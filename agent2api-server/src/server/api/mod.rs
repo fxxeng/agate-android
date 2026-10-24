@@ -79,6 +79,8 @@ pub mod debug_api;
 // 「handler 被 axum 取消时补 408 终态」这一件事的完整封装，见该文件模块头）
 pub mod disconnect_guard;
 pub mod endpoints;
+/// SSE 事件流（M3 事件总线，见 `server::events` 模块头）
+pub mod events_api;
 pub mod health;
 // 「从其他工具导入」的扫描接口（当前来源：cc-switch；存储读取见
 // `core::import_ccswitch`）

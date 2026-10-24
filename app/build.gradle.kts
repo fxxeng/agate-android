@@ -52,4 +52,6 @@ dependencies {
     debugImplementation("androidx.compose.ui:ui-tooling")
 
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    // M3 SSE 事件流（/api/events，方案 §3.2）
+    implementation("com.squareup.okhttp3:okhttp-sse:4.12.0")
 }

@@ -349,6 +349,20 @@ impl RequestStats {
     /// 影响已经转发成功的请求：丢一条统计只是报表少一个数。
     pub fn record(&self, entry: NewRequestEntry) {
         let record = entry.normalize();
+        // SSE 总线（M3）：每条请求的终态 Diff。publish 内部已吞掉
+        // 「无订阅者」错误，与本函数「记账失败不影响请求」的契约一致。
+        crate::server::events::publish(
+            "request_done",
+            serde_json::json!({
+                "model": record.model,
+                "provider": record.provider,
+                "accountName": record.account_name,
+                "status": record.status,
+                "durationMs": record.duration_ms,
+                "totalTokens": record.total_tokens,
+                "isTest": record.is_test,
+            }),
+        );
         let date = date_key(day_of(record.ts));
         let bounds = self.retention_bounds();
         let guard = self.guard();

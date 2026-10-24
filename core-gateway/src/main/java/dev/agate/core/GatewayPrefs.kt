@@ -13,12 +13,28 @@ object GatewayPrefs {
     private const val FILE = "gateway_prefs"
 
     private const val KEY_BIND_LAN = "bind_lan"
+    private const val KEY_API_KEY = "api_key"
     private const val KEY_BOOT_AUTO_START = "boot_auto_start"
     private const val KEY_CHECKIN_ALARM = "checkin_alarm"
     private const val KEY_ALARM_TIMES = "alarm_times"
     private const val KEY_NEXT_ALARM_AT = "next_alarm_at"
 
     /** 局域网监听（0.0.0.0 + 内核 panel gate + fail-closed）。默认关。 */
+    /**
+     * 本机网关 Key（M3）：首次调用生成 `agate-` + 32 位 hex 并持久化，
+     * 之后跨重启稳定。经 nativeStart 的 api_key 注入内核（env 兼容模式），
+     * 作用：① 局域网形态下壳自身的 /api、/v1 请求凭它过闸门；② 展示在
+     * 「访问密钥」页供局域网设备配置。仅存 SharedPreferences（M3/M5 的
+     * KeyStore 加密为增强项，见方案 §3.7）。
+     */
+    fun apiKey(ctx: Context): String {
+        prefs(ctx).getString(KEY_API_KEY, null)?.let { return it }
+        val alphabet = "0123456789abcdef"
+        val key = "agate-" + (1..32).map { alphabet.random() }.joinToString("")
+        prefs(ctx).edit().putString(KEY_API_KEY, key).apply()
+        return key
+    }
+
     fun bindLan(ctx: Context): Boolean =
         prefs(ctx).getBoolean(KEY_BIND_LAN, false)
 

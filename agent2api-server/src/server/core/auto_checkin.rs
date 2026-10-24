@@ -718,6 +718,16 @@ impl AutoCheckin {
             "failed": failures.iter().take(5).cloned().collect::<Vec<_>>(),
             "failedCount": failures.len(),
         });
+        crate::server::events::publish(
+            "checkin_done",
+            serde_json::json!({
+                "succeeded": succeeded,
+                "total": total,
+                "skipped": skipped,
+                "failed": failures.len(),
+                "active": active,
+            }),
+        );
         write_state(json!({ "lastResult": summary }));
         logging::log(
             "[Checkin]",

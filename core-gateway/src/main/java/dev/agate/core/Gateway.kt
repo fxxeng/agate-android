@@ -93,6 +93,7 @@ object Gateway {
         port: Int = 8787,
         bindLan: Boolean = false,
         adminToken: String? = null,
+        apiKey: String? = null,
     ): StartResult {
         ensureLoaded()
         val cfg = JSONObject()
@@ -100,6 +101,7 @@ object Gateway {
             .put("port", port)
             .put("bind_lan", bindLan)
         adminToken?.let { cfg.put("admin_token", it) }
+        apiKey?.takeIf { it.isNotBlank() }?.let { cfg.put("api_key", it) }
         return StartResult.parse(nativeStart(cfg.toString()))
     }
 

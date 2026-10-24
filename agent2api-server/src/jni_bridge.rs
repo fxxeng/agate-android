@@ -214,6 +214,13 @@ fn start_gateway(data_dir: &str, port: u16, bind_lan: bool) -> Value {
         bind_lan,
         started_at: Instant::now(),
     });
+    // SSE 总线（M3）：App 的 GatewayRepository 重连上即收到，UI 据此从
+    // 「轮询降级」回到 SSE 通道（O9）。stop 不推 —— 那时 SSE 已断流，
+    // 客户端靠 onFailure 感知，重连后的 hello 帧补位。
+    crate::server::events::publish(
+        "gateway_started",
+        serde_json::json!({ "port": port, "bindLan": bind_lan, "version": VERSION }),
+    );
     json!({"ok": true, "port": port, "bind_lan": bind_lan, "version": VERSION})
 }
 
@@ -313,6 +320,17 @@ pub extern "system" fn Java_dev_agate_core_Gateway_nativeStart<'local>(
         return json_reply(&mut env, json!({"ok": false, "stage": "config", "error": "data_dir 必填"}));
     };
     let port = cfg.get("port").and_then(Value::as_u64).unwrap_or(8080).clamp(1, 65535) as u16;
+    // api_key（M3）：壳层生成的本机 Key → env 注入。config::active_keys_from
+    // 每次鉴权都实时读 env（parse::env_api_key_value），无需写 config.json；
+    // 效果 = 上游「兼容模式」：局域网形态下壳的 /api 与 /v1 请求带这把 Key
+    // 即过闸门，同时 /v1 不再 fail-closed（keys 非空），Key 可展示给局域网
+    // 设备复用（M3 访问密钥页）。
+    if let Some(key) = cfg.get("api_key").and_then(Value::as_str) {
+        let key = key.trim();
+        if !key.is_empty() {
+            std::env::set_var("AGENT2API_PROXY_API_KEY", key);
+        }
+    }
     let bind_lan = cfg.get("bind_lan").and_then(Value::as_bool).unwrap_or(false);
     // admin_token：M0 预留 —— M1 局域网模式的 X-Internal-Admin-Token 免登守卫用它
     if let Some(token) = cfg.get("admin_token").and_then(Value::as_str) {

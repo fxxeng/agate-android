@@ -24,6 +24,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.runtime.collectAsState
+import dev.agate.android.data.GatewayRepository
 import dev.agate.core.AgateForegroundService
 import dev.agate.core.AlarmScheduler
 import dev.agate.core.BatteryWhitelist
@@ -106,7 +108,56 @@ fun GatewayControlPage(modifier: Modifier = Modifier) {
         }
         RowButton("停止网关") {
             AgateForegroundService.stop(ctx)
-            append("→ 已请求停止")
+            GatewayRepository.stop()
+            append("→ 已请求停止（事件流已断开）")
+        }
+
+        Spacer(Modifier.height(14.dp))
+
+        // ── M3 · SSE 事件总线（方案 §3.2 / O9）─────────────────────
+        // SSE 为主 + 轮询降级的可视化验收位：状态徽标 + 最近事件流。
+        SectionLabel("事件总线（M3 · SSE /api/events）")
+        val link = GatewayRepository.link.collectAsState().value
+        val recentEvents = GatewayRepository.events.collectAsState().value
+        AgateBadge(
+            when (link) {
+                GatewayRepository.LinkState.CONNECTED -> "SSE 已连接"
+                GatewayRepository.LinkState.CONNECTING -> "连接中…"
+                GatewayRepository.LinkState.RETRYING -> "重连中…"
+                GatewayRepository.LinkState.POLLING -> "轮询降级（/health 5s）"
+                GatewayRepository.LinkState.DISCONNECTED -> "未连接"
+            },
+            when (link) {
+                GatewayRepository.LinkState.CONNECTED -> BadgeTone.GREEN
+                GatewayRepository.LinkState.CONNECTING,
+                GatewayRepository.LinkState.RETRYING,
+                -> BadgeTone.AMBER
+                GatewayRepository.LinkState.POLLING -> BadgeTone.BLUE
+                GatewayRepository.LinkState.DISCONNECTED -> BadgeTone.RED
+            },
+        )
+        Spacer(Modifier.height(8.dp))
+        RowButton("连接事件流") {
+            GatewayRepository.configure(GatewayPrefs.apiKey(ctx))
+            GatewayRepository.start()
+        }
+        RowButton("断开事件流") {
+            GatewayRepository.stop()
+        }
+        if (recentEvents.isEmpty()) {
+            Text(
+                "尚无事件：连上后首帧 hello；转发完成 / 签到轮次 / 网关启动都会推到这里",
+                style = AgateType.BodyS,
+                color = C.textSub,
+            )
+        } else {
+            recentEvents.take(8).forEach { ev ->
+                Text(
+                    "· ${ev.type}｜${ev.summary}",
+                    style = AgateType.BodyS,
+                    color = C.textMain,
+                )
+            }
         }
         RowButton("Gateway.status()") {
             bg { "status → " + runCatching { Gateway.status().toString() }.getOrElse { "异常 ${it.message}" } }

@@ -197,6 +197,10 @@ pub fn panel_router(state: ServerState) -> Router {
         // 昵称、各家健康状态、路由中的账号等部署信息（字段清单见 session.rs），
         // 桌面壳的请求由壳带第一把 Key（gateway::request_builder）不受影响。
         .route("/api/session", get(api::session::get_session))
+        // SSE 事件流（M3）：与其它 /api/* 同一道闸门 —— loopback 免鉴权
+        // 形态原样放行（require_api_key 的 keys 为空分支），局域网形态
+        // 需面板凭证或 API Key。
+        .route("/api/events", get(api::events_api::handle))
         .route(
             "/api/config",
             get(api::config_api::get_config)

@@ -143,6 +143,7 @@ pub mod config_migration;
 pub mod core;
 pub mod db;
 pub mod errors;
+pub mod events;
 pub mod http;
 pub mod logging;
 pub mod logs_store;

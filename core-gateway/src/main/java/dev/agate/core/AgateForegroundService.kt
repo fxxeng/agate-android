@@ -105,6 +105,7 @@ class AgateForegroundService : Service() {
                 filesDir.resolve("agate").absolutePath,
                 port = 8787,
                 bindLan = bindLan,
+                apiKey = GatewayPrefs.apiKey(this),
             )
         } catch (t: Throwable) {
             android.util.Log.e("Agate", "内核启动异常（.so 加载失败？）", t)
@@ -150,7 +151,7 @@ class AgateForegroundService : Service() {
             if (!running) {
                 val bindLan = GatewayPrefs.bindLan(this)
                 val result = try {
-                    Gateway.start(filesDir.resolve("agate").absolutePath, port = 8787, bindLan = bindLan)
+                    Gateway.start(filesDir.resolve("agate").absolutePath, port = 8787, bindLan = bindLan, apiKey = GatewayPrefs.apiKey(this))
                 } catch (_: Throwable) {
                     null
                 }
