@@ -1,0 +1,78 @@
+package dev.agate.android.ui.theme
+
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.lightColorScheme
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.staticCompositionLocalOf
+
+/** 主题三档：跟随系统 / 浅色 / 深色（不做更多主题）。 */
+enum class AgateThemeMode { FOLLOW_SYSTEM, LIGHT, DARK }
+
+val LocalAgateColors = staticCompositionLocalOf { AgateColors.Dark }
+
+/** 组件取语义色的唯一入口：`val C = agateColors()`。 */
+@Composable
+fun agateColors(): AgateColors = LocalAgateColors.current
+
+@Composable
+fun AgateTheme(
+    mode: AgateThemeMode = AgateThemeMode.FOLLOW_SYSTEM,
+    content: @Composable () -> Unit,
+) {
+    val dark = when (mode) {
+        AgateThemeMode.FOLLOW_SYSTEM -> isSystemInDarkTheme()
+        AgateThemeMode.LIGHT -> false
+        AgateThemeMode.DARK -> true
+    }
+    val C = if (dark) AgateColors.Dark else AgateColors.Light
+
+    // Material3 ColorScheme 映射（让 M3 组件默认贴合 v44 视觉；组件内仍优先取 AgateColors）
+    val scheme = if (dark) {
+        darkColorScheme(
+            primary = C.accent,
+            onPrimary = C.onAccent,
+            background = C.bg,
+            onBackground = C.textMain,
+            surface = C.cardBg,
+            onSurface = C.textMain,
+            surfaceVariant = C.insetBg,
+            onSurfaceVariant = C.textSub,
+            outline = C.border,
+            outlineVariant = C.border,
+            error = C.red,
+            onError = C.onAccent,
+            secondary = C.accent,
+            onSecondary = C.onAccent,
+            tertiary = C.green,
+        )
+    } else {
+        lightColorScheme(
+            primary = C.accent,
+            onPrimary = C.onAccent,
+            background = C.bg,
+            onBackground = C.textMain,
+            surface = C.cardBg,
+            onSurface = C.textMain,
+            surfaceVariant = C.insetBg,
+            onSurfaceVariant = C.textSub,
+            outline = C.border,
+            outlineVariant = C.border,
+            error = C.red,
+            onError = C.onAccent,
+            secondary = C.accent,
+            onSecondary = C.onAccent,
+            tertiary = C.green,
+        )
+    }
+
+    CompositionLocalProvider(LocalAgateColors provides C) {
+        MaterialTheme(
+            colorScheme = scheme,
+            typography = AgateTypography,
+            content = content,
+        )
+    }
+}
