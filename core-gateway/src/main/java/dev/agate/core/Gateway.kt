@@ -7,7 +7,7 @@ import org.json.JSONObject
 /**
  * 网关内核（libagate_server.so）的 Kotlin 门面。
  *
- * 双通信面（方案 §3）：数据面全部走 HTTP（127.0.0.1:8080），本对象只管
+ * 双通信面（方案 §3）：数据面全部走 HTTP（127.0.0.1:8787），本对象只管
  * 「电源开关 + 闹钟 + 日志回调」六件事，不碰任何业务数据结构。
  *
  * 线程：JNI 导出可在任意线程调用（bootstrap/start 是同步调用、毫秒级返回，
@@ -85,12 +85,12 @@ object Gateway {
 
     /**
      * 拉起网关。[dataDir] 是内核数据目录（SQLite/日志/备份），调用方传
-     * context.filesDir 下的子目录；[port] 默认 8080；[bindLan] 局域网监听
+     * context.filesDir 下的子目录；[port] 默认 8787；[bindLan] 局域网监听
      * （M0 默认 false，M1 接设置）；[adminToken] M1 局域网守卫用，M0 可空。
      */
     fun start(
         dataDir: String,
-        port: Int = 8080,
+        port: Int = 8787,
         bindLan: Boolean = false,
         adminToken: String? = null,
     ): StartResult {

@@ -31,7 +31,7 @@ class MainActivity : Activity() {
         .connectTimeout(5, TimeUnit.SECONDS)
         .readTimeout(180, TimeUnit.SECONDS)
         .build()
-    private val port = 8080
+    private val port = 8787
     private lateinit var out: TextView
 
     override fun onCreate(savedInstanceState: Bundle?) {

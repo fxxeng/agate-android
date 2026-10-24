@@ -26,7 +26,7 @@ class AgateForegroundService : Service() {
         private const val CHANNEL_ID = "agate_gateway"
         private const val NOTIFICATION_ID = 1001
 
-        /** M0：端口/局域网开关用默认值（8080/关）；M1 起接 Compose 设置页。 */
+        /** M0：端口/局域网开关用默认值（8787/关）；M1 起接 Compose 设置页。 */
         fun start(context: Context) {
             context.startForegroundService(
                 Intent(context, AgateForegroundService::class.java).setAction(ACTION_START)
@@ -61,7 +61,7 @@ class AgateForegroundService : Service() {
                 enterForeground("启动中…")
                 Thread {
                     val result = try {
-                        Gateway.start(filesDir.resolve("agate").absolutePath, port = 8080, bindLan = false)
+                        Gateway.start(filesDir.resolve("agate").absolutePath, port = 8787, bindLan = false)
                     } catch (t: Throwable) {
                         android.util.Log.e("Agate", "内核启动异常（.so 加载失败？）", t)
                         null
