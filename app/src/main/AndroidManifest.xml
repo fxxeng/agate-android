@@ -6,12 +6,15 @@
     <!-- API 34+：specialUse 类型 FGS 必须声明对应权限 -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-    <!-- M1 起：闹钟签到唤醒 / 按需持锁 -->
+    <!-- M1 起：闹钟签到唤醒 / 按需持锁 / 开机自启 / 电池白名单申请 -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
     <application
         android:usesCleartextTraffic="true"
-        android:label="Agate M0"
+        android:label="Agate M1"
         android:allowBackup="false"
         android:theme="@android:style/Theme.Material.NoActionBar">
 
@@ -23,7 +26,7 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
-        <!-- AgateForegroundService 声明在 core-gateway 模块的 manifest，合并进来 -->
+        <!-- AgateForegroundService / BootReceiver / AlarmReceiver 声明在 core-gateway 模块，合并进来 -->
     </application>
 
 </manifest>

@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- Service 由本库模块拥有，manifest 合并进宿主 app；权限声明在 app 模块 -->
+    <!-- Service/Receiver 由本库模块拥有，manifest 合并进宿主 app；权限声明在 app 模块 -->
     <application>
+
         <service
             android:name="dev.agate.core.AgateForegroundService"
             android:exported="false"
@@ -11,6 +12,24 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Local AI gateway HTTP server under explicit user control (start/stop via notification)" />
         </service>
+
+        <!-- 开机自启：BOOT_COMPLETED 是系统广播，必须 exported -->
+        <receiver
+            android:name="dev.agate.core.BootReceiver"
+            android:enabled="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+
+        <!-- 签到闹钟：只收本应用 PendingIntent，exported=false -->
+        <receiver
+            android:name="dev.agate.core.AlarmReceiver"
+            android:enabled="true"
+            android:exported="false" />
+
     </application>
 
 </manifest>
