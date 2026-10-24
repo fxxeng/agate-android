@@ -28,7 +28,6 @@ import dev.agate.android.ui.theme.agateColors
  * 折线 = 成功率（green，0..1 归一），底部 0/6/12/18/24 刻度（tnum）。
  * 柱高按 volumes.max 归一；两轴量纲不同，图例注明。
  */
-@ComComposable
 @Composable
 fun AgateDualAxisChart(
     volumes: List<Int>,

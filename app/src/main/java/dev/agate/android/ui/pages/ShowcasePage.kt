@@ -79,9 +79,9 @@ fun ShowcasePage(
 
         // 主题三档（走查用；正式切换入口在设置页，仅三档不增）
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            AgateChip("跟随系统", themeMode == AgateThemeMode.FOLLOW_SYSTEM) { onThemeModeChange(AgateThemeMode.FOLLOW_SYSTEM) }
-            AgateChip("浅色", themeMode == AgateThemeMode.LIGHT) { onThemeModeChange(AgateThemeMode.LIGHT) }
-            AgateChip("深色", themeMode == AgateThemeMode.DARK) { onThemeModeChange(AgateThemeMode.DARK) }
+            AgateChip("跟随系统", themeMode == AgateThemeMode.FOLLOW_SYSTEM, onClick = { onThemeModeChange(AgateThemeMode.FOLLOW_SYSTEM) })
+            AgateChip("浅色", themeMode == AgateThemeMode.LIGHT, onClick = { onThemeModeChange(AgateThemeMode.LIGHT) })
+            AgateChip("深色", themeMode == AgateThemeMode.DARK, onClick = { onThemeModeChange(AgateThemeMode.DARK) })
         }
         Spacer(Modifier.height(18.dp))
 
@@ -108,12 +108,12 @@ fun ShowcasePage(
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             AgateChip("深度思考")
             AgateChip("已选模式", selected = true)
-            AgateChip("限时") { }
+            AgateChip("限时", onClick = {})
         }
 
         // 4 分段控件
         Section("4 · 分段控件 AgateSegmented")
-        AgateSegmented(listOf("按模型", "按提供商", "混合"), segIdx) { segIdx = it }
+        AgateSegmented(listOf("按模型", "按提供商", "混合"), segIdx, onSelect = { segIdx = it })
 
         // 5 KPI 四联（tnum）
         Section("5 · KPI 四联 AgateKpiStrip（数字 tnum 等宽）")
@@ -136,7 +136,7 @@ fun ShowcasePage(
 
         // 7 热力图
         Section("7 · 热力图 AgateHeatmap（26 周）")
-        val heat = remember {
+        val heat: List<Float> = remember {
             List(26 * 7) { i ->
                 val v = sin(i * 0.37) * 0.5 + 0.5
                 ((v * 100).toInt() % 100) / 100f
