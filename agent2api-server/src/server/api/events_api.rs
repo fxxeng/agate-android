@@ -46,9 +46,11 @@ pub async fn handle() -> Sse<impl futures::Stream<Item = Result<Event, Infallibl
             })
             .to_string(),
         )));
+    // axum 0.8 的 KeepAlive 只有 text()（发 `: ping` 注释帧，不带事件名）；
+    // okhttp-sse 对注释帧不回调 onEvent，正好是纯心跳语义。
     Sse::new(hello.chain(live)).keep_alive(
         KeepAlive::new()
             .interval(Duration::from_secs(15))
-            .event("ping"),
+            .text("ping"),
     )
 }
