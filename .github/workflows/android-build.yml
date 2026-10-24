@@ -1,7 +1,6 @@
 name: android-build
 
-# 仅手动触发：Actions 免费额度（2000 分钟/月）已耗尽，推送不再自动构建；
-# 额度每月 1 日重置后按需手动触发（约 10-15 分钟/次）。
+# 仓库已转公共（Actions 免费不占额度），保持手动触发、按需构建。
 on:
   workflow_dispatch:
 
@@ -31,11 +30,9 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Android SDK
-        uses: android-actions/setup-android@v3
-
       - name: 安装 NDK r27c 与 cargo-ndk
         run: |
+          command -v sdkmanager >/dev/null || export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
           yes | sdkmanager --install "ndk;27.2.12479018" > /dev/null
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"
           cargo install cargo-ndk --locked
