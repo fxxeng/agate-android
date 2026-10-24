@@ -24,13 +24,17 @@ use tokio_stream::wrappers::BroadcastStream;
 use crate::server::events;
 
 pub async fn handle() -> Sse<impl futures::Stream<Item = Result<Event, Infallible>>> {
-    let live = BroadcastStream::new(events::subscribe()).filter_map(|item| match item {
-        Ok(text) => Some(Ok(Event::default().data(text))),
-        // Lagged：只告诉客户端「你落后了」，不带被丢的条数（拿到条数也没法
-        // 补，客户端的动作只有一个 —— 全量刷新）
-        Err(_) => Some(Ok(Event::default()
-            .event("lagged")
-            .data(r#"{"type":"lagged","data":{"hint":"refresh"}}"#))),
+    // futures 0.3 的 filter_map 是异步签名（闭包须返回 Future<Output=Option<T>>），
+    // 同步 match 用 async move 块包一层。
+    let live = BroadcastStream::new(events::subscribe()).filter_map(|item| async move {
+        match item {
+            Ok(text) => Some(Ok(Event::default().data(text))),
+            // Lagged：只告诉客户端「你落后了」，不带被丢的条数（拿到条数也没法
+            // 补，客户端的动作只有一个 —— 全量刷新）
+            Err(_) => Some(Ok(Event::default()
+                .event("lagged")
+                .data(r#"{"type":"lagged","data":{"hint":"refresh"}}"#))),
+        }
     });
     let hello = fstream::once(ok(Event::default()
         .event("hello")
