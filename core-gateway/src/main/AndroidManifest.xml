@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Service 由本库模块拥有，manifest 合并进宿主 app；权限声明在 app 模块 -->
+    <application>
+        <service
+            android:name="dev.agate.core.AgateForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Local AI gateway HTTP server under explicit user control (start/stop via notification)" />
+        </service>
+    </application>
+
+</manifest>
