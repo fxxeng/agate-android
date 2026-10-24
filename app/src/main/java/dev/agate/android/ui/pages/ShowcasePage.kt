@@ -153,7 +153,7 @@ fun ShowcasePage(
                 List(24) { h -> (abs(sin(h * 1.3)) * 220).toInt() + (if (h in 9..22) 60 else 0) }
             },
             successRates = remember {
-                List(24) { h -> 0.86f + (abs(sin(h * 0.71)) * 0.13f) }
+                List(24) { h -> 0.86f + (abs(sin(h * 0.71)) * 0.13f).toFloat() }
             },
         )
 
