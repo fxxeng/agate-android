@@ -277,7 +277,16 @@ fn trigger_task(task: &str) -> Value {
             .timeout(std::time::Duration::from_secs(120))
             .build()
             .unwrap_or_default();
-        match client.post(&url).send().await {
+        // M3-1 回归修复：env 注入 AGENT2API_PROXY_API_KEY 后闸门 keys 非空，
+        // 内部触发请求也必须带这把 Key，否则闹钟签到 401。
+        let mut request = client.post(&url);
+        if let Ok(key) = std::env::var("AGENT2API_PROXY_API_KEY") {
+            let key = key.trim().to_string();
+            if !key.is_empty() {
+                request = request.header("Authorization", format!("Bearer {key}"));
+            }
+        }
+        match request.send().await {
             Ok(resp) => server::logging::log(
                 "[Checkin]",
                 &format!("闹钟触发 {url} → HTTP {}", resp.status().as_u16()),
