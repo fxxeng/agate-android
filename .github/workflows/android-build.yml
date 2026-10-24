@@ -1,9 +1,9 @@
 name: android-build
 
+# 仅手动触发：Actions 免费额度（2000 分钟/月）已耗尽，推送不再自动构建；
+# 额度每月 1 日重置后按需手动触发（约 10-15 分钟/次）。
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
 
 jobs:
   build:

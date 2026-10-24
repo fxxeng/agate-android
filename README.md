@@ -3,7 +3,7 @@
 Rust `agent2api-server` 内核原样复用（交叉编译为 `libagate_server.so`）+ Kotlin / Jetpack Compose 原生壳。
 设计基线：`123_v44.html` 交互规范 × agent2api 上游源码。完整方案与里程碑见 [docs/Agate移植方案-v3.0.md](docs/Agate移植方案-v3.0.md)。
 
-**状态**：M0 实施中（2026-10-24）——上游 3.0.8 内核副本已入库（agent2api-server/）、JNI 桥（src/jni_bridge.rs）、core-gateway（Gateway.kt + 前台服务）、Gradle 骨架与 CI（.github/workflows/android-build.yml）就绪，等待首轮 CI 编译验证。决策与偏差见 [docs/M0-决策记录.md](docs/M0-决策记录.md)。
+**状态**：M0 实施中（2026-10-24）——上游 3.0.8 内核副本已入库（agent2api-server/）、JNI 桥（src/jni_bridge.rs）、core-gateway（Gateway.kt + 前台服务）、Gradle 骨架与 CI（.github/workflows/android-build.yml）就绪，CI 已改为仅手动触发（Actions 免费额度耗尽，额度每月重置后手动点构建），编译验证挂起待做。决策与偏差见 [docs/M0-决策记录.md](docs/M0-决策记录.md)。
 
 ## 目录结构（对应方案第 4 节）
 
