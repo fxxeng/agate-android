@@ -492,7 +492,9 @@ private fun ProviderPickerSheet(
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
-        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = false),
+        // true：跳过「半展开」中间态，直接落在内容高度（=78% 屏高）；
+        // 内容已固定 78%，所以不会再顶到顶，也不会出现两段式拖动。
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         containerColor = C.cardBg,
     ) {
         Column(Modifier.fillMaxWidth().height(sheetH)) {
