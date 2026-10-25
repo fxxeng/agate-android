@@ -20,3 +20,7 @@ agate-server/target/
 
 # 内核 .so 由 build-android-so.sh 现场产出，不入库
 core-gateway/src/main/jniLibs/
+
+# MCP 工具本地产物，不入库
+.mcp-change-history.json
+*.mcp-backup-*

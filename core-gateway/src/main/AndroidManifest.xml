@@ -30,6 +30,18 @@
             android:enabled="true"
             android:exported="false" />
 
+        <!-- Quick Settings 磁贴：系统绑定需 BIND_QUICK_SETTINGS_TILE 权限，exported -->
+        <service
+            android:name="dev.agate.core.AgateTileService"
+            android:exported="true"
+            android:icon="@android:drawable/ic_lock_power_off"
+            android:label="Agate 网关"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+
     </application>
 
 </manifest>
