@@ -13,8 +13,8 @@ android {
         minSdk = 26
         targetSdk = 35
         // 主版本号与上游内核同步溯源（方案 §2）
-        versionCode = 2
-        versionName = "0.3.0-m2"
+        versionCode = 3
+        versionName = "0.4.0-m3"
     }
 
     buildTypes {

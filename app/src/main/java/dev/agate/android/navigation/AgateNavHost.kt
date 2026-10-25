@@ -49,6 +49,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import dev.agate.android.ui.home.ConsolePage
 import dev.agate.android.ui.pages.GatewayControlPage
 import dev.agate.android.ui.pages.ShowcasePage
 import dev.agate.android.ui.pages.SkeletonPage
@@ -202,9 +203,14 @@ fun AgateNavHost(
                 modifier = Modifier.padding(padding),
             ) {
                 composable(Routes.HOME) {
-                    SkeletonPage(
-                        "控制台", "M3",
-                        "Hero 状态卡、健康自检、3 步新手向导、KPI 四联、实时出战队列与排队水位。M2 骨架已立，M3 接 /api/* 真数据。",
+                    ConsolePage(
+                        onNavigate = { route ->
+                            navController.navigate(route) {
+                                popUpTo(Routes.HOME) { saveState = true }
+                                launchSingleTop = true
+                                restoreState = true
+                            }
+                        },
                     )
                 }
                 composable(Routes.PROVIDERS) {
