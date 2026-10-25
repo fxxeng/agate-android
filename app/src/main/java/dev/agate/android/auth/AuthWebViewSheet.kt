@@ -51,7 +51,7 @@ data class LoginSession(
  *
  * - 加载 login/start 给的 authUrl，JS/DOM/Cookie 全开（OAuth 页与 HttpOnly Cookie 需要）；
  * - 回调分两路：
- *   · http(s)://127.0.0.1:8787/* 的 loopback 回调 **不拦**，让 WebView 直接打到内核
+ *   · http(s) 回调打到本机 8787 端口的（loopback），**不拦**，WebView 直达内核
  *     （内核各家的 *-callback 路由自己会消化，wait 随之转 done）；
  *   · zcode:// 等自定义 scheme 拦下，POST /api/session/login/callback 转发内核；
  * - 完成检测统一靠 wait 轮询（1.8s 间隔，5 分钟超时），与服务端中介型（Qoder 设备
