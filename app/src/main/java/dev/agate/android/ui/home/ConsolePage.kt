@@ -29,7 +29,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.Menu
+import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -115,7 +115,7 @@ fun ConsolePage(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Icon(
-                Icons.AutoMirrored.Filled.Menu,
+                Icons.Filled.Menu,
                 contentDescription = "打开抽屉",
                 tint = C.textMain,
                 modifier = Modifier
