@@ -126,13 +126,13 @@ private val DrawerSections: List<DrawerSection> = listOf(
         DrawerEntry(Routes.MODELS, "模型", Icons.Filled.Dataset),
         DrawerEntry(Routes.TASKS, "任务中心", Icons.Filled.Assignment),
     )),
-    DrawerSection("数据与日志", listOf(
+    DrawerSection("数据与报表", listOf(
         DrawerEntry(Routes.QUOTA, "额度中心", Icons.Filled.WorkspacePremium),
         DrawerEntry(Routes.REPORTS, "数据报表", Icons.Filled.Dashboard),
         DrawerEntry(Routes.LOGS, "调用记录", Icons.Filled.ReceiptLong),
         DrawerEntry(Routes.APPLOGS, "应用日志", Icons.Filled.Terminal),
     )),
-    DrawerSection("运维与扩展", listOf(
+    DrawerSection("运维与路由", listOf(
         DrawerEntry(Routes.GATEWAY, "网关控制", Icons.Filled.Bolt),
         DrawerEntry(Routes.ROUTING, "路由预演", Icons.Filled.Route),
         DrawerEntry(Routes.PROXY, "出网代理池", Icons.Filled.Lan),
@@ -141,6 +141,8 @@ private val DrawerSections: List<DrawerSection> = listOf(
     DrawerSection("设置", listOf(
         DrawerEntry(Routes.KEYS, "访问密钥", Icons.Filled.Key),
         DrawerEntry(Routes.SETTINGS, "设置", Icons.Filled.Settings),
+    )),
+    DrawerSection("开发调试", listOf(
         DrawerEntry(Routes.SHOWCASE, "组件走查", Icons.Filled.ViewQuilt),
     )),
 )
@@ -158,47 +160,62 @@ private fun AgateDrawer(
             .fillMaxHeight()
             .background(C.cardBg)
             .statusBarsPadding()
-            .padding(horizontal = 12.dp)
-            .verticalScroll(rememberScrollState())
             .navigationBarsPadding(),
     ) {
-        // 页头（v44 .drawer-header）
+        // 页头（固定，v44 .drawer-header）
         Column(
             Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 14.dp),
+                .padding(start = 24.dp, end = 24.dp, top = 16.dp, bottom = 14.dp),
         ) {
             Text("Agate", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = C.textMain)
             Spacer(Modifier.height(4.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("AI Gateway", fontSize = 12.sp, color = C.textSub)
-                Spacer(Modifier.width(6.dp))
+                Spacer(Modifier.width(8.dp))
                 Box(Modifier.size(6.dp).background(C.green, CircleShape))
                 Spacer(Modifier.width(4.dp))
                 Text("网关", fontSize = 12.sp, color = C.green)
             }
         }
         DashedDivider()
-        Spacer(Modifier.height(6.dp))
 
-        DrawerSections.forEachIndexed { idx, section ->
-            section.title?.let {
-                Text(
-                    it,
-                    fontSize = 12.sp,
-                    color = C.textDim,
-                    modifier = Modifier.padding(start = 12.dp, top = 10.dp, bottom = 2.dp),
-                )
+        // 分组列表（独立滚动）
+        Column(
+            Modifier
+                .weight(1f)
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+        ) {
+            DrawerSections.forEachIndexed { idx, section ->
+                section.title?.let {
+                    Text(
+                        it,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = C.textDim,
+                        modifier = Modifier.padding(start = 12.dp, top = 12.dp, bottom = 4.dp),
+                    )
+                }
+                section.items.forEach { entry ->
+                    DrawerItemRow(entry, currentRoute == entry.route) { onSelect(entry.route) }
+                }
+                if (idx < DrawerSections.size - 1) {
+                    Spacer(Modifier.height(8.dp))
+                    DashedDivider()
+                }
             }
-            section.items.forEach { entry ->
-                DrawerItemRow(entry, currentRoute == entry.route) { onSelect(entry.route) }
-            }
-            if (idx < DrawerSections.size - 1) {
-                Spacer(Modifier.height(6.dp))
-                DashedDivider()
-            }
+            Spacer(Modifier.height(8.dp))
         }
-        Spacer(Modifier.height(20.dp))
+
+        // 页脚（固定）
+        DashedDivider()
+        Text(
+            "Agate · v0.4.0-m3",
+            fontSize = 11.sp,
+            color = C.textDim,
+            modifier = Modifier.padding(start = 24.dp, top = 10.dp, bottom = 12.dp),
+        )
     }
 }
 
