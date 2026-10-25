@@ -17,7 +17,7 @@ command -v cargo >/dev/null || { echo "❌ cargo 不在 PATH"; exit 1; }
 command -v cargo-ndk >/dev/null || cargo install cargo-ndk --locked
 
 echo "▶ cargo ndk -t $TARGET_ABI build --release --lib（首次全量编译约 5-15 分钟）"
-cd "$REPO_ROOT/agent2api-server"
+cd "$REPO_ROOT/agate-server"
 cargo ndk -t "$TARGET_ABI" -o "$OUT_DIR" build --release --lib
 
 SO="$OUT_DIR/$TARGET_ABI/libagate_server.so"

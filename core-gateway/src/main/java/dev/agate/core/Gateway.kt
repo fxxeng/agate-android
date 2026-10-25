@@ -24,14 +24,14 @@ object Gateway {
         if (loaded) return
         synchronized(loadLock) {
             if (!loaded) {
-                // libagate_server.so —— agent2api-server 内核的 cdylib 产物
+                // libagate_server.so —— agate-server 内核的 cdylib 产物
                 System.loadLibrary("agate_server")
                 loaded = true
             }
         }
     }
 
-    // ── JNI 导出（与 agent2api-server/src/jni_bridge.rs 一一对应，勿直接调用）──
+    // ── JNI 导出（与 agate-server/src/jni_bridge.rs 一一对应，勿直接调用）──
     private external fun nativeStart(configJson: String): String
     private external fun nativeStop(): String
     private external fun nativeStatus(): String
@@ -116,7 +116,7 @@ object Gateway {
         return Status.parse(nativeStatus())
     }
 
-    /** 内核版本号（与上游 agent2api-server 同源，如 3.0.8）。 */
+    /** 内核版本号（与上游 agate-server 同源，如 3.0.8）。 */
     fun version(): String {
         ensureLoaded()
         return nativeVersion()
