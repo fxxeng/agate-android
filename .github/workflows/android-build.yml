@@ -67,3 +67,4 @@ jobs:
             app/build/outputs/apk/debug/*.apk
             core-gateway/src/main/jniLibs/arm64-v8a/*.so
           if-no-files-found: error
+          retention-days: 7
