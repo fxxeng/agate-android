@@ -1,5 +1,6 @@
 package dev.agate.android.navigation
 
+import android.app.Activity
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -47,13 +48,16 @@ import androidx.compose.material.icons.filled.Verified
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.SideEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -282,6 +286,16 @@ fun AgateNavHost(
     val scope = rememberCoroutineScope()
     val backStack by navController.currentBackStackEntryAsState()
     val currentRoute = backStack?.destination?.route ?: Routes.HOME
+
+    // 导航栏配色随层级切换：一级页有底栏(chromeBg)，二级页无底栏 → 与页面底色一致，
+    // 否则手势条区域会出现一条明显色带（尤其 API<35 未强制 edge-to-edge 时）。
+    val isTopLevel = currentRoute in TopLevelRoutes
+    val view = LocalView.current
+    SideEffect {
+        val window = (view.context as? Activity)?.window ?: return@SideEffect
+        @Suppress("DEPRECATION")
+        window.navigationBarColor = (if (isTopLevel) C.chromeBg else C.bg).toArgb()
+    }
 
     fun openDrawer() = scope.launch { drawerState.open() }
 

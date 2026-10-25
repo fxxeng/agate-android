@@ -50,6 +50,7 @@ import dev.agate.android.data.TaskCenter
 import dev.agate.android.data.dto.AccountDto
 import dev.agate.android.ui.models.parseMultiplier
 import dev.agate.core.GatewayPrefs
+import dev.agate.android.ui.components.AgateProviderAvatar
 import dev.agate.android.ui.components.agateCard
 import dev.agate.android.ui.components.AgateAvatar
 import dev.agate.android.ui.components.AgateBadge
@@ -375,7 +376,7 @@ private fun ProviderCard(
         // 头部：头像（右下状态点）+ 名称/副行/meta + 管理 + chevron
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box {
-                AgateAvatar(name = g.label, size = 40.dp, letters = initialsOf(g.label))
+                AgateProviderAvatar(providerId = g.providerId, label = g.label, size = 40.dp)
                 Box(
                     Modifier
                         .align(Alignment.BottomEnd)
@@ -596,7 +597,7 @@ private fun ReorderRow(g: ProviderGroupView) {
             .padding(horizontal = 12.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        AgateAvatar(name = g.label, size = 32.dp, corner = 10.dp, letters = initialsOf(g.label))
+        AgateProviderAvatar(providerId = g.providerId, label = g.label, size = 32.dp, corner = 10.dp)
         Spacer(Modifier.width(10.dp))
         Text(g.label, color = C.textMain, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
         Text("${g.accounts.count { it.enabled }}/${g.accounts.size} 启用", color = C.textSub, fontSize = 12.sp)

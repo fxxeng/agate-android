@@ -44,6 +44,7 @@ import dev.agate.android.data.GatewayRepository
 import dev.agate.android.data.ModelOps
 import dev.agate.android.data.PresetRegistry
 import dev.agate.core.GatewayPrefs
+import dev.agate.android.ui.components.AgateProviderAvatar
 import dev.agate.android.ui.components.agateCard
 import dev.agate.android.ui.components.AgateAvatar
 import dev.agate.android.ui.components.AgateBadge
@@ -241,7 +242,7 @@ private fun ProviderModelGroup(
             .animateContentSize(),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            AgateAvatar(name = label, size = 32.dp, corner = 10.dp, letters = initialsOf(label))
+            AgateProviderAvatar(providerId = providerId, label = label, size = 32.dp, corner = 10.dp)
             Spacer(Modifier.width(8.dp))
             Text(label, color = C.textMain, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.width(8.dp))

@@ -52,6 +52,7 @@ import dev.agate.android.data.GatewayRepository
 import dev.agate.android.data.PresetRegistry
 import dev.agate.android.data.dto.AccountDto
 import dev.agate.core.GatewayPrefs
+import dev.agate.android.ui.components.AgateProviderAvatar
 import dev.agate.android.ui.components.AgateAvatar
 import dev.agate.android.ui.components.AgateBadge
 import dev.agate.android.ui.components.AgateSegmented
@@ -146,7 +147,7 @@ fun ProviderDetailPage(providerId: String, onBack: () -> Unit, onAddAccount: () 
                 Modifier.size(36.dp).clickable(onClick = onBack),
                 contentAlignment = Alignment.Center,
             ) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回", tint = C.textMain) }
-            AgateAvatar(name = preset?.label ?: providerId, size = 32.dp, corner = 10.dp, letters = initialsOf(preset?.label ?: providerId))
+            AgateProviderAvatar(providerId = providerId, label = preset?.label ?: providerId, size = 32.dp, corner = 10.dp)
             Spacer(Modifier.width(10.dp))
             Text(
                 preset?.label ?: providerId,

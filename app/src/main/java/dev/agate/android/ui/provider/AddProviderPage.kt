@@ -58,6 +58,7 @@ import dev.agate.android.data.PresetRegistry
 import dev.agate.core.GatewayPrefs
 import dev.agate.android.auth.AuthWebViewSheet
 import dev.agate.android.auth.LoginSession
+import dev.agate.android.ui.components.AgateProviderAvatar
 import dev.agate.android.ui.components.AgateAvatar
 import dev.agate.android.ui.components.AgateBadge
 import dev.agate.android.ui.components.AgateChip
@@ -177,7 +178,7 @@ fun AddProviderPage(onBack: () -> Unit, initialProviderId: String? = null) {
                                 Text("24 家官方 Agent · 点此打开选择器", color = C.textSub, fontSize = 12.sp)
                             }
                         } else {
-                            AgateAvatar(name = shown.label, size = 40.dp, letters = initialsOf(shown.label))
+                            AgateProviderAvatar(providerId = shown.id, label = shown.label, size = 40.dp)
                             Spacer(Modifier.width(12.dp))
                             Column(Modifier.weight(1f)) {
                                 Text(shown.label, color = C.textMain, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
@@ -503,7 +504,7 @@ private fun ProviderPickerSheet(
                                     .padding(vertical = 11.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
-                                AgateAvatar(name = p.label, size = 36.dp, corner = 11.dp, letters = initialsOf(p.label))
+                                AgateProviderAvatar(providerId = p.id, label = p.label, size = 36.dp, corner = 11.dp)
                                 Spacer(Modifier.width(12.dp))
                                 Column(Modifier.weight(1f)) {
                                     Text(p.label, color = C.textMain, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
