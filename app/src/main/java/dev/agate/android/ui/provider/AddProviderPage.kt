@@ -49,6 +49,9 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import android.content.Intent
+import android.net.Uri
+import dev.agate.android.data.AuthChannel
 import dev.agate.android.data.AccountOps
 import dev.agate.android.data.CustomProviderOps
 import dev.agate.android.data.GatewayRepository
@@ -226,8 +229,24 @@ fun AddProviderPage(onBack: () -> Unit, initialProviderId: String? = null) {
                     ) {
                         Text("凭据", color = C.textMain, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                         Spacer(Modifier.height(10.dp))
-                        when (picked.kind) {
-                            LoginKind.WEBVIEW -> WebLoginForm(preset = picked, onStart = { p ->
+
+                        // 添加成功后的统一收尾（三条通道共用）
+                        val onAdded: (Boolean, String) -> Unit = { ok, msg ->
+                            if (ok) {
+                                GatewayPrefs.pushRecentProvider(ctx, picked.id)
+                                GatewayRepository.refreshOnce()
+                                Toast.makeText(ctx, msg, Toast.LENGTH_LONG).show()
+                                onBack()
+                            }
+                        }
+                        // 通道按内核核实结果渲染（IMPORT_DESKTOP 在 Android 不出现）
+                        val usable = picked.channels.filter { it != AuthChannel.IMPORT_DESKTOP }
+                        var channel by remember(picked.id) { mutableStateOf(usable.first()) }
+                        ChannelChips(usable, channel) { channel = it }
+                        Spacer(Modifier.height(12.dp))
+
+                        when (channel) {
+                            AuthChannel.EMBEDDED -> WebLoginForm(preset = picked, onStart = { p ->
                                 scope.launch {
                                     when (val r = LoginClient.start(p.id)) {
                                         is LoginClient.StartResult.Started ->
@@ -237,22 +256,12 @@ fun AddProviderPage(onBack: () -> Unit, initialProviderId: String? = null) {
                                     }
                                 }
                             })
-                            LoginKind.SMS -> SmsLoginForm(preset = picked, onDone = { ok, msg ->
-                                if (ok) {
-                                    GatewayPrefs.pushRecentProvider(ctx, picked.id)
-                                    GatewayRepository.refreshOnce()
-                                    Toast.makeText(ctx, msg, Toast.LENGTH_LONG).show()
-                                    onBack()
-                                }
-                            })
-                            LoginKind.PASTE -> PasteLoginForm(preset = picked, onDone = { ok, msg ->
-                                if (ok) {
-                                    GatewayPrefs.pushRecentProvider(ctx, picked.id)
-                                    GatewayRepository.refreshOnce()
-                                    Toast.makeText(ctx, msg, Toast.LENGTH_LONG).show()
-                                    onBack()
-                                }
-                            })
+                            AuthChannel.EXTERNAL, AuthChannel.DEVICE_CODE ->
+                                ExternalLoginForm(preset = picked, onDone = onAdded)
+                            AuthChannel.SMS -> SmsLoginForm(preset = picked, onDone = onAdded)
+                            AuthChannel.PASTE -> PasteLoginForm(preset = picked, onDone = onAdded)
+                            AuthChannel.IMPORT_FILE -> ImportFileNote()
+                            AuthChannel.IMPORT_DESKTOP -> Unit
                         }
                     }
                 } else {
@@ -436,15 +445,10 @@ private fun PasteLoginForm(preset: ProviderPreset, onDone: (Boolean, String) -> 
     var hint by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
 
-    val primaryHint: String
-    val minLines: Int
-    val secondaryHint: String?
-    when (preset.id) {
-        "kuku" -> { primaryHint = "Cookie 整串（wenku.baidu.com 登录后复制，含 BDUSS 与 STOKEN）"; minLines = 4; secondaryHint = null }
-        "commandcode" -> { primaryHint = "API Key（user_ 开头）"; minLines = 1; secondaryHint = null }
-        "antigravity" -> { primaryHint = "Google refresh token（1// 开头）"; minLines = 3; secondaryHint = "Google 账号邮箱（可选，同账号去重）" }
-        else -> { primaryHint = "凭证"; minLines = 3; secondaryHint = null }
-    }
+    // 粘贴提示统一来自 PresetRegistry（按家核实过），不再在此硬编码
+    val primaryHint: String = preset.pasteHint ?: "凭证"
+    val secondaryHint: String? = preset.pasteSecondaryHint
+    val minLines: Int = if (preset.pasteMultiline) maxOf(3, primaryHint.length / 24) else 1
 
     AgateFormInput(value = primary, onValueChange = { primary = it }, hint = primaryHint, singleLine = false, minLines = minLines)
     if (secondaryHint != null) {
@@ -888,4 +892,151 @@ private fun SubmitButton(text: String, enabled: Boolean, onClick: () -> Unit) {
         modifier = Modifier.fillMaxWidth(),
         colors = ButtonDefaults.buttonColors(containerColor = C.accent, contentColor = C.onAccent),
     ) { Text(text, fontWeight = FontWeight.SemiBold) }
+}
+
+/* ── 通道 chips（按家可用性渲染）── */
+@Composable
+private fun ChannelChips(
+    options: List<AuthChannel>,
+    selected: AuthChannel,
+    onSelect: (AuthChannel) -> Unit,
+) {
+    val C = agateColors()
+    Row(
+        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        options.forEach { ch ->
+            val active = ch == selected
+            Text(
+                ch.label,
+                maxLines = 1,
+                color = if (active) C.onAccent else C.textSub,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier
+                    .background(if (active) C.accent else C.insetBg, RoundedCornerShape(999.dp))
+                    .border(1.dp, if (active) Color.Transparent else C.border, RoundedCornerShape(999.dp))
+                    .clickable { onSelect(ch) }
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+            )
+        }
+    }
+}
+
+/* ── 浏览器登录（含设备码类）：跳系统浏览器 + 轮询 + 取消 ── */
+@Composable
+private fun ExternalLoginForm(preset: ProviderPreset, onDone: (Boolean, String) -> Unit) {
+    val C = agateColors()
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var state by remember { mutableStateOf<String?>(null) }
+    var authUrl by remember { mutableStateOf<String?>(null) }
+    var waiting by remember { mutableStateOf(false) }
+    var seconds by remember { mutableStateOf(0) }
+    var hint by remember { mutableStateOf<String?>(null) }
+
+    fun openBrowser(url: String) {
+        runCatching {
+            ctx.startActivity(
+                Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            )
+        }.onFailure { hint = "无法打开浏览器：${it.message}" }
+    }
+
+    // 每 2 秒问一次内核；Done/Failed 即落定
+    LaunchedEffect(waiting, state) {
+        if (!waiting) return@LaunchedEffect
+        while (isActive && waiting) {
+            delay(2_000L)
+            seconds += 2
+            val st = state ?: break
+            when (val r = LoginClient.wait(st)) {
+                is LoginClient.WaitResult.Done -> {
+                    waiting = false
+                    onDone(true, "已添加 ${preset.label} 账号")
+                }
+                is LoginClient.WaitResult.Failed -> {
+                    waiting = false
+                    hint = r.reason
+                }
+                else -> Unit
+            }
+        }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose { state?.let { s -> scope.launch { LoginClient.cancel(s) } } }
+    }
+
+    Text(
+        if (preset.channels.contains(AuthChannel.DEVICE_CODE))
+            "在浏览器完成设备授权（授权页会显示设备码，可复制到官网确认）"
+        else "在系统浏览器完成授权 · 回到 App 自动继续",
+        color = C.textSub, fontSize = 12.sp,
+    )
+    Spacer(Modifier.height(12.dp))
+
+    if (!waiting) {
+        Button(
+            onClick = {
+                hint = null
+                scope.launch {
+                    when (val r = LoginClient.start(preset.id)) {
+                        is LoginClient.StartResult.Started -> {
+                            state = r.state
+                            authUrl = r.authUrl
+                            seconds = 0
+                            waiting = true
+                            openBrowser(r.authUrl)
+                        }
+                        is LoginClient.StartResult.Failed -> hint = r.reason
+                    }
+                }
+            },
+            modifier = Modifier.fillMaxWidth(),
+            colors = ButtonDefaults.buttonColors(containerColor = C.accent, contentColor = C.onAccent),
+        ) { Text("在浏览器中打开", fontWeight = FontWeight.SemiBold) }
+    } else {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text("等待授权 · 已等待 ${seconds}s", color = C.accent, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+            Text(
+                "取消",
+                color = C.red, fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
+                modifier = Modifier
+                    .background(C.redBg, RoundedCornerShape(9.dp))
+                    .clickable {
+                        val st = state
+                        waiting = false
+                        if (st != null) scope.launch { LoginClient.cancel(st) }
+                    }
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+            )
+        }
+        authUrl?.let { url ->
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "没打开浏览器？点此重开",
+                color = C.accent, fontSize = 12.sp,
+                modifier = Modifier.clickable { openBrowser(url) },
+            )
+        }
+    }
+    hint?.let {
+        Spacer(Modifier.height(8.dp))
+        Text(it, color = C.red, fontSize = 12.sp)
+    }
+}
+
+/* ── 导入凭证文件（下一轮接 SAF，先如实说明）── */
+@Composable
+private fun ImportFileNote() {
+    val C = agateColors()
+    Text(
+        "从系统文件选择器导入桌面客户端导出的凭证文件（auth.json / providers.json / Cookie 库）。" +
+            "文本 JSON 直接解析，二进制 Cookie 库走 base64。",
+        color = C.textSub, fontSize = 12.sp,
+    )
+    Spacer(Modifier.height(8.dp))
+    AgateBadge("下一轮接入", BadgeTone.AMBER)
 }

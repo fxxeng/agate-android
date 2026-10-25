@@ -4,47 +4,177 @@ package dev.agate.android.data
  * 官方提供商预置注册表（M3-3）。
  *
  * 顺序与内核 providers::PROVIDERS 数组逐条对齐（内核是该白名单的唯一事实来源，
- * 见 kind_from_id）：同一条产品线的两个版本相邻排列，加新家在末尾追加并同步内核。
- * 展示名直接采用内核 label（界面与内核分组标题永远一致）。
+ * 见 kind_from_id）：同一条产品线的两个版本相邻排列。
+ *
+ * 【通道**以核实的内核行为为准**】见 docs/提供商接入设计-v1.md：
+ * - EXTERNAL（系统浏览器）只在「完成判定由内核轮询 / loopback 收回调」时可用；
+ *   需要壳侧拦截回调的（raccoon/catpaw/kuku/orcaterm）不提供。
+ * - IMPORT_DESKTOP 读的是本机固定路径，Android 上不展示（仍保留在枚举里）。
+ * - 「签到」是能力标签（[supportsCheckin]），不混进通道。
  */
 
 /** 登录通道：决定点卡片后的交互形态。 */
 enum class LoginKind { WEBVIEW, SMS, PASTE }
 
+/** 登录/接入通道（核实版）。 */
+enum class AuthChannel(val label: String) {
+    EMBEDDED("内嵌登录"),
+    EXTERNAL("浏览器登录"),
+    DEVICE_CODE("设备码"),
+    SMS("手机验证码"),
+    PASTE("粘贴凭证"),
+    IMPORT_FILE("导入凭证文件"),
+    IMPORT_DESKTOP("桌面登录态"),
+}
+
 data class ProviderPreset(
     val id: String,
     val label: String,
     val desc: String,
+    /** 兼容字段（旧 UI 仍读它）；新 UI 请读 [channels]。 */
     val kind: LoginKind,
+    /** 该家真实支持的通道，顺序即 UI 顺序；首项为默认。 */
+    val channels: List<AuthChannel>,
+    /** 粘贴通道的主输入提示（为空表示该家不走粘贴）。 */
+    val pasteHint: String? = null,
+    val pasteSecondaryHint: String? = null,
+    /** 粘贴框是否多行（整份 JSON / Cookie 串）。 */
+    val pasteMultiline: Boolean = false,
+    /** 能力标签：是否支持自动签到（来自内核 CHECKIN_PROVIDERS）。 */
+    val supportsCheckin: Boolean = false,
 )
 
 object PresetRegistry {
 
+    private val WEB = listOf(AuthChannel.EMBEDDED, AuthChannel.EXTERNAL)
+
     val ALL: List<ProviderPreset> = listOf(
-        ProviderPreset("workbuddy", "WorkBuddy 国内版", "copilot.tencent.com 网页登录", LoginKind.WEBVIEW),
-        ProviderPreset("workbuddy-intl", "WorkBuddy 国际版", "workbuddy.ai 网页登录", LoginKind.WEBVIEW),
-        ProviderPreset("raccoon", "小浣熊", "JWT 凭证网页登录", LoginKind.WEBVIEW),
-        ProviderPreset("catpaw", "CatPaw", "美团 · 网页登录", LoginKind.WEBVIEW),
-        ProviderPreset("autoclaw", "AutoClaw 国内版", "智谱 · 手机验证码", LoginKind.SMS),
-        ProviderPreset("autoclaw-intl", "AutoClaw 国际版", "autoglm.ai · 手机验证码", LoginKind.SMS),
-        ProviderPreset("qoder", "Qoder 中国版", "设备授权登录", LoginKind.WEBVIEW),
-        ProviderPreset("qoder-intl", "Qoder 国际版", "设备授权登录", LoginKind.WEBVIEW),
-        ProviderPreset("cline-free", "Cline Free", "免费池网页登录", LoginKind.WEBVIEW),
-        ProviderPreset("cline-pass", "Cline Pass", "付费池网页登录", LoginKind.WEBVIEW),
-        ProviderPreset("accio", "Accio", "国际版网页登录", LoginKind.WEBVIEW),
-        ProviderPreset("accio-cn", "Accio 国内版", "国内版网页登录", LoginKind.WEBVIEW),
-        ProviderPreset("zcode", "ZCode 国内版", "CLI 授权轮询", LoginKind.WEBVIEW),
-        ProviderPreset("zcode-intl", "ZCode 国际版", "CLI 授权轮询", LoginKind.WEBVIEW),
-        ProviderPreset("codearts", "CodeArts", "华为云 OAuth 登录", LoginKind.WEBVIEW),
-        ProviderPreset("trae", "Trae", "SOLO 网页登录", LoginKind.WEBVIEW),
-        ProviderPreset("loomy", "Loomy", "讯飞 · 手机验证码", LoginKind.SMS),
-        ProviderPreset("kuku", "KukuAI", "百度文库 · 粘贴 Cookie", LoginKind.PASTE),
-        ProviderPreset("monkeycode", "MonkeyCode", "长亭 · 网页登录", LoginKind.WEBVIEW),
-        ProviderPreset("monkeycode-intl", "MonkeyCode 国际版", "长亭国际 · 网页登录", LoginKind.WEBVIEW),
-        ProviderPreset("commandcode", "Command Code", "粘贴 user_ API Key", LoginKind.PASTE),
-        ProviderPreset("antigravity", "Antigravity", "Google · 粘贴 refresh token", LoginKind.PASTE),
-        ProviderPreset("officeace", "OfficeAce 果办", "网页登录", LoginKind.WEBVIEW),
-        ProviderPreset("orcaterm", "OrcaTerm", "网页登录", LoginKind.WEBVIEW),
+        // WorkBuddy：上游推 authUrl → 轮询 auth/token；可粘贴 auth.json（需 uid）
+        ProviderPreset(
+            "workbuddy", "WorkBuddy 国内版", "copilot.tencent.com 网页登录", LoginKind.WEBVIEW,
+            listOf(AuthChannel.EMBEDDED, AuthChannel.EXTERNAL, AuthChannel.PASTE),
+            pasteHint = "粘贴 auth.json 内容（含 auth.accessToken / account.uid）",
+            pasteMultiline = true, supportsCheckin = true,
+        ),
+        ProviderPreset(
+            "workbuddy-intl", "WorkBuddy 国际版", "workbuddy.ai 网页登录", LoginKind.WEBVIEW,
+            listOf(AuthChannel.EMBEDDED, AuthChannel.EXTERNAL, AuthChannel.PASTE),
+            pasteHint = "粘贴 auth.json 内容（含 auth.accessToken / account.uid）",
+            pasteMultiline = true, supportsCheckin = true,
+        ),
+        // 小浣熊：自定义协议回调，只能内嵌；可导入文本 JSON
+        ProviderPreset(
+            "raccoon", "小浣熊", "JWT 凭证网页登录", LoginKind.WEBVIEW,
+            listOf(AuthChannel.EMBEDDED, AuthChannel.IMPORT_FILE),
+            supportsCheckin = true,
+        ),
+        // CatPaw：回调由壳提交，只能内嵌；可导入文本 JSON
+        ProviderPreset(
+            "catpaw", "CatPaw", "美团 · 网页登录", LoginKind.WEBVIEW,
+            listOf(AuthChannel.EMBEDDED, AuthChannel.IMPORT_FILE),
+        ),
+        // AutoClaw 国内：手机验证码
+        ProviderPreset(
+            "autoclaw", "AutoClaw 国内版", "智谱 · 手机验证码", LoginKind.SMS,
+            listOf(AuthChannel.SMS), supportsCheckin = true,
+        ),
+        // AutoClaw 国际：loopback 回调
+        ProviderPreset(
+            "autoclaw-intl", "AutoClaw 国际版", "autoglm.ai · 网页登录", LoginKind.WEBVIEW,
+            WEB, supportsCheckin = true,
+        ),
+        // Qoder：设备码 + PAT 粘贴
+        ProviderPreset(
+            "qoder", "Qoder 中国版", "设备授权登录 / PAT", LoginKind.WEBVIEW,
+            listOf(AuthChannel.DEVICE_CODE, AuthChannel.EXTERNAL, AuthChannel.PASTE),
+            pasteHint = "粘贴个人访问令牌 PAT（pt-…）", supportsCheckin = true,
+        ),
+        ProviderPreset(
+            "qoder-intl", "Qoder 国际版", "设备授权登录 / PAT", LoginKind.WEBVIEW,
+            listOf(AuthChannel.DEVICE_CODE, AuthChannel.EXTERNAL, AuthChannel.PASTE),
+            pasteHint = "粘贴个人访问令牌 PAT（pt-…）",
+        ),
+        // Cline：设备码轮询；可导入
+        ProviderPreset(
+            "cline-free", "Cline Free", "设备码授权 · 免费池", LoginKind.WEBVIEW,
+            listOf(AuthChannel.DEVICE_CODE, AuthChannel.EXTERNAL, AuthChannel.IMPORT_FILE),
+        ),
+        ProviderPreset(
+            "cline-pass", "Cline Pass", "设备码授权 · 付费池", LoginKind.WEBVIEW,
+            listOf(AuthChannel.DEVICE_CODE, AuthChannel.EXTERNAL, AuthChannel.IMPORT_FILE),
+        ),
+        // Accio：OAuth+PKCE loopback；可粘贴 token
+        ProviderPreset(
+            "accio", "Accio", "国际版网页登录", LoginKind.WEBVIEW,
+            listOf(AuthChannel.EMBEDDED, AuthChannel.EXTERNAL, AuthChannel.PASTE),
+            pasteHint = "粘贴 accessToken 或 refreshToken", pasteMultiline = true,
+        ),
+        ProviderPreset(
+            "accio-cn", "Accio 国内版", "国内版网页登录", LoginKind.WEBVIEW,
+            listOf(AuthChannel.EMBEDDED, AuthChannel.EXTERNAL, AuthChannel.PASTE),
+            pasteHint = "粘贴 accessToken 或 refreshToken", pasteMultiline = true,
+        ),
+        // ZCode：CLI init 轮询
+        ProviderPreset(
+            "zcode", "ZCode 国内版", "CLI 授权轮询", LoginKind.WEBVIEW, WEB, supportsCheckin = true,
+        ),
+        ProviderPreset("zcode-intl", "ZCode 国际版", "CLI 授权轮询", LoginKind.WEBVIEW, WEB),
+        // CodeArts：OAuth loopback；可粘贴 AK/SK/STS
+        ProviderPreset(
+            "codearts", "CodeArts", "华为云 OAuth 登录", LoginKind.WEBVIEW,
+            listOf(AuthChannel.EMBEDDED, AuthChannel.EXTERNAL, AuthChannel.PASTE),
+            pasteHint = "粘贴 AK/SK 或 STS + domain/user", pasteMultiline = true,
+            supportsCheckin = true,
+        ),
+        // Trae：进程内 loopback + PKCE
+        ProviderPreset(
+            "trae", "Trae", "SOLO 网页登录", LoginKind.WEBVIEW, WEB, supportsCheckin = true,
+        ),
+        // Loomy：手机验证码
+        ProviderPreset(
+            "loomy", "Loomy", "讯飞 · 手机验证码", LoginKind.SMS,
+            listOf(AuthChannel.SMS), supportsCheckin = true,
+        ),
+        // Kuku：粘贴 Cookie；文件导入需二进制 SQLite
+        ProviderPreset(
+            "kuku", "KukuAI", "百度文库 · 粘贴 Cookie", LoginKind.PASTE,
+            listOf(AuthChannel.PASTE, AuthChannel.IMPORT_FILE),
+            pasteHint = "Cookie 整串（含 BDUSS 与 STOKEN）", pasteMultiline = true,
+            supportsCheckin = true,
+        ),
+        // MonkeyCode：内核不支持网页登录，只能粘贴 session
+        ProviderPreset(
+            "monkeycode", "MonkeyCode", "长亭 · 粘贴 session", LoginKind.PASTE,
+            listOf(AuthChannel.PASTE),
+            pasteHint = "粘贴会话 Cookie（session）", pasteMultiline = true,
+        ),
+        ProviderPreset(
+            "monkeycode-intl", "MonkeyCode 国际版", "长亭国际 · 粘贴 session", LoginKind.PASTE,
+            listOf(AuthChannel.PASTE),
+            pasteHint = "粘贴会话 Cookie（session）", pasteMultiline = true,
+        ),
+        // Command Code：粘贴 user_ Key
+        ProviderPreset(
+            "commandcode", "Command Code", "粘贴 user_ API Key", LoginKind.PASTE,
+            listOf(AuthChannel.PASTE),
+            pasteHint = "API Key（user_ 开头）",
+        ),
+        // Antigravity：Google OAuth loopback；可粘贴 refresh token
+        ProviderPreset(
+            "antigravity", "Antigravity", "Google 授权 / 粘贴 refresh token", LoginKind.PASTE,
+            listOf(AuthChannel.EMBEDDED, AuthChannel.EXTERNAL, AuthChannel.PASTE),
+            pasteHint = "Google refresh token（1// 开头）", pasteMultiline = true,
+            pasteSecondaryHint = "Google 账号邮箱（可选，同账号去重）",
+        ),
+        // OfficeAce：服务端中介轮询
+        ProviderPreset(
+            "officeace", "OfficeAce 果办", "网页登录", LoginKind.WEBVIEW, WEB, supportsCheckin = true,
+        ),
+        // OrcaTerm：回调由壳提交，只能内嵌
+        ProviderPreset(
+            "orcaterm", "OrcaTerm", "网页登录", LoginKind.WEBVIEW,
+            listOf(AuthChannel.EMBEDDED),
+        ),
     )
 
     fun byId(id: String): ProviderPreset? = ALL.firstOrNull { it.id == id }
