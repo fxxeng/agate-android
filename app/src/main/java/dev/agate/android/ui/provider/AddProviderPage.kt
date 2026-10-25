@@ -190,16 +190,19 @@ fun AddProviderPage(onBack: () -> Unit, initialProviderId: String? = null) {
                         Text("更换 ❯", color = C.accent, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                     }
 
-                    // 最近添加快捷 chips（v44 .rchips）
-                    val recents = remember { GatewayPrefs.recentProviders(ctx) }
+                    // v44 .rchips「最近」：有记录才显示，没有则整行隐藏（按你的要求）。
+                    // 数据来自 GatewayPrefs.recentProviders —— 每次添加成功时 push。
+                    val recents = GatewayPrefs.recentProviders(ctx)
                         .mapNotNull { id -> PresetRegistry.ALL.find { it.id == id } }
+                        .take(4)
                     if (recents.isNotEmpty()) {
                         Spacer(Modifier.height(10.dp))
                         Row(
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                         ) {
-                            Text("最近", color = C.textDim, fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp))
+                            Text("最近", color = C.textDim, fontSize = 12.sp)
                             recents.forEach { p ->
                                 AgateChip(
                                     text = p.label,
