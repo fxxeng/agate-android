@@ -88,6 +88,7 @@ fun ProviderDetailPage(providerId: String, onBack: () -> Unit, onAddAccount: () 
     var usageLabel = remember { mutableStateMapOf<String, String>() }   // id → 展示文案
     var editing by remember { mutableStateOf<AccountDto?>(null) }
     var editName by remember { mutableStateOf("") }
+    var editConc by remember { mutableStateOf("") }
     var confirmRemove by remember { mutableStateOf<AccountDto?>(null) }
     var confirmRemoveAll by remember { mutableStateOf(false) }
 
@@ -185,18 +186,23 @@ fun ProviderDetailPage(providerId: String, onBack: () -> Unit, onAddAccount: () 
                 usageLabel = usageLabel,
                 busy = busy,
                 onQueryUsage = { loadUsage() },
-                onMoveUp = { acc ->
+                onEdit = { acc ->
+                    editing = acc
+                    editName = acc.displayName
+                    editConc = acc.raw.optInt("maxConcurrent", 0).takeIf { it > 0 }?.toString() ?: ""
+                },
+                onPin = { acc ->
                     if (!busy) {
                         busy = true
                         scope.launch {
-                            val r = AccountOps.move(acc.id, up = true)
+                            // 置顶 = 连续上移到本家队首（内核只有单向 move）
+                            repeat(accounts.size) { runCatching { AccountOps.move(acc.id, up = true) } }
                             busy = false
-                            toast(if (r.ok) "已上移" else (r.error ?: "已到顶"))
+                            toast("已置顶")
                             GatewayRepository.refreshOnce()
                         }
                     }
                 },
-                onEdit = { acc -> editing = acc; editName = acc.displayName },
                 onToggle = { acc -> batchAction(if (acc.enabled) "disable" else "enable", listOf(acc.id), if (acc.enabled) "已禁用" else "已启用") },
                 onDelete = { acc -> confirmRemove = acc },
                 onAdd = onAddAccount,
@@ -252,6 +258,14 @@ fun ProviderDetailPage(providerId: String, onBack: () -> Unit, onAddAccount: () 
                     Text("备注名", fontSize = 12.sp, color = agateColors().textSub)
                     Spacer(Modifier.height(6.dp))
                     OutlinedTextField(value = editName, onValueChange = { editName = it }, singleLine = true)
+                    Spacer(Modifier.height(10.dp))
+                    Text("并发上限（留空 = 不限）", fontSize = 12.sp, color = agateColors().textSub)
+                    Spacer(Modifier.height(6.dp))
+                    OutlinedTextField(
+                        value = editConc,
+                        onValueChange = { v -> editConc = v.filter { it.isDigit() }.take(3) },
+                        singleLine = true,
+                    )
                 }
             },
             confirmButton = {
@@ -259,7 +273,9 @@ fun ProviderDetailPage(providerId: String, onBack: () -> Unit, onAddAccount: () 
                     val target = acc
                     editing = null
                     scope.launch {
-                        val r = AccountOps.update(target.id, JSONObject().put("name", editName.trim()))
+                        val patch = JSONObject().put("name", editName.trim())
+                        editConc.trim().toIntOrNull()?.let { patch.put("maxConcurrent", it) }
+                        val r = AccountOps.update(target.id, patch)
                         toast(if (r.ok) "已保存" else (r.error ?: "保存失败"))
                         if (r.ok) GatewayRepository.refreshOnce()
                     }
@@ -400,7 +416,7 @@ private fun AccountsTab(
     usageLabel: Map<String, String>,
     busy: Boolean,
     onQueryUsage: () -> Unit,
-    onMoveUp: (AccountDto) -> Unit,
+    onPin: (AccountDto) -> Unit,
     onEdit: (AccountDto) -> Unit,
     onToggle: (AccountDto) -> Unit,
     onDelete: (AccountDto) -> Unit,
@@ -431,7 +447,7 @@ private fun AccountsTab(
                         rank = i + 1,
                         usage = usageLabel[acc.id],
                         busy = busy,
-                        onMoveUp = { onMoveUp(acc) },
+                        onPin = { onPin(acc) },
                         onEdit = { onEdit(acc) },
                         onToggle = { onToggle(acc) },
                         onDelete = { onDelete(acc) },
@@ -463,7 +479,7 @@ private fun AccountBlock(
     rank: Int,
     usage: String?,
     busy: Boolean,
-    onMoveUp: () -> Unit,
+    onPin: () -> Unit,
     onEdit: () -> Unit,
     onToggle: () -> Unit,
     onDelete: () -> Unit,
@@ -494,7 +510,7 @@ private fun AccountBlock(
         )
         Spacer(Modifier.height(8.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            SmallAction("上移", false, !busy, onClick = onMoveUp)
+            SmallAction("置顶", enabled = !busy, onClick = onPin)
             SmallAction("编辑", false, !busy, onClick = onEdit)
             SmallAction(if (acc.enabled) "停用" else "启用", false, !busy, onClick = onToggle)
             SmallAction("删除", false, !busy, onClick = onDelete, danger = true)
