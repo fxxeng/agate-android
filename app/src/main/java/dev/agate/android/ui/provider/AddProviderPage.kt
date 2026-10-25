@@ -60,10 +60,12 @@ import dev.agate.android.data.AuthChannel
 import dev.agate.android.data.AccountOps
 import dev.agate.android.data.CustomProviderOps
 import dev.agate.android.data.GatewayRepository
+import dev.agate.android.data.KernelOps
 import dev.agate.android.data.LoginClient
 import dev.agate.android.data.LoginKind
 import dev.agate.android.data.ProviderPreset
 import dev.agate.android.data.PresetRegistry
+import dev.agate.core.AgateForegroundService
 import dev.agate.core.GatewayPrefs
 import dev.agate.android.auth.AuthWebViewSheet
 import dev.agate.android.auth.LoginSession
@@ -97,7 +99,18 @@ fun AddProviderPage(onBack: () -> Unit, initialProviderId: String? = null) {
         )
     }
     var showPicker by remember { mutableStateOf(false) }
+    // 内核探活：登录/落账号都由网关执行，没起来时先给「启动网关」入口
+    var kernelUp by remember { mutableStateOf<Boolean?>(null) }
     var loginSession by remember { mutableStateOf<LoginSession?>(null) }
+
+    LaunchedEffect(Unit) {
+        while (isActive) {
+            val up = KernelOps.isUp()
+            kernelUp = up
+            if (up) break
+            delay(2_000L)
+        }
+    }
 
     DisposableEffect(Unit) {
         LoginClient.configure(GatewayPrefs.apiKey(ctx))
@@ -125,6 +138,29 @@ fun AddProviderPage(onBack: () -> Unit, initialProviderId: String? = null) {
                 .padding(horizontal = 16.dp)
                 .padding(bottom = 24.dp)
         ) {
+            if (kernelUp == false) {
+                Spacer(Modifier.height(8.dp))
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .background(C.amber.copy(alpha = 0.10f), RoundedCornerShape(14.dp))
+                        .border(1.dp, C.amber.copy(alpha = 0.45f), RoundedCornerShape(14.dp))
+                        .padding(14.dp),
+                ) {
+                    Text("网关未运行", color = C.textMain, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "登录与添加账号都由网关内核执行，需先启动网关（启动后本页会自动恢复）。",
+                        color = C.textSub, fontSize = 12.sp,
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    Button(
+                        onClick = { AgateForegroundService.start(ctx) },
+                        colors = ButtonDefaults.buttonColors(containerColor = C.accent, contentColor = C.onAccent),
+                    ) { Text("启动网关", fontWeight = FontWeight.SemiBold) }
+                }
+            }
+
             Spacer(Modifier.height(8.dp))
 
             // ptabs：v44 胶囊页签（官方 / 中转 / 自定义），中转与自定义为占位
