@@ -38,7 +38,7 @@ object LoginClient {
     /** call() 的三态：连不上 / HTTP 状态码 / 拿到 JSON —— 401 不再被吞成「网关未运行」。 */
     private sealed class HttpResult {
         data class Ok(val json: JSONObject) : HttpResult()
-        data class Status(val code: Int) : HttpResult()
+        data class Status(val code: Int, val json: JSONObject?) : HttpResult()
         object Unreachable : HttpResult()
     }
 
@@ -124,7 +124,7 @@ object LoginClient {
         client.newCall(authed).execute().use { resp ->
             val text = resp.body?.string().orEmpty()
             val json = runCatching { JSONObject(text) }.getOrNull()
-            if (resp.isSuccessful && json != null) HttpResult.Ok(json) else HttpResult.Status(resp.code)
+            if (resp.isSuccessful && json != null) HttpResult.Ok(json) else HttpResult.Status(resp.code, json)
         }
     } catch (_: Exception) {
         HttpResult.Unreachable
@@ -137,10 +137,14 @@ object LoginClient {
     private fun describe(r: HttpResult): String = when (r) {
         is HttpResult.Ok -> ""
         is HttpResult.Unreachable -> "无法连接内核（网关未运行？）"
-        is HttpResult.Status -> when (r.code) {
-            401 -> "API Key 校验失败：网关已启用 Key，请核对网关设置中的 Key"
-            404 -> "内核没有该登录接口（版本过旧？）"
-            else -> "内核返回 HTTP ${r.code}"
+        is HttpResult.Status -> {
+            val detail = r.json?.optString("error").orEmpty()
+            when {
+                r.code == 401 -> "API Key 校验失败：网关已启用 Key，请核对网关设置中的 Key"
+                detail.isNotBlank() -> detail
+                r.code == 404 -> "内核没有该登录接口（版本过旧？）"
+                else -> "内核返回 HTTP ${r.code}"
+            }
         }
     }
 }
