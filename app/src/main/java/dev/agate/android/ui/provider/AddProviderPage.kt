@@ -49,6 +49,11 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import android.util.Base64
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import android.content.Intent
 import android.net.Uri
 import dev.agate.android.data.AuthChannel
@@ -260,7 +265,7 @@ fun AddProviderPage(onBack: () -> Unit, initialProviderId: String? = null) {
                                 ExternalLoginForm(preset = picked, onDone = onAdded)
                             AuthChannel.SMS -> SmsLoginForm(preset = picked, onDone = onAdded)
                             AuthChannel.PASTE -> PasteLoginForm(preset = picked, onDone = onAdded)
-                            AuthChannel.IMPORT_FILE -> ImportFileNote()
+                            AuthChannel.IMPORT_FILE -> ImportFileForm(preset = picked, onDone = onAdded)
                             AuthChannel.IMPORT_DESKTOP -> Unit
                         }
                     }
@@ -936,6 +941,12 @@ private fun ExternalLoginForm(preset: ProviderPreset, onDone: (Boolean, String) 
     var seconds by remember { mutableStateOf(0) }
     var hint by remember { mutableStateOf<String?>(null) }
 
+    // 设备码：只有上游给了 user_code 的（Cline）才有；从 authUrl 的 query 里取
+    val userCode = remember(authUrl) {
+        authUrl?.let { u -> runCatching { Uri.parse(u).getQueryParameter("user_code") }.getOrNull() }
+    }
+    val clipboard = LocalClipboardManager.current
+
     fun openBrowser(url: String) {
         runCatching {
             ctx.startActivity(
@@ -976,6 +987,27 @@ private fun ExternalLoginForm(preset: ProviderPreset, onDone: (Boolean, String) 
         color = C.textSub, fontSize = 12.sp,
     )
     Spacer(Modifier.height(12.dp))
+
+    if (userCode != null) {
+        Text("设备码", color = C.textSub, fontSize = 12.sp)
+        Spacer(Modifier.height(4.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                userCode,
+                color = C.accent, fontSize = 20.sp, fontWeight = FontWeight.Bold,
+                modifier = Modifier.weight(1f),
+            )
+            Text(
+                "复制",
+                color = C.accent, fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
+                modifier = Modifier
+                    .background(C.accent.copy(alpha = 0.10f), RoundedCornerShape(9.dp))
+                    .clickable { clipboard.setText(AnnotatedString(userCode)) }
+                    .padding(horizontal = 10.dp, vertical = 6.dp),
+            )
+        }
+        Spacer(Modifier.height(10.dp))
+    }
 
     if (!waiting) {
         Button(
@@ -1028,15 +1060,78 @@ private fun ExternalLoginForm(preset: ProviderPreset, onDone: (Boolean, String) 
     }
 }
 
-/* ── 导入凭证文件（下一轮接 SAF，先如实说明）── */
+/* ── 导入凭证文件：SAF 选文件 → 文本走 authFileContent / 二进制走 authFileB64 ── */
 @Composable
-private fun ImportFileNote() {
+private fun ImportFileForm(preset: ProviderPreset, onDone: (Boolean, String) -> Unit) {
     val C = agateColors()
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var busy by remember { mutableStateOf(false) }
+    var hint by remember { mutableStateOf<String?>(null) }
+    var pickedName by remember { mutableStateOf<String?>(null) }
+
+    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) {
+            busy = true
+            hint = null
+            scope.launch {
+                val name = uri.lastPathSegment?.substringAfterLast('/')?.takeIf { it.isNotBlank() } ?: "credential"
+                pickedName = name
+                val bytes = runCatching {
+                    ctx.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                }.getOrNull()
+                if (bytes == null) {
+                    busy = false
+                    hint = "读取文件失败（权限或路径不可用）"
+                    return@launch
+                }
+                if (bytes.size > 8 * 1024 * 1024) {
+                    busy = false
+                    hint = "文件过大（超过 8MB）"
+                    return@launch
+                }
+                val asText = runCatching { String(bytes, Charsets.UTF_8) }.getOrNull()
+                val looksJson = asText != null && (asText.trimStart().startsWith("{") || asText.trimStart().startsWith("["))
+                val binary = !looksJson && (
+                    preset.id == "kuku" ||
+                        name.endsWith(".db", true) || name.endsWith(".sqlite", true)
+                    )
+                val r = if (binary) {
+                    AccountOps.importCredential(
+                        preset.id, name,
+                        b64 = Base64.encodeToString(bytes, Base64.NO_WRAP),
+                    )
+                } else {
+                    AccountOps.importCredential(
+                        preset.id, name,
+                        text = asText ?: String(bytes, Charsets.UTF_8),
+                    )
+                }
+                busy = false
+                if (r.ok) onDone(true, "已从 $name 导入 ${preset.label} 账号")
+                else hint = r.error ?: "导入失败"
+            }
+        }
+    }
+
     Text(
-        "从系统文件选择器导入桌面客户端导出的凭证文件（auth.json / providers.json / Cookie 库）。" +
-            "文本 JSON 直接解析，二进制 Cookie 库走 base64。",
+        "选择桌面客户端导出的凭证文件（auth.json / providers.json / Cookie 库）。" +
+            "文本 JSON 直接解析，二进制（KukuAI 的 Cookies SQLite）自动转 base64。",
         color = C.textSub, fontSize = 12.sp,
     )
-    Spacer(Modifier.height(8.dp))
-    AgateBadge("下一轮接入", BadgeTone.AMBER)
+    Spacer(Modifier.height(10.dp))
+    Button(
+        onClick = { launcher.launch(arrayOf("*/*")) },
+        enabled = !busy,
+        modifier = Modifier.fillMaxWidth(),
+        colors = ButtonDefaults.buttonColors(containerColor = C.accent, contentColor = C.onAccent),
+    ) { Text(if (busy) "导入中…" else "选择文件", fontWeight = FontWeight.SemiBold) }
+    pickedName?.let {
+        Spacer(Modifier.height(6.dp))
+        Text("已选：$it", color = C.textDim, fontSize = 11.sp)
+    }
+    hint?.let {
+        Spacer(Modifier.height(8.dp))
+        Text(it, color = C.red, fontSize = 12.sp)
+    }
 }

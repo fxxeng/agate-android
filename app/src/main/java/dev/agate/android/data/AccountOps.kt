@@ -132,6 +132,27 @@ object AccountOps {
     /** POST /api/accounts/refresh-expiring：并发刷新临期凭证。 */
     suspend fun refreshExpiring(): OpResult = post("/api/accounts/refresh-expiring", JSONObject())
 
+    /**
+     * 导入凭证文件（POST /api/accounts）：
+     * - 文本 JSON（auth.json / providers.json）→ [text]（authFileContent）
+     * - 二进制（KukuAI 的 Cookies SQLite）→ [b64]（authFileB64）
+     * [fileName] 只用于错误文案。
+     */
+    suspend fun importCredential(
+        provider: String,
+        fileName: String?,
+        text: String? = null,
+        b64: String? = null,
+        accountName: String? = null,
+    ): OpResult {
+        val body = JSONObject().put("provider", provider)
+        if (!fileName.isNullOrBlank()) body.put("authFileName", fileName)
+        if (text != null) body.put("authFileContent", text)
+        if (b64 != null) body.put("authFileB64", b64)
+        if (!accountName.isNullOrBlank()) body.put("name", accountName)
+        return post("/api/accounts", body)
+    }
+
     private suspend fun get(path: String): JSONObject? = withContext(Dispatchers.IO) {
         val builder = Request.Builder().url("http://127.0.0.1:$PORT$path").get()
         if (apiKey.isNotBlank()) builder.header("Authorization", "Bearer $apiKey")
