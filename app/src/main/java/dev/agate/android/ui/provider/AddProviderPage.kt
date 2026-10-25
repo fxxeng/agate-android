@@ -46,6 +46,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.agate.android.data.AccountOps
@@ -58,6 +59,7 @@ import dev.agate.android.data.PresetRegistry
 import dev.agate.core.GatewayPrefs
 import dev.agate.android.auth.AuthWebViewSheet
 import dev.agate.android.auth.LoginSession
+import dev.agate.android.ui.components.AgateSearchBar
 import dev.agate.android.ui.components.AgateProviderAvatar
 import dev.agate.android.ui.components.AgateAvatar
 import dev.agate.android.ui.components.AgateBadge
@@ -478,42 +480,100 @@ private fun ProviderPickerSheet(
     onDismiss: () -> Unit,
 ) {
     val C = agateColors()
+    // v44 .sheet：高度 78%，不到顶；顶部标题 + 关闭、搜索、通道筛选、列表滚动
+    val sheetH = (LocalConfiguration.current.screenHeightDp * 0.78f).dp
+    var q by remember { mutableStateOf("") }
+    var kindFilter by remember { mutableStateOf<LoginKind?>(null) }
+
+    val filtered = PresetRegistry.ALL.filter { p ->
+        (kindFilter == null || p.kind == kindFilter) &&
+            (q.isBlank() || p.label.contains(q, ignoreCase = true) || p.desc.contains(q, ignoreCase = true))
+    }
+
     ModalBottomSheet(
         onDismissRequest = onDismiss,
-        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = false),
         containerColor = C.cardBg,
     ) {
-        Column(Modifier.padding(horizontal = 16.dp)) {
-            Text("官方 AGENT · ${PresetRegistry.ALL.size}", color = C.textMain, fontSize = 15.sp, fontWeight = FontWeight.Bold)
-            Text("按登录通道分节 · 点击选择", color = C.textDim, fontSize = 12.sp)
-            Spacer(Modifier.height(6.dp))
-            Column(Modifier.verticalScroll(rememberScrollState()).padding(bottom = 20.dp)) {
-                listOf(
+        Column(Modifier.fillMaxWidth().height(sheetH)) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    "选择官方 AGENT",
+                    color = C.textMain,
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.weight(1f),
+                )
+                Text(
+                    "关闭",
+                    color = C.accent,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.clickable(onClick = onDismiss).padding(6.dp),
+                )
+            }
+            Spacer(Modifier.height(8.dp))
+            Box(Modifier.padding(horizontal = 16.dp)) {
+                AgateSearchBar(value = q, onValueChange = { q = it }, hint = "搜索提供商 / 登录方式")
+            }
+            Spacer(Modifier.height(10.dp))
+            // 通道筛选 chips
+            Row(
+                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                val chips = listOf<Pair<String, LoginKind?>>(
+                    "全部" to null,
                     "网页登录" to LoginKind.WEBVIEW,
                     "手机验证码" to LoginKind.SMS,
                     "粘贴凭证" to LoginKind.PASTE,
-                ).forEach { (section, kind) ->
-                    val items = PresetRegistry.ALL.filter { it.kind == kind }
-                    if (items.isNotEmpty()) {
-                        Text(section, color = C.textDim, fontSize = 12.sp, modifier = Modifier.padding(top = 12.dp, bottom = 2.dp))
-                        items.forEach { p ->
-                            Row(
-                                Modifier
-                                    .fillMaxWidth()
-                                    .clickable { onPick(p) }
-                                    .padding(vertical = 11.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                AgateProviderAvatar(providerId = p.id, label = p.label, size = 36.dp, corner = 11.dp)
-                                Spacer(Modifier.width(12.dp))
-                                Column(Modifier.weight(1f)) {
-                                    Text(p.label, color = C.textMain, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-                                    Text(p.desc, color = C.textSub, fontSize = 12.sp)
-                                }
-                                if (p.id == currentId) {
-                                    Text("✓", color = C.accent, fontSize = 16.sp, fontWeight = FontWeight.Bold)
-                                }
-                            }
+                )
+                chips.forEach { (label, kind) ->
+                    val active = kindFilter == kind
+                    Text(
+                        label,
+                        maxLines = 1,
+                        color = if (active) C.onAccent else C.textSub,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier
+                            .background(if (active) C.accent else C.insetBg, RoundedCornerShape(999.dp))
+                            .border(1.dp, if (active) Color.Transparent else C.border, RoundedCornerShape(999.dp))
+                            .clickable { kindFilter = kind }
+                            .padding(horizontal = 14.dp, vertical = 8.dp),
+                    )
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "${if (kindFilter == null) "全部" else "筛选"} · ${filtered.size}",
+                color = C.textDim,
+                fontSize = 12.sp,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+            )
+            Column(
+                Modifier
+                    .weight(1f)
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 16.dp)
+                    .padding(bottom = 20.dp),
+            ) {
+                filtered.forEach { p ->
+                    Row(
+                        Modifier.fillMaxWidth().clickable { onPick(p) }.padding(vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        AgateProviderAvatar(providerId = p.id, label = p.label, size = 38.dp, corner = 12.dp)
+                        Spacer(Modifier.width(12.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(p.label, color = C.textMain, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                            Text(p.desc, color = C.textSub, fontSize = 12.sp)
+                        }
+                        if (p.id == currentId) {
+                            Text("✓", color = C.accent, fontSize = 16.sp, fontWeight = FontWeight.Bold)
                         }
                     }
                 }

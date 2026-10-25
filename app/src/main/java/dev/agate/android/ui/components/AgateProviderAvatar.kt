@@ -33,9 +33,21 @@ object ProviderIcons {
         "antigravity" to R.drawable.provider_antigravity,
         "officeace" to R.drawable.provider_officeace,
         "orcaterm" to R.drawable.provider_orcaterm,
+        "cline" to R.drawable.provider_cline,
     )
 
-    fun resOf(providerId: String): Int? = map[providerId]
+    /**
+     * 变体归一：同一产品线的国际版 / 国内版 / 双池共用同一图标
+     * （`workbuddy-intl` → `workbuddy`、`accio-cn` → `accio`、`cline-free` → `cline`）。
+     */
+    private fun normalize(providerId: String): String = when {
+        providerId.endsWith("-intl") -> providerId.removeSuffix("-intl")
+        providerId.endsWith("-cn") -> providerId.removeSuffix("-cn")
+        providerId.startsWith("cline") -> "cline"
+        else -> providerId
+    }
+
+    fun resOf(providerId: String): Int? = map[normalize(providerId)] ?: map[providerId]
 }
 
 /** 提供商头像：有官方 logo 画 logo，否则用两字母头像兜底。 */
