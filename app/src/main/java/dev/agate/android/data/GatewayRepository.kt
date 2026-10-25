@@ -36,7 +36,7 @@ import java.util.concurrent.atomic.AtomicLong
  * 事件语义与服务端 events_api 对齐：hello / gateway_started / request_done /
  * checkin_done /（ping 不进列表；lagged 触发快照全量刷新，不进列表）。
  *
- * M3-2 起：控制台快照轮询（/api/session + /health + /api/stats/*）也由本层
+ * M3-2 起：控制台快照轮询（/api/session + /health + /api/stats 各端点）也由本层
  * 承载 —— 页面只读 StateFlow，保证「单一数据源」（方案 §7.1）。
  */
 object GatewayRepository {
