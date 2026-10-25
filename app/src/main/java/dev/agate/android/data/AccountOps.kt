@@ -129,6 +129,10 @@ object AccountOps {
         post("/api/accounts/" + java.net.URLEncoder.encode(id, "UTF-8") + "/move",
             JSONObject().put("direction", if (up) "up" else "down"))
 
+    /** POST /api/accounts/refresh {id}：刷新单个账号 token（不支持的家会明确报错）。 */
+    suspend fun refreshAccount(id: String): OpResult =
+        post("/api/accounts/refresh", JSONObject().put("id", id))
+
     /** POST /api/accounts/refresh-expiring：并发刷新临期凭证。 */
     suspend fun refreshExpiring(): OpResult = post("/api/accounts/refresh-expiring", JSONObject())
 

@@ -49,6 +49,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.agate.android.data.AccountOps
 import dev.agate.android.data.GatewayRepository
+import dev.agate.android.data.ScheduledTaskOps
 import dev.agate.android.data.PresetRegistry
 import dev.agate.android.data.dto.AccountDto
 import dev.agate.core.GatewayPrefs
@@ -92,6 +93,10 @@ fun ProviderDetailPage(providerId: String, onBack: () -> Unit, onAddAccount: () 
     var editConc by remember { mutableStateOf("") }
     var confirmRemove by remember { mutableStateOf<AccountDto?>(null) }
     var confirmRemoveAll by remember { mutableStateOf(false) }
+    // 自动化：凭证自动维护（自动续期）是**全局**定时任务，这里只做该家的入口与节奏调整
+    var credTask by remember { mutableStateOf<JSONObject?>(null) }
+    var editingInterval by remember { mutableStateOf(false) }
+    var intervalText by remember { mutableStateOf("") }
 
     DisposableEffect(Unit) {
         AccountOps.configure(GatewayPrefs.apiKey(ctx))
@@ -119,6 +124,20 @@ fun ProviderDetailPage(providerId: String, onBack: () -> Unit, onAddAccount: () 
                 }
             }
             toast("余额已更新")
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        ScheduledTaskOps.configure(GatewayPrefs.apiKey(ctx))
+        val arr = ScheduledTaskOps.list()
+        if (arr != null) {
+            for (i in 0 until arr.length()) {
+                val t = arr.optJSONObject(i) ?: continue
+                if (t.optString("id") == ScheduledTaskOps.TASK_CREDENTIAL_MAINTENANCE) {
+                    credTask = t
+                    break
+                }
+            }
         }
     }
 
@@ -181,6 +200,31 @@ fun ProviderDetailPage(providerId: String, onBack: () -> Unit, onAddAccount: () 
                 onQueryUsage = { loadUsage() },
                 onToggleAll = { enable -> batchAction(if (enable) "enable" else "disable", done = if (enable) "已全部启用" else "已全部禁用") },
                 onJumpToAccounts = { tab = 1 },
+                credTask = credTask,
+                checkinSupported = preset?.supportsCheckin == true,
+                onEditInterval = {
+                    intervalText = (credTask?.optInt("interval", 10) ?: 10).toString()
+                    editingInterval = true
+                },
+                onRefreshProvider = {
+                    if (!busy) {
+                        busy = true
+                        scope.launch {
+                            var okCount = 0
+                            var lastErr: String? = null
+                            accounts.forEach { acc ->
+                                val r = AccountOps.refreshAccount(acc.id)
+                                if (r.ok) okCount++ else lastErr = r.error
+                            }
+                            busy = false
+                            toast(
+                                if (okCount == accounts.size) "已续期 $okCount 个账号"
+                                else "成功 $okCount/${accounts.size}" + (lastErr?.let { " · $it" } ?: "")
+                            )
+                            GatewayRepository.refreshOnce()
+                        }
+                    }
+                },
             )
             1 -> AccountsTab(
                 accounts = accounts,
@@ -247,6 +291,53 @@ fun ProviderDetailPage(providerId: String, onBack: () -> Unit, onAddAccount: () 
                 },
             )
         }
+    }
+
+    // ── 调整自动续期间隔（全局任务，就地改，不用去任务中心）──
+    if (editingInterval) {
+        AlertDialog(
+            onDismissRequest = { editingInterval = false },
+            title = { Text("自动续期间隔") },
+            text = {
+                Column {
+                    Text("单位：分钟（该任务为全局节奏，对所有提供商生效）", fontSize = 12.sp, color = agateColors().textSub)
+                    Spacer(Modifier.height(6.dp))
+                    OutlinedTextField(
+                        value = intervalText,
+                        onValueChange = { v -> intervalText = v.filter { it.isDigit() }.take(4) },
+                        singleLine = true,
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val minutes = intervalText.toIntOrNull()
+                    editingInterval = false
+                    if (minutes == null || minutes <= 0) {
+                        toast("请输入正整数分钟")
+                        return@TextButton
+                    }
+                    scope.launch {
+                        val r = ScheduledTaskOps.configure(
+                            ScheduledTaskOps.TASK_CREDENTIAL_MAINTENANCE,
+                            interval = minutes,
+                        )
+                        toast(if (r.ok) "已改为每 $minutes 分钟" else (r.error ?: "保存失败"))
+                        if (r.ok) {
+                            val arr = ScheduledTaskOps.list()
+                            if (arr != null) for (i in 0 until arr.length()) {
+                                val t = arr.optJSONObject(i) ?: continue
+                                if (t.optString("id") == ScheduledTaskOps.TASK_CREDENTIAL_MAINTENANCE) {
+                                    credTask = t
+                                    break
+                                }
+                            }
+                        }
+                    }
+                }) { Text("保存") }
+            },
+            dismissButton = { TextButton(onClick = { editingInterval = false }) { Text("取消") } },
+        )
     }
 
     // ── 编辑备注名 ──
@@ -339,6 +430,10 @@ private fun OverviewTab(
     onQueryUsage: () -> Unit,
     onToggleAll: (Boolean) -> Unit,
     onJumpToAccounts: () -> Unit,
+    credTask: JSONObject?,
+    checkinSupported: Boolean,
+    onEditInterval: () -> Unit,
+    onRefreshProvider: () -> Unit,
 ) {
     val C = agateColors()
     val allEnabled = accounts.isNotEmpty() && accounts.all { it.enabled }
@@ -374,6 +469,51 @@ private fun OverviewTab(
                     )
                 }
                 Switch(checked = allEnabled, enabled = accounts.isNotEmpty(), onCheckedChange = onToggleAll)
+            }
+        }
+
+        Spacer(Modifier.height(12.dp))
+        Card {
+            Text("自动化", color = C.textMain, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.height(8.dp))
+
+            // 自动续期：能力/节奏来自全局任务；「立即续期」按该家账号逐个触发
+            Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("自动续期", color = C.textMain, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        credTask?.let { t ->
+                            val on = t.optBoolean("enabled", true)
+                            val n = t.optInt("interval", 10)
+                            if (on) "已开启 · 每 $n 分钟检查临期凭证" else "已关闭 · 转发时仍按需续期"
+                        } ?: "节奏读取中…",
+                        color = C.textSub, fontSize = 12.sp,
+                    )
+                }
+                SmallAction("改间隔", enabled = !busy && credTask != null, onClick = onEditInterval)
+            }
+            Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "转发时的按需续期始终生效，不受上面的开关影响。",
+                    color = C.textDim, fontSize = 11.sp, modifier = Modifier.weight(1f),
+                )
+                SmallAction("立即续期该家", enabled = !busy && accounts.isNotEmpty(), onClick = onRefreshProvider, primary = true)
+            }
+
+            // 自动签到：能力来自内核签到矩阵（PresetRegistry.supportsCheckin）
+            Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("自动签到", color = C.textMain, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        if (checkinSupported) "该家支持 · 在任务中心统一配置签到时间与范围"
+                        else "该家不支持签到（上游无签到能力）",
+                        color = C.textSub, fontSize = 12.sp,
+                    )
+                }
+                AgateBadge(
+                    if (checkinSupported) "支持" else "不支持",
+                    if (checkinSupported) BadgeTone.GREEN else BadgeTone.GRAY,
+                )
             }
         }
 
