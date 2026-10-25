@@ -1,6 +1,5 @@
 package dev.agate.core
 
-import android.graphics.Icon
 import android.service.quicksettings.Tile
 import android.service.quicksettings.TileService
 
@@ -44,7 +43,6 @@ class AgateTileService : TileService() {
 
     private fun applyState(tile: Tile, running: Boolean, port: Int?) {
         tile.state = if (running) Tile.STATE_ACTIVE else Tile.STATE_INACTIVE
-        tile.icon = Icon.createWithResource(packageName, R.drawable.ic_agate_logo)
         tile.label = if (running && (port ?: 0) > 0) "Agate · 运行中 (:$port)" else "Agate · 已停止"
         tile.updateTile()
     }
