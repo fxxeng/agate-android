@@ -19,6 +19,9 @@ object GatewayPrefs {
     private const val KEY_ALARM_TIMES = "alarm_times"
     private const val KEY_NEXT_ALARM_AT = "next_alarm_at"
 
+    private const val KEY_PROVIDER_ORDER = "provider_order"
+    private const val KEY_RECENT_PROVIDERS = "recent_providers"
+
     /** 局域网监听（0.0.0.0 + 内核 panel gate + fail-closed）。默认关。 */
     /**
      * 本机网关 Key（M3）：首次调用生成 `agate-` + 32 位 hex 并持久化，
@@ -40,6 +43,25 @@ object GatewayPrefs {
 
     fun setBindLan(ctx: Context, value: Boolean) {
         prefs(ctx).edit().putBoolean(KEY_BIND_LAN, value).apply()
+    }
+
+    /** 提供商页分组显示顺序（M3-3R）：家 id 逗号串，缺省按 PresetRegistry 顺序。 */
+    fun providerOrder(ctx: Context): List<String> =
+        prefs(ctx).getString(KEY_PROVIDER_ORDER, null)?.split(',')?.filter { it.isNotBlank() } ?: emptyList()
+
+    fun setProviderOrder(ctx: Context, order: List<String>) {
+        prefs(ctx).edit().putString(KEY_PROVIDER_ORDER, order.joinToString(",")).apply()
+    }
+
+    /** 最近添加的家（M3-3R 新增提供商页快捷 chips）：家 id 逗号串，最新在前，至多 4 个。 */
+    fun recentProviders(ctx: Context): List<String> =
+        prefs(ctx).getString(KEY_RECENT_PROVIDERS, null)?.split(',')?.filter { it.isNotBlank() } ?: emptyList()
+
+    fun pushRecentProvider(ctx: Context, id: String) {
+        val cur = recentProviders(ctx).toMutableList()
+        cur.remove(id)
+        cur.add(0, id)
+        prefs(ctx).edit().putString(KEY_RECENT_PROVIDERS, cur.take(4).joinToString(",")).apply()
     }
 
     /** 开机自启（BOOT_COMPLETED → 拉起前台服务）。默认关，尊重用户。 */

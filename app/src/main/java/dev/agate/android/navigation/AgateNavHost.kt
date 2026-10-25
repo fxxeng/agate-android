@@ -49,9 +49,13 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import androidx.navigation.NavType
+import androidx.navigation.navArgument
 import dev.agate.android.ui.home.ConsolePage
 import dev.agate.android.ui.pages.GatewayControlPage
 import dev.agate.android.ui.pages.ShowcasePage
+import dev.agate.android.ui.provider.AddProviderPage
+import dev.agate.android.ui.provider.ProviderDetailPage
 import dev.agate.android.ui.provider.ProviderPage
 import dev.agate.android.ui.pages.SkeletonPage
 import dev.agate.android.ui.theme.AgateThemeMode
@@ -215,7 +219,10 @@ fun AgateNavHost(
                     )
                 }
                 composable(Routes.PROVIDERS) {
-                    ProviderPage()
+                    ProviderPage(
+                        onOpenAdd = { navController.navigate(Routes.PROVIDER_ADD) },
+                        onOpenDetail = { id -> navController.navigate("provider_detail/" + id) },
+                    )
                 }
                 composable(Routes.MODELS) {
                     SkeletonPage(
@@ -233,8 +240,18 @@ fun AgateNavHost(
                 composable(Routes.GATEWAY) { GatewayControlPage() }
                 composable(Routes.SHOWCASE) { ShowcasePage(themeMode, onThemeModeChange) }
 
-                composable(Routes.PROVIDER_DETAIL) { skeleton(it, "提供商详情", "三 Tab：全动态概览 / 家规 / 账号列表，M3 联动 GatewayRepository。") }
-                composable(Routes.PROVIDER_ADD) { skeleton(it, "新增提供商", "26 官方 Agent + 25 张中转预置卡、7 大能力筛选、SAF 跨端凭证导入。") }
+                composable(
+                    "provider_detail/{id}",
+                    arguments = listOf(navArgument("id") { type = NavType.StringType }),
+                ) { entry ->
+                    ProviderDetailPage(
+                        providerId = entry.arguments?.getString("id") ?: "",
+                        onBack = { navController.popBackStack() },
+                    )
+                }
+                composable(Routes.PROVIDER_ADD) {
+                    AddProviderPage(onBack = { navController.popBackStack() })
+                }
                 composable(Routes.MODEL_SPEEDTEST) { skeleton(it, "模型测速", "并发测速（SSE 流式）、思考等级、多账号同测。") }
                 composable(Routes.MODEL_MAPPING) { skeleton(it, "模型映射", "alias → target 多家主备映射、enabled 开关、同三元组幂等。") }
                 composable(Routes.MODEL_CAPS) { skeleton(it, "能力位", "六键：maxInput/maxOutput/toolCall/images/video/reasoning，capOverrides 标记。") }

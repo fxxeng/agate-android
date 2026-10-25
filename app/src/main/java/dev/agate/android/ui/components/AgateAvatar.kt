@@ -34,6 +34,7 @@ fun AgateAvatar(
     corner: Dp = 13.dp,
     icon: ImageVector? = null,
     iconTint: Color? = null,
+    letters: String? = null,
 ) {
     val h = hueFor(name)
     val c1 = Color.hsv(h, 0.45f, 0.38f)
@@ -54,7 +55,7 @@ fun AgateAvatar(
             )
         } else {
             Text(
-                text = name.trim().take(1).uppercase(),
+                text = (letters ?: name.trim().take(1)).uppercase(),
                 color = Color.White,
                 fontSize = (size.value * 0.5f).sp,
                 fontWeight = FontWeight.Bold,
