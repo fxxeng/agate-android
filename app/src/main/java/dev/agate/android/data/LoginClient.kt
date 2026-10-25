@@ -35,6 +35,13 @@ object LoginClient {
         this.apiKey = apiKey
     }
 
+    /** call() 的三态：连不上 / HTTP 状态码 / 拿到 JSON —— 401 不再被吞成「网关未运行」。 */
+    private sealed class HttpResult {
+        data class Ok(val json: JSONObject) : HttpResult()
+        data class Status(val code: Int) : HttpResult()
+        object Unreachable : HttpResult()
+    }
+
     sealed class StartResult {
         data class Started(val state: String, val authUrl: String, val provider: String) : StartResult()
         data class Failed(val reason: String) : StartResult()
@@ -48,8 +55,10 @@ object LoginClient {
 
     /** POST /api/session/login/start {provider} → {state, authUrl, edition, provider} */
     suspend fun start(provider: String): StartResult = withContext(Dispatchers.IO) {
-        val resp = postJson("/api/session/login/start", JSONObject().put("provider", provider))
-            ?: return@withContext StartResult.Failed("无法连接内核（网关未运行？）")
+        val resp = when (val r = postJson("/api/session/login/start", JSONObject().put("provider", provider))) {
+            is HttpResult.Ok -> r.json
+            else -> return@withContext StartResult.Failed(describe(r))
+        }
         val data = resp.optJSONObject("data")
             ?: return@withContext StartResult.Failed(errorOf(resp))
         val state = data.optString("state")
@@ -63,8 +72,10 @@ object LoginClient {
 
     /** GET /api/session/login/wait?state= — 三态 pending / done+error / done+session */
     suspend fun wait(state: String): WaitResult = withContext(Dispatchers.IO) {
-        val resp = getJson("/api/session/login/wait?state=$state")
-            ?: return@withContext WaitResult.Failed("无法连接内核")
+        val resp = when (val r = getJson("/api/session/login/wait?state=$state")) {
+            is HttpResult.Ok -> r.json
+            else -> return@withContext WaitResult.Failed(describe(r))
+        }
         val data = resp.optJSONObject("data")
             ?: return@withContext WaitResult.Failed(errorOf(resp))
         when {
@@ -84,34 +95,52 @@ object LoginClient {
      * 拦下后把完整 URL POST 给内核统一回调端点，由它决定下一跳。
      */
     suspend fun forwardCallback(callbackUrl: String): Boolean = withContext(Dispatchers.IO) {
-        val resp = postJson(
+        val resp = when (val r = postJson(
             "/api/session/login/callback",
             JSONObject().put("callback_url", callbackUrl),
-        ) ?: return@withContext false
+        )) {
+            is HttpResult.Ok -> r.json
+            else -> return@withContext false
+        }
         resp.optBoolean("success")
     }
 
-    private fun getJson(path: String): JSONObject? = call(
+    private fun getJson(path: String): HttpResult = call(
         Request.Builder().url("http://127.0.0.1:$PORT$path").get().build(),
     )
 
-    private fun postJson(path: String, body: JSONObject): JSONObject? = call(
+    private fun postJson(path: String, body: JSONObject): HttpResult = call(
         Request.Builder()
             .url("http://127.0.0.1:$PORT$path")
             .post(body.toString().toRequestBody(JSON_MEDIA))
             .build(),
     )
 
-    private fun call(request: Request): JSONObject? = try {
-        client.newCall(request).execute().use { resp ->
-            if (!resp.isSuccessful) return null
-            val text = resp.body?.string() ?: return null
-            if (text.isBlank()) null else JSONObject(text)
+    private fun call(request: Request): HttpResult = try {
+        val authed = if (apiKey.isNotBlank()) request.newBuilder()
+            .header("Authorization", "Bearer $apiKey")
+            .build()
+        else request
+        client.newCall(authed).execute().use { resp ->
+            val text = resp.body?.string().orEmpty()
+            val json = runCatching { JSONObject(text) }.getOrNull()
+            if (resp.isSuccessful && json != null) HttpResult.Ok(json) else HttpResult.Status(resp.code)
         }
     } catch (_: Exception) {
-        null
+        HttpResult.Unreachable
     }
 
     private fun errorOf(resp: JSONObject): String =
         resp.optString("error").ifBlank { "内核返回了无法解析的响应" }
+
+    /** 非 Ok 的可读文案：401 是「Key 没过闸门」，不再说成网关没运行。 */
+    private fun describe(r: HttpResult): String = when (r) {
+        is HttpResult.Ok -> ""
+        is HttpResult.Unreachable -> "无法连接内核（网关未运行？）"
+        is HttpResult.Status -> when (r.code) {
+            401 -> "API Key 校验失败：网关已启用 Key，请核对网关设置中的 Key"
+            404 -> "内核没有该登录接口（版本过旧？）"
+            else -> "内核返回 HTTP ${r.code}"
+        }
+    }
 }
