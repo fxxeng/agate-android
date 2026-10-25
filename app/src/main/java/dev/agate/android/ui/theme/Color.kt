@@ -14,8 +14,8 @@ val DarkCard = Color(0xFF1E293B)        // --card-bg
 val DarkBorder = Color(0xFF334155)      // --card-border
 val DarkAccent = Color(0xFF38BDF8)      // --accent
 val DarkTextMain = Color(0xFFF8FAFC)    // --text-main
-val DarkTextSub = Color(0xFF94A3B8)     // --text-sub
-val DarkTextDim = Color(0xFF64748B)     // --text-dim
+val DarkTextSub = Color(0xFFA3B1C6)     // --text-sub（v18 增量覆盖：原 #94A3B8）
+val DarkTextDim = Color(0xFF7C8BA1)     // --text-dim（v18 增量覆盖：原 #64748B）
 val DarkNavBg = Color(0xE61E293B)       // --nav-bg rgba(30,41,59,.92)
 val DarkSegBg = DarkBg                  // --seg-bg
 val DarkSegActive = DarkCard            // --seg-active-bg
@@ -24,6 +24,9 @@ val DarkSwitchOff = Color(0xFF334155)   // --switch-off
 val DarkDotOff = Color(0xFF334155)      // --dot-off
 val DarkDotBorder = Color(0xFF475569)   // --dot-border
 val DarkPillBg = Color(0x59F8FAFC)      // --pill-bg rgba(248,250,252,.35)
+// 外壳色：nav-bg rgba(30,41,59,.92) 叠在 bg #0F172A 上的精确实色（= #1D283A）。
+// 页头 / 底栏 / 系统栏三者统一用它，消除半透明底与实底之间的分界缝。
+val DarkChrome = Color(0xFF1D283A)
 
 // ── 浅色 ──
 val LightBg = Color(0xFFF1F5F9)         // --bg-dark
@@ -32,8 +35,8 @@ val LightBorder = Color(0xFFE2E8F0)     // --card-border
 val LightInset = Color(0xFFF8FAFC)      // --bg-inset
 val LightAccent = Color(0xFF0284C7)     // --accent
 val LightTextMain = Color(0xFF0F172A)
-val LightTextSub = Color(0xFF64748B)
-val LightTextDim = Color(0xFF94A3B8)
+val LightTextSub = Color(0xFF475569)    // --text-sub（v18 增量覆盖）
+val LightTextDim = Color(0xFF64748B)    // --text-dim（v18 增量覆盖）
 val LightNavBg = Color(0xEBFFFFFF)      // rgba(255,255,255,.92)
 val LightSegBg = Color(0xFFE2E8F0)
 val LightSegActive = Color(0xFFFFFFFF)
@@ -42,6 +45,8 @@ val LightSwitchOff = Color(0xFFCBD5E1)
 val LightDotOff = Color(0xFFE2E8F0)
 val LightDotBorder = Color(0xFFCBD5E1)
 val LightPillBg = Color(0x4D0F172A)     // rgba(15,23,42,.30)
+// 外壳色：nav-bg rgba(255,255,255,.92) 叠在 bg #F1F5F9 上的精确实色（= #FEFEFE）。
+val LightChrome = Color(0xFFFEFEFE)
 
 // ── 语义基色（深色档） ──
 val GreenDark = Color(0xFF22C55E)
@@ -75,6 +80,8 @@ data class AgateColors(
     val textSub: Color,
     val textDim: Color,
     val navBg: Color,
+    /** 外壳实色（页头/底栏/系统栏统一，消除分界缝） */
+    val chromeBg: Color,
     val segBg: Color,
     val segActiveBg: Color,
     val btnBg: Color,
@@ -103,7 +110,7 @@ data class AgateColors(
             bg = DarkBg, insetBg = DarkBg, cardBg = DarkCard, border = DarkBorder,
             accent = DarkAccent, onAccent = Color(0xFF04111F),
             textMain = DarkTextMain, textSub = DarkTextSub, textDim = DarkTextDim,
-            navBg = DarkNavBg, segBg = DarkSegBg, segActiveBg = DarkSegActive,
+            navBg = DarkNavBg, chromeBg = DarkChrome, segBg = DarkSegBg, segActiveBg = DarkSegActive,
             btnBg = DarkBtnBg, switchOff = DarkSwitchOff,
             dotOff = DarkDotOff, dotBorder = DarkDotBorder, pillBg = DarkPillBg,
             green = GreenDark, red = RedDark, amber = AmberDark, blue = BlueDark,
@@ -121,7 +128,7 @@ data class AgateColors(
             bg = LightBg, insetBg = LightInset, cardBg = LightCard, border = LightBorder,
             accent = LightAccent, onAccent = Color(0xFFFFFFFF),
             textMain = LightTextMain, textSub = LightTextSub, textDim = LightTextDim,
-            navBg = LightNavBg, segBg = LightSegBg, segActiveBg = LightSegActive,
+            navBg = LightNavBg, chromeBg = LightChrome, segBg = LightSegBg, segActiveBg = LightSegActive,
             btnBg = LightBtnBg, switchOff = LightSwitchOff,
             dotOff = LightDotOff, dotBorder = LightDotBorder, pillBg = LightPillBg,
             green = GreenLight, red = RedLight, amber = AmberLight, blue = BlueLight,

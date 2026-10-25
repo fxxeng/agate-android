@@ -1,6 +1,7 @@
 package dev.agate.android.ui.components
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -38,6 +39,7 @@ fun AgateSearchBar(
         modifier = modifier
             .fillMaxWidth()
             .background(C.cardBg, RoundedCornerShape(12.dp))
+            .border(1.dp, C.border, RoundedCornerShape(12.dp))
             .padding(horizontal = 12.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {

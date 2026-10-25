@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -86,7 +87,7 @@ fun AddProviderPage(onBack: () -> Unit) {
         onDispose { }
     }
 
-    Column(Modifier.fillMaxSize().background(C.bg)) {
+    Column(Modifier.fillMaxSize().background(C.bg).statusBarsPadding()) {
         // 顶栏（v44 .header-bar）：返回 + 标题
         Row(
             Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 2.dp),

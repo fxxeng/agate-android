@@ -1,5 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- 深色科技蓝底（v44 深色基调）× 青玛瑙前景 -->
+    <!-- 深色科技蓝底（v44 深色基调）× 青玛瑙前景：启动图标背景 -->
     <color name="ic_launcher_background">#0F172A</color>
+    <!-- v44 深色基调，作为窗口初始背景，避免启动白闪/黑闪 -->
+    <color name="agate_bg">#0F172A</color>
+    <!-- 外壳色（页头/底栏/系统栏统一，与 Color.kt DarkChrome 一致） -->
+    <color name="agate_chrome">#1D283A</color>
 </resources>

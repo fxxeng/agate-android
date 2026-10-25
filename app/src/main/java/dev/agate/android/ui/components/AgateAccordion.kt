@@ -45,8 +45,8 @@ fun AgateAccordion(
         modifier = modifier
             .fillMaxWidth()
             .animateContentSize()
-            .background(C.cardBg, RoundedCornerShape(18.dp))
-            .border(1.dp, C.border, RoundedCornerShape(18.dp))
+            .background(C.cardBg, RoundedCornerShape(20.dp))
+            .border(1.dp, C.border, RoundedCornerShape(20.dp))
             .padding(14.dp),
     ) {
         Row(

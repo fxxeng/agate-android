@@ -29,7 +29,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -56,9 +55,12 @@ import dev.agate.core.Gateway
 import dev.agate.core.GatewayPrefs
 import dev.agate.android.data.GatewayRepository
 import dev.agate.android.navigation.Routes
+import dev.agate.android.ui.components.agateCard
 import dev.agate.android.ui.components.AgateBadge
 import dev.agate.android.ui.components.AgateChip
+import dev.agate.android.ui.components.AgateHeaderAction
 import dev.agate.android.ui.components.AgateKpiStrip
+import dev.agate.android.ui.components.AgatePageHeader
 import dev.agate.android.ui.components.BadgeTone
 import dev.agate.android.ui.components.KpiCell
 import dev.agate.android.ui.theme.agateColors
@@ -103,30 +105,18 @@ fun ConsolePage(
     val running = gw?.running == true
     var hcOpen by remember { mutableStateOf(false) }
 
-    Column(
-        modifier = modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = 16.dp),
-    ) {
-        // ── 页头（v44 .header-bar）──
-        Row(
-            Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 2.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Icon(
-                Icons.Filled.Menu,
-                contentDescription = "打开抽屉",
-                tint = C.textMain,
-                modifier = Modifier
-                    .size(24.dp)
-                    .clickable(onClick = onOpenDrawer),
-            )
-            Spacer(Modifier.width(12.dp))
-            Text("控制台", color = C.textMain, fontSize = 20.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-            HeaderAction("实时日志") { onNavigate(Routes.LOGS) }
+    Column(modifier = modifier.fillMaxSize()) {
+        // ── 页头（v18 吸顶：菜单 + 标题 + 实时日志）──
+        AgatePageHeader(title = "控制台", onOpenDrawer = onOpenDrawer) {
+            AgateHeaderAction("实时日志") { onNavigate(Routes.LOGS) }
         }
 
+        Column(
+            Modifier
+                .weight(1f)
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp),
+        ) {
         Spacer(Modifier.height(10.dp))
 
         // ── 新手 3 步向导（accent 边框；三步完成自动收起，✕ 永久关闭）──
@@ -212,23 +202,8 @@ fun ConsolePage(
         TokenCard(tokens = snap.tokensToday, fetched = snap.fetchedAtMs > 0, onNavigate = onNavigate)
 
         Spacer(Modifier.height(28.dp))
+        }
     }
-}
-
-/* ── v44 .header-action：accent 色胶囊小按钮 ── */
-@Composable
-private fun HeaderAction(text: String, onClick: () -> Unit) {
-    val C = agateColors()
-    Text(
-        text,
-        color = C.accent,
-        fontSize = 13.sp,
-        fontWeight = FontWeight.SemiBold,
-        modifier = Modifier
-            .background(C.accent.copy(alpha = 0.10f), RoundedCornerShape(9.dp))
-            .clickable(onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 7.dp),
-    )
 }
 
 /* ── Hero 卡（v44 .hero：深蓝渐变 + live 呼吸点 + url-pill + meta 行）── */
@@ -256,8 +231,8 @@ private fun HeroCard(
     Column(
         Modifier
             .fillMaxWidth()
-            .background(Brush.linearGradient(listOf(H.bg1, H.bg2)), RoundedCornerShape(16.dp))
-            .border(1.dp, H.border, RoundedCornerShape(16.dp))
+            .background(Brush.linearGradient(listOf(H.bg1, H.bg2)), RoundedCornerShape(20.dp))
+            .border(1.dp, H.border, RoundedCornerShape(20.dp))
             .padding(16.dp),
     ) {
         // hero-top：呼吸点 + 状态词 + 端口 + 停止
@@ -344,8 +319,8 @@ private fun StoppedCard(onStart: () -> Unit) {
     Column(
         Modifier
             .fillMaxWidth()
-            .background(C.cardBg, RoundedCornerShape(16.dp))
-            .border(1.dp, C.border, RoundedCornerShape(16.dp))
+            .agateCard().background(C.cardBg, RoundedCornerShape(20.dp))
+            .border(1.dp, C.border, RoundedCornerShape(20.dp))
             .padding(16.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -376,8 +351,8 @@ private fun WizardCard(onNavigate: (String) -> Unit, onDismiss: () -> Unit) {
     Column(
         Modifier
             .fillMaxWidth()
-            .background(C.cardBg, RoundedCornerShape(16.dp))
-            .border(1.dp, C.accent, RoundedCornerShape(16.dp))
+            .agateCard().background(C.cardBg, RoundedCornerShape(20.dp))
+            .border(1.dp, C.accent, RoundedCornerShape(20.dp))
             .padding(14.dp)
             .animateContentSize(),
     ) {
@@ -438,8 +413,8 @@ private fun HealthCard(snap: GatewayRepository.ConsoleSnapshot, snapError: Strin
     Column(
         Modifier
             .fillMaxWidth()
-            .background(C.cardBg, RoundedCornerShape(16.dp))
-            .border(1.dp, C.border, RoundedCornerShape(16.dp))
+            .agateCard().background(C.cardBg, RoundedCornerShape(20.dp))
+            .border(1.dp, C.border, RoundedCornerShape(20.dp))
             .padding(16.dp)
             .animateContentSize(),
     ) {
@@ -509,8 +484,8 @@ private fun QueueCard(
     Column(
         Modifier
             .fillMaxWidth()
-            .background(C.cardBg, RoundedCornerShape(16.dp))
-            .border(1.dp, C.border, RoundedCornerShape(16.dp))
+            .agateCard().background(C.cardBg, RoundedCornerShape(20.dp))
+            .border(1.dp, C.border, RoundedCornerShape(20.dp))
             .padding(16.dp)
             .animateContentSize(),
     ) {
@@ -569,8 +544,8 @@ private fun EntryCard(icon: String, title: String, sub: String, onClick: () -> U
     Row(
         Modifier
             .fillMaxWidth()
-            .background(C.cardBg, RoundedCornerShape(16.dp))
-            .border(1.dp, C.border, RoundedCornerShape(16.dp))
+            .agateCard().background(C.cardBg, RoundedCornerShape(20.dp))
+            .border(1.dp, C.border, RoundedCornerShape(20.dp))
             .clickable(onClick = onClick)
             .padding(16.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -592,8 +567,8 @@ private fun TokenCard(tokens: Long, fetched: Boolean, onNavigate: (String) -> Un
     Column(
         Modifier
             .fillMaxWidth()
-            .background(C.cardBg, RoundedCornerShape(16.dp))
-            .border(1.dp, C.border, RoundedCornerShape(16.dp))
+            .agateCard().background(C.cardBg, RoundedCornerShape(20.dp))
+            .border(1.dp, C.border, RoundedCornerShape(20.dp))
             .padding(16.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {

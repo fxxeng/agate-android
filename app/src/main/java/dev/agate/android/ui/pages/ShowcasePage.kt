@@ -2,11 +2,13 @@ package dev.agate.android.ui.pages
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -18,6 +20,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bolt
+import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -59,6 +63,7 @@ import kotlin.math.sin
 fun ShowcasePage(
     themeMode: AgateThemeMode,
     onThemeModeChange: (AgateThemeMode) -> Unit,
+    onOpenDrawer: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val C = agateColors()
@@ -70,11 +75,21 @@ fun ShowcasePage(
         modifier = modifier
             .fillMaxSize()
             .background(C.bg)
+            .statusBarsPadding()
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 16.dp),
     ) {
-        Spacer(Modifier.height(16.dp))
-        Text("组件走查", style = AgateType.PageTitle, color = C.textMain)
+        Spacer(Modifier.height(6.dp))
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+                Icons.Filled.Menu,
+                contentDescription = "打开侧栏",
+                tint = C.textMain,
+                modifier = Modifier.size(24.dp).clickable(onClick = onOpenDrawer),
+            )
+            Spacer(Modifier.width(10.dp))
+            Text("组件走查", style = AgateType.PageTitle, color = C.textMain)
+        }
         Spacer(Modifier.height(10.dp))
 
         // 主题三档（走查用；正式切换入口在设置页，仅三档不增）

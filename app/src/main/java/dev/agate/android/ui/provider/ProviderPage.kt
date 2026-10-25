@@ -45,9 +45,13 @@ import dev.agate.android.data.ProviderPreset
 import dev.agate.android.data.PresetRegistry
 import dev.agate.android.data.dto.AccountDto
 import dev.agate.core.GatewayPrefs
+import dev.agate.android.ui.components.agateCard
 import dev.agate.android.ui.components.AgateAvatar
 import dev.agate.android.ui.components.AgateBadge
 import dev.agate.android.ui.components.AgateDragList
+import dev.agate.android.ui.components.AgateHeaderAction
+import dev.agate.android.ui.components.AgatePageHeader
+import dev.agate.android.ui.components.AgatePrimaryAction
 import dev.agate.android.ui.components.AgateProgress
 import dev.agate.android.ui.components.AgateSearchBar
 import dev.agate.android.ui.components.AgateSegmented
@@ -76,6 +80,7 @@ internal data class ProviderGroupView(
 @Composable
 fun ProviderPage(
     modifier: Modifier = Modifier,
+    onOpenDrawer: () -> Unit = {},
     onOpenAdd: () -> Unit = {},
     onOpenDetail: (String) -> Unit = {},
 ) {
@@ -150,42 +155,19 @@ fun ProviderPage(
     val okCount = orderState.size - warnCount
 
     Column(Modifier.fillMaxSize().background(C.bg)) {
-        // ── 页头（v44 .header-bar）──
-        Row(
-            Modifier.fillMaxWidth().padding(start = 16.dp, end = 12.dp, top = 4.dp, bottom = 2.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text("提供商", color = C.textMain, fontSize = 20.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-            Text(
-                "⇅ 排序",
-                color = C.accent,
-                fontSize = 13.sp,
-                fontWeight = FontWeight.SemiBold,
-                modifier = Modifier
-                    .background(C.accent.copy(alpha = 0.10f), RoundedCornerShape(9.dp))
-                    .clickable {
-                        if (reordering) {
-                            // 手动退出同样落盘（与 5s 自动退出同一条保存路径）
-                            reordering = false
-                            GatewayPrefs.setProviderOrder(ctx, orderState.map { it.providerId })
-                        } else {
-                            lastTouch = System.currentTimeMillis()
-                            reordering = true
-                        }
-                    }
-                    .padding(horizontal = 12.dp, vertical = 7.dp),
-            )
-            Spacer(Modifier.width(8.dp))
-            Text(
-                "+ 添加",
-                color = C.onAccent,
-                fontSize = 13.sp,
-                fontWeight = FontWeight.SemiBold,
-                modifier = Modifier
-                    .background(C.accent, RoundedCornerShape(9.dp))
-                    .clickable { onOpenAdd() }
-                    .padding(horizontal = 12.dp, vertical = 7.dp),
-            )
+        // ── 页头（v44 .header-bar：菜单 + 标题 + 排序/添加）──
+        AgatePageHeader(title = "提供商", onOpenDrawer = onOpenDrawer) {
+            AgateHeaderAction(if (reordering) "保存" else "⇅ 排序") {
+                if (reordering) {
+                    // 手动退出同样落盘（与 5s 自动退出同一条保存路径）
+                    reordering = false
+                    GatewayPrefs.setProviderOrder(ctx, orderState.map { it.providerId })
+                } else {
+                    lastTouch = System.currentTimeMillis()
+                    reordering = true
+                }
+            }
+            AgatePrimaryAction("+ 添加") { onOpenAdd() }
         }
 
         if (reordering) {
@@ -293,11 +275,11 @@ private fun ProviderCard(
     Column(
         Modifier
             .fillMaxWidth()
-            .background(C.cardBg, RoundedCornerShape(16.dp))
+            .agateCard().background(C.cardBg, RoundedCornerShape(20.dp))
             .border(
                 1.dp,
                 if (g.hasWarn) C.amber.copy(alpha = 0.45f) else C.border,
-                RoundedCornerShape(16.dp),
+                RoundedCornerShape(20.dp),
             )
             .clickable { expanded = !expanded }
             .padding(14.dp)

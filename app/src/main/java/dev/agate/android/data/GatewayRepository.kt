@@ -87,6 +87,26 @@ object GatewayRepository {
         val routingQueue: List<QueueRow> = emptyList(),
         /** /api/stats/summary overview → 平均时延（字段名随上游，读不到为 null 显示占位） */
         val avgLatencyMs: Long? = null,
+        /** /api/session → models（客户端所见清单；M3 模型页数据源） */
+        val models: List<ModelRow> = emptyList(),
+    )
+
+    /**
+     * 一条「客户端所见清单」模型（/api/session.models，与 GET /v1/models 同源）。
+     * credits 是上游形态字符串（如 "x0.16 credits" / ""），倍率在界面侧解析。
+     */
+    data class ModelRow(
+        val id: String,
+        val provider: String,
+        val providerLabel: String,
+        val name: String?,
+        val credits: String?,
+        val maxInput: Int?,
+        val maxOutput: Int?,
+        val toolCall: Boolean,
+        val images: Boolean,
+        val reasoning: Boolean,
+        val isDefault: Boolean,
     )
 
     /** v44 .qrow 一行：序号由渲染端下标，这里只带语义字段。 */
@@ -268,6 +288,7 @@ object GatewayRepository {
                         overview?.optLong("latencyMs", -1L),
                         overview?.optLong("avgDurationMs", -1L),
                     ) ?: prev.avgLatencyMs,
+                    models = session?.let { parseModels(it) } ?: prev.models,
                 )
             } finally {
                 refreshing.set(false)
@@ -294,6 +315,37 @@ object GatewayRepository {
     }
 
     private fun firstNonNull(vararg v: Long?): Long? = v.firstOrNull { it != null && it >= 0 }
+
+    /**
+     * /api/session.models → 客户端所见清单。字段名按内核 shape.rs 的 list_item：
+     * id / owned_by(provider) / name / credits / max_input_tokens / max_output_tokens /
+     * supports_tool_call / supports_images / supports_reasoning / is_default；
+     * 解析层另接 provider / providerLabel（session_models 注入）。
+     */
+    private fun parseModels(session: JSONObject): List<ModelRow> {
+        val arr = session.optJSONArray("models") ?: return emptyList()
+        val out = ArrayList<ModelRow>(arr.length())
+        for (i in 0 until arr.length()) {
+            val m = arr.optJSONObject(i) ?: continue
+            val id = m.optString("id")
+            if (id.isBlank()) continue
+            val provider = m.optString("provider", m.optString("owned_by", ""))
+            out += ModelRow(
+                id = id,
+                provider = provider,
+                providerLabel = m.optString("providerLabel").ifBlank { provider },
+                name = m.optString("name").ifBlank { null },
+                credits = m.optString("credits").ifBlank { null },
+                maxInput = m.optInt("max_input_tokens", 0).takeIf { it > 0 },
+                maxOutput = m.optInt("max_output_tokens", 0).takeIf { it > 0 },
+                toolCall = m.optBoolean("supports_tool_call"),
+                images = m.optBoolean("supports_images"),
+                reasoning = m.optBoolean("supports_reasoning"),
+                isDefault = m.optBoolean("is_default"),
+            )
+        }
+        return out
+    }
 
     /** 统一带 Bearer Key 的 GET；envelope=true 解 `{success,data}` 信封，否则裸值。 */
     private fun getJson(path: String, envelope: Boolean): JSONObject? {

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      v44 全屏深色外壳：窗口背景与系统栏统一到深色底 #0F172A，
+      避免默认 Theme.Material 的白色/灰色窗口背景与状态栏割裂。
+      Compose 侧 AgateTheme 会按主题态覆盖系统栏图标明暗（见 Theme.kt）。
+    -->
+    <style name="Theme.Agate" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/agate_bg</item>
+        <item name="android:statusBarColor">@color/agate_chrome</item>
+        <item name="android:navigationBarColor">@color/agate_chrome</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+    </style>
+</resources>

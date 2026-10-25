@@ -1,12 +1,17 @@
 package dev.agate.android.ui.theme
 
+import android.app.Activity
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.platform.LocalView
+import androidx.core.view.WindowCompat
 
 /** 主题三档：跟随系统 / 浅色 / 深色（不做更多主题）。 */
 enum class AgateThemeMode { FOLLOW_SYSTEM, LIGHT, DARK }
@@ -66,6 +71,22 @@ fun AgateTheme(
             onSecondary = C.onAccent,
             tertiary = C.green,
         )
+    }
+
+    // 系统栏跟随主题态：与页头/底栏同色（chromeBg），消除分界缝
+    val view = LocalView.current
+    if (!view.isInEditMode) {
+        SideEffect {
+            val window = (view.context as? Activity)?.window ?: return@SideEffect
+            @Suppress("DEPRECATION")
+            window.statusBarColor = C.chromeBg.toArgb()
+            @Suppress("DEPRECATION")
+            window.navigationBarColor = C.chromeBg.toArgb()
+            WindowCompat.getInsetsController(window, view).apply {
+                isAppearanceLightStatusBars = !dark
+                isAppearanceLightNavigationBars = !dark
+            }
+        }
     }
 
     CompositionLocalProvider(LocalAgateColors provides C) {
