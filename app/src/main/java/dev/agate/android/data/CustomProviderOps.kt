@@ -57,14 +57,32 @@ object CustomProviderOps {
         baseUrl: String,
         apiKeyValue: String,
         protocol: Protocol,
+        noAuth: Boolean = false,
+        balanceScheme: String? = null,
     ): OpResult {
         val body = JSONObject()
             .put("name", name.trim())
             .put("baseUrl", baseUrl.trim())
             .put("protocol", protocol.wire)
-            .put("apiKey", apiKeyValue.trim().removePrefix("Bearer ").trim())
+        if (noAuth) {
+            body.put("noAuth", true)
+        } else {
+            body.put("apiKey", apiKeyValue.trim().removePrefix("Bearer ").trim())
+        }
+        if (!balanceScheme.isNullOrBlank()) body.put("balanceScheme", balanceScheme)
         return post("/api/custom-providers", body)
     }
+
+    /** 余额直查方案（内核 BALANCE_SCHEMES 全集）+ 展示名。 */
+    val balanceSchemes: List<Pair<String, String>> = listOf(
+        "newapi" to "NewAPI",
+        "sub2api" to "Sub2API",
+        "deepseek" to "DeepSeek",
+        "opencode" to "OpenCode",
+        "sensenova" to "SenseNova",
+        "zhipu" to "智谱",
+        "zhipu_zai" to "智谱 Z.AI",
+    )
 
     suspend fun update(id: String, name: String? = null, baseUrl: String? = null, enabled: Boolean? = null): OpResult {
         val body = JSONObject().put("id", id)
