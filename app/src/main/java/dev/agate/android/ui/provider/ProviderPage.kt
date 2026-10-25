@@ -118,7 +118,7 @@ fun ProviderPage(
         onDispose { }
     }
 
-    /** 并发查询全部账号余额 + 在途连接数（v44 页头「查余额」）。silent=首屏自动拉取不弹提示。 */
+    /** 并发查询全部账号余额 + 在途连接数。silent=首屏自动拉取不弹提示。 */
     fun loadBalances(silent: Boolean = false) {
         if (querying) return
         querying = true
@@ -232,7 +232,6 @@ fun ProviderPage(
     Column(Modifier.fillMaxSize().background(C.bg)) {
         // ── 页头（v44 .header-bar：菜单 + 标题 + 排序/添加）──
         AgatePageHeader(title = "提供商", onOpenDrawer = onOpenDrawer) {
-            AgateHeaderAction(if (querying) "查询中…" else "查余额") { loadBalances() }
             AgateHeaderAction(if (reordering) "保存" else "⇅ 排序") {
                 if (reordering) {
                     // 手动退出同样落盘（与 5s 自动退出同一条保存路径）

@@ -169,7 +169,7 @@ fun AddProviderPage(onBack: () -> Unit, initialProviderId: String? = null) {
                 modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                listOf("官方 AGENT · ${PresetRegistry.ALL.size}", "中转 API", "自定义", "导入 · 更多").forEachIndexed { i, label ->
+                listOf("AGENT · ${PresetRegistry.ALL.size}", "中转 API", "自定义", "导入 · 更多").forEachIndexed { i, label ->
                     val active = tab == i
                     Text(
                         label,
@@ -221,7 +221,7 @@ fun AddProviderPage(onBack: () -> Unit, initialProviderId: String? = null) {
                         if (shown == null) {
                             Column(Modifier.weight(1f)) {
                                 Text("选择要添加的家", color = C.textMain, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-                                Text("24 家官方 Agent · 点此打开选择器", color = C.textSub, fontSize = 12.sp)
+                                Text("24 家 Agent · 点此打开选择器", color = C.textSub, fontSize = 12.sp)
                             }
                         } else {
                             AgateProviderAvatar(providerId = shown.id, label = shown.label, size = 40.dp)
@@ -551,7 +551,7 @@ private fun ProviderPickerSheet(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
-                    "选择官方 AGENT",
+                    "选择 AGENT",
                     color = C.textMain,
                     fontSize = 16.sp,
                     fontWeight = FontWeight.Bold,

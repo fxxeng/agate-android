@@ -372,7 +372,7 @@ private fun WizardCard(onNavigate: (String) -> Unit, onDismiss: () -> Unit) {
             Spacer(Modifier.height(10.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 listOf(
-                    Triple("1", "添加首个提供商", "官方 / 中转 / 24 张预置卡") to Routes.PROVIDER_ADD,
+                    Triple("1", "添加首个提供商", "中转 / 24 张预置卡") to Routes.PROVIDER_ADD,
                     Triple("2", "复制地址与 Key", ":8787 · sk-…（访问密钥）") to Routes.KEYS,
                     Triple("3", "测速验证", "并发跑一轮模型测速") to Routes.MODEL_SPEEDTEST,
                 ).forEach { (step, route) ->
