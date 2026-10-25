@@ -1,7 +1,19 @@
 package dev.agate.android.ui.home
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.widget.Toast
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -11,25 +23,37 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Button
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Menu
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.scale
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import dev.agate.core.AgateForegroundService
+import dev.agate.core.Gateway
+import dev.agate.core.GatewayPrefs
 import dev.agate.android.data.GatewayRepository
 import dev.agate.android.navigation.Routes
 import dev.agate.android.ui.components.AgateBadge
@@ -37,29 +61,24 @@ import dev.agate.android.ui.components.AgateChip
 import dev.agate.android.ui.components.AgateKpiStrip
 import dev.agate.android.ui.components.BadgeTone
 import dev.agate.android.ui.components.KpiCell
-import dev.agate.android.ui.theme.AgateType
 import dev.agate.android.ui.theme.agateColors
-import dev.agate.core.AgateForegroundService
-import dev.agate.core.Gateway
-import dev.agate.core.GatewayPrefs
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 
 /**
- * Tab1 控制台（方案 §7 / §8 M3）：Hero 状态卡、KPI 四联、健康自检、
- * 3 步新手向导、实时出战队列与排队水位。
- *
- * 数据纪律：全部走 [GatewayRepository] 单一数据源（快照轮询 + SSE 事件流），
- * 本页不直连内核；JNI 只读 [Gateway.status] 做运行态对齐（方案 §3 控制面）。
- * 前台轮询 / 退后台挂起由 DisposableEffect 挂卸实现（方案 §3.1）。
+ * 首页·控制台（M3-2R，对齐 v44 Tab 1 结构，自上而下）：
+ * 页头（汉堡/控制台/实时日志）→ 新手 3 步向导（accent 边框，可 ✕）→
+ * Hero 渐变状态卡（呼吸点 + URL 复制胶囊 + meta 行 +「网络测速 ›」）→
+ * 停止态独立卡 → KPI 四联（成功率/平均时延/今日请求/活跃账号）→
+ * 健康自检（默认收起，v44 hc-card）→ 实时出战队列（/api/routing/queue）→
+ * 额度中心入口 → 今日 Token 消耗。
+ * SSE 事件列表不再放首页（网关控制页已有事件总线区块）。
  */
 @Composable
 fun ConsolePage(
     onNavigate: (String) -> Unit,
+    onOpenDrawer: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val C = agateColors()
@@ -67,65 +86,92 @@ fun ConsolePage(
 
     val snap by GatewayRepository.snapshot.collectAsState()
     val snapError by GatewayRepository.snapshotError.collectAsState()
-    val link by GatewayRepository.link.collectAsState()
-    val events by GatewayRepository.events.collectAsState()
 
-    // JNI 运行态：轮询回填（控制面不进仓库层，方案 §3 双通信面边界）
     var gw by remember { mutableStateOf<Gateway.Status?>(null) }
-
     DisposableEffect(Unit) {
         GatewayRepository.configure(GatewayPrefs.apiKey(ctx))
         GatewayRepository.startPolling()
         onDispose { GatewayRepository.stopPolling() }
     }
-
     LaunchedEffect(Unit) {
         while (true) {
-            gw = withContext(Dispatchers.IO) {
-                runCatching { Gateway.status() }.getOrNull()
-            }
+            gw = withContext(Dispatchers.IO) { runCatching { Gateway.status() }.getOrNull() }
             GatewayRepository.onGatewayRunning(gw?.running == true)
             delay(5_000L)
         }
     }
-
     val running = gw?.running == true
+    var hcOpen by remember { mutableStateOf(false) }
+
     Column(
         modifier = modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 16.dp),
     ) {
-        Spacer(Modifier.height(16.dp))
+        // ── 页头（v44 .header-bar）──
+        Row(
+            Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                Icons.AutoMirrored.Filled.Menu,
+                contentDescription = "打开抽屉",
+                tint = C.textMain,
+                modifier = Modifier
+                    .size(24.dp)
+                    .clickable(onClick = onOpenDrawer),
+            )
+            Spacer(Modifier.width(12.dp))
+            Text("控制台", color = C.textMain, fontSize = 20.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+            HeaderAction("实时日志") { onNavigate(Routes.LOGS) }
+        }
 
-        HeroCard(
-            running = running,
-            status = gw,
-            link = link,
-            onToggle = {
-                if (running) {
-                    AgateForegroundService.stop(ctx)
-                } else {
-                    AgateForegroundService.start(ctx)
-                }
-            },
-        )
+        Spacer(Modifier.height(10.dp))
 
-        Spacer(Modifier.height(14.dp))
+        // ── 新手 3 步向导（accent 边框；三步完成自动收起，✕ 永久关闭）──
+        val wizardDone = running && snap.upstreamConfigured == true && snap.requestsToday > 0
+        var wizardDismissed by remember { mutableStateOf(GatewayPrefs.wizardDismissed(ctx)) }
+        if (!wizardDone && !wizardDismissed) {
+            WizardCard(onNavigate = onNavigate, onDismiss = {
+                wizardDismissed = true
+                GatewayPrefs.setWizardDismissed(ctx, true)
+            })
+            Spacer(Modifier.height(12.dp))
+        }
+
+        // ── Hero / 停止卡 ──
+        if (running) {
+            HeroCard(
+                status = gw,
+                requestsToday = snap.requestsToday,
+                hcOpen = hcOpen,
+                onToggleHc = { hcOpen = !hcOpen },
+                onStop = { AgateForegroundService.stop(ctx) },
+            )
+        } else {
+            StoppedCard(onStart = { AgateForegroundService.start(ctx) })
+        }
+
+        Spacer(Modifier.height(12.dp))
+
+        // ── KPI 四联（v44 语义：成功率 / 平均时延 / 今日请求 / 活跃账号）──
         AgateKpiStrip(
             cells = listOf(
                 KpiCell(
-                    label = "今日请求",
-                    value = if (snap.fetchedAtMs == 0L) "—" else snap.requestsToday.toString(),
-                ),
-                KpiCell(
                     label = "成功率",
-                    value = successRateOf(snap),
+                    value = if (snap.fetchedAtMs == 0L) "—" else successRateOf(snap),
                     valueColor = if (snap.requestsToday > 0) C.green else null,
                 ),
                 KpiCell(
-                    label = "今日 Tokens",
-                    value = if (snap.fetchedAtMs == 0L) "—" else fmtTokens(snap.tokensToday),
+                    label = "平均时延",
+                    value = snap.avgLatencyMs?.let { "${it}ms" } ?: "—",
+                    valueColor = C.accent,
+                ),
+                KpiCell(
+                    label = "今日请求",
+                    value = if (snap.fetchedAtMs == 0L) "—" else snap.requestsToday.toString(),
+                    valueColor = C.textMain,
                 ),
                 KpiCell(
                     label = "活跃账号",
@@ -135,46 +181,165 @@ fun ConsolePage(
             ),
         )
 
-        Spacer(Modifier.height(14.dp))
-        WizardCard(
-            running = running,
-            upstreamConfigured = snap.upstreamConfigured,
-            requestsToday = snap.requestsToday,
+        Spacer(Modifier.height(12.dp))
+
+        // ── 健康自检（v44 hc-card：默认收起，点「网络测速 ›」展开）──
+        if (hcOpen) {
+            HealthCard(snap = snap, snapError = snapError, onClose = { hcOpen = false })
+            Spacer(Modifier.height(12.dp))
+        }
+
+        // ── 实时出战队列（v44 hq：编号 = 候选队列位置）──
+        QueueCard(
+            queue = snap.routingQueue,
+            inFlight = snap.inFlight,
             onNavigate = onNavigate,
-            onStartGateway = { AgateForegroundService.start(ctx) },
         )
 
-        Spacer(Modifier.height(14.dp))
-        SectionLabel("健康自检")
-        HealthCard(snap = snap, snapError = snapError)
+        Spacer(Modifier.height(12.dp))
 
-        Spacer(Modifier.height(14.dp))
-        Row(
-            Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text("实时出战队列", style = AgateType.SectionTitle, color = C.textSub, modifier = Modifier.weight(1f))
-            AgateChip(
-                text = "在途 ${snap.inFlight}",
-                selected = snap.inFlight > 0,
-            )
-        }
-        Spacer(Modifier.height(8.dp))
-        EventQueueCard(events = events)
+        // ── 额度中心入口（v44 .quota-entry）──
+        EntryCard(
+            icon = "◔",
+            title = "额度中心",
+            sub = "余额与水位待额度端点接入",
+            onClick = { onNavigate(Routes.QUOTA) },
+        )
+
+        Spacer(Modifier.height(12.dp))
+
+        // ── 今日 Token 消耗（v44 token-big）──
+        TokenCard(tokens = snap.tokensToday, fetched = snap.fetchedAtMs > 0, onNavigate = onNavigate)
 
         Spacer(Modifier.height(28.dp))
     }
 }
 
-// ── Hero 状态卡 ──────────────────────────────────────────────────────────
+/* ── v44 .header-action：accent 色胶囊小按钮 ── */
+@Composable
+private fun HeaderAction(text: String, onClick: () -> Unit) {
+    val C = agateColors()
+    Text(
+        text,
+        color = C.accent,
+        fontSize = 13.sp,
+        fontWeight = FontWeight.SemiBold,
+        modifier = Modifier
+            .background(C.accent.copy(alpha = 0.10f), RoundedCornerShape(9.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 7.dp),
+    )
+}
 
+/* ── Hero 卡（v44 .hero：深蓝渐变 + live 呼吸点 + url-pill + meta 行）── */
 @Composable
 private fun HeroCard(
-    running: Boolean,
     status: Gateway.Status?,
-    link: GatewayRepository.LinkState,
-    onToggle: () -> Unit,
+    requestsToday: Long,
+    hcOpen: Boolean,
+    onToggleHc: () -> Unit,
+    onStop: () -> Unit,
 ) {
+    val C = agateColors()
+    val lightHero = C.bg.luminance() > 0.5f
+    val H = if (lightHero) HeroPalette(
+        bg1 = Color(0xFFE0F2FE), bg2 = Color(0xFFBAE6FD), border = Color(0xFF7DD3FC),
+        text = Color(0xFF0C4A6E), sub = Color(0xFF0369A1),
+        pillBg = Color(0x66FFFFFF), pillText = Color(0xFF0C4A6E),
+    ) else HeroPalette(
+        bg1 = Color(0xFF12324D), bg2 = Color(0xFF0C4A6E), border = Color(0xFF0369A1),
+        text = Color(0xFFF8FAFC), sub = Color(0xFF7DD3FC),
+        pillBg = Color(0x59020623), pillText = Color(0xFFE0F2FE),
+    )
+    val ctx = LocalContext.current
+
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .background(Brush.linearGradient(listOf(H.bg1, H.bg2)), RoundedCornerShape(16.dp))
+            .border(1.dp, H.border, RoundedCornerShape(16.dp))
+            .padding(16.dp),
+    ) {
+        // hero-top：呼吸点 + 状态词 + 端口 + 停止
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            val pulse by rememberInfiniteTransition(label = "live").animateFloat(
+                initialValue = 0.75f,
+                targetValue = 1f,
+                animationSpec = infiniteRepeatable(tween(900), RepeatMode.Reverse),
+                label = "pulse",
+            )
+            Box(
+                Modifier
+                    .size(10.dp)
+                    .scale(pulse)
+                    .background(C.green, CircleShape),
+            )
+            Spacer(Modifier.width(8.dp))
+            Text("服务运行中", color = H.text, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.width(10.dp))
+            Text(":${status?.port ?: 8787}", color = H.sub, fontSize = 13.sp, modifier = Modifier.weight(1f))
+            Text(
+                "停止",
+                color = Color(0xFFF87171),
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier
+                    .border(1.dp, Color(0x59F87171), RoundedCornerShape(9.dp))
+                    .clickable(onClick = onStop)
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
+            )
+        }
+
+        // url-pill：点按复制 BaseURL
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(top = 14.dp, bottom = 10.dp)
+                .background(H.pillBg, RoundedCornerShape(12.dp))
+                .clickable {
+                    val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    cm.setPrimaryClip(ClipData.newPlainText("BaseURL", "http://127.0.0.1:${status?.port ?: 8787}/v1"))
+                    Toast.makeText(ctx, "已复制本机地址", Toast.LENGTH_SHORT).show()
+                }
+                .padding(horizontal = 14.dp, vertical = 11.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                "http://127.0.0.1:${status?.port ?: 8787}/v1",
+                color = H.pillText,
+                fontSize = 13.sp,
+                maxLines = 1,
+                modifier = Modifier.weight(1f),
+            )
+            Icon(Icons.Filled.ContentCopy, contentDescription = "复制", tint = H.pillText.copy(alpha = 0.8f), modifier = Modifier.size(16.dp))
+        }
+
+        // hero-meta：运行时长 · 今日请求 · 网络测速 ›
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("已运行 ${fmtUptime(status?.uptimeSec ?: 0)}", color = H.sub, fontSize = 12.sp)
+            Dot()
+            Text("今日 $requestsToday 次请求", color = H.sub, fontSize = 12.sp)
+            Spacer(Modifier.weight(1f))
+            Text(
+                if (hcOpen) "收起自检 ⌄" else "网络测速 ›",
+                color = H.sub,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.clickable(onClick = onToggleHc),
+            )
+        }
+    }
+}
+
+@Composable
+private fun Dot() {
+    val C = agateColors()
+    Box(Modifier.padding(horizontal = 8.dp).size(3.dp).background(C.textDim, CircleShape))
+}
+
+/* ── 停止态独立卡（v44 .state-stopped）── */
+@Composable
+private fun StoppedCard(onStart: () -> Unit) {
     val C = agateColors()
     Column(
         Modifier
@@ -184,312 +349,300 @@ private fun HeroCard(
             .padding(16.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        if (running) "网关运行中" else "网关已停止",
-                        style = AgateType.NumXL,
-                        color = if (running) C.green else C.textSub,
-                    )
-                    Spacer(Modifier.size(10.dp))
-                    AgateBadge(
-                        text = if (running) ":${status?.port ?: 8787}" else "未启动",
-                        tone = if (running) BadgeTone.BLUE else BadgeTone.GRAY,
-                        withDot = running,
-                    )
+            Box(Modifier.size(10.dp).background(C.textDim, CircleShape))
+            Spacer(Modifier.width(8.dp))
+            Text("服务已停止", color = C.textSub, fontSize = 16.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+            Text(
+                "启动网关",
+                color = C.onAccent,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier
+                    .background(C.accent, RoundedCornerShape(9.dp))
+                    .clickable(onClick = onStart)
+                    .padding(horizontal = 14.dp, vertical = 7.dp),
+            )
+        }
+        Spacer(Modifier.height(8.dp))
+        Text("BaseURL 将在启动后生成 · 端口 :8787", color = C.textDim, fontSize = 12.sp)
+    }
+}
+
+/* ── 新手向导（v44 ob-card：accent 边框 + 收起单行 + 展开 3 步）── */
+@Composable
+private fun WizardCard(onNavigate: (String) -> Unit, onDismiss: () -> Unit) {
+    val C = agateColors()
+    var expanded by remember { mutableStateOf(false) }
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .background(C.cardBg, RoundedCornerShape(16.dp))
+            .border(1.dp, C.accent, RoundedCornerShape(16.dp))
+            .padding(14.dp)
+            .animateContentSize(),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                if (expanded) "🚀 新手向导 · 3 步跑通" else "🚀 新手 3 步向导 · 点此展开 ❯",
+                color = C.textMain,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier
+                    .weight(1f)
+                    .clickable { expanded = !expanded },
+            )
+            Text("✕", color = C.textDim, fontSize = 13.sp, modifier = Modifier.clickable(onClick = onDismiss).padding(6.dp))
+        }
+        if (expanded) {
+            Spacer(Modifier.height(10.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf(
+                    Triple("1", "添加首个提供商", "官方 / 中转 / 24 张预置卡") to Routes.PROVIDER_ADD,
+                    Triple("2", "复制地址与 Key", ":8787 · sk-…（访问密钥）") to Routes.KEYS,
+                    Triple("3", "测速验证", "并发跑一轮模型测速") to Routes.MODEL_SPEEDTEST,
+                ).forEach { (step, route) ->
+                    Column(
+                        Modifier
+                            .weight(1f)
+                            .background(C.insetBg, RoundedCornerShape(12.dp))
+                            .border(1.dp, C.border, RoundedCornerShape(12.dp))
+                            .clickable { onNavigate(route) }
+                            .padding(10.dp),
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(
+                                Modifier
+                                    .size(22.dp)
+                                    .background(C.accent, CircleShape),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Text(step.first, color = C.onAccent, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            }
+                            Spacer(Modifier.width(6.dp))
+                            Text(step.second, color = C.textMain, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                        }
+                        Spacer(Modifier.height(4.dp))
+                        Text(step.third, color = C.textSub, fontSize = 11.sp)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/* ── 健康自检（v44 hc-card：cfg-row × 4 + 协议 chips）── */
+@Composable
+private fun HealthCard(snap: GatewayRepository.ConsoleSnapshot, snapError: String?, onClose: () -> Unit) {
+    val C = agateColors()
+    val ctx = LocalContext.current
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .background(C.cardBg, RoundedCornerShape(16.dp))
+            .border(1.dp, C.border, RoundedCornerShape(16.dp))
+            .padding(16.dp)
+            .animateContentSize(),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("健康自检（GET /health 口径）", color = C.textMain, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+            if (snapError == null) AgateBadge("status ok", BadgeTone.GREEN) else AgateBadge("异常", BadgeTone.RED)
+        }
+        HcRow(
+            "壳侧就绪",
+            if (snap.upstreamConfigured == true) "上游已配置 · 会话摘要正常" else "上游未配置 / 未登录",
+            if (snap.upstreamConfigured == true) "ok" else "待配置",
+            snap.upstreamConfigured == true,
+        )
+        HcRow("回环探活", snapError ?: "127.0.0.1:8787 /health · 正常", "通", snapError == null)
+        HcRow(
+            "凭证状态",
+            "登录态 " + (snap.loggedIn?.let { if (it) "已登录" else "未登录" } ?: "未知") + " · 模型 ${snap.modelCount}",
+            snap.loggedIn?.let { if (it) "可刷新" else "缺失" } ?: "—",
+            snap.loggedIn == true,
+        )
+        HcRow("出网连通", "上游延迟均值（测速样本）", "—", null)
+
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            listOf("/v1/chat/completions", "/v1/messages", "/v1/responses").forEach { ep ->
+                AgateChip(
+                    text = ep,
+                    onClick = {
+                        val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        cm.setPrimaryClip(ClipData.newPlainText("endpoint", ep))
+                        Toast.makeText(ctx, "已复制 $ep", Toast.LENGTH_SHORT).show()
+                    },
+                )
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        Text("协议入口按客户端能力选 · 点击复制 · 点「收起自检」折叠本面板", color = C.textSub, fontSize = 12.sp)
+    }
+}
+
+@Composable
+private fun HcRow(name: String, desc: String, value: String, ok: Boolean?) {
+    val C = agateColors()
+    Row(Modifier.fillMaxWidth().padding(vertical = 9.dp), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text(name, color = C.textMain, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+            Text(desc, color = C.textSub, fontSize = 12.sp)
+        }
+        AgateBadge(
+            value,
+            when (ok) {
+                true -> BadgeTone.GREEN
+                false -> BadgeTone.AMBER
+                null -> BadgeTone.GRAY
+            },
+        )
+    }
+}
+
+/* ── 实时出战队列（v44 hq / .qrow）── */
+@Composable
+private fun QueueCard(
+    queue: List<GatewayRepository.QueueRow>,
+    inFlight: Int,
+    onNavigate: (String) -> Unit,
+) {
+    val C = agateColors()
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .background(C.cardBg, RoundedCornerShape(16.dp))
+            .border(1.dp, C.border, RoundedCornerShape(16.dp))
+            .padding(16.dp)
+            .animateContentSize(),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("实时出战队列", color = C.textMain, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+            AgateChip(text = "排队 $inFlight", selected = inFlight > 0)
+        }
+        Spacer(Modifier.height(4.dp))
+        Text("编号 = 候选队列位置 · 在「路由」里调整", color = C.textDim, fontSize = 11.sp)
+        Spacer(Modifier.height(8.dp))
+        if (queue.isEmpty()) {
+            Text(
+                if (inFlight > 0) "队列数据待 /api/routing/queue 结构核对" else "队列空闲 · 暂无在途请求",
+                color = C.textSub,
+                fontSize = 12.sp,
+                modifier = Modifier.padding(vertical = 6.dp),
+            )
+        } else {
+            queue.take(6).forEachIndexed { i, row ->
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 10.dp, vertical = 9.dp)
+                        .background(C.insetBg, RoundedCornerShape(14.dp))
+                        .border(
+                            1.dp,
+                            if (i == 0) C.accent.copy(alpha = 0.55f) else C.border,
+                            RoundedCornerShape(14.dp),
+                        )
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Box(
+                        Modifier.size(24.dp).background(if (i == 0) C.accent else C.textDim.copy(alpha = 0.2f), CircleShape),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text("${i + 1}", color = if (i == 0) C.onAccent else C.textSub, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    }
+                    Spacer(Modifier.width(12.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(row.account, color = C.textMain, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                        Text(row.provider + (row.model?.let { " · $it" } ?: ""), color = C.textSub, fontSize = 12.sp)
+                    }
+                    row.note?.let { AgateBadge(it, BadgeTone.BLUE) }
                 }
                 Spacer(Modifier.height(6.dp))
-                Text(
-                    buildString {
-                        append("内核 ")
-                        append(status?.version?.ifBlank { "—" } ?: "—")
-                        if (running) {
-                            append(" · 运行 ").append(fmtUptime(status?.uptimeSec ?: 0))
-                            append(" · ").append(if (status?.bindLan == true) "局域网 0.0.0.0" else "本机 127.0.0.1")
-                        }
-                    },
-                    style = AgateType.Caption,
-                    color = C.textDim,
-                )
             }
-            LinkBadge(link)
-        }
-        Spacer(Modifier.height(12.dp))
-        Button(onClick = onToggle, modifier = Modifier.fillMaxWidth()) {
-            Text(if (running) "停止网关" else "启动网关", style = AgateType.BodyS)
         }
     }
 }
 
+/* ── 入口卡（v44 .quota-entry：图标 + 标题 + 副行 + ❯）── */
 @Composable
-private fun LinkBadge(link: GatewayRepository.LinkState) {
-    val (text, tone) = when (link) {
-        GatewayRepository.LinkState.CONNECTED -> "SSE 已连接" to BadgeTone.GREEN
-        GatewayRepository.LinkState.CONNECTING -> "连接中…" to BadgeTone.AMBER
-        GatewayRepository.LinkState.RETRYING -> "重连中…" to BadgeTone.AMBER
-        GatewayRepository.LinkState.POLLING -> "轮询降级" to BadgeTone.BLUE
-        GatewayRepository.LinkState.DISCONNECTED -> "事件流未连" to BadgeTone.GRAY
+private fun EntryCard(icon: String, title: String, sub: String, onClick: () -> Unit) {
+    val C = agateColors()
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .background(C.cardBg, RoundedCornerShape(16.dp))
+            .border(1.dp, C.border, RoundedCornerShape(16.dp))
+            .clickable(onClick = onClick)
+            .padding(16.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(icon, fontSize = 22.sp, color = C.accent)
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text(title, color = C.textMain, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+            Text(sub, color = C.textSub, fontSize = 12.sp)
+        }
+        Text("❯", color = C.textDim, fontSize = 13.sp)
     }
-    AgateBadge(text = text, tone = tone)
 }
 
-// ── 健康自检 ─────────────────────────────────────────────────────────────
-
+/* ── 今日 Token 消耗（v44 .token-big）── */
 @Composable
-private fun HealthCard(snap: GatewayRepository.ConsoleSnapshot, snapError: String?) {
+private fun TokenCard(tokens: Long, fetched: Boolean, onNavigate: (String) -> Unit) {
     val C = agateColors()
     Column(
         Modifier
             .fillMaxWidth()
             .background(C.cardBg, RoundedCornerShape(16.dp))
             .border(1.dp, C.border, RoundedCornerShape(16.dp))
-            .padding(horizontal = 14.dp, vertical = 6.dp),
+            .padding(16.dp),
     ) {
-        if (snapError != null) {
-            Text(
-                snapError,
-                style = AgateType.Caption,
-                color = C.red,
-                modifier = Modifier.padding(vertical = 8.dp),
-            )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("今日 Token 消耗", color = C.textMain, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+            if (fetched) AgateBadge("tnum", BadgeTone.GRAY)
         }
-        HealthRow("上游配置") {
-            when (snap.upstreamConfigured) {
-                true -> AgateBadge("已配置", BadgeTone.GREEN)
-                false -> AgateBadge("未配置", BadgeTone.RED)
-                null -> Placeholder()
-            }
-        }
-        HealthRow("面板登录") {
-            when (snap.loggedIn) {
-                true -> AgateBadge("已登录", BadgeTone.GREEN)
-                false -> AgateBadge("未登录", BadgeTone.AMBER)
-                null -> Placeholder()
-            }
-        }
-        HealthRow("/v1 鉴权") {
-            when (snap.authRequired) {
-                true -> AgateBadge("已启用 API Key", BadgeTone.BLUE)
-                false -> AgateBadge("未设置", BadgeTone.GRAY)
-                null -> Placeholder()
-            }
-        }
-        HealthRow("默认模型") { ValueText(snap.defaultModel) }
-        HealthRow("模型目录") {
-            ValueText(if (snap.modelCount > 0) "${snap.modelCount} 个" else null)
-        }
-        HealthRow("队首账号") {
-            ValueText(snap.routedAccountName ?: snap.routedAccountId)
-        }
-        if (snap.fetchedAtMs > 0) {
-            Text(
-                "刷新于 ${fmtClock(snap.fetchedAtMs)}",
-                style = AgateType.Caption,
-                color = C.textDim,
-                modifier = Modifier.padding(top = 2.dp, bottom = 8.dp),
-            )
-        }
-    }
-}
-
-@Composable
-private fun HealthRow(label: String, value: @Composable () -> Unit) {
-    val C = agateColors()
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .padding(vertical = 7.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(label, style = AgateType.Body, color = C.textSub, modifier = Modifier.weight(1f))
-        value()
-    }
-}
-
-@Composable
-private fun ValueText(text: String?) {
-    val C = agateColors()
-    Text(
-        text ?: "—",
-        style = AgateType.BodyS,
-        color = if (text.isNullOrBlank()) C.textDim else C.textMain,
-    )
-}
-
-@Composable
-private fun Placeholder() {
-    val C = agateColors()
-    Text("—", style = AgateType.BodyS, color = C.textDim)
-}
-
-// ── 3 步新手向导 ─────────────────────────────────────────────────────────
-
-@Composable
-private fun WizardCard(
-    running: Boolean,
-    upstreamConfigured: Boolean?,
-    requestsToday: Long,
-    onNavigate: (String) -> Unit,
-    onStartGateway: () -> Unit,
-) {
-    // 三步全过即整卡收起（v44 紧凑向导语义）：接入完成的标志是今天已有真实流量。
-    val step2Done = upstreamConfigured == true
-    val allDone = running && step2Done && requestsToday > 0
-    if (allDone) return
-
-    val C = agateColors()
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .background(C.cardBg, RoundedCornerShape(16.dp))
-            .border(1.dp, C.border, RoundedCornerShape(16.dp))
-            .padding(14.dp),
-    ) {
-        Text("3 步开始使用", style = AgateType.SectionTitle, color = C.textMain)
-        Spacer(Modifier.height(8.dp))
-        WizardStep(
-            index = 1,
-            text = "启动网关（本机 :8787）",
-            done = running,
-            actionLabel = if (running) null else "启动",
-            onAction = onStartGateway,
-        )
-        WizardStep(
-            index = 2,
-            text = "配置上游账号",
-            done = step2Done,
-            actionLabel = if (step2Done) null else "去提供商",
-            onAction = { onNavigate(Routes.PROVIDERS) },
-        )
-        WizardStep(
-            index = 3,
-            text = "客户端接入 /v1（Key 在访问密钥页）",
-            done = requestsToday > 0,
-            actionLabel = "查看密钥",
-            onAction = { onNavigate(Routes.KEYS) },
-        )
-    }
-}
-
-@Composable
-private fun WizardStep(
-    index: Int,
-    text: String,
-    done: Boolean,
-    actionLabel: String?,
-    onAction: () -> Unit,
-) {
-    val C = agateColors()
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .padding(vertical = 5.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Box(
-            Modifier
-                .size(20.dp)
-                .background(if (done) C.greenBg else C.insetBg, CircleShape)
-                .border(1.dp, if (done) C.green else C.border, CircleShape),
-            contentAlignment = Alignment.Center,
-        ) {
-            Text(
-                if (done) "✓" else index.toString(),
-                style = AgateType.Caption,
-                fontWeight = FontWeight.Bold,
-                color = if (done) C.green else C.textSub,
-            )
-        }
-        Spacer(Modifier.size(10.dp))
+        Spacer(Modifier.height(6.dp))
         Text(
-            text,
-            style = AgateType.BodyS,
-            color = if (done) C.textDim else C.textMain,
-            modifier = Modifier.weight(1f),
+            if (fetched) fmtTokens(tokens) else "—",
+            color = C.textMain,
+            fontSize = 24.sp,
+            fontWeight = FontWeight.Bold,
         )
-        if (actionLabel != null) {
-            AgateChip(text = actionLabel, selected = true, onClick = onAction)
-        }
+        Spacer(Modifier.height(4.dp))
+        Text("输入 / 输出拆分与各家占比待 stats 端点字段接入", color = C.textSub, fontSize = 12.sp)
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "完整报表 ❯",
+            color = C.accent,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.clickable { onNavigate(Routes.REPORTS) },
+        )
     }
 }
 
-// ── 实时出战队列 ─────────────────────────────────────────────────────────
+/** Hero 卡配色（v44 .hero 深浅两套渐变，按当前主题底色亮度选择）。 */
+private data class HeroPalette(
+    val bg1: Color,
+    val bg2: Color,
+    val border: Color,
+    val text: Color,
+    val sub: Color,
+    val pillBg: Color,
+    val pillText: Color,
+)
 
-@Composable
-private fun EventQueueCard(events: List<GatewayRepository.RecentEvent>) {
-    val C = agateColors()
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .background(C.cardBg, RoundedCornerShape(16.dp))
-            .border(1.dp, C.border, RoundedCornerShape(16.dp))
-            .padding(horizontal = 14.dp, vertical = 10.dp),
-    ) {
-        if (events.isEmpty()) {
-            Text(
-                "尚无事件：连上后首帧 hello；转发完成 / 签到轮次 / 网关启动都会推到这里",
-                style = AgateType.BodyS,
-                color = C.textDim,
-            )
-            return@Column
-        }
-        events.take(8).forEach { ev ->
-            Row(Modifier.padding(vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
-                val ok = ev.type != "request_done" || ev.summary.startsWith("✓")
-                Box(
-                    Modifier
-                        .size(6.dp)
-                        .background(
-                            when {
-                                ev.type == "request_done" && !ok -> C.red
-                                ev.type == "request_done" -> C.green
-                                else -> C.accent
-                            },
-                            CircleShape,
-                        ),
-                )
-                Spacer(Modifier.size(10.dp))
-                Text(
-                    ev.summary,
-                    style = AgateType.BodyS,
-                    color = C.textMain,
-                    modifier = Modifier.weight(1f),
-                )
-                Text(
-                    if (ev.tsMs > 0) fmtClock(ev.tsMs) else "",
-                    style = AgateType.Caption,
-                    color = C.textDim,
-                )
-            }
-        }
-    }
-}
-
-// ── 公共小件与格式化 ─────────────────────────────────────────────────────
-
-@Composable
-private fun SectionLabel(text: String) {
-    val C = agateColors()
-    Text(text, style = AgateType.SectionTitle, color = C.textSub)
-}
-
-private fun successRateOf(snap: GatewayRepository.ConsoleSnapshot): String {
-    if (snap.fetchedAtMs == 0L || snap.requestsToday <= 0L) return "—"
-    val pct = snap.successfulToday * 100 / snap.requestsToday
-    return "$pct%"
-}
+/* ── 小件 ── */
+private fun successRateOf(snap: GatewayRepository.ConsoleSnapshot): String =
+    if (snap.requestsToday <= 0) "—" else "%.1f%%".format(snap.successfulToday * 100.0 / snap.requestsToday)
 
 private fun fmtUptime(sec: Long): String = when {
-    sec >= 3600 -> "${sec / 3600}小时${(sec % 3600) / 60}分"
-    sec >= 60 -> "${sec / 60}分${sec % 60}秒"
-    else -> "${sec}秒"
+    sec >= 3600 -> "%02d:%02d:%02d".format(sec / 3600, (sec % 3600) / 60, sec % 60)
+    sec >= 60 -> "%02d:%02d".format(sec / 60, sec % 60)
+    else -> "${sec}s"
 }
 
 private fun fmtTokens(n: Long): String = when {
-    n >= 1_000_000L -> String.format(Locale.US, "%.1fM", n / 1_000_000.0)
-    n >= 1_000L -> String.format(Locale.US, "%.1fk", n / 1_000.0)
+    n >= 100_000_000 -> "%.1f亿".format(n / 100_000_000.0)
+    n >= 10_000 -> "%.1f万".format(n / 10_000.0)
     else -> n.toString()
 }
-
-private fun fmtClock(ms: Long): String =
-    SimpleDateFormat("HH:mm:ss", Locale.CHINA).format(Date(ms))

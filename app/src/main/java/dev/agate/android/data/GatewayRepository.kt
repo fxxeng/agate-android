@@ -83,6 +83,18 @@ object GatewayRepository {
         val providerCounts: Map<String, Int> = emptyMap(),
         /** provider id → 该家队首账号 id（★ 判据） */
         val currentAccountIds: Map<String, String> = emptyMap(),
+        /** /api/routing/queue → 实时出战队列（首页 v44 hq 卡）；解析失败沿用上份 */
+        val routingQueue: List<QueueRow> = emptyList(),
+        /** /api/stats/summary overview → 平均时延（字段名随上游，读不到为 null 显示占位） */
+        val avgLatencyMs: Long? = null,
+    )
+
+    /** v44 .qrow 一行：序号由渲染端下标，这里只带语义字段。 */
+    data class QueueRow(
+        val provider: String,
+        val account: String,
+        val model: String? = null,
+        val note: String? = null,
     )
 
     private const val PORT = 8787
@@ -204,6 +216,8 @@ object GatewayRepository {
                 getJson("/health", envelope = false)?.let { health = it; anySuccess = true }
                 getJson("/api/stats/summary?range=today", envelope = true)?.let { summary = it; anySuccess = true }
                 getJson("/api/stats/requests?limit=1", envelope = true)?.let { queue = it; anySuccess = true }
+                var routing: JSONObject? = null
+                getJson("/api/routing/queue", envelope = true)?.let { routing = it }
 
                 if (!anySuccess) {
                     _snapshotError.value = "无法连接内核（网关未运行？）"
@@ -248,12 +262,38 @@ object GatewayRepository {
                     accountList = if (session != null) parsed.accounts else prev.accountList,
                     providerCounts = if (session != null) parsed.providerCounts else prev.providerCounts,
                     currentAccountIds = if (session != null) parsed.currentAccountIds else prev.currentAccountIds,
+                    routingQueue = parseRoutingQueue(routing) ?: prev.routingQueue,
+                    avgLatencyMs = firstNonNull(
+                        overview?.optLong("avgLatencyMs", -1L),
+                        overview?.optLong("latencyMs", -1L),
+                        overview?.optLong("avgDurationMs", -1L),
+                    ) ?: prev.avgLatencyMs,
                 )
             } finally {
                 refreshing.set(false)
             }
         }
     }
+
+    /** 队列端点字段名未定案，按候选键防御解析；端点缺失/结构变化返回 null（沿用上份）。 */
+    private fun parseRoutingQueue(obj: JSONObject?): List<QueueRow>? {
+        if (obj == null) return null
+        val arr = listOf("queue", "entries", "rows", "items", "candidates")
+            .firstNotNullOfOrNull { key -> obj.optJSONArray(key) } ?: return null
+        val rows = ArrayList<QueueRow>(arr.length())
+        for (i in 0 until arr.length()) {
+            val r = arr.optJSONObject(i) ?: continue
+            rows += QueueRow(
+                provider = r.optString("provider", r.optString("providerId", "?")),
+                account = r.optString("account", r.optString("displayName", r.optString("accountId", "?"))),
+                model = r.optString("model", "").ifBlank { null },
+                note = r.optString("reason", r.optString("status", "")).ifBlank { null },
+            )
+        }
+        return rows
+    }
+
+    private fun firstNonNull(vararg v: Long?): Long? = v.firstOrNull { it != null && it >= 0 }
 
     /** 统一带 Bearer Key 的 GET；envelope=true 解 `{success,data}` 信封，否则裸值。 */
     private fun getJson(path: String, envelope: Boolean): JSONObject? {

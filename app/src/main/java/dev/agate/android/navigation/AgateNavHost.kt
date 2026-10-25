@@ -209,6 +209,7 @@ fun AgateNavHost(
             ) {
                 composable(Routes.HOME) {
                     ConsolePage(
+                        onOpenDrawer = { scope.launch { drawerState.open() } },
                         onNavigate = { route ->
                             navController.navigate(route) {
                                 popUpTo(Routes.HOME) { saveState = true }

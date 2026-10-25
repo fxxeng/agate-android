@@ -21,6 +21,7 @@ object GatewayPrefs {
 
     private const val KEY_PROVIDER_ORDER = "provider_order"
     private const val KEY_RECENT_PROVIDERS = "recent_providers"
+    private const val KEY_WIZARD_DISMISSED = "wizard_dismissed"
 
     /** 局域网监听（0.0.0.0 + 内核 panel gate + fail-closed）。默认关。 */
     /**
@@ -56,6 +57,13 @@ object GatewayPrefs {
     /** 最近添加的家（M3-3R 新增提供商页快捷 chips）：家 id 逗号串，最新在前，至多 4 个。 */
     fun recentProviders(ctx: Context): List<String> =
         prefs(ctx).getString(KEY_RECENT_PROVIDERS, null)?.split(',')?.filter { it.isNotBlank() } ?: emptyList()
+
+    /** 首页新手向导卡是否被 ✕ 关闭（v44 obDismiss 语义，跨重启记住）。 */
+    fun wizardDismissed(ctx: Context): Boolean = prefs(ctx).getBoolean(KEY_WIZARD_DISMISSED, false)
+
+    fun setWizardDismissed(ctx: Context, value: Boolean) {
+        prefs(ctx).edit().putBoolean(KEY_WIZARD_DISMISSED, value).apply()
+    }
 
     fun pushRecentProvider(ctx: Context, id: String) {
         val cur = recentProviders(ctx).toMutableList()
