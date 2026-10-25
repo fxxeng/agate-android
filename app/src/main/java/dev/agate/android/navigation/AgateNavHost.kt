@@ -52,6 +52,7 @@ import androidx.navigation.compose.rememberNavController
 import dev.agate.android.ui.home.ConsolePage
 import dev.agate.android.ui.pages.GatewayControlPage
 import dev.agate.android.ui.pages.ShowcasePage
+import dev.agate.android.ui.provider.ProviderPage
 import dev.agate.android.ui.pages.SkeletonPage
 import dev.agate.android.ui.theme.AgateThemeMode
 import dev.agate.android.ui.theme.AgateType
@@ -214,10 +215,7 @@ fun AgateNavHost(
                     )
                 }
                 composable(Routes.PROVIDERS) {
-                    SkeletonPage(
-                        "提供商", "M3",
-                        "账号列表与拖拽排序、详情三 Tab（概览/家规/账号）、19 家动态专有家规、新增提供商（26 官方 + 25 预置卡）。",
-                    )
+                    ProviderPage()
                 }
                 composable(Routes.MODELS) {
                     SkeletonPage(

@@ -1,5 +1,7 @@
 package dev.agate.android.data
 
+import dev.agate.android.data.dto.AccountDto
+import dev.agate.android.data.dto.AccountDtos
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -75,6 +77,12 @@ object GatewayRepository {
         val modelCount: Int = 0,
         /** /api/stats/requests → running（在途请求数 = 排队水位） */
         val inFlight: Int = 0,
+        /** M3-3：全量账号（按家分组渲染用），解析统一走 AccountDtos */
+        val accountList: List<AccountDto> = emptyList(),
+        /** provider id → 账号总数（含禁用，分组标题口径） */
+        val providerCounts: Map<String, Int> = emptyMap(),
+        /** provider id → 该家队首账号 id（★ 判据） */
+        val currentAccountIds: Map<String, String> = emptyMap(),
     )
 
     private const val PORT = 8787
@@ -203,23 +211,18 @@ object GatewayRepository {
                 }
                 _snapshotError.value = null
 
-                val accounts = session?.optJSONArray("accounts")
-                var total = 0
+                // accounts 是对象信封 {accounts[], providers[], currentAccountIds{}}
+                // （内核 account_store::snapshot）。M3-2 曾按裸数组解析：零账号时恰好
+                // 都对，有账号后 KPI 恒 0 —— M3-3 起解析统一收口 AccountDtos。
+                val parsed = AccountDtos.parseSession(session)
+                val total = parsed.accounts.size
                 var enabled = 0
                 var routedName: String? = null
-                if (accounts != null) {
-                    total = accounts.length()
+                if (total > 0) {
                     val routedId = session?.optString("routedAccountId", "").orEmpty()
-                    for (i in 0 until total) {
-                        val acc = accounts.optJSONObject(i) ?: continue
-                        if (acc.optBoolean("enabled")) enabled++
-                        if (routedId.isNotEmpty() && routedId == acc.optString("id")) {
-                            // 各家公开形态不同，展示名按常见字段逐个兜底
-                            routedName = listOf("name", "nickname", "label", "uid", "loginName")
-                                .firstOrNull { acc.optString(it).isNotBlank() }
-                                ?.let { acc.optString(it) }
-                                ?: routedId
-                        }
+                    for (acc in parsed.accounts) {
+                        if (acc.enabled) enabled++
+                        if (routedId.isNotEmpty() && routedId == acc.id) routedName = acc.displayName
                     }
                 }
                 val overview = summary?.optJSONObject("overview")
@@ -228,8 +231,8 @@ object GatewayRepository {
                     requestsToday = overview?.optLong("requests") ?: prev.requestsToday,
                     successfulToday = overview?.optLong("successful") ?: prev.successfulToday,
                     tokensToday = overview?.optLong("tokens") ?: prev.tokensToday,
-                    accountsTotal = if (accounts != null) total else prev.accountsTotal,
-                    accountsEnabled = if (accounts != null) enabled else prev.accountsEnabled,
+                    accountsTotal = if (session != null) total else prev.accountsTotal,
+                    accountsEnabled = if (session != null) enabled else prev.accountsEnabled,
                     routedAccountId = session?.optString("routedAccountId", "")?.ifBlank { null }
                         ?: prev.routedAccountId,
                     routedAccountName = routedName ?: prev.routedAccountName,
@@ -242,6 +245,9 @@ object GatewayRepository {
                     authRequired = health?.let { it.optBoolean("authRequired") } ?: prev.authRequired,
                     modelCount = health?.optInt("models") ?: prev.modelCount,
                     inFlight = queue?.optInt("running") ?: prev.inFlight,
+                    accountList = if (session != null) parsed.accounts else prev.accountList,
+                    providerCounts = if (session != null) parsed.providerCounts else prev.providerCounts,
+                    currentAccountIds = if (session != null) parsed.currentAccountIds else prev.currentAccountIds,
                 )
             } finally {
                 refreshing.set(false)
