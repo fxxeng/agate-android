@@ -120,8 +120,8 @@ private fun PresetCard(
         Spacer(Modifier.height(7.dp))
         when (preset.kind) {
             LoginKind.WEBVIEW -> AgateBadge("网页登录", BadgeTone.GREEN)
-            LoginKind.SMS -> AgateBadge("验证码 · 即将支持", BadgeTone.AMBER)
-            LoginKind.PASTE -> AgateBadge("粘贴凭证 · 即将支持", BadgeTone.AMBER)
+            LoginKind.SMS -> AgateBadge("验证码登录", BadgeTone.BLUE)
+            LoginKind.PASTE -> AgateBadge("粘贴凭证", BadgeTone.BLUE)
         }
     }
 }

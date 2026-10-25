@@ -17,6 +17,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -35,6 +37,7 @@ import androidx.compose.ui.unit.sp
 import dev.agate.android.auth.AuthWebViewSheet
 import dev.agate.android.auth.LoginSession
 import dev.agate.android.data.GatewayRepository
+import dev.agate.android.data.AccountOps
 import dev.agate.android.data.LoginClient
 import dev.agate.android.data.PresetRegistry
 import dev.agate.android.data.dto.AccountDto
@@ -62,9 +65,14 @@ fun ProviderPage(modifier: Modifier = Modifier) {
 
     var showAdd by remember { mutableStateOf(false) }
     var loginSession by remember { mutableStateOf<LoginSession?>(null) }
+    var smsPreset by remember { mutableStateOf<dev.agate.android.data.ProviderPreset?>(null) }
+    var pastePreset by remember { mutableStateOf<dev.agate.android.data.ProviderPreset?>(null) }
+    var opsAccount by remember { mutableStateOf<AccountDto?>(null) }
 
     DisposableEffect(Unit) {
         GatewayRepository.configure(GatewayPrefs.apiKey(ctx))
+        LoginClient.configure(GatewayPrefs.apiKey(ctx))
+        AccountOps.configure(GatewayPrefs.apiKey(ctx))
         GatewayRepository.startPolling()
         onDispose { GatewayRepository.stopPolling() }
     }
@@ -126,7 +134,7 @@ fun ProviderPage(modifier: Modifier = Modifier) {
             ) {
                 items(groups.size) { gi ->
                     val g = groups[gi]
-                    GroupCard(g, heads = snap.currentAccountIds)
+                    GroupCard(g, heads = snap.currentAccountIds, onOpenAccount = { opsAccount = it })
                 }
                 item { Spacer(Modifier.height(24.dp)) }
             }
@@ -138,19 +146,19 @@ fun ProviderPage(modifier: Modifier = Modifier) {
             providerCounts = snap.providerCounts,
             onDismiss = { showAdd = false },
             onPick = { preset ->
-                if (preset.kind != dev.agate.android.data.LoginKind.WEBVIEW) {
-                    Toast.makeText(ctx, "${preset.label}：该登录通道将在后续版本提供", Toast.LENGTH_SHORT).show()
-                    return@AddProviderSheet
-                }
-                scope.launch {
-                    when (val r = LoginClient.start(preset.id)) {
-                        is LoginClient.StartResult.Started -> {
-                            showAdd = false
-                            loginSession = LoginSession(r.provider, r.state, r.authUrl)
+                when (preset.kind) {
+                    dev.agate.android.data.LoginKind.WEBVIEW -> scope.launch {
+                        when (val r = LoginClient.start(preset.id)) {
+                            is LoginClient.StartResult.Started -> {
+                                showAdd = false
+                                loginSession = LoginSession(r.provider, r.state, r.authUrl)
+                            }
+                            is LoginClient.StartResult.Failed ->
+                                Toast.makeText(ctx, r.reason, Toast.LENGTH_LONG).show()
                         }
-                        is LoginClient.StartResult.Failed ->
-                            Toast.makeText(ctx, r.reason, Toast.LENGTH_LONG).show()
                     }
+                    dev.agate.android.data.LoginKind.SMS -> smsPreset = preset
+                    dev.agate.android.data.LoginKind.PASTE -> pastePreset = preset
                 }
             },
         )
@@ -164,6 +172,75 @@ fun ProviderPage(modifier: Modifier = Modifier) {
                 loginSession = null
                 Toast.makeText(ctx, message, Toast.LENGTH_LONG).show()
                 if (success) GatewayRepository.refreshOnce()
+            },
+        )
+    }
+
+    smsPreset?.let { p ->
+        SmsLoginSheet(
+            preset = p,
+            onDismiss = { smsPreset = null },
+            onResult = { success, message ->
+                smsPreset = null
+                Toast.makeText(ctx, message, Toast.LENGTH_LONG).show()
+                if (success) GatewayRepository.refreshOnce()
+            },
+        )
+    }
+
+    pastePreset?.let { p ->
+        PasteLoginSheet(
+            preset = p,
+            onDismiss = { pastePreset = null },
+            onResult = { success, message ->
+                pastePreset = null
+                Toast.makeText(ctx, message, Toast.LENGTH_LONG).show()
+                if (success) GatewayRepository.refreshOnce()
+            },
+        )
+    }
+
+    opsAccount?.let { acc ->
+        AlertDialog(
+            onDismissRequest = { opsAccount = null },
+            title = { Text(acc.displayName) },
+            text = {
+                Text(
+                    "${PresetRegistry.labelOf(acc.provider)} · ${if (acc.enabled) "已启用，转发选路参与排队" else "已禁用，不参与转发"}",
+                    fontSize = 13.sp,
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val target = acc
+                    opsAccount = null
+                    scope.launch {
+                        val action = if (target.enabled) "disable" else "enable"
+                        if (AccountOps.batch(listOf(target.id), action)) {
+                            Toast.makeText(ctx, if (target.enabled) "已禁用" else "已启用", Toast.LENGTH_SHORT).show()
+                            GatewayRepository.refreshOnce()
+                        } else {
+                            Toast.makeText(ctx, "操作失败", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                }) { Text(if (acc.enabled) "禁用" else "启用") }
+            },
+            dismissButton = {
+                Row {
+                    TextButton(onClick = { opsAccount = null }) { Text("取消") }
+                    TextButton(onClick = {
+                        val target = acc
+                        opsAccount = null
+                        scope.launch {
+                            if (AccountOps.batch(listOf(target.id), "remove")) {
+                                Toast.makeText(ctx, "已删除账号", Toast.LENGTH_SHORT).show()
+                                GatewayRepository.refreshOnce()
+                            } else {
+                                Toast.makeText(ctx, "删除失败", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    }) { Text("删除", color = C.red) }
+                }
             },
         )
     }
@@ -208,6 +285,7 @@ private fun EmptyHint(hasError: Boolean, onAdd: () -> Unit) {
 private fun GroupCard(
     g: ProviderGroupView,
     heads: Map<String, String>,
+    onOpenAccount: (AccountDto) -> Unit,
 ) {
     val C = agateColors()
     Column(
@@ -227,20 +305,20 @@ private fun GroupCard(
         }
         Spacer(Modifier.height(10.dp))
         g.accounts.forEach { acc ->
-            AccountRow(acc, isHead = heads[g.providerId] == acc.id)
+            AccountRow(acc, isHead = heads[g.providerId] == acc.id, onOpen = { onOpenAccount(acc) })
             Spacer(Modifier.height(6.dp))
         }
     }
 }
 
 @Composable
-private fun AccountRow(acc: AccountDto, isHead: Boolean) {
+private fun AccountRow(acc: AccountDto, isHead: Boolean, onOpen: () -> Unit) {
     val C = agateColors()
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .background(C.insetBg, RoundedCornerShape(10.dp))
-            .clickable(enabled = false) { }
+            .clickable(onClick = onOpen)
             .padding(horizontal = 10.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
