@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -48,6 +49,7 @@ fun AgatePageHeader(
     title: String,
     onOpenDrawer: () -> Unit,
     modifier: Modifier = Modifier,
+    onBack: (() -> Unit)? = null,
     actions: @Composable RowScope.() -> Unit = {},
 ) {
     val C = agateColors()
@@ -62,17 +64,18 @@ fun AgatePageHeader(
             .padding(start = 16.dp, end = 12.dp, top = 8.dp, bottom = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        // v44 .menu-icon（v18 增量）：36dp 圆角底 + 22dp 图标
+        // v44 .menu-icon（v18 增量）：36dp 圆角底 + 22dp 图标。
+        // 二级页（onBack != null）显示返回箭头，一级页显示汉堡菜单。
         Box(
             modifier = Modifier
                 .size(36.dp)
                 .background(C.textSub.copy(alpha = 0.10f), RoundedCornerShape(10.dp))
-                .clickable(onClick = onOpenDrawer),
+                .clickable { if (onBack != null) onBack() else onOpenDrawer() },
             contentAlignment = Alignment.Center,
         ) {
             Icon(
-                imageVector = Icons.Filled.Menu,
-                contentDescription = "打开侧栏",
+                imageVector = if (onBack != null) Icons.AutoMirrored.Filled.ArrowBack else Icons.Filled.Menu,
+                contentDescription = if (onBack != null) "返回" else "打开侧栏",
                 tint = C.textMain,
                 modifier = Modifier.size(22.dp),
             )

@@ -313,17 +313,20 @@ fun AgateNavHost(
             containerColor = C.bg,
             contentWindowInsets = WindowInsets(0, 0, 0, 0),
             bottomBar = {
-                AgateBottomBar(
-                    items = TabItems,
-                    currentRoute = currentRoute,
-                    onSelect = { route ->
-                        navController.navigate(route) {
-                            popUpTo(Routes.HOME) { saveState = true }
-                            launchSingleTop = true
-                            restoreState = true
-                        }
-                    },
-                )
+                // v44：二级页为全屏覆盖（无底栏），仅一级 Tab 显示底栏
+                if (currentRoute in TopLevelRoutes) {
+                    AgateBottomBar(
+                        items = TabItems,
+                        currentRoute = currentRoute,
+                        onSelect = { route ->
+                            navController.navigate(route) {
+                                popUpTo(Routes.HOME) { saveState = true }
+                                launchSingleTop = true
+                                restoreState = true
+                            }
+                        },
+                    )
+                }
             },
         ) { padding ->
             NavHost(
@@ -384,24 +387,24 @@ fun AgateNavHost(
                 composable(Routes.PROVIDER_ADD) {
                     AddProviderPage(onBack = { navController.popBackStack() })
                 }
-                composable(Routes.MODEL_SPEEDTEST) { skeleton(it, "模型测速", "M3", "并发测速（SSE 流式）、思考等级、多账号同测。", ::openDrawer) }
-                composable(Routes.MODEL_MAPPING) { skeleton(it, "模型映射", "M3", "alias → target 多家主备映射、enabled 开关、同三元组幂等。", ::openDrawer) }
-                composable(Routes.MODEL_CAPS) { skeleton(it, "能力位", "M3", "六键：maxInput/maxOutput/toolCall/images/video/reasoning，capOverrides 标记。", ::openDrawer) }
-                composable(Routes.TASK_WELFARE) { skeleton(it, "福利中心", "M4", "一次性项：新手任务 + 平台福利。", ::openDrawer) }
-                composable(Routes.TASK_CAPTCHA) { skeleton(it, "验证码池", "M4", "ZCode 活动套餐票据池、水位补货、阿里 V3 滑块铸造。", ::openDrawer) }
-                composable(Routes.TASK_CHECKIN) { skeleton(it, "定时签到", "M4", "北京时间签到计划（08:00/20:00）、Qoder 国际版 10:00 窗口、分组视图。", ::openDrawer) }
-                composable(Routes.TASK_KEEPALIVE) { skeleton(it, "保活链", "M4", "日活任务链编辑：WorkBuddy intl 活跃任务等。", ::openDrawer) }
-                composable(Routes.TASK_SCHEDULES) { skeleton(it, "周期任务", "M4", "后台周期任务总览与下次执行时间。", ::openDrawer) }
-                composable(Routes.TASK_HISTORY) { skeleton(it, "签到台账", "M4", "批量轮次记录、失败明细前 5 条、checkinAt 落账。", ::openDrawer) }
-                composable(Routes.QUOTA) { skeleton(it, "额度中心", "M4", "各账号余额与额度水位、刷新与下限限制器联动。", ::openDrawer) }
-                composable(Routes.REPORTS) { skeleton(it, "数据报表", "M4", "6 档时间窗、365 天热力图、24h 双轴、三维构成占比。", ::openDrawer) }
-                composable(Routes.LOGS) { skeleton(it, "调用记录", "M3", "转发请求流水、调用报文、出网取证 Diff、筛选 Sheet。", ::openDrawer) }
-                composable(Routes.APPLOGS) { skeleton(it, "应用日志", "M3", "内核 console_line 转发的应用侧日志流。", ::openDrawer) }
-                composable(Routes.PROXY) { skeleton(it, "出网代理池", "M4", "代理分组、健康检查、绑定提供商。", ::openDrawer) }
-                composable(Routes.ROUTING) { skeleton(it, "路由", "M3", "三策略选号预演、候选队列跨家交错拖拽、自愈演练与倒计时回队、限制器。", ::openDrawer) }
-                composable(Routes.ASSISTANT) { skeleton(it, "AI 运维助手", "M4", "4 大快捷诊断 Chips、工具调用气泡、流式对话。", ::openDrawer) }
-                composable(Routes.SETTINGS) { skeleton(it, "设置", "M4", "手风琴分组：主题三档 / 传输 / 脱敏 / 备份与恢复中心。", ::openDrawer) }
-                composable(Routes.KEYS) { skeleton(it, "访问密钥", "M3", "网关 API Key 管理：创建/吊销，/v1 闸门依据。", ::openDrawer) }
+                composable(Routes.MODEL_SPEEDTEST) { skeleton(it, navController, "模型测速", "M3", "并发测速（SSE 流式）、思考等级、多账号同测。", ::openDrawer) }
+                composable(Routes.MODEL_MAPPING) { skeleton(it, navController, "模型映射", "M3", "alias → target 多家主备映射、enabled 开关、同三元组幂等。", ::openDrawer) }
+                composable(Routes.MODEL_CAPS) { skeleton(it, navController, "能力位", "M3", "六键：maxInput/maxOutput/toolCall/images/video/reasoning，capOverrides 标记。", ::openDrawer) }
+                composable(Routes.TASK_WELFARE) { skeleton(it, navController, "福利中心", "M4", "一次性项：新手任务 + 平台福利。", ::openDrawer) }
+                composable(Routes.TASK_CAPTCHA) { skeleton(it, navController, "验证码池", "M4", "ZCode 活动套餐票据池、水位补货、阿里 V3 滑块铸造。", ::openDrawer) }
+                composable(Routes.TASK_CHECKIN) { skeleton(it, navController, "定时签到", "M4", "北京时间签到计划（08:00/20:00）、Qoder 国际版 10:00 窗口、分组视图。", ::openDrawer) }
+                composable(Routes.TASK_KEEPALIVE) { skeleton(it, navController, "保活链", "M4", "日活任务链编辑：WorkBuddy intl 活跃任务等。", ::openDrawer) }
+                composable(Routes.TASK_SCHEDULES) { skeleton(it, navController, "周期任务", "M4", "后台周期任务总览与下次执行时间。", ::openDrawer) }
+                composable(Routes.TASK_HISTORY) { skeleton(it, navController, "签到台账", "M4", "批量轮次记录、失败明细前 5 条、checkinAt 落账。", ::openDrawer) }
+                composable(Routes.QUOTA) { skeleton(it, navController, "额度中心", "M4", "各账号余额与额度水位、刷新与下限限制器联动。", ::openDrawer) }
+                composable(Routes.REPORTS) { skeleton(it, navController, "数据报表", "M4", "6 档时间窗、365 天热力图、24h 双轴、三维构成占比。", ::openDrawer) }
+                composable(Routes.LOGS) { skeleton(it, navController, "调用记录", "M3", "转发请求流水、调用报文、出网取证 Diff、筛选 Sheet。", ::openDrawer) }
+                composable(Routes.APPLOGS) { skeleton(it, navController, "应用日志", "M3", "内核 console_line 转发的应用侧日志流。", ::openDrawer) }
+                composable(Routes.PROXY) { skeleton(it, navController, "出网代理池", "M4", "代理分组、健康检查、绑定提供商。", ::openDrawer) }
+                composable(Routes.ROUTING) { skeleton(it, navController, "路由", "M3", "三策略选号预演、候选队列跨家交错拖拽、自愈演练与倒计时回队、限制器。", ::openDrawer) }
+                composable(Routes.ASSISTANT) { skeleton(it, navController, "AI 运维助手", "M4", "4 大快捷诊断 Chips、工具调用气泡、流式对话。", ::openDrawer) }
+                composable(Routes.SETTINGS) { skeleton(it, navController, "设置", "M4", "手风琴分组：主题三档 / 传输 / 脱敏 / 备份与恢复中心。", ::openDrawer) }
+                composable(Routes.KEYS) { skeleton(it, navController, "访问密钥", "M3", "网关 API Key 管理：创建/吊销，/v1 闸门依据。", ::openDrawer) }
             }
         }
     }
@@ -410,12 +413,19 @@ fun AgateNavHost(
 @Composable
 private fun skeleton(
     @Suppress("UNUSED_PARAMETER") entry: androidx.navigation.NavBackStackEntry,
+    navController: NavHostController,
     title: String,
     milestone: String,
     hint: String,
     onOpenDrawer: () -> Unit,
 ) {
-    SkeletonPage(title, milestone, hint, onOpenDrawer = onOpenDrawer)
+    SkeletonPage(
+        title = title,
+        milestone = milestone,
+        hint = hint,
+        onOpenDrawer = onOpenDrawer,
+        onBack = { navController.popBackStack() },
+    )
 }
 
 private val TabItems = listOf(
@@ -424,3 +434,6 @@ private val TabItems = listOf(
     AgateTabItem(Routes.MODELS, "模型", Icons.Filled.Dataset),
     AgateTabItem(Routes.TASKS, "任务中心", Icons.Filled.Assignment),
 )
+
+/** 一级 Tab（显示底栏）；其余路由均按二级页处理（全屏覆盖、无底栏）。 */
+private val TopLevelRoutes = setOf(Routes.HOME, Routes.PROVIDERS, Routes.MODELS, Routes.TASKS)
