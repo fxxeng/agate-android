@@ -382,10 +382,26 @@ fun AgateNavHost(
                     ProviderDetailPage(
                         providerId = entry.arguments?.getString("id") ?: "",
                         onBack = { navController.popBackStack() },
+                        onAddAccount = {
+                            val pid = entry.arguments?.getString("id").orEmpty()
+                            navController.navigate("provider_add?providerId=$pid")
+                        },
                     )
                 }
-                composable(Routes.PROVIDER_ADD) {
-                    AddProviderPage(onBack = { navController.popBackStack() })
+                composable(
+                    "provider_add?providerId={providerId}",
+                    arguments = listOf(
+                        navArgument("providerId") {
+                            type = NavType.StringType
+                            nullable = true
+                            defaultValue = null
+                        },
+                    ),
+                ) { entry ->
+                    AddProviderPage(
+                        initialProviderId = entry.arguments?.getString("providerId"),
+                        onBack = { navController.popBackStack() },
+                    )
                 }
                 composable(Routes.MODEL_SPEEDTEST) { skeleton(it, navController, "模型测速", "M3", "并发测速（SSE 流式）、思考等级、多账号同测。", ::openDrawer) }
                 composable(Routes.MODEL_MAPPING) { skeleton(it, navController, "模型映射", "M3", "alias → target 多家主备映射、enabled 开关、同三元组幂等。", ::openDrawer) }

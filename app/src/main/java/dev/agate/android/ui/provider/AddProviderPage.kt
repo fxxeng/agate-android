@@ -48,6 +48,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.agate.android.data.AccountOps
+import dev.agate.android.data.CustomProviderOps
 import dev.agate.android.data.GatewayRepository
 import dev.agate.android.data.LoginClient
 import dev.agate.android.data.LoginKind
@@ -73,18 +74,23 @@ import kotlinx.coroutines.launch
  * - 凭据卡按登录通道 inline 表单：网页登录（回跳+轮询）/ 手机验证码 / 粘贴凭证
  */
 @Composable
-fun AddProviderPage(onBack: () -> Unit) {
+fun AddProviderPage(onBack: () -> Unit, initialProviderId: String? = null) {
     val C = agateColors()
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
 
-    var current by remember { mutableStateOf<ProviderPreset?>(null) }
+    var current by remember {
+        mutableStateOf<ProviderPreset?>(
+            initialProviderId?.let { id -> PresetRegistry.ALL.find { it.id == id } }
+        )
+    }
     var showPicker by remember { mutableStateOf(false) }
     var loginSession by remember { mutableStateOf<LoginSession?>(null) }
 
     DisposableEffect(Unit) {
         LoginClient.configure(GatewayPrefs.apiKey(ctx))
         AccountOps.configure(GatewayPrefs.apiKey(ctx))
+        CustomProviderOps.configure(GatewayPrefs.apiKey(ctx))
         onDispose { }
     }
 
@@ -112,7 +118,7 @@ fun AddProviderPage(onBack: () -> Unit) {
             // ptabs：v44 胶囊页签（官方 / 中转 / 自定义），中转与自定义为占位
             var tab by remember { mutableStateOf(0) }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf("官方 AGENT · 24", "中转 API", "自定义").forEachIndexed { i, label ->
+                listOf("官方 AGENT · ${PresetRegistry.ALL.size}", "中转 / 自定义").forEachIndexed { i, label ->
                     val active = tab == i
                     Text(
                         label,
@@ -247,25 +253,15 @@ fun AddProviderPage(onBack: () -> Unit) {
                     )
                 }
             } else {
-                // 中转 / 自定义：占位卡（内核 custom providers 端点已备，UI 后续接）
+                // 中转 / 自定义：Base URL + Key + 协议，走 /api/custom-providers
                 Spacer(Modifier.height(12.dp))
-                Column(
-                    Modifier
-                        .fillMaxWidth()
-                        .background(C.cardBg, RoundedCornerShape(16.dp))
-                        .border(1.dp, C.border, RoundedCornerShape(16.dp))
-                        .padding(16.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                ) {
-                    Text(
-                        if (tab == 1) "中转 API · 25 张预置卡" else "自定义 OpenAI 兼容上游",
-                        color = C.textMain,
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                    Spacer(Modifier.height(6.dp))
-                    Text("后续版本提供 · Base URL + Key 接入与模型自动发现", color = C.textDim, fontSize = 12.sp)
-                }
+                CustomProviderForm(onDone = { ok, msg ->
+                    Toast.makeText(ctx, msg, Toast.LENGTH_LONG).show()
+                    if (ok) {
+                        GatewayRepository.refreshOnce()
+                        onBack()
+                    }
+                })
             }
         }
     }
@@ -513,5 +509,79 @@ private fun ProviderPickerSheet(
                 }
             }
         }
+    }
+}
+
+/* ── 中转 / 自定义接入：Base URL + Key + 协议 → POST /api/custom-providers ── */
+@Composable
+private fun CustomProviderForm(onDone: (Boolean, String) -> Unit) {
+    val C = agateColors()
+    val scope = rememberCoroutineScope()
+    var name by remember { mutableStateOf("") }
+    var baseUrl by remember { mutableStateOf("") }
+    var key by remember { mutableStateOf("") }
+    var protocol by remember { mutableStateOf(CustomProviderOps.Protocol.OPENAI) }
+    var busy by remember { mutableStateOf(false) }
+    var hint by remember { mutableStateOf<String?>(null) }
+
+    val valid = name.isNotBlank() && baseUrl.startsWith("http") && key.isNotBlank()
+
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .background(C.cardBg, RoundedCornerShape(16.dp))
+            .border(1.dp, C.border, RoundedCornerShape(16.dp))
+            .padding(14.dp),
+    ) {
+        Text("接入信息", color = C.textMain, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+        Spacer(Modifier.height(10.dp))
+        AgateFormInput(value = name, onValueChange = { name = it }, hint = "名称（如 OpenAI 兼容 / NewAPI）")
+        Spacer(Modifier.height(8.dp))
+        AgateFormInput(value = baseUrl, onValueChange = { baseUrl = it.trim() }, hint = "Base URL，如 https://api.example.com/v1")
+        Spacer(Modifier.height(8.dp))
+        AgateFormInput(value = key, onValueChange = { key = it.trim() }, hint = "API Key（可带 Bearer 前缀）")
+        Spacer(Modifier.height(12.dp))
+        Text("协议", color = C.textSub, fontSize = 12.sp)
+        Spacer(Modifier.height(8.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            CustomProviderOps.Protocol.entries.forEach { p ->
+                val active = protocol == p
+                Text(
+                    p.label,
+                    color = if (active) C.onAccent else C.textSub,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier
+                        .background(if (active) C.accent else C.insetBg, RoundedCornerShape(999.dp))
+                        .border(1.dp, if (active) Color.Transparent else C.border, RoundedCornerShape(999.dp))
+                        .clickable { protocol = p }
+                        .padding(horizontal = 14.dp, vertical = 8.dp),
+                )
+            }
+        }
+        hint?.let {
+            Spacer(Modifier.height(8.dp))
+            Text(it, color = C.red, fontSize = 12.sp)
+        }
+        Spacer(Modifier.height(12.dp))
+        Button(
+            onClick = {
+                busy = true; hint = null
+                scope.launch {
+                    val r = CustomProviderOps.create(name, baseUrl, key, protocol)
+                    busy = false
+                    if (r.ok) onDone(true, "已添加 " + name)
+                    else hint = r.error ?: "创建失败"
+                }
+            },
+            enabled = !busy && valid,
+            modifier = Modifier.fillMaxWidth(),
+            colors = ButtonDefaults.buttonColors(containerColor = C.accent, contentColor = C.onAccent),
+        ) { Text(if (busy) "创建中…" else "创建并接入", fontWeight = FontWeight.SemiBold) }
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "仅 LLM 请求 + 模型列表；兼容 OpenAI /v1/chat/completions 即可接入。",
+            color = C.textDim, fontSize = 11.sp,
+        )
     }
 }

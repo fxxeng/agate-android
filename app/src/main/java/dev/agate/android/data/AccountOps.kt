@@ -33,8 +33,9 @@ object AccountOps {
     private val client by lazy {
         OkHttpClient.Builder()
             .connectTimeout(8, TimeUnit.SECONDS)
-            // 粘贴型添加会去上游校验凭证（kuku enrich_identity 等），放宽到 20s
-            .readTimeout(20, TimeUnit.SECONDS)
+            // 粘贴型添加会去上游校验凭证（kuku enrich_identity 等），
+            // 余额查询要逐账号打上游，统一放宽到 40s
+            .readTimeout(40, TimeUnit.SECONDS)
             .build()
     }
 
@@ -109,6 +110,60 @@ object AccountOps {
             .put("action", action)
         return post("/api/accounts/batch", body).ok
     }
+
+    /** GET /api/accounts/usage[?id=] → {results:[{id,name,usage,error,code?}], skipped}。 */
+    suspend fun usage(id: String? = null): JSONObject? {
+        val q = if (id.isNullOrBlank()) "" else "?id=" + java.net.URLEncoder.encode(id, "UTF-8")
+        return get("/api/accounts/usage$q")
+    }
+
+    /** GET /api/accounts/connections → {counts:{id:count}}。 */
+    suspend fun connections(): JSONObject? = get("/api/accounts/connections")
+
+    /** PATCH /api/accounts/{id}：改备注名 / enabled / maxConcurrent / proxy 等。 */
+    suspend fun update(id: String, body: JSONObject): OpResult =
+        patch("/api/accounts/" + java.net.URLEncoder.encode(id, "UTF-8"), body)
+
+    /** POST /api/accounts/{id}/move {direction: up|down}：本家内调整出战顺序。 */
+    suspend fun move(id: String, up: Boolean): OpResult =
+        post("/api/accounts/" + java.net.URLEncoder.encode(id, "UTF-8") + "/move",
+            JSONObject().put("direction", if (up) "up" else "down"))
+
+    /** POST /api/accounts/refresh-expiring：并发刷新临期凭证。 */
+    suspend fun refreshExpiring(): OpResult = post("/api/accounts/refresh-expiring", JSONObject())
+
+    private suspend fun get(path: String): JSONObject? = withContext(Dispatchers.IO) {
+        val builder = Request.Builder().url("http://127.0.0.1:$PORT$path").get()
+        if (apiKey.isNotBlank()) builder.header("Authorization", "Bearer $apiKey")
+        try {
+            client.newCall(builder.build()).execute().use { resp ->
+                if (!resp.isSuccessful) return@withContext null
+                val text = resp.body?.string() ?: return@withContext null
+                val obj = JSONObject(text)
+                if (obj.optBoolean("success")) obj.optJSONObject("data") else null
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private suspend fun patch(path: String, body: JSONObject): OpResult =
+        withContext(Dispatchers.IO) {
+            val builder = Request.Builder()
+                .url("http://127.0.0.1:$PORT$path")
+                .patch(body.toString().toRequestBody(JSON_MEDIA))
+            if (apiKey.isNotBlank()) builder.header("Authorization", "Bearer $apiKey")
+            try {
+                client.newCall(builder.build()).execute().use { resp ->
+                    val text = resp.body?.string() ?: return@withContext OpResult(false, null, "空响应")
+                    val obj = JSONObject(text)
+                    if (obj.optBoolean("success")) OpResult(true, obj.optJSONObject("data"), null)
+                    else OpResult(false, obj.optJSONObject("data"), obj.optString("error").ifBlank { "操作失败" })
+                }
+            } catch (e: Exception) {
+                OpResult(false, null, e.message ?: "网络错误")
+            }
+        }
 
     private suspend fun post(path: String, body: JSONObject): OpResult =
         withContext(Dispatchers.IO) {

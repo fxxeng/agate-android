@@ -4,44 +4,51 @@ import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.agate.android.data.AccountOps
 import dev.agate.android.data.GatewayRepository
-import dev.agate.android.data.ProviderPreset
 import dev.agate.android.data.PresetRegistry
 import dev.agate.android.data.dto.AccountDto
 import dev.agate.core.GatewayPrefs
@@ -49,16 +56,25 @@ import dev.agate.android.ui.components.AgateAvatar
 import dev.agate.android.ui.components.AgateBadge
 import dev.agate.android.ui.components.AgateSegmented
 import dev.agate.android.ui.components.BadgeTone
+import dev.agate.android.ui.theme.AgateType
 import dev.agate.android.ui.theme.agateColors
 import kotlinx.coroutines.launch
+import org.json.JSONObject
 
 /**
- * 提供商详情子页（M3-3R，对齐 v44 sub-providerdetail）：
- * 三档 seg —— 概览（家档案）/ 账号 · N（acct 块 + 启停/删除）/ 设置（危险区）。
- * v44 概览里的倍率/续期/策略覆盖等项依赖内核暂无的端点，本轮只列真实数据。
+ * 提供商详情（对齐 v44 sub-providerdetail）：
+ * - 概览：账号统计 / 余额查询 / 登录通道 / 启用开关 / 队列位置
+ * - 账号：逐账号余额与操作（上移 · 编辑备注 · 启停 · 删除）+ 添加账号 + 批量操作
+ * - 设置：测试连通性 / 删除提供商
+ *
+ * 真实数据源：/api/session.accounts（列表）、/api/accounts/usage（余额/积分）、
+ * /api/accounts/batch（启停/删除）、PATCH /api/accounts/{id}（改备注名）、
+ * /api/accounts/{id}/move（调序）。倍率/续期/限流明细等依赖内核暂未暴露的端点，
+ * 本页不臆造，统一在底部说明。
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ProviderDetailPage(providerId: String, onBack: () -> Unit) {
+fun ProviderDetailPage(providerId: String, onBack: () -> Unit, onAddAccount: () -> Unit = {}) {
     val C = agateColors()
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -68,37 +84,80 @@ fun ProviderDetailPage(providerId: String, onBack: () -> Unit) {
     val accounts = snap.accountList.filter { it.provider == providerId }
 
     var tab by remember { mutableStateOf(0) }
-    var opsAccount by remember { mutableStateOf<AccountDto?>(null) }
-    var confirmDeleteAll by remember { mutableStateOf(false) }
+    var busy by remember { mutableStateOf(false) }
+    var usageLabel = remember { mutableStateMapOf<String, String>() }   // id → 展示文案
+    var editing by remember { mutableStateOf<AccountDto?>(null) }
+    var editName by remember { mutableStateOf("") }
+    var confirmRemove by remember { mutableStateOf<AccountDto?>(null) }
+    var confirmRemoveAll by remember { mutableStateOf(false) }
 
     DisposableEffect(Unit) {
         AccountOps.configure(GatewayPrefs.apiKey(ctx))
         onDispose { }
     }
 
+    fun toast(m: String) = Toast.makeText(ctx, m, Toast.LENGTH_SHORT).show()
+
+    fun loadUsage(id: String? = null) {
+        if (busy) return
+        busy = true
+        scope.launch {
+            val data = AccountOps.usage(id)
+            busy = false
+            if (data == null) { toast("余额查询失败（网关未运行？）"); return@launch }
+            val arr = data.optJSONArray("results")
+            if (arr != null) {
+                for (i in 0 until arr.length()) {
+                    val row = arr.optJSONObject(i) ?: continue
+                    val aid = row.optString("id")
+                    if (aid.isBlank()) continue
+                    val err = row.optString("error")
+                    usageLabel[aid] = if (err.isNotBlank()) "查询失败：$err"
+                    else formatUsage(row.optJSONObject("usage")) ?: "已查询"
+                }
+            }
+            toast("余额已更新")
+        }
+    }
+
+    LaunchedEffect(accounts.map { it.id }) {
+        if (accounts.isNotEmpty()) loadUsage()
+    }
+
+    fun batchAction(action: String, ids: List<String> = accounts.map { it.id }, done: String) {
+        if (ids.isEmpty() || busy) return
+        busy = true
+        scope.launch {
+            val ok = AccountOps.batch(ids, action)
+            busy = false
+            toast(if (ok) done else "操作失败")
+            if (ok) GatewayRepository.refreshOnce()
+        }
+    }
+
     Column(Modifier.fillMaxSize().background(C.bg).statusBarsPadding().navigationBarsPadding()) {
-        // 顶栏：返回 + 家名（头像 + 名称）+ 右侧状态徽标
+        // ── 顶栏 ──
         Row(
-            Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 2.dp),
+            Modifier.fillMaxWidth().padding(start = 4.dp, end = 16.dp, top = 4.dp, bottom = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            IconButton(onClick = onBack) {
-                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回", tint = C.textMain)
-            }
-            preset?.let {
-                AgateAvatar(name = it.label, size = 32.dp, corner = 10.dp, letters = initialsOf(it.label))
-                Spacer(Modifier.width(10.dp))
-            }
+            Box(
+                Modifier.size(36.dp).clickable(onClick = onBack),
+                contentAlignment = Alignment.Center,
+            ) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回", tint = C.textMain) }
+            AgateAvatar(name = preset?.label ?: providerId, size = 32.dp, corner = 10.dp, letters = initialsOf(preset?.label ?: providerId))
+            Spacer(Modifier.width(10.dp))
             Text(
                 preset?.label ?: providerId,
-                color = C.textMain,
-                fontSize = 18.sp,
-                fontWeight = FontWeight.Bold,
+                color = C.textMain, fontSize = 18.sp, fontWeight = FontWeight.Bold,
                 modifier = Modifier.weight(1f),
             )
-            if (accounts.isNotEmpty()) {
-                val anyDown = accounts.any { !it.enabled }
-                if (!anyDown) AgateBadge("就绪", BadgeTone.GREEN) else AgateBadge("有停用", BadgeTone.AMBER)
+            val enabledCount = accounts.count { it.enabled }
+            when {
+                accounts.isEmpty() -> AgateBadge("无账号", BadgeTone.GRAY)
+                enabledCount == accounts.size -> AgateBadge("就绪", BadgeTone.GREEN)
+                enabledCount == 0 -> AgateBadge("全部停用", BadgeTone.RED)
+                else -> AgateBadge("$enabledCount/${accounts.size} 启用", BadgeTone.AMBER)
             }
         }
 
@@ -106,196 +165,477 @@ fun ProviderDetailPage(providerId: String, onBack: () -> Unit) {
             options = listOf("概览", "账号 · ${accounts.size}", "设置"),
             selected = tab,
             onSelect = { tab = it },
-            modifier = Modifier.padding(horizontal = 16.dp),
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
         )
 
         when (tab) {
-            0 -> LazyColumn(
-                Modifier.fillMaxSize().padding(horizontal = 16.dp),
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 12.dp),
-            ) {
-                item {
-                    Column(
-                        Modifier
-                            .fillMaxWidth()
-                            .background(C.cardBg, RoundedCornerShape(16.dp))
-                            .border(1.dp, C.border, RoundedCornerShape(16.dp))
-                            .padding(16.dp),
-                    ) {
-                        CfgRow("账号", "${accounts.size} 个 · ${accounts.count { it.enabled }} 启用", if (accounts.isEmpty()) null else accounts.size.toString())
-                        CfgRow("登录通道", preset?.let { channelLabel(it) } ?: "自定义 / 中转上游", null)
-                        CfgRow("接入说明", preset?.desc ?: "", null)
-                        CfgRow("提供商 ID", providerId, null)
+            0 -> OverviewTab(
+                accounts = accounts,
+                usageLabel = usageLabel,
+                busy = busy,
+                presetLabel = preset?.desc ?: "自定义 / 中转上游",
+                channel = preset?.let { channelLabel(it) } ?: "自定义",
+                providerId = providerId,
+                onQueryUsage = { loadUsage() },
+                onToggleAll = { enable -> batchAction(if (enable) "enable" else "disable", done = if (enable) "已全部启用" else "已全部禁用") },
+                onJumpToAccounts = { tab = 1 },
+            )
+            1 -> AccountsTab(
+                accounts = accounts,
+                usageLabel = usageLabel,
+                busy = busy,
+                onQueryUsage = { loadUsage() },
+                onMoveUp = { acc ->
+                    if (!busy) {
+                        busy = true
+                        scope.launch {
+                            val r = AccountOps.move(acc.id, up = true)
+                            busy = false
+                            toast(if (r.ok) "已上移" else (r.error ?: "已到顶"))
+                            GatewayRepository.refreshOnce()
+                        }
                     }
-                }
-                item {
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        "倍率 / 凭证续期 / 策略覆盖等待内核对应端点接入后开放",
-                        color = C.textDim,
-                        fontSize = 12.sp,
-                    )
-                }
-            }
-            1 -> LazyColumn(
-                Modifier.fillMaxSize().padding(horizontal = 16.dp),
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 12.dp),
-            ) {
-                if (accounts.isEmpty()) {
-                    item {
-                        Text("该家还没有账号 · 回提供商页点「+ 添加」", color = C.textSub, fontSize = 13.sp)
+                },
+                onEdit = { acc -> editing = acc; editName = acc.displayName },
+                onToggle = { acc -> batchAction(if (acc.enabled) "disable" else "enable", listOf(acc.id), if (acc.enabled) "已禁用" else "已启用") },
+                onDelete = { acc -> confirmRemove = acc },
+                onAdd = onAddAccount,
+                onEnableAll = { batchAction("enable", done = "已全部启用") },
+                onDisableAll = { batchAction("disable", done = "已全部禁用") },
+                onDeleteAll = { confirmRemoveAll = true },
+            )
+            else -> SettingsTab(
+                accounts = accounts,
+                busy = busy,
+                onTest = {
+                    val first = accounts.firstOrNull()
+                    if (first == null) {
+                        toast("该家没有账号可测")
+                    } else if (!busy) {
+                        busy = true
+                        scope.launch {
+                            val data = AccountOps.usage(first.id)
+                            busy = false
+                            val row = data?.optJSONArray("results")?.optJSONObject(0)
+                            val err = row?.optString("error").orEmpty()
+                            toast(
+                                if (row != null && err.isBlank())
+                                    "连通正常 · ${formatUsage(row.optJSONObject("usage")) ?: "已响应"}"
+                                else "连通失败：${err.ifBlank { "无响应" }}"
+                            )
+                        }
                     }
-                }
-                items(accounts, key = { it.id }) { acc ->
-                    DetailAcctRow(
-                        acc = acc,
-                        rank = accounts.indexOf(acc) + 1,
-                        onOpen = { opsAccount = acc },
-                    )
-                    Spacer(Modifier.height(8.dp))
-                }
-            }
-            else -> LazyColumn(
-                Modifier.fillMaxSize().padding(horizontal = 16.dp),
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 12.dp),
-            ) {
-                item {
-                    Column(
-                        Modifier
-                            .fillMaxWidth()
-                            .background(C.cardBg, RoundedCornerShape(16.dp))
-                            .border(1.dp, C.border, RoundedCornerShape(16.dp))
-                            .padding(16.dp),
-                    ) {
-                        Text("危险区", color = C.red, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                        Spacer(Modifier.height(6.dp))
-                        Text(
-                            "删除该提供商下全部 ${accounts.size} 个账号（凭证一并清除，不可恢复）",
-                            color = C.textSub,
-                            fontSize = 12.sp,
-                        )
-                        Spacer(Modifier.height(10.dp))
-                        Text(
-                            "删除全部账号",
-                            color = C.red,
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            modifier = Modifier
-                                .background(C.redBg, RoundedCornerShape(10.dp))
-                                .clickable(enabled = accounts.isNotEmpty()) { confirmDeleteAll = true }
-                                .padding(horizontal = 14.dp, vertical = 10.dp),
-                        )
+                },
+                onDeleteProvider = { confirmRemoveAll = true },
+                onRefreshExpiring = {
+                    if (!busy) {
+                        busy = true
+                        scope.launch {
+                            val r = AccountOps.refreshExpiring()
+                            busy = false
+                            toast(if (r.ok) "已触发凭证刷新" else (r.error ?: "刷新失败"))
+                            GatewayRepository.refreshOnce()
+                        }
                     }
-                }
-            }
+                },
+            )
         }
     }
 
-    // 单账号操作（启停 / 删除）
-    opsAccount?.let { acc ->
+    // ── 编辑备注名 ──
+    editing?.let { acc ->
         AlertDialog(
-            onDismissRequest = { opsAccount = null },
-            title = { Text(acc.displayName) },
+            onDismissRequest = { editing = null },
+            title = { Text("编辑账号") },
             text = {
-                Text(
-                    if (acc.enabled) "已启用 · 转发选路参与排队" else "已禁用 · 不参与转发",
-                    fontSize = 13.sp,
-                )
+                Column {
+                    Text("备注名", fontSize = 12.sp, color = agateColors().textSub)
+                    Spacer(Modifier.height(6.dp))
+                    OutlinedTextField(value = editName, onValueChange = { editName = it }, singleLine = true)
+                }
             },
             confirmButton = {
                 TextButton(onClick = {
                     val target = acc
-                    opsAccount = null
+                    editing = null
                     scope.launch {
-                        if (AccountOps.batch(listOf(target.id), if (target.enabled) "disable" else "enable")) {
-                            Toast.makeText(ctx, if (target.enabled) "已禁用" else "已启用", Toast.LENGTH_SHORT).show()
-                            GatewayRepository.refreshOnce()
-                        } else Toast.makeText(ctx, "操作失败", Toast.LENGTH_SHORT).show()
+                        val r = AccountOps.update(target.id, JSONObject().put("name", editName.trim()))
+                        toast(if (r.ok) "已保存" else (r.error ?: "保存失败"))
+                        if (r.ok) GatewayRepository.refreshOnce()
                     }
-                }) { Text(if (acc.enabled) "禁用" else "启用") }
+                }) { Text("保存") }
             },
-            dismissButton = {
-                Row {
-                    TextButton(onClick = { opsAccount = null }) { Text("取消") }
-                    TextButton(onClick = {
-                        val target = acc
-                        opsAccount = null
-                        scope.launch {
-                            if (AccountOps.batch(listOf(target.id), "remove")) {
-                                Toast.makeText(ctx, "已删除账号", Toast.LENGTH_SHORT).show()
-                                GatewayRepository.refreshOnce()
-                            } else Toast.makeText(ctx, "删除失败", Toast.LENGTH_SHORT).show()
-                        }
-                    }) { Text("删除", color = C.red) }
-                }
-            },
+            dismissButton = { TextButton(onClick = { editing = null }) { Text("取消") } },
         )
     }
 
-    if (confirmDeleteAll) {
+    // ── 删除单账号 ──
+    confirmRemove?.let { acc ->
         AlertDialog(
-            onDismissRequest = { confirmDeleteAll = false },
-            title = { Text("删除全部账号") },
-            text = { Text("将删除 ${preset?.label} 下 ${accounts.size} 个账号，不可恢复。", fontSize = 13.sp) },
+            onDismissRequest = { confirmRemove = null },
+            title = { Text("删除账号") },
+            text = { Text("删除「${acc.displayName}」？登录态一并移除，不可恢复。", fontSize = 13.sp) },
             confirmButton = {
                 TextButton(onClick = {
-                    confirmDeleteAll = false
+                    val target = acc
+                    confirmRemove = null
+                    batchAction("remove", listOf(target.id), "已删除账号")
+                }) { Text("删除", color = C.red) }
+            },
+            dismissButton = { TextButton(onClick = { confirmRemove = null }) { Text("取消") } },
+        )
+    }
+
+    // ── 删除提供商（全部账号）──
+    if (confirmRemoveAll) {
+        AlertDialog(
+            onDismissRequest = { confirmRemoveAll = false },
+            title = { Text("删除提供商") },
+            text = { Text("将删除「${preset?.label ?: providerId}」下全部 ${accounts.size} 个账号，凭证一并清除，不可恢复。", fontSize = 13.sp) },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmRemoveAll = false
+                    if (accounts.isEmpty()) { onBack(); return@TextButton }
+                    busy = true
                     scope.launch {
-                        if (AccountOps.batch(accounts.map { it.id }, "remove")) {
-                            Toast.makeText(ctx, "已删除全部账号", Toast.LENGTH_SHORT).show()
-                            GatewayRepository.refreshOnce()
-                            onBack()
-                        } else Toast.makeText(ctx, "删除失败", Toast.LENGTH_SHORT).show()
+                        val ok = AccountOps.batch(accounts.map { it.id }, "remove")
+                        busy = false
+                        toast(if (ok) "已删除该提供商全部账号" else "删除失败")
+                        if (ok) { GatewayRepository.refreshOnce(); onBack() }
                     }
                 }) { Text("删除", color = C.red) }
             },
-            dismissButton = { TextButton(onClick = { confirmDeleteAll = false }) { Text("取消") } },
+            dismissButton = { TextButton(onClick = { confirmRemoveAll = false }) { Text("取消") } },
         )
     }
 }
 
-/** v44 .cfg-row：左 name + desc，右 value（chip 风）。 */
+/* ───────────── 概览 ───────────── */
 @Composable
-private fun CfgRow(name: String, desc: String, value: String?) {
+private fun OverviewTab(
+    accounts: List<AccountDto>,
+    usageLabel: Map<String, String>,
+    busy: Boolean,
+    presetLabel: String,
+    channel: String,
+    providerId: String,
+    onQueryUsage: () -> Unit,
+    onToggleAll: (Boolean) -> Unit,
+    onJumpToAccounts: () -> Unit,
+) {
     val C = agateColors()
-    Row(
-        Modifier.fillMaxWidth().padding(vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Column(Modifier.weight(1f)) {
-            Text(name, color = C.textMain, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-            Text(desc, color = C.textSub, fontSize = 12.sp)
-        }
-        if (value != null) {
-            Box(
-                Modifier
-                    .background(C.insetBg, RoundedCornerShape(999.dp))
-                    .padding(horizontal = 12.dp, vertical = 5.dp),
+    val allEnabled = accounts.isNotEmpty() && accounts.all { it.enabled }
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp)) {
+        Spacer(Modifier.height(10.dp))
+
+        Card {
+            Text("概览", color = C.textMain, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.height(6.dp))
+            CfgRow(
+                "账号",
+                "${accounts.size} 个 · ${accounts.count { it.enabled }} 启用",
+                if (accounts.isEmpty()) null else accounts.size.toString(),
+            )
+            CfgRow(
+                "余额 / 积分",
+                if (accounts.isEmpty()) "无账号" else if (usageLabel.isEmpty()) "点右侧查询" else "已查询 ${usageLabel.size}/${accounts.size}",
+                if (accounts.isEmpty()) null else if (busy) "查询中…" else "查询",
+                onValueClick = onQueryUsage,
+            )
+            CfgRow("登录通道", channel, null)
+            CfgRow("接入说明", presetLabel, null)
+            CfgRow("提供商 ID", providerId, null)
+            Row(
+                Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(value, color = C.accent, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                Column(Modifier.weight(1f)) {
+                    Text("启用提供商", color = C.textMain, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        if (allEnabled) "参与选号 · 关闭后本家账号全部停用" else "当前有账号停用 · 打开即全部启用",
+                        color = C.textSub, fontSize = 12.sp,
+                    )
+                }
+                Switch(checked = allEnabled, enabled = accounts.isNotEmpty(), onCheckedChange = onToggleAll)
+            }
+        }
+
+        Spacer(Modifier.height(12.dp))
+        Card {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("队列位置", color = C.textMain, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                Text(
+                    "查看账号 ❯",
+                    color = C.accent, fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.clickable(onClick = onJumpToAccounts),
+                )
+            }
+            Spacer(Modifier.height(6.dp))
+            if (accounts.isEmpty()) {
+                Text("该家还没有账号", color = C.textSub, fontSize = 12.sp)
+            } else {
+                accounts.take(6).forEachIndexed { i, acc ->
+                    Row(Modifier.fillMaxWidth().padding(vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text("#${i + 1}", color = C.textDim, fontSize = 12.sp, modifier = Modifier.width(34.dp))
+                        Text(acc.displayName, color = C.textMain, fontSize = 13.sp, modifier = Modifier.weight(1f))
+                        AgateBadge(if (acc.enabled) "出战" else "跳过", if (acc.enabled) BadgeTone.GREEN else BadgeTone.GRAY)
+                    }
+                }
+            }
+        }
+
+        Spacer(Modifier.height(10.dp))
+        Text(
+            "倍率 / 凭证续期 / 策略覆盖 / 限流明细依赖内核暂未暴露的端点，本页不展示占位数据。",
+            color = C.textDim, fontSize = 11.sp,
+        )
+        Spacer(Modifier.height(24.dp))
+    }
+}
+
+/* ───────────── 账号 ───────────── */
+@Composable
+private fun AccountsTab(
+    accounts: List<AccountDto>,
+    usageLabel: Map<String, String>,
+    busy: Boolean,
+    onQueryUsage: () -> Unit,
+    onMoveUp: (AccountDto) -> Unit,
+    onEdit: (AccountDto) -> Unit,
+    onToggle: (AccountDto) -> Unit,
+    onDelete: (AccountDto) -> Unit,
+    onAdd: () -> Unit,
+    onEnableAll: () -> Unit,
+    onDisableAll: () -> Unit,
+    onDeleteAll: () -> Unit,
+) {
+    val C = agateColors()
+    LazyColumn(
+        Modifier.fillMaxSize().padding(horizontal = 16.dp),
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 10.dp),
+    ) {
+        item {
+            Card {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("账号列表", color = C.textMain, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                    SmallAction(if (busy) "查询中…" else "刷新余额", primary = false, enabled = !busy && accounts.isNotEmpty(), onClick = onQueryUsage)
+                }
+                Spacer(Modifier.height(8.dp))
+                if (accounts.isEmpty()) {
+                    Text("该家还没有账号 · 点下方「+ 添加账号」", color = C.textSub, fontSize = 13.sp)
+                }
+                accounts.forEachIndexed { i, acc ->
+                    Spacer(Modifier.height(8.dp))
+                    AccountBlock(
+                        acc = acc,
+                        rank = i + 1,
+                        usage = usageLabel[acc.id],
+                        busy = busy,
+                        onMoveUp = { onMoveUp(acc) },
+                        onEdit = { onEdit(acc) },
+                        onToggle = { onToggle(acc) },
+                        onDelete = { onDelete(acc) },
+                    )
+                }
+                Spacer(Modifier.height(10.dp))
+                SmallAction("+ 添加账号", primary = true, enabled = true, modifier = Modifier.fillMaxWidth(), onClick = onAdd)
+            }
+        }
+        item {
+            Spacer(Modifier.height(12.dp))
+            Card {
+                Text("批量操作", color = C.textMain, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                    SmallAction("全部启用", enabled = !busy && accounts.isNotEmpty(), onClick = onEnableAll, modifier = Modifier.weight(1f))
+                    SmallAction("全部禁用", enabled = !busy && accounts.isNotEmpty(), onClick = onDisableAll, modifier = Modifier.weight(1f))
+                }
+                Spacer(Modifier.height(8.dp))
+                SmallAction("删除全部账号", enabled = !busy && accounts.isNotEmpty(), onClick = onDeleteAll, modifier = Modifier.fillMaxWidth(), danger = true)
             }
         }
     }
 }
 
-/** v44 .acct 块（详情页用：序号 + 名称 + 状态徽标，点击弹操作）。 */
 @Composable
-private fun DetailAcctRow(acc: AccountDto, rank: Int, onOpen: () -> Unit) {
+private fun AccountBlock(
+    acc: AccountDto,
+    rank: Int,
+    usage: String?,
+    busy: Boolean,
+    onMoveUp: () -> Unit,
+    onEdit: () -> Unit,
+    onToggle: () -> Unit,
+    onDelete: () -> Unit,
+) {
     val C = agateColors()
     Column(
         Modifier
             .fillMaxWidth()
             .background(C.insetBg, RoundedCornerShape(12.dp))
-            .clickable(onClick = onOpen)
             .padding(horizontal = 12.dp, vertical = 10.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("#$rank", color = C.textDim, fontSize = 12.sp)
             Spacer(Modifier.width(8.dp))
             Text(acc.displayName, color = C.textMain, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
-            if (acc.enabled) AgateBadge("就绪", BadgeTone.GREEN) else AgateBadge("停用", BadgeTone.GRAY)
+            when {
+                !acc.enabled -> AgateBadge("停用", BadgeTone.GRAY)
+                !acc.hasCredentials -> AgateBadge("缺凭证", BadgeTone.RED)
+                acc.lowBalance -> AgateBadge("余额低", BadgeTone.AMBER)
+                else -> AgateBadge("就绪", BadgeTone.GREEN)
+            }
         }
-        Spacer(Modifier.height(6.dp))
-        Text("余额与用量待额度端点接入 · 点此启停或删除", color = C.textDim, fontSize = 11.sp)
+        Spacer(Modifier.height(4.dp))
+        Text(
+            usage ?: "余额未查询",
+            color = if (usage?.startsWith("查询失败") == true) C.red else C.textSub,
+            fontSize = 12.sp,
+        )
+        Spacer(Modifier.height(8.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            SmallAction("上移", false, !busy, onClick = onMoveUp)
+            SmallAction("编辑", false, !busy, onClick = onEdit)
+            SmallAction(if (acc.enabled) "停用" else "启用", false, !busy, onClick = onToggle)
+            SmallAction("删除", false, !busy, onClick = onDelete, danger = true)
+        }
     }
 }
+
+/* ───────────── 设置 ───────────── */
+@Composable
+private fun SettingsTab(
+    accounts: List<AccountDto>,
+    busy: Boolean,
+    onTest: () -> Unit,
+    onDeleteProvider: () -> Unit,
+    onRefreshExpiring: () -> Unit,
+) {
+    val C = agateColors()
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp)) {
+        Spacer(Modifier.height(10.dp))
+        Card {
+            Text("操作", color = C.textMain, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.height(6.dp))
+            Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("测试连通性", color = C.textMain, fontSize = 14.sp, modifier = Modifier.weight(1f))
+                SmallAction(if (busy) "测试中…" else "测试", false, !busy && accounts.isNotEmpty(), onClick = onTest)
+            }
+            Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("刷新临期凭证", color = C.textMain, fontSize = 14.sp, modifier = Modifier.weight(1f))
+                SmallAction("刷新", false, !busy, onClick = onRefreshExpiring)
+            }
+            Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("删除提供商", color = C.textMain, fontSize = 14.sp)
+                    Text("删除该家全部账号，不可恢复", color = C.textSub, fontSize = 12.sp)
+                }
+                SmallAction("删除", false, !busy, onClick = onDeleteProvider, danger = true)
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+        Text(
+            "本家专有设置（伪装头 / 设备指纹 / 免费池等）按家差异较大，后续按提供商逐个接入。",
+            color = C.textDim, fontSize = 11.sp,
+        )
+        Spacer(Modifier.height(24.dp))
+    }
+}
+
+/* ───────────── 小件 ───────────── */
+@Composable
+private fun Card(content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit) {
+    val C = agateColors()
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(C.cardBg, RoundedCornerShape(18.dp))
+            .border(1.dp, C.border, RoundedCornerShape(18.dp))
+            .padding(14.dp),
+        content = content,
+    )
+}
+
+@Composable
+private fun CfgRow(
+    name: String,
+    desc: String,
+    value: String?,
+    onValueClick: (() -> Unit)? = null,
+) {
+    val C = agateColors()
+    Row(Modifier.fillMaxWidth().padding(vertical = 9.dp), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text(name, color = C.textMain, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+            if (desc.isNotBlank()) Text(desc, color = C.textSub, fontSize = 12.sp)
+        }
+        if (value != null) {
+            Text(
+                value,
+                color = C.accent, fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
+                modifier = Modifier
+                    .background(C.accent.copy(alpha = 0.10f), RoundedCornerShape(999.dp))
+                    .then(if (onValueClick != null) Modifier.clickable(onClick = onValueClick) else Modifier)
+                    .padding(horizontal = 12.dp, vertical = 5.dp),
+            )
+        }
+    }
+}
+
+@Composable
+private fun SmallAction(
+    text: String,
+    primary: Boolean = false,
+    enabled: Boolean = true,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    danger: Boolean = false,
+) {
+    val C = agateColors()
+    val fg = when {
+        !enabled -> C.textDim
+        danger -> C.red
+        primary -> C.onAccent
+        else -> C.textMain
+    }
+    val bg = when {
+        primary && enabled -> C.accent
+        danger && enabled -> C.redBg
+        else -> C.btnBg
+    }
+    Box(
+        modifier
+            .background(bg, RoundedCornerShape(9.dp))
+            .then(if (enabled) Modifier.clickable(onClick = onClick) else Modifier)
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(text, color = fg, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, style = AgateType.BodyS)
+    }
+}
+
+/**
+ * 把 /api/accounts/usage 的 usage 对象格式化成一行文案。
+ * 各家字段不同，按候选键取值；全无则返回 null（调用方显示「已查询」）。
+ */
+private fun formatUsage(usage: JSONObject?): String? {
+    if (usage == null) return null
+    fun d(vararg keys: String): Double? =
+        keys.firstNotNullOfOrNull { k -> if (usage.has(k)) usage.optDouble(k, Double.NaN).takeIf { !it.isNaN() } else null }
+
+    val left = d("left", "remain", "remaining", "balance", "available", "total_granted")
+    val total = d("total", "quota", "granted")
+    val used = d("used", "usage", "consumed")
+    return when {
+        total != null && used != null && total > 0 ->
+            "剩余 ${fmtNum(total - used)} / ${fmtNum(total)}（${((total - used) / total * 100).toInt()}%）"
+        left != null && total != null && total > 0 ->
+            "剩余 ${fmtNum(left)} / ${fmtNum(total)}（${(left / total * 100).toInt()}%）"
+        left != null -> "剩余 ${fmtNum(left)}"
+        used != null -> "已用 ${fmtNum(used)}"
+        else -> null
+    }
+}
+
+private fun fmtNum(v: Double): String =
+    if (v >= 1000) String.format("%,.0f", v) else String.format("%.2f", v).trimEnd('0').trimEnd('.')
