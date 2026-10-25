@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 玛瑙切面环带（单色剪影）：通知栏 smallIcon / 磁贴共用，系统按状态自动染色 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="24" android:viewportHeight="24">
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:fillType="evenOdd"
+        android:pathData="M12,2.2 L20.2,6.9 L20.2,17.1 L12,21.8 L3.8,17.1 L3.8,6.9 Z M12,6.1 L16.8,8.85 L16.8,15.15 L12,17.9 L7.2,15.15 L7.2,8.85 Z" />
+</vector>

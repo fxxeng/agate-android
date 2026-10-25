@@ -261,7 +261,7 @@ class AgateForegroundService : Service() {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
         val builder = Notification.Builder(this, CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setSmallIcon(R.drawable.ic_agate_logo)
             .setContentTitle("Agate")
             .setContentText(text)
             .setOngoing(true)
