@@ -24,6 +24,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -61,8 +62,8 @@ fun ProviderDetailPage(providerId: String, onBack: () -> Unit) {
     val scope = rememberCoroutineScope()
     val preset = PresetRegistry.ALL.find { it.id == providerId }
 
-    val snapshot by GatewayRepository.snapshot
-    val accounts = snapshot?.accountList?.filter { it.provider == providerId } ?: emptyList()
+    val snap by GatewayRepository.snapshot.collectAsState()
+    val accounts = snap.accountList.filter { it.provider == providerId }
 
     var tab by remember { mutableStateOf(0) }
     var opsAccount by remember { mutableStateOf<AccountDto?>(null) }

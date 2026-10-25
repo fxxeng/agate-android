@@ -24,6 +24,7 @@ import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -81,8 +82,7 @@ fun ProviderPage(
     val C = agateColors()
     val ctx = LocalContext.current
 
-    val snapshot by GatewayRepository.snapshot
-    val snap = snapshot
+    val snap by GatewayRepository.snapshot.collectAsState()
 
     DisposableEffect(Unit) {
         GatewayRepository.configure(GatewayPrefs.apiKey(ctx))
@@ -92,8 +92,8 @@ fun ProviderPage(
 
     // ── 分组：有账号的家按「偏好顺序 → PresetRegistry 顺序」；无账号家不出现 ──
     val savedOrder = remember { GatewayPrefs.providerOrder(ctx) }
-    val groups = remember(snap?.accountList) {
-        val byProvider = snap?.accountList?.groupBy { it.provider } ?: emptyMap()
+    val groups = remember(snap.accountList) {
+        val byProvider = snap.accountList?.groupBy { it.provider } ?: emptyMap()
         val seq = ArrayList<ProviderGroupView>(byProvider.size)
         val seen = HashSet<String>()
         savedOrder.forEach { pid ->
@@ -268,7 +268,7 @@ fun ProviderPage(
                 items(visible, key = { it.providerId }) { g ->
                     ProviderCard(
                         g = g,
-                        heads = snap?.currentAccountIds ?: emptyMap(),
+                        heads = snap.currentAccountIds,
                         onOpenDetail = { onOpenDetail(g.providerId) },
                     )
                     Spacer(Modifier.height(10.dp))
