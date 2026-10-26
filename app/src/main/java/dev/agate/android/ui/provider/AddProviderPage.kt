@@ -4,6 +4,7 @@ import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.ui.draw.alpha
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -238,6 +239,7 @@ fun AddProviderPage(onBack: () -> Unit, initialProviderId: String? = null) {
                     // 数据来自 GatewayPrefs.recentProviders —— 每次添加成功时 push。
                     val recents = GatewayPrefs.recentProviders(ctx)
                         .mapNotNull { id -> PresetRegistry.ALL.find { it.id == id } }
+                        .filter { it.disabledNote == null }
                         .take(4)
                     if (recents.isNotEmpty()) {
                         Spacer(Modifier.height(10.dp))
@@ -612,8 +614,13 @@ private fun ProviderPickerSheet(
                     .padding(bottom = 20.dp),
             ) {
                 filtered.forEach { p ->
+                    val disabled = p.disabledNote != null
                     Row(
-                        Modifier.fillMaxWidth().clickable { onPick(p) }.padding(vertical = 10.dp),
+                        Modifier
+                            .fillMaxWidth()
+                            .alpha(if (disabled) 0.45f else 1f)
+                            .clickable(enabled = !disabled) { onPick(p) }
+                            .padding(vertical = 10.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         AgateProviderAvatar(providerId = p.id, label = p.label, size = 38.dp, corner = 12.dp)
@@ -621,6 +628,9 @@ private fun ProviderPickerSheet(
                         Column(Modifier.weight(1f)) {
                             Text(p.label, color = C.textMain, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
                             Text(p.desc, color = C.textSub, fontSize = 12.sp)
+                            if (disabled) {
+                                Text(p.disabledNote!!, color = C.textSub, fontSize = 11.sp)
+                            }
                         }
                         if (p.id == currentId) {
                             Text("✓", color = C.accent, fontSize = 16.sp, fontWeight = FontWeight.Bold)

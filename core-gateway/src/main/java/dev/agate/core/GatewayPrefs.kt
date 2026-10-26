@@ -22,6 +22,7 @@ object GatewayPrefs {
     private const val KEY_PROVIDER_ORDER = "provider_order"
     private const val KEY_RECENT_PROVIDERS = "recent_providers"
     private const val KEY_WIZARD_DISMISSED = "wizard_dismissed"
+    private const val KEY_THEME_MODE = "theme_mode"
 
     /** 局域网监听（0.0.0.0 + 内核 panel gate + fail-closed）。默认关。 */
     /**
@@ -60,6 +61,14 @@ object GatewayPrefs {
 
     /** 首页新手向导卡是否被 ✕ 关闭（v44 obDismiss 语义，跨重启记住）。 */
     fun wizardDismissed(ctx: Context): Boolean = prefs(ctx).getBoolean(KEY_WIZARD_DISMISSED, false)
+
+    /** App 主题档（F13）：存壳层 AgateThemeMode.name，默认跟随系统；枚举映射在壳层。 */
+    fun themeMode(ctx: Context): String =
+        prefs(ctx).getString(KEY_THEME_MODE, "FOLLOW_SYSTEM") ?: "FOLLOW_SYSTEM"
+
+    fun setThemeMode(ctx: Context, value: String) {
+        prefs(ctx).edit().putString(KEY_THEME_MODE, value).apply()
+    }
 
     fun setWizardDismissed(ctx: Context, value: Boolean) {
         prefs(ctx).edit().putBoolean(KEY_WIZARD_DISMISSED, value).apply()

@@ -539,7 +539,7 @@ impl BillingService {
                 "msg": "会话缺少账号 uid，无法上报活跃",
             });
         }
-        let conversation_id = format!("agate-{}", new_request_id());
+        let conversation_id = format!("agent2api-{}", new_request_id());
         let now = logging::now_ms();
         let event = json!({
             "eventCode": "chat_request_send",

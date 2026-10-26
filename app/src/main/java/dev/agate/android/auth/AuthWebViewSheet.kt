@@ -2,6 +2,7 @@ package dev.agate.android.auth
 
 import android.annotation.SuppressLint
 import android.webkit.CookieManager
+import android.webkit.WebStorage
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -173,6 +174,13 @@ private fun WebViewBlock(
                 settings.domStorageEnabled = true
                 CookieManager.getInstance().setAcceptCookie(true)
                 CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
+                // F4 会话隔离：每次登录用全新会话，清掉上一家/上一账号的
+                // Cookie 与站点存储，防止串号。removeAllCookies 异步，但
+                // 登录页首个网络请求前通常已完成，浏览器态对时序不敏感。
+                CookieManager.getInstance().removeAllCookies(null)
+                CookieManager.getInstance().removeSessionCookies(null)
+                CookieManager.getInstance().flush()
+                WebStorage.getInstance().deleteAllData()
                 webViewClient = object : WebViewClient() {
                     override fun shouldOverrideUrlLoading(
                         view: WebView,

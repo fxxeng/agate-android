@@ -42,6 +42,11 @@ data class ProviderPreset(
     val pasteMultiline: Boolean = false,
     /** 能力标签：是否支持自动签到（来自内核 CHECKIN_PROVIDERS）。 */
     val supportsCheckin: Boolean = false,
+    /**
+     * 非空 = 整家置灰不可添加（F12）。如 Kuku：换票引擎是官方 Windows
+     * 客户端的 genflowengine.dll，Android 无从加载 → 入口置灰，已有账号不动。
+     */
+    val disabledNote: String? = null,
 )
 
 object PresetRegistry {
@@ -141,6 +146,7 @@ object PresetRegistry {
             listOf(AuthChannel.PASTE, AuthChannel.IMPORT_FILE),
             pasteHint = "Cookie 整串（含 BDUSS 与 STOKEN）", pasteMultiline = true,
             supportsCheckin = true,
+            disabledNote = "引擎依赖官方 Windows 客户端，Android 端暂不可用",
         ),
         // MonkeyCode：内核不支持网页登录，只能粘贴 session
         ProviderPreset(

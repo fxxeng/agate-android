@@ -35,13 +35,19 @@ pub fn now_ms() -> u64 {
 /// 序列化在调用线程完成，订阅者拿到的就是可直接写进 SSE data 帧的
 /// 完整对象（含 type / tsMs）。
 pub fn publish(kind: &str, data: Value) {
+    // F16：先看有没有订阅者，没有（无 SSE 连接，Core 态常态）直接返回，
+    // 跳过 JSON 序列化 —— publish 在无人监听时才是零成本。
+    let tx = sender();
+    if tx.receiver_count() == 0 {
+        return;
+    }
     let payload = json!({
         "type": kind,
         "tsMs": now_ms(),
         "data": data,
     });
     // 无订阅者 = Err(SendError)：正常态（App 不在前台时没人听），忽略
-    let _ = sender().send(payload.to_string());
+    let _ = tx.send(payload.to_string());
 }
 
 /// 订阅事件流（每个 SSE 连接一份 Receiver）。

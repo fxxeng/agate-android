@@ -11,6 +11,7 @@ import androidx.compose.runtime.setValue
 import dev.agate.android.navigation.AgateNavHost
 import dev.agate.android.ui.theme.AgateTheme
 import dev.agate.android.ui.theme.AgateThemeMode
+import dev.agate.core.GatewayPrefs
 
 /**
  * M2 起为 Compose 骨架：AgateTheme（三档主题）+ AgateNavHost
@@ -22,11 +23,21 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         requestNotificationPermission()
         setContent {
-            var themeMode by rememberSaveable { mutableStateOf(AgateThemeMode.FOLLOW_SYSTEM) }
+            // F13：主题档持久化到 GatewayPrefs（冷启动读档；rememberSaveable
+            // 兜底进程内配置变更）。脏值（老版本枚举名变更等）回退跟随系统。
+            var themeMode by rememberSaveable {
+                mutableStateOf(
+                    runCatching { AgateThemeMode.valueOf(GatewayPrefs.themeMode(this@MainActivity)) }
+                        .getOrDefault(AgateThemeMode.FOLLOW_SYSTEM)
+                )
+            }
             AgateTheme(mode = themeMode) {
                 AgateNavHost(
                     themeMode = themeMode,
-                    onThemeModeChange = { themeMode = it },
+                    onThemeModeChange = {
+                        themeMode = it
+                        GatewayPrefs.setThemeMode(this@MainActivity, it.name)
+                    },
                 )
             }
         }
