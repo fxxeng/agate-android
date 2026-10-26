@@ -247,6 +247,8 @@ pub enum UpstreamResponse {
     /// 走翻译层的理由同上：账号轮换、限额冷却、退避重试、usage 记账与取消处理
     /// 全部留在编排层，只有字节形态在翻译器里变。
     AntigravityGemini,
+    /// 智谱清言：SSE 帧混着增量与收尾全文快照（见 `providers::chatglm::plan`）
+    ChatglmSnapshot,
 }
 
 /// 上游错误分类（架构文档 §4.2；三个动作的语义见模块头）。
@@ -1109,6 +1111,7 @@ pub fn adapter_for(kind: ProviderKind) -> &'static dyn ProviderAdapter {
         // Qoder 的两个地区是两个 provider、两个实例（同一份实现的按地区
         // 参数化，见 `qoder::endpoints::Region` 与 `qoder::mod` 的模块头）
         ProviderKind::QoderIntl => &super::qoder::QODER_INTL_ADAPTER,
+        ProviderKind::Chatglm => &super::chatglm::CHATGLM_ADAPTER,
         ProviderKind::CodeArts => &super::codearts::CODEARTS_ADAPTER,
         // Cline 的两个额度池是两个 provider、两个实例（同一份实现的按池
         // 参数化，见 `cline::adapter` 的模块头）
