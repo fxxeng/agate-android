@@ -82,6 +82,9 @@ fun QuotaCenterPage(
     var expiries by remember { mutableStateOf<Map<String, Expiry>>(emptyMap()) }
     // 原始 usage JSON（诊断用）：解析不出数时，展开能看到内核到底回了什么
     var raws by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
+    // 逐份额度包：workbuddy 的 credits[]、trae/officeace 的 credits[]…
+    // 汇总读数回答「还剩多少」，明细回答「哪几份、各剩多少、什么时候作废」
+    var packs by remember { mutableStateOf<Map<String, List<QuotaPack>>>(emptyMap()) }
     var skipped by remember { mutableStateOf(0) }
     var busy by remember { mutableStateOf(false) }
     var hint by remember { mutableStateOf<String?>(null) }
@@ -102,6 +105,7 @@ fun QuotaCenterPage(
         val out = HashMap<String, AcctMetric>()
         val exp = HashMap<String, Expiry>()
         val raw = HashMap<String, String>()
+        val pk = HashMap<String, List<QuotaPack>>()
         data.optJSONArray("results")?.let { arr ->
             for (i in 0 until arr.length()) {
                 val row = arr.optJSONObject(i) ?: continue
@@ -118,12 +122,14 @@ fun QuotaCenterPage(
                 if (usage != null) {
                     extractExpiry(usage)?.let { exp[id] = it }
                     raw[id] = usage.toString()
+                    parsePacks(usage).takeIf { it.isNotEmpty() }?.let { pk[id] = it }
                 }
             }
         }
         metrics = out
         expiries = exp
         raws = raw
+        packs = pk
         skipped = data.optInt("skipped", 0)
         lastAt = android.text.format.DateFormat.format("HH:mm", System.currentTimeMillis()).toString()
     }
@@ -248,6 +254,7 @@ fun QuotaCenterPage(
                         metrics = metrics,
                         expiries = expiries,
                         raws = raws,
+                        packs = packs,
                         expanded = provider in expanded,
                         onToggle = {
                             expanded = if (provider in expanded) expanded - provider else expanded + provider
@@ -276,6 +283,7 @@ private fun ProviderQuotaCard(
     metrics: Map<String, AcctMetric>,
     expiries: Map<String, Expiry>,
     raws: Map<String, String>,
+    packs: Map<String, List<QuotaPack>>,
     expanded: Boolean,
     onToggle: () -> Unit,
     onOpenProvider: () -> Unit,
@@ -409,6 +417,21 @@ private fun ProviderQuotaCard(
                     right = headExpiry?.describe() ?: "该家未返回",
                     valueColor = C.textMain,
                 )
+
+                // ── 额度包明细 ──
+                // 汇总只说「还剩多少」，这份清单说清「哪几份、各剩多少、何时作废」。
+                // workbuddy 的 `credits[]` 里很多包 `remain` 已经归零（用完的历史包），
+                // 仍如实列出并标灰 —— 它们是「为什么总数是这个数」的解释。
+                head?.let { acc ->
+                    packs[acc.id]?.takeIf { it.isNotEmpty() }?.let { list ->
+                        Spacer(Modifier.height(6.dp))
+                        Text("额度包 ${list.size} 份", color = C.textDim, fontSize = 11.sp)
+                        Spacer(Modifier.height(2.dp))
+                        list.forEach { pack ->
+                            PackRow(pack)
+                        }
+                    }
+                }
                 // 诊断行：解析不出数时（界面显示 —）照着它就能定位是上游形状不认识
                 // 还是那次请求确实没返回读数。取第一个账号的原始 JSON。
                 head?.let { acc ->
@@ -486,6 +509,113 @@ private fun SmallPill(text: String, enabled: Boolean, onClick: () -> Unit) {
             .clickable(enabled = enabled) { onClick() }
             .padding(horizontal = 12.dp, vertical = 7.dp),
     )
+}
+
+/**
+ * 数字格式化：与 `ui.provider.ProviderPage` 的同名函数**同一口径**（那边是
+ * private，跨模块拿不到；两边都只做「千分位 / 去尾零」这一件事，改一处要改两处）。
+ */
+private fun fmtNum(v: Double): String =
+    if (v >= 1000) String.format("%,.0f", v)
+    else String.format("%.2f", v).trimEnd('0').trimEnd('.')
+
+/** 一份额度包（明细行）。字段全部来自上游，缺失不补 0。 */
+internal data class QuotaPack(
+    val name: String,
+    val remain: Double?,
+    val total: Double?,
+    val used: Double?,
+    val expireAt: Long?,
+)
+
+/**
+ * 从 usage 里取额度包明细。
+ *
+ * 两个来源，形状不同但语义一致：
+ *   - `credits[]`（workbuddy / trae / officeace / zcode）：`{name, remain|left, total, used, expireAt}`；
+ *   - `wallets[]`（归一化形状）：`{type|displayName, balance, quota, used}`，没有 credits 时才用。
+ * 都没有就返回空 —— 界面不显示这一节（不是错误）。
+ */
+private fun parsePacks(usage: JSONObject): List<QuotaPack> {
+    fun num(o: JSONObject, vararg keys: String): Double? = keys.firstNotNullOfOrNull { k ->
+        when (val raw = o.opt(k)) {
+            is Number -> raw.toDouble().takeIf { it.isFinite() }
+            is String -> raw.trim().toDoubleOrNull()?.takeIf { it.isFinite() }
+            else -> null
+        }
+    }
+
+    usage.optJSONArray("credits")?.let { arr ->
+        val out = ArrayList<QuotaPack>(arr.length())
+        for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i) ?: continue
+            out += QuotaPack(
+                name = o.optString("name").ifBlank { "额度包 ${i + 1}" },
+                remain = num(o, "remain", "left", "balance", "available"),
+                total = num(o, "total", "quota", "granted"),
+                used = num(o, "used", "usage", "consumed"),
+                expireAt = parseEpochMs(o.opt("expireAt")),
+            )
+        }
+        if (out.isNotEmpty()) return out
+    }
+
+    usage.optJSONArray("wallets")?.let { arr ->
+        val out = ArrayList<QuotaPack>(arr.length())
+        for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i) ?: continue
+            out += QuotaPack(
+                name = o.optString("displayName").ifBlank { o.optString("type").ifBlank { "钱包 ${i + 1}" } },
+                remain = num(o, "balance", "remain", "left"),
+                total = num(o, "quota", "total"),
+                used = num(o, "used"),
+                expireAt = parseEpochMs(o.opt("expireAt")),
+            )
+        }
+        return out
+    }
+    return emptyList()
+}
+
+/** 额度包明细行：名称 + 剩余 / 总量 + 到期。 */
+@Composable
+private fun PackRow(pack: QuotaPack) {
+    val C = agateColors()
+    val drained = pack.remain != null && pack.remain!! <= 0.0
+    Row(
+        Modifier.fillMaxWidth().padding(vertical = 5.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            pack.name,
+            color = if (drained) C.textDim else C.textSub,
+            fontSize = 11.sp,
+            modifier = Modifier.weight(1f),
+        )
+        val remainText = pack.remain?.let { if (drained) "已用完" else fmtNum(it) } ?: "—"
+        val totalText = pack.total?.let { " / ${fmtNum(it)}" } ?: ""
+        Text(
+            remainText + totalText,
+            color = if (drained) C.textDim else C.textMain,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.SemiBold,
+        )
+        pack.expireAt?.let { at ->
+            val days = (at - System.currentTimeMillis()) / 86_400_000L
+            Spacer(Modifier.size(8.dp))
+            Text(
+                if (days < 0) "已过期" else "${days}天",
+                color = when {
+                    days < 0 -> C.textDim
+                    days <= 3 -> C.red
+                    days <= 7 -> C.amber
+                    else -> C.textDim
+                },
+                fontSize = 10.sp,
+            )
+        }
+    }
+    Box(Modifier.fillMaxWidth().height(1.dp).background(C.border))
 }
 
 // ── 到期解析（各家余额构成不同，统一走通用扫描）──────────────────

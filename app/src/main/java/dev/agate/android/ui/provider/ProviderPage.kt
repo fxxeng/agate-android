@@ -98,6 +98,7 @@ fun ProviderPage(
     onOpenDrawer: () -> Unit = {},
     onOpenAdd: () -> Unit = {},
     onOpenDetail: (String) -> Unit = {},
+    onOpenQuotaCenter: () -> Unit = {},
 ) {
     val C = agateColors()
     val ctx = LocalContext.current
@@ -338,6 +339,7 @@ fun ProviderPage(
                         mult = multByProvider[g.providerId],
                         checkinSupported = g.providerId in checkinProviders,
                         onOpenDetail = { onOpenDetail(g.providerId) },
+                        onOpenQuotaCenter = onOpenQuotaCenter,
                     )
                     Spacer(Modifier.height(10.dp))
                 }
@@ -356,6 +358,7 @@ private fun ProviderCard(
     mult: Pair<Double, Double>?,
     checkinSupported: Boolean,
     onOpenDetail: () -> Unit,
+    onOpenQuotaCenter: () -> Unit = {},
 ) {
     val C = agateColors()
     var expanded by remember(g.providerId) { mutableStateOf(false) }
@@ -471,6 +474,7 @@ private fun ProviderCard(
                     isHead = heads[g.providerId] == acc.id,
                     metric = metrics[acc.id],
                     inflight = inflight[acc.id] ?: 0,
+                    onOpenQuotaCenter = onOpenQuotaCenter,
                 )
                 Spacer(Modifier.height(8.dp))
             }
@@ -486,6 +490,7 @@ private fun AcctBlock(
     isHead: Boolean,
     metric: AcctMetric?,
     inflight: Int,
+    onOpenQuotaCenter: () -> Unit = {},
 ) {
     val C = agateColors()
     val cap = acc.raw.optInt("maxConcurrent", 0)
@@ -519,6 +524,18 @@ private fun AcctBlock(
                 metric?.text ?: "--",
                 color = if (metric?.failed == true) C.red else C.textSub,
                 fontSize = 12.sp,
+                modifier = Modifier.weight(2f, fill = false),
+                textAlign = androidx.compose.ui.text.style.TextAlign.End,
+            )
+            // 小字入口：这一行只够放一个读数，明细（额度包 / 到期）在额度中心
+            Spacer(Modifier.size(6.dp))
+            Text(
+                "明细 ›",
+                color = C.accent,
+                fontSize = 11.sp,
+                modifier = Modifier
+                    .clickable { onOpenQuotaCenter() }
+                    .padding(horizontal = 2.dp, vertical = 2.dp),
             )
         }
         Spacer(Modifier.height(4.dp))

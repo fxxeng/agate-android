@@ -367,6 +367,9 @@ fun AgateNavHost(
                         onOpenDrawer = { openDrawer() },
                         onOpenAdd = { navController.navigate(Routes.PROVIDER_ADD) },
                         onOpenDetail = { id -> navController.navigate("provider_detail/" + id) },
+                        // 「明细 ›」跳到额度中心：这一行只够一个读数，逐份额度包
+                        // （workbuddy 的 credits[]、trae 的权益包等）在那边展开看
+                        onOpenQuotaCenter = { navController.navigate(Routes.QUOTA) },
                     )
                 }
                 composable(Routes.MODELS) {

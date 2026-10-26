@@ -125,9 +125,15 @@ fun ProviderDetailPage(providerId: String, onBack: () -> Unit, onAddAccount: () 
                     val row = arr.optJSONObject(i) ?: continue
                     val aid = row.optString("id")
                     if (aid.isBlank()) continue
-                    val err = row.optString("error")
-                    usageLabel[aid] = if (err.isNotBlank()) "查询失败：$err"
-                    else formatUsage(row.optJSONObject("usage")) ?: "已查询"
+                    // ⚠️ `error` 为 JSON null 时不能用 optString（会得到字符串 "null"，
+                    // 界面变成「查询失败：null」—— 真机踩到过）
+                    val err = (row.opt("error") as? String)?.trim().orEmpty()
+                    val usage = row.optJSONObject("usage")
+                    usageLabel[aid] = when {
+                        err.isNotEmpty() -> "查询失败：$err"
+                        usage == null -> "未返回余额数据"
+                        else -> formatUsage(usage) ?: "已查询"
+                    }
                 }
             }
             toast(if (force) "余额已更新" else "余额已载入（缓存）")
@@ -938,7 +944,24 @@ private fun SmallAction(
 private fun formatUsage(usage: JSONObject?): String? {
     if (usage == null) return null
     fun d(vararg keys: String): Double? =
-        keys.firstNotNullOfOrNull { k -> if (usage.has(k)) usage.optDouble(k, Double.NaN).takeIf { !it.isNaN() } else null }
+        keys.firstNotNullOfOrNull { k ->
+            // 只认数字与数字串：布尔不能当数字（`optDouble` 在旧实现在这里会 toString）
+            when (val raw = usage.opt(k)) {
+                is Number -> raw.toDouble().takeIf { it.isFinite() }
+                is String -> raw.trim().toDoubleOrNull()?.takeIf { it.isFinite() }
+                else -> null
+            }
+        }
+
+    // WorkBuddy 的既有契约 `{totalLeft, planLeft, bonusLeft}`（无 total/used）
+    if (usage.has("totalLeft")) {
+        if (usage.optBoolean("unlimited", false)) return "不限量"
+        val parts = ArrayList<String>(3)
+        d("totalLeft")?.let { parts += "共${fmtNum(it)}" }
+        d("planLeft")?.let { parts += "套餐${fmtNum(it)}" }
+        d("bonusLeft")?.let { parts += "奖励${fmtNum(it)}" }
+        return parts.takeIf { it.isNotEmpty() }?.joinToString(" · ")
+    }
 
     val left = d("left", "remain", "remaining", "balance", "available", "total_granted")
     val total = d("total", "quota", "granted")
