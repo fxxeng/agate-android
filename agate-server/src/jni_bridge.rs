@@ -7,8 +7,9 @@
 //!
 //! 两级启动（B 包 · 方案 v2.0 三开关），桌面壳 `ensure_ready` 的序列拆两段：
 //!   Core（随进程）：AGATE_PROXY_HOME → `ServerState::bootstrap` →
-//!     `access::attach_db`；后台调度（scheduled_tasks + auto_checkin）随
-//!     Core 常驻，不监听任何端口；
+//!     `access::attach_db`；后台循环任务（scheduled_tasks + auto_checkin +
+//!     订阅内核 worker / zcode 配置同步 / 余额查询，见 bootstrap 末尾区块）
+//!     随 Core 常驻，不监听任何端口，也不随网关启停；
 //!   网关（手动）：重设 OAuth 回调端口 → `local_panel = true` →（bind_lan
 //!     时面板闸门 + /v1 fail-closed）→ `start_gateway_tasks` →
 //!     `server::start()` 拿 oneshot 停机通道。
@@ -159,10 +160,11 @@ fn call_on_log(
 
 // ── 两级内核（B 包 · 方案 v2.0 三开关）──────────────────────────
 // Core 态（随进程）：bootstrap 全部基础设施 + Core 级后台任务（凭证维护 /
-// 模型目录刷新在 scheduled_tasks 里，auto_checkin 调度循环自带），不监听
-// 任何端口。网关态（手动）：bind 端口 + 网关级任务（sub_kernel / zcode /
-// usage，见 server::start_gateway_tasks）。调度器是 Core 里的独立开关，
-// 不随网关启停 —— 网关停着，App 进程活着签到调度照跑。
+// 模型目录刷新在 scheduled_tasks 里，auto_checkin 调度循环自带，订阅内核
+// worker / zcode 配置同步 / 余额查询 sweeper 在 bootstrap 末尾区块），不监
+// 听任何端口。网关态（手动）：bind 端口 + 网关启动动作（内核 autostart，
+// 见 server::start_gateway_tasks）。调度器是 Core 里的独立开关，不随网关
+// 启停 —— 网关停着，App 进程活着签到调度 / 余额查询照跑。
 
 struct Core {
     state: ServerState,
@@ -327,8 +329,9 @@ fn start_gateway(data_dir: &str, port: u16, bind_lan: bool, api_key: Option<&str
         } else {
             server::access::set_panel_gate(false);
         }
-        // 网关级后台任务（进程内首次拉起后常驻；见 server::start_gateway_tasks）
-        server::start_gateway_tasks(&core.state);
+        // 网关启动动作（当前只有内核 autostart；后台循环是 Core 级，已在
+        // bootstrap 拉起，见 server::start_gateway_tasks 的文档）
+        server::start_gateway_tasks();
         match server::start(&core.state) {
             Ok(tx) => tx,
             Err(conflict) => {

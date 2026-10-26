@@ -456,6 +456,11 @@ pub const SWEEP_TICK_MS: u64 = 10_000;
 /// 起动每账号自动查询的心跳循环（`ServerState::bootstrap` 调一次，进程内
 /// 只有这一个循环）。循环体：扫到期账号 → 占位 → 并发查询 → 落记录 → 钩子。
 pub fn spawn_sweeper(store: AccountStore) {
+    // 模块自防：只许拉起一层心跳循环（理由同 config_sync::spawn）。
+    static STARTED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    if STARTED.set(()).is_err() {
+        return;
+    }
     crate::spawn_task(async move {
         loop {
             sweep_due(&store).await;

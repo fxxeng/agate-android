@@ -22,6 +22,13 @@
 //! mpsc 队列、一个 worker 串行消费；API handler 只投命令 + 读快照，界面用
 //! 轮询看进度（下载字节 / 运行状态），不引入第二条推送通道。
 //!
+//! ── worker 的生命周期归属（Core 级，不是网关级）──────────────
+//! 命令 worker 随进程启动（`ServerState::bootstrap` 拉起）：订阅页是
+//! JNI 直调的，网关停着也要能手动启动内核 / 下载 / 刷新。网关启停只管
+//! HTTP 端口，worker 与内核 sidecar 都不随它启停——「自动拉起内核」是
+//! 网关启动路径上的一个**动作**（`autostart_for_gateway`），不是常驻
+//! 任务的归属。
+//!
 //! ── 与代理池的关系 ──────────────────────────────────────────
 //! 内核拉到订阅后把节点镜像进池（`proxy_pool::sync_subscription_nodes`，
 //! `source: "subscription"` 的只读条目，账号按 id 引用）；订阅删了 / 节点
@@ -490,22 +497,26 @@ pub fn request_remove() {
 /// running，内核进程在两次操作之间崩溃时快照还是 true —— 这里补一次
 /// 本地端口探活（connect 到控制端口，毫秒级），状态不符时如实报 false。
 pub fn status_json() -> Value {
-    with_status(|snapshot| {
-        let controller_port = snapshot.controller_port;
-        let snapshot_running = snapshot.running;
-        let listener_count = snapshot.listener_count;
-        let last_error = snapshot.last_error.clone();
-        let provider_sync = snapshot.provider_sync.clone();
-        let download_state = snapshot.download.state;
-        let download_received = snapshot.download.received;
-        let download_total = snapshot.download.total;
-        let download_error = snapshot.download.error.clone();
-        let halted = snapshot.halted;
-        let running = snapshot_running
-            && controller_port
-                .map(|port| controller_alive(port))
-                .unwrap_or(false);
-        json!({
+    let (controller_port, snapshot_running, listener_count, last_error, provider_sync, download_state, download_received, download_total, download_error, halted) =
+        with_status(|snapshot| {
+            (
+                snapshot.controller_port,
+                snapshot.running,
+                snapshot.listener_count,
+                snapshot.last_error.clone(),
+                snapshot.provider_sync.clone(),
+                snapshot.download.state,
+                snapshot.download.received,
+                snapshot.download.total,
+                snapshot.download.error.clone(),
+                snapshot.halted,
+            )
+        });
+    // 探活（最长 300ms 的 TCP connect）必须**在锁外**：放在 with_status
+    // 闭包里会让 STATUS 锁被持满整个探活时长，阻塞 is_manually_halted /
+    // record_running 等并发读者。
+    let running = kernel_running_with(controller_port, snapshot_running);
+    json!({
             "installed": installed(),
             "version": KERNEL_VERSION,
             "asset": asset_for_current_platform().map(|(name, _)| name),
@@ -534,7 +545,53 @@ pub fn status_json() -> Value {
                 "error": download_error,
             },
         })
-    })
+}
+
+/// 「快照 running ∧ 控制端口可达」的合取。UI 的 running 字段与内核
+/// autostart 守卫同源，避免两处口径分叉。探活是最长 300ms 的 TCP
+/// connect，调用方必须已经不在 STATUS 锁内。
+fn kernel_running_with(controller_port: Option<u16>, snapshot_running: bool) -> bool {
+    snapshot_running
+        && controller_port
+            .map(controller_alive)
+            .unwrap_or(false)
+}
+
+/// 内核当前是否实际可达（autostart 守卫用；与 `status_json` 的 running
+/// 同一合取）。先取快照再解锁探活，不在 STATUS 锁内做 I/O。
+fn kernel_effectively_running() -> bool {
+    let (running, port) = with_status(|snapshot| (snapshot.running, snapshot.controller_port));
+    kernel_running_with(port, running)
+}
+
+/// 网关启动时的内核自动拉起（`server::start_gateway_tasks` 的唯一内容）。
+///
+/// 三重守卫，任一命中就不拉：
+/// · `subscriptions::should_autostart()` 为假 —— 内核未安装（自动下载必须
+///   有用户手势，静默拉 20-40MB 不合适）或没有启用的订阅；
+/// · `is_manually_halted()` —— 用户刚在订阅页按下「关闭内核」，网关启动
+///   静默拉起会推翻这个动作（与测试 / 保存引用路径同一闩语义）；
+/// · `kernel_effectively_running()` —— 内核活着就不动它。早先整函数靠
+///   OnceLock 只跑一次兜底；现在网关每次启动都会走到这里，必须自己判断，
+///   避免把在跑的内核无谓重启一遍。
+///
+/// 经命令队列走（`request_restart`），与手动启动同一串行通道；run_restart
+/// 会先清理上次运行遗留的进程再重建配置。
+pub fn autostart_for_gateway() {
+    if !crate::server::core::subscriptions::should_autostart()
+        || is_manually_halted()
+        || kernel_effectively_running()
+    {
+        return;
+    }
+    let providers = crate::server::core::subscriptions::enabled_provider_inputs();
+    crate::spawn_task(async move {
+        request_restart(providers);
+    });
+    logging::console_line(
+        "[Subscription]",
+        "检测到已安装的代理内核与启用的订阅，后台自动拉起",
+    );
 }
 
 /// 控制端口探活（本地 TCP connect，超时 300ms）

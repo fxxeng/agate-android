@@ -395,8 +395,9 @@ impl ServerState {
         // 订阅存储（「订阅管理」维护的订阅链接）：同一个 `Db`（与 proxyPool
         // 同一形态）。位置只要求早于任何一次 `/api/subscriptions*` 请求。
         core::subscriptions::install(db.clone());
-        // sub_kernel worker 与「已装内核的自动拉起」已挪到 `start_gateway_tasks`
-        //（B 包三开关：网关级任务首次 gateway_start 才拉起，Core 态不跑）。
+        // （订阅内核 worker / zcode 配置同步 / 余额查询 sweeper 与下面的
+        // scheduled_tasks 同级：Core 级后台任务，统一在 bootstrap 末尾的
+        // 「Core 级后台任务」区块拉起，网关启停不碰它们。）
         // 模型清单的持久化缓存：把**同一个 `Db`** 传进去（与配置 / 日志库 /
         // 账号库同一形态）。各家的远程清单在进程重启后由它读回，不再回落到
         // 内置清单（见 `core::providers::catalog_cache` 的模块头）。
@@ -759,8 +760,22 @@ impl ServerState {
         // 服务器停机时进程会结束，任务随之消失。用 crate::spawn_task
         // （与 auto_checkin 同一理由）保证从非 tokio 上下文调用也能进入全局运行时。
         core::scheduled_tasks::spawn(state.store.clone(), state.update.clone());
-        // zcode config_sync 与 usage sweeper 同样挪到 `start_gateway_tasks`
-        //（网关级：Core 态无人消费这些轮询，空转浪费电）。
+
+        // ── Core 级后台任务（进程生命周期，与网关启停解耦）───────────
+        // 以下循环一律随 bootstrap 拉起：网关 stop 只停 HTTP 端口，这里
+        // 的任务照常跑；网关 start 也不重复拉起（各 spawn 自带 OnceLock
+        // 防重入）。**新增后台循环一律加在这个区块**，不要挂到网关启动
+        // 路径 —— start_gateway_tasks 只放「随网关开关而有意义」的动作
+        //（当前只有内核 autostart）。
+        //
+        // · 订阅内核命令 worker：订阅页走 JNI 直调，网关停着也要能手动
+        //   启动内核 / 下载 / 刷新（生命周期契约见 sub_kernel 模块头）。
+        core::sub_kernel::spawn_worker();
+        // · ZCode 活动套餐「推理要不要验证码令牌」的配置同步（每 5 分钟；
+        //   判据、代价与三条口径见 providers::zcode::config_sync 模块头）。
+        core::providers::zcode::config_sync::spawn(state.store.clone());
+        // · 每账号自动余额查询的心跳循环（排期按账号各自算，见 usage_query）。
+        core::usage_query::spawn_sweeper(state.store.clone());
 
         Ok(state)
     }
@@ -1063,39 +1078,14 @@ pub fn probe_port(port: u16) -> Result<(), PortConflict> {
     }
 }
 
-/// 网关级后台任务的拉起口（B 包 · 方案 v2.0 三开关）。
+/// 网关启动路径上的非 HTTP 动作（jni_bridge 与 headless bin 在
+/// `server::start` 之前调用）。
 ///
-/// bootstrap 只装基础设施 + Core 级任务（凭证维护 / 模型目录刷新 /
-/// auto_checkin 调度循环都在 `scheduled_tasks` 或自身循环里，随进程走）。
-/// 以下三件「网关运行才有意义」，由首次 gateway_start（headless 形态则
-/// 在 bootstrap 装配完成后立即）调用本函数拉起：
-///   - sub_kernel worker（mihomo sidecar 命令队列）+ 已装内核的自动拉起
-///   - zcode config_sync（上游配置 5 分钟轮询）
-///   - usage_query sweeper（每账号余额查询心跳）
-///
-/// 幂等：进程内 OnceLock，重复调用直接返回。这些模块自身没有 stop 接口，
-/// 首次拉起后进程内常驻 —— 「真停」等模块补 watch 通道后再做（P5）。
-pub fn start_gateway_tasks(state: &ServerState) {
-    static STARTED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
-    if STARTED.set(()).is_ok() {
-        return;
-    }
-    // 订阅内核（mihomo sidecar）的命令 worker：单条队列串行消费内核操作
-    // （下载 / 重建配置 / 重启 / 停止），见 `core::sub_kernel` 的模块头。
-    core::sub_kernel::spawn_worker();
-    // 内核已安装且有启用的订阅 → 自动拉起（清理上次运行遗留的进程后
-    // 重建配置）。**未安装时不自动下载**：二进制 ~20-40MB，下载必须有
-    // 用户的手势（界面上的「下载内核」按钮），启动时静默拉网不合适。
-    if core::subscriptions::should_autostart() {
-        let providers = core::subscriptions::enabled_provider_inputs();
-        crate::spawn_task(async move {
-            core::sub_kernel::request_restart(providers);
-        });
-        logging::console_line("[Subscription]", "检测到已安装的代理内核与启用的订阅，后台自动拉起");
-    }
-    // ZCode 活动套餐的「推理要不要验证码令牌」由上游配置说，每 5 分钟同步一次
-    //（判据、代价与三条口径见 `providers::zcode::config_sync` 的模块头）。
-    core::providers::zcode::config_sync::spawn(state.store.clone());
-    // 每账号自动余额查询的心跳循环（排期按账号各自算，见 `core::usage_query`）。
-    core::usage_query::spawn_sweeper(state.store.clone());
+/// ⚠ 后台循环任务**不放这里**：它们是 Core 级（进程生命周期），统一在
+/// `ServerState::bootstrap` 末尾的「Core 级后台任务」区块拉起，与网关启停
+/// 完全解耦 —— 网关 stop 只停 HTTP 端口，余额查询 / 配置同步 / 订阅内核
+/// worker 照常跑。这里只放「随网关启动而有意义」的动作，当前只有一项：
+/// 订阅内核的自动拉起（判定与守卫见 `sub_kernel::autostart_for_gateway`）。
+pub fn start_gateway_tasks() {
+    core::sub_kernel::autostart_for_gateway();
 }

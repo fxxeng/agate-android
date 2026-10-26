@@ -71,6 +71,12 @@ const FIRST_DELAY_MS: u64 = 3_000;
 /// 用 `crate::spawn_task` 而不是裸 `tokio::spawn`：本函数可能在 setup 钩子（非
 /// 运行时线程）里被调用，裸 spawn 会 panic —— release 是 `panic=abort`。
 pub fn spawn(store: AccountStore) {
+    // 模块自防：只许拉起一层循环。调用方（bootstrap）进程内只跑一次，
+    // 这里再兜一道，避免未来出现第二个调用点时叠加双循环（同步双发）。
+    static STARTED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    if STARTED.set(()).is_err() {
+        return;
+    }
     crate::spawn_task(async move {
         tokio::time::sleep(Duration::from_millis(FIRST_DELAY_MS)).await;
         loop {
