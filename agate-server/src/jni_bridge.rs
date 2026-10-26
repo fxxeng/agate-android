@@ -5,10 +5,13 @@
 //!     消费），JNI 不碰任何业务数据结构；
 //!   · 控制面：本文件只提供 6 个「电源开关 + 闹钟 + 日志」函数。
 //!
-//! 启动序列逐字对齐桌面壳 `backend.rs::ensure_ready`（去掉 Tauri 相关部分）：
-//!   注入 AGATE_PROXY_HOME → `ServerState::bootstrap` → `access::attach_db`
-//!   → `local_panel = true` →（bind_lan 时启用面板闸门 + /v1 fail-closed）
-//!   → `server::start()` 拿 oneshot 停机通道。
+//! 两级启动（B 包 · 方案 v2.0 三开关），桌面壳 `ensure_ready` 的序列拆两段：
+//!   Core（随进程）：AGATE_PROXY_HOME → `ServerState::bootstrap` →
+//!     `access::attach_db`；后台调度（scheduled_tasks + auto_checkin）随
+//!     Core 常驻，不监听任何端口；
+//!   网关（手动）：重设 OAuth 回调端口 → `local_panel = true` →（bind_lan
+//!     时面板闸门 + /v1 fail-closed）→ `start_gateway_tasks` →
+//!     `server::start()` 拿 oneshot 停机通道。
 //! `start()` 是同步调用，内部经 `crate::spawn_task` 落到全局惰性 Tokio 运行时
 //! （见 lib.rs），因此本桥不需要自建 Runtime —— 与 headless bin 的时序一致
 //! （那边也是先 start、再建运行时等信号）。
@@ -26,7 +29,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
 use jni::objects::{GlobalRef, JClass, JObject, JString, JValue};
-use jni::sys::{jobject, jstring};
+use jni::sys::{jboolean, jint, jlong, jobject, jstring};
 use jni::{JNIEnv, JavaVM};
 use serde_json::{json, Value};
 use tokio::sync::oneshot;
@@ -154,52 +157,188 @@ fn call_on_log(
     Ok(())
 }
 
-// ── 内核启停（对齐 backend.rs::ensure_ready）─────────────────────
+// ── 两级内核（B 包 · 方案 v2.0 三开关）──────────────────────────
+// Core 态（随进程）：bootstrap 全部基础设施 + Core 级后台任务（凭证维护 /
+// 模型目录刷新在 scheduled_tasks 里，auto_checkin 调度循环自带），不监听
+// 任何端口。网关态（手动）：bind 端口 + 网关级任务（sub_kernel / zcode /
+// usage，见 server::start_gateway_tasks）。调度器是 Core 里的独立开关，
+// 不随网关启停 —— 网关停着，App 进程活着签到调度照跑。
 
-fn start_gateway(data_dir: &str, port: u16, bind_lan: bool) -> Value {
-    let Ok(mut guard) = RUNNING.lock() else {
-        return json!({"ok": false, "error": "state poisoned"});
-    };
-    if let Some(r) = guard.as_ref() {
-        return json!({"ok": false, "error": "already_running", "port": r.port});
+struct Core {
+    state: ServerState,
+    scheduler_on: bool,
+    started_at: Instant,
+}
+
+/// Core 句柄；`None` = 尚未初始化（bootstrap 未跑）。
+static CORE: Mutex<Option<Core>> = Mutex::new(None);
+/// 引导锁：防两条线程同时 ensure_core 双跑 bootstrap。
+static CORE_BOOT: Mutex<()> = Mutex::new(());
+
+/// 初始化 Core（幂等）。Ok(true) = 本次新建，Ok(false) = 已在跑。
+/// 端口只影响 OAuth 回调登记与 state.port 初值；网关启动时会按需重设。
+fn ensure_core(data_dir: &str, port: u16) -> Result<bool, String> {
+    {
+        let Ok(guard) = CORE.lock() else { return Err("state poisoned".into()); };
+        if guard.is_some() {
+            return Ok(false);
+        }
+    }
+    let Ok(_boot) = CORE_BOOT.lock() else { return Err("state poisoned".into()); };
+    {
+        let Ok(guard) = CORE.lock() else { return Err("state poisoned".into()); };
+        if guard.is_some() {
+            return Ok(false);
+        }
     }
     // 数据目录注入：paths::config_dir() 的唯一覆盖口（AGATE_PROXY_HOME）。
-    // 说明：std 在 2024 edition 才把 set_var 标 unsafe，本 crate 是 2021；
-    // 进程内单网关、首启先于任何内核线程，重启时重设同值无副作用。
+    // 进程内单 Core、首启先于任何内核线程，重启时重设同值无副作用。
     std::env::set_var("AGATE_PROXY_HOME", data_dir);
+    let state = match ServerState::bootstrap(port, IpAddr::V4(Ipv4Addr::LOCALHOST)) {
+        Ok(state) => state,
+        Err(reason) => {
+            logcat_write(LOG_ERROR, LOGCAT_TAG, &format!("bootstrap 失败: {reason}"));
+            return Err(reason);
+        }
+    };
+    // 面板访问控制的库句柄注入（Android 未注册管理员 → 该体系不启用）。
+    // Core 态就装：access 状态不依赖端口，网关后启动也读得到同一份。
+    server::access::attach_db(state.db().cloned());
+    let Ok(mut guard) = CORE.lock() else { return Err("state poisoned".into()); };
+    if guard.is_some() {
+        // 引导锁窗口内被并发抢先：丢弃本次 bootstrap 产物
+        return Ok(false);
+    }
+    *guard = Some(Core {
+        state,
+        // bootstrap 内部已按配置决定是否 start()；先记 true，core_init 随后
+        // 用用户开关对齐（scheduler_set 幂等，重复 start 无害）。
+        scheduler_on: true,
+        started_at: Instant::now(),
+    });
+    server::logging::log(
+        "[Server]",
+        &format!("Agate Core 就绪（内核 v{VERSION}，后台调度随进程，无端口监听）"),
+    );
+    Ok(true)
+}
+
+/// Core 初始化 + 调度器对齐（Application 启动与 FGS 兜底都走这里）。
+fn core_init(data_dir: &str, port: u16, scheduler_on: bool) -> Value {
+    if let Err(reason) = ensure_core(data_dir, port) {
+        return json!({ "ok": false, "stage": "bootstrap", "error": reason });
+    }
+    scheduler_set(scheduler_on)
+}
+
+/// 调度器开关（独立于网关）。on = auto_checkin.start()，off = stop()。
+fn scheduler_set(on: bool) -> Value {
+    let Ok(mut guard) = CORE.lock() else {
+        return json!({ "ok": false, "error": "state poisoned" });
+    };
+    let Some(core) = guard.as_mut() else {
+        return json!({ "ok": false, "error": "core_not_ready" });
+    };
+    if on {
+        core.state.auto_checkin().start();
+    } else {
+        core.state.auto_checkin().stop();
+    }
+    core.scheduler_on = on;
+    server::logging::log(
+        "[Checkin]",
+        if on { "后台签到调度已开启" } else { "后台签到调度已关闭" },
+    );
+    json!({ "ok": true, "scheduler": on })
+}
+
+/// 同步触发一轮签到并等待完成（F3：闹钟 tick 直调内核，不再 HTTP 回环）。
+/// 超时不算失败 —— fire 已在内核后台跑，只是调用方不再等它收尾。
+fn checkin_run_now(timeout_ms: u64) -> Value {
+    let checkin = {
+        let Ok(guard) = CORE.lock() else {
+            return json!({ "ok": false, "error": "state poisoned" });
+        };
+        let Some(core) = guard.as_ref() else {
+            return json!({ "ok": false, "error": "core_not_ready" });
+        };
+        core.state.auto_checkin().clone()
+    };
+    let (tx, rx) = std::sync::mpsc::channel::<Option<Value>>();
+    crate::spawn_task(async move {
+        let _ = tx.send(checkin.fire("alarm").await);
+    });
+    match rx.recv_timeout(std::time::Duration::from_millis(timeout_ms)) {
+        Ok(Some(result)) => json!({ "ok": true, "done": true, "result": result }),
+        // None = 上一轮签到仍在执行（fire 的 CAS 抢锁失败），如实上报
+        Ok(None) => json!({ "ok": false, "done": true, "error": "busy" }),
+        Err(_) => json!({ "ok": true, "done": false, "error": "timeout" }),
+    }
+}
+
+fn start_gateway(data_dir: &str, port: u16, bind_lan: bool, api_key: Option<&str>) -> Value {
+    // api_key → env（每次启动按本次参数注入；trigger_task 的内部请求也读它）
+    if let Some(key) = api_key.map(str::trim).filter(|k| !k.is_empty()) {
+        std::env::set_var("AGATE_PROXY_API_KEY", key);
+    }
+    {
+        let Ok(guard) = RUNNING.lock() else {
+            return json!({ "ok": false, "error": "state poisoned" });
+        };
+        if let Some(r) = guard.as_ref() {
+            return json!({ "ok": false, "error": "already_running", "port": r.port });
+        }
+    }
+    // Core 兜底：网关必先有 Core（通常 Application 已初始化，这里兜异常路径）
+    if let Err(reason) = ensure_core(data_dir, port) {
+        return json!({ "ok": false, "stage": "bootstrap", "error": reason });
+    }
     let host: IpAddr = if bind_lan {
         IpAddr::V4(Ipv4Addr::UNSPECIFIED)
     } else {
         IpAddr::V4(Ipv4Addr::LOCALHOST)
     };
-    let mut state = match ServerState::bootstrap(port, host) {
-        Ok(state) => state,
-        Err(reason) => {
-            logcat_write(LOG_ERROR, LOGCAT_TAG, &format!("bootstrap 失败: {reason}"));
-            return json!({"ok": false, "stage": "bootstrap", "error": reason});
+    let shutdown_tx = {
+        let Ok(mut core_guard) = CORE.lock() else {
+            return json!({ "ok": false, "error": "state poisoned" });
+        };
+        let Some(core) = core_guard.as_mut() else {
+            return json!({ "ok": false, "error": "core_not_ready" });
+        };
+        // 端口可能晚于 Core 就位（core_init 用默认口，这里才是用户配置口）
+        // → 重设三家 OAuth 的回调登记 + 监听参数，与 bootstrap 首装同口径。
+        crate::server::core::providers::accio::oauth::set_loopback_port(port);
+        crate::server::core::providers::codearts::oauth::set_loopback_port(port);
+        crate::server::core::providers::antigravity::oauth::set_loopback_port(port);
+        core.state.port = port;
+        core.state.host = host;
+        // 管理界面（这里是 Compose UI）跑在本机：OAuth 回调可占本机登记端口
+        core.state.local_panel = true;
+        // 局域网闸门幂等设置：防上一次 LAN 会话的 panel_gate 残留到本次本机模式
+        if bind_lan {
+            server::access::set_panel_gate(true);
+            if server::config::current().active_api_keys().is_empty() {
+                server::access::set_v1_fail_closed(true);
+                server::logging::log(
+                    "[Security]",
+                    "⚠️  局域网监听已开启但未配置 API Key：/v1/* 暂时拒绝服务，请在面板创建第一把 Key",
+                );
+            }
+        } else {
+            server::access::set_panel_gate(false);
+        }
+        // 网关级后台任务（进程内首次拉起后常驻；见 server::start_gateway_tasks）
+        server::start_gateway_tasks(&core.state);
+        match server::start(&core.state) {
+            Ok(tx) => tx,
+            Err(conflict) => {
+                logcat_write(LOG_ERROR, LOGCAT_TAG, &format!("网关启动失败: {}", conflict.message));
+                return json!({ "ok": false, "stage": "bind", "error": conflict.message });
+            }
         }
     };
-    // 桌面同款：面板访问控制的库句柄注入（Android 未注册管理员 → 该体系不启用）
-    server::access::attach_db(state.db().cloned());
-    // 管理界面（这里是 Compose UI）跑在本机：OAuth 回调可占本机登记端口
-    state.local_panel = true;
-    if bind_lan {
-        // 局域网监听的安全闸门，语义与桌面 LAN 模式一致（见 backend.rs）
-        server::access::set_panel_gate(true);
-        if server::config::current().active_api_keys().is_empty() {
-            server::access::set_v1_fail_closed(true);
-            server::logging::log(
-                "[Security]",
-                "⚠️  局域网监听已开启但未配置 API Key：/v1/* 暂时拒绝服务，请在面板创建第一把 Key",
-            );
-        }
-    }
-    let shutdown_tx = match server::start(&state) {
-        Ok(tx) => tx,
-        Err(conflict) => {
-            logcat_write(LOG_ERROR, LOGCAT_TAG, &format!("网关启动失败: {}", conflict.message));
-            return json!({"ok": false, "stage": "bind", "error": conflict.message});
-        }
+    let Ok(mut guard) = RUNNING.lock() else {
+        return json!({ "ok": false, "error": "state poisoned" });
     };
     server::logging::log(
         "[Server]",
@@ -221,39 +360,78 @@ fn start_gateway(data_dir: &str, port: u16, bind_lan: bool) -> Value {
         "gateway_started",
         serde_json::json!({ "port": port, "bindLan": bind_lan, "version": VERSION }),
     );
-    json!({"ok": true, "port": port, "bind_lan": bind_lan, "version": VERSION})
+    json!({ "ok": true, "port": port, "bind_lan": bind_lan, "version": VERSION })
 }
 
 fn stop_gateway() -> Value {
-    let Ok(mut guard) = RUNNING.lock() else {
-        return json!({"ok": false, "error": "state poisoned"});
+    let r = {
+        let Ok(mut guard) = RUNNING.lock() else {
+            return json!({ "ok": false, "error": "state poisoned" });
+        };
+        guard.take()
     };
-    match guard.take() {
-        Some(r) => {
-            // 优雅停机：start() 内部的协调任务会把它转成 watch 广播，
-            // 在途请求有 graceful shutdown 收尾（见 server::start）
-            let _ = r.shutdown_tx.send(());
-            server::logging::log("[Server]", &format!("网关已停止（:{}）", r.port));
-            json!({"ok": true, "port": r.port})
+    let Some(r) = r else {
+        return json!({ "ok": false, "error": "not_running" });
+    };
+    // 优雅停机：start() 内部的协调任务会把它转成 watch 广播，
+    // 在途请求有 graceful shutdown 收尾（见 server::start）。
+    // 只停网关；Core 与签到调度器不受影响（B 包语义）。
+    let _ = r.shutdown_tx.send(());
+    server::logging::log("[Server]", &format!("网关已停止（:{}）", r.port));
+    // F6：等端口真的释放（serve 退出 + listener drop）再返回 —— 否则
+    // 「停止后立刻重启」会 bind 冲突。5s 上限、100ms 探测一次、连续 2 次
+    // 成功才判释放（防单次 bind 成功的竞态误判）。
+    let deadline = Instant::now() + std::time::Duration::from_secs(5);
+    let mut hits = 0;
+    while Instant::now() < deadline {
+        if server::probe_port(r.port).is_ok() {
+            hits += 1;
+            if hits >= 2 {
+                return json!({ "ok": true, "port": r.port, "released": true });
+            }
+        } else {
+            hits = 0;
         }
-        None => json!({"ok": false, "error": "not_running"}),
+        std::thread::sleep(std::time::Duration::from_millis(100));
     }
+    json!({ "ok": true, "port": r.port, "released": false })
 }
 
 fn status_json() -> Value {
-    let Ok(guard) = RUNNING.lock() else {
-        return json!({"ok": false, "error": "state poisoned"});
+    let core = {
+        let Ok(guard) = CORE.lock() else {
+            return json!({ "ok": false, "error": "state poisoned" });
+        };
+        guard.as_ref().map(|c| (c.scheduler_on, c.started_at.elapsed().as_secs()))
     };
-    match guard.as_ref() {
-        Some(r) => json!({
+    let running = {
+        let Ok(guard) = RUNNING.lock() else {
+            return json!({ "ok": false, "error": "state poisoned" });
+        };
+        guard.as_ref().map(|r| (r.port, r.bind_lan, r.started_at.elapsed().as_secs()))
+    };
+    // running/port/bind_lan/uptime_sec 字段向后兼容（M3 的 UI 读这几个）；
+    // core/scheduler 是 B 包新增的两级状态。
+    let scheduler = core.as_ref().map(|c| c.0).unwrap_or(false);
+    match running {
+        Some((port, bind_lan, uptime)) => json!({
             "ok": true,
             "running": true,
-            "port": r.port,
-            "bind_lan": r.bind_lan,
-            "uptime_sec": r.started_at.elapsed().as_secs(),
+            "core": true,
+            "scheduler": scheduler,
+            "port": port,
+            "bind_lan": bind_lan,
+            "uptime_sec": uptime,
             "version": VERSION,
         }),
-        None => json!({"ok": true, "running": false, "version": VERSION}),
+        None => json!({
+            "ok": true,
+            "running": false,
+            "core": core.is_some(),
+            "scheduler": scheduler,
+            "core_uptime_sec": core.as_ref().map(|c| c.1).unwrap_or(0),
+            "version": VERSION,
+        }),
     }
 }
 
@@ -334,12 +512,12 @@ pub extern "system" fn Java_dev_agate_core_Gateway_nativeStart<'local>(
     // 效果 = 上游「兼容模式」：局域网形态下壳的 /api 与 /v1 请求带这把 Key
     // 即过闸门，同时 /v1 不再 fail-closed（keys 非空），Key 可展示给局域网
     // 设备复用（M3 访问密钥页）。
-    if let Some(key) = cfg.get("api_key").and_then(Value::as_str) {
-        let key = key.trim();
-        if !key.is_empty() {
-            std::env::set_var("AGATE_PROXY_API_KEY", key);
-        }
-    }
+    let api_key = cfg
+        .get("api_key")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|k| !k.is_empty())
+        .map(str::to_owned);
     let bind_lan = cfg.get("bind_lan").and_then(Value::as_bool).unwrap_or(false);
     // admin_token：M0 预留 —— M1 局域网模式的 X-Internal-Admin-Token 免登守卫用它
     if let Some(token) = cfg.get("admin_token").and_then(Value::as_str) {
@@ -348,7 +526,7 @@ pub extern "system" fn Java_dev_agate_core_Gateway_nativeStart<'local>(
             &format!("admin_token 已登记（{} 字符），局域网守卫启用后生效", token.chars().count()),
         );
     }
-    json_reply(&mut env, start_gateway(&data_dir, port, bind_lan))
+    json_reply(&mut env, start_gateway(&data_dir, port, bind_lan, api_key.as_deref()))
 }
 
 #[no_mangle]
@@ -357,6 +535,46 @@ pub extern "system" fn Java_dev_agate_core_Gateway_nativeStop<'local>(
     _class: JClass<'local>,
 ) -> jstring {
     json_reply(&mut env, stop_gateway())
+}
+
+/// Core 初始化 + 调度器对齐（Application 启动 / FGS 兜底）。幂等。
+#[no_mangle]
+pub extern "system" fn Java_dev_agate_core_Gateway_nativeCoreInit<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    data_dir: JString<'local>,
+    port: jint,
+    scheduler_on: jboolean,
+) -> jstring {
+    let dir = match env.get_string(&data_dir) {
+        Ok(s) => s.to_string_lossy().into_owned(),
+        Err(e) => {
+            return json_reply(&mut env, json!({ "ok": false, "error": e.to_string() }))
+        }
+    };
+    let port = port.clamp(1, 65535) as u16;
+    json_reply(&mut env, core_init(&dir, port, scheduler_on != 0))
+}
+
+/// 调度器独立开关（B 包：不随网关启停）。
+#[no_mangle]
+pub extern "system" fn Java_dev_agate_core_Gateway_nativeSchedulerSet<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    on: jboolean,
+) -> jstring {
+    json_reply(&mut env, scheduler_set(on != 0))
+}
+
+/// 同步跑一轮签到并等待（F3：闹钟 tick 直调）。timeout_ms ≤ 0 时默认 120s。
+#[no_mangle]
+pub extern "system" fn Java_dev_agate_core_Gateway_nativeCheckinRunNow<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    timeout_ms: jlong,
+) -> jstring {
+    let timeout = if timeout_ms > 0 { timeout_ms as u64 } else { 120_000 };
+    json_reply(&mut env, checkin_run_now(timeout))
 }
 
 #[no_mangle]

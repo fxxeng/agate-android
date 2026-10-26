@@ -36,6 +36,9 @@ object Gateway {
     private external fun nativeStop(): String
     private external fun nativeStatus(): String
     private external fun nativeTriggerTask(task: String): String
+    private external fun nativeCoreInit(dataDir: String, port: Int, schedulerOn: Boolean): String
+    private external fun nativeSchedulerSet(on: Boolean): String
+    private external fun nativeCheckinRunNow(timeoutMs: Long): String
     private external fun nativeVersion(): String
     private external fun nativeSetLogCallback(callback: Any?): String
 
@@ -68,6 +71,10 @@ object Gateway {
         val bindLan: Boolean,
         val uptimeSec: Long,
         val version: String,
+        /** B 包两级状态：core = 进程内基础设施就绪（随进程）；running = 网关在跑。 */
+        val core: Boolean,
+        /** 签到调度器开关状态（独立于网关）。 */
+        val scheduler: Boolean,
     ) {
         companion object {
             fun parse(raw: String): Status {
@@ -78,6 +85,8 @@ object Gateway {
                     j.optBoolean("bind_lan"),
                     j.optLong("uptime_sec", 0),
                     j.optString("version"),
+                    j.optBoolean("core"),
+                    j.optBoolean("scheduler"),
                 )
             }
         }
@@ -126,6 +135,30 @@ object Gateway {
     fun triggerTask(task: String): JSONObject {
         ensureLoaded()
         return JSONObject(nativeTriggerTask(task))
+    }
+
+    /**
+     * Core 初始化（幂等，B 包两级内核）：bootstrap 基础设施 + 后台调度对齐
+     * [schedulerOn]。Application 启动与闹钟兜底都走它；不监听端口。
+     */
+    fun coreInit(dataDir: String, port: Int, schedulerOn: Boolean): JSONObject {
+        ensureLoaded()
+        return JSONObject(nativeCoreInit(dataDir, port, schedulerOn))
+    }
+
+    /** 调度器独立开关（不随网关启停；Core 未就绪时返回 core_not_ready）。 */
+    fun schedulerSet(on: Boolean): JSONObject {
+        ensureLoaded()
+        return JSONObject(nativeSchedulerSet(on))
+    }
+
+    /**
+     * 同步跑一轮签到并等待完成（F3：闹钟直调内核，替代 HTTP 回环）。
+     * 返回前 WakeLock 必须由调用方持有；超时后签到在内核后台继续跑。
+     */
+    fun checkinRunNow(timeoutMs: Long = 120_000L): JSONObject {
+        ensureLoaded()
+        return JSONObject(nativeCheckinRunNow(timeoutMs))
     }
 
     // ── 日志回调 ──────────────────────────────────────────────────

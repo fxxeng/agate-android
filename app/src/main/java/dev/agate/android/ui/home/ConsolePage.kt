@@ -252,7 +252,7 @@ private fun HeroCard(
             Spacer(Modifier.width(8.dp))
             Text("服务运行中", color = H.text, fontSize = 16.sp, fontWeight = FontWeight.Bold)
             Spacer(Modifier.width(10.dp))
-            Text(":${status?.port ?: 8787}", color = H.sub, fontSize = 13.sp, modifier = Modifier.weight(1f))
+            Text(":${status?.port ?: GatewayPrefs.port(ctx)}", color = H.sub, fontSize = 13.sp, modifier = Modifier.weight(1f))
             Text(
                 "停止",
                 color = Color(0xFFF87171),
@@ -273,14 +273,14 @@ private fun HeroCard(
                 .background(H.pillBg, RoundedCornerShape(12.dp))
                 .clickable {
                     val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                    cm.setPrimaryClip(ClipData.newPlainText("BaseURL", "http://127.0.0.1:${status?.port ?: 8787}/v1"))
+                    cm.setPrimaryClip(ClipData.newPlainText("BaseURL", "http://127.0.0.1:${status?.port ?: GatewayPrefs.port(ctx)}/v1"))
                     Toast.makeText(ctx, "已复制本机地址", Toast.LENGTH_SHORT).show()
                 }
                 .padding(horizontal = 14.dp, vertical = 11.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
-                "http://127.0.0.1:${status?.port ?: 8787}/v1",
+                "http://127.0.0.1:${status?.port ?: GatewayPrefs.port(ctx)}/v1",
                 color = H.pillText,
                 fontSize = 13.sp,
                 maxLines = 1,
@@ -339,7 +339,7 @@ private fun StoppedCard(onStart: () -> Unit) {
             )
         }
         Spacer(Modifier.height(8.dp))
-        Text("BaseURL 将在启动后生成 · 端口 :8787", color = C.textDim, fontSize = 12.sp)
+        Text("BaseURL 将在启动后生成 · 端口 :${GatewayPrefs.port(ctx)}", color = C.textDim, fontSize = 12.sp)
     }
 }
 
@@ -373,7 +373,7 @@ private fun WizardCard(onNavigate: (String) -> Unit, onDismiss: () -> Unit) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 listOf(
                     Triple("1", "添加首个提供商", "中转 / 24 张预置卡") to Routes.PROVIDER_ADD,
-                    Triple("2", "复制地址与 Key", ":8787 · sk-…（访问密钥）") to Routes.KEYS,
+                    Triple("2", "复制地址与 Key", ":${GatewayPrefs.port(ctx)} · sk-…（访问密钥）") to Routes.KEYS,
                     Triple("3", "测速验证", "并发跑一轮模型测速") to Routes.MODEL_SPEEDTEST,
                 ).forEach { (step, route) ->
                     Column(

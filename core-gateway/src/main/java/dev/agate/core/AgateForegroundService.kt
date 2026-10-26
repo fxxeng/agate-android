@@ -21,8 +21,8 @@ import android.os.PowerManager
  *  2. 按需持锁：bindLan 局域网模式（0.0.0.0）持 PARTIAL_WAKE_LOCK +
  *     WifiLock(WIFI_MODE_FULL_HIGH_PERF)，保障同网段设备随时接入；
  *     本机模式（127.0.0.1）不持锁；
- *  3. 定点唤醒：ACTION_TICK 由 AlarmManager 精确闹钟进入，先拿 30 秒
- *     WakeLock 再补跑内核签到轮次（内核没起则先拉起来），跑完即放手。
+ *  3. 定点唤醒（B 包 F2/F3）：ACTION_TICK 走 Core 态直调签到 —— 不拉
+ *     网关、同步等内核跑完（WakeLock 覆盖全程）；网关没在跑则收尾即退前台。
  *
  * START_STICKY：进程被杀后系统重启服务（intent 为 null → 按当前设置拉内核）；
  * 用户主动停止（ACTION_STOP）走 START_NOT_STICKY，不复活。
@@ -103,7 +103,7 @@ class AgateForegroundService : Service() {
         val result = try {
             Gateway.start(
                 filesDir.resolve("agate").absolutePath,
-                port = 8787,
+                port = GatewayPrefs.port(this),
                 bindLan = bindLan,
                 apiKey = GatewayPrefs.apiKey(this),
             )
@@ -136,47 +136,51 @@ class AgateForegroundService : Service() {
     // ── 闹钟 tick 路径 ───────────────────────────────────────────
 
     private fun runTick() {
-        // 30 秒超时 WakeLock：签到轮次打外网需要 CPU + 网络，跑完自动释放
+        // F3：WakeLock 覆盖整轮签到（120s 内核超时 + 余量），跑完才释放
         val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
         val tickLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "agate:tick").apply {
             setReferenceCounted(false)
-            acquire(30_000L)
+            acquire(150_000L)
         }
         try {
+            // F2：tick 不再拉起网关 —— Core 态直调签到执行体，网关保持原状
+            //（没在跑就继续没在跑；Core 未就绪时这里兜底初始化）
+            val init = try {
+                Gateway.coreInit(
+                    filesDir.resolve("agate").absolutePath,
+                    GatewayPrefs.port(this),
+                    GatewayPrefs.schedulerOn(this),
+                )
+            } catch (t: Throwable) {
+                android.util.Log.e("Agate", "coreInit 异常", t)
+                null
+            }
+            if (init == null || !init.optBoolean("ok")) {
+                updateNotification("闹钟拉起 Core 失败：${init?.optString("error") ?: "异常"}")
+                return
+            }
+            val reply = try {
+                Gateway.checkinRunNow(120_000L)
+            } catch (t: Throwable) {
+                android.util.Log.e("Agate", "checkinRunNow 异常", t)
+                null
+            }
+            android.util.Log.i(
+                "Agate",
+                "闹钟签到 → ok=${reply?.optBoolean("ok") ?: false} " +
+                    "done=${reply?.optBoolean("done") ?: false}" +
+                    (reply?.optString("error")?.takeIf { it.isNotEmpty() }?.let { " ($it)" } ?: ""),
+            )
+            // 签到收尾：网关没在跑就收掉这个短命前台（跑着则保留网关通知）
             val running = try {
                 Gateway.status().running
             } catch (_: Throwable) {
                 false
             }
             if (!running) {
-                val bindLan = GatewayPrefs.bindLan(this)
-                val result = try {
-                    Gateway.start(filesDir.resolve("agate").absolutePath, port = 8787, bindLan = bindLan, apiKey = GatewayPrefs.apiKey(this))
-                } catch (_: Throwable) {
-                    null
-                }
-                if (result != null && result.ok) {
-                    if (result.bindLan) acquireKeepAwakeLocks()
-                    updateNotification(
-                        "网关运行中 · :${result.port}（内核 v${result.version}）" +
-                            if (result.bindLan) " · 局域网 0.0.0.0" else ""
-                    )
-                } else {
-                    updateNotification("闹钟拉起内核失败：${result?.error ?: "异常"}")
-                    return
-                }
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
             }
-            val reply = try {
-                Gateway.triggerTask("scheduled_tick")
-            } catch (t: Throwable) {
-                android.util.Log.e("Agate", "triggerTask 异常", t)
-                null
-            }
-            android.util.Log.i(
-                "Agate",
-                "闹钟 scheduled_tick → ${reply?.optBoolean("ok") ?: false}" +
-                    (reply?.optString("route")?.takeIf { it.isNotEmpty() }?.let { " ($it)" } ?: ""),
-            )
         } finally {
             if (tickLock.isHeld) tickLock.release()
         }

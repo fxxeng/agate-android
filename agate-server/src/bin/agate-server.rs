@@ -108,6 +108,9 @@ fn main() -> ExitCode {
     // env 预置的管理员同步进库（明文在此前已转哈希，库里只存哈希）
     agate_server::server::access::sync_env_admin_to_store();
 
+    // 网关级后台任务（B 包）：headless = 网关常开形态，bootstrap 装配完立即拉起
+    agate_server::server::start_gateway_tasks(&state);
+
     // ── 安全闸门：/v1/* 的 fail-closed 与注册提示 ───────────────
     // 桌面形态的安全边界是「只监听 127.0.0.1」，免鉴权语义（一把 Key 都
     // 没配 → 全放行）在此之上成立；本形态绑 0.0.0.0、对外可见：

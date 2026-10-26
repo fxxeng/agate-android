@@ -18,6 +18,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material3.Button
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -197,6 +198,19 @@ fun GatewayControlPage(modifier: Modifier = Modifier, onOpenDrawer: () -> Unit =
 
         Spacer(Modifier.height(10.dp))
         SectionLabel("保活开关")
+        // B 包①：内核端口单一来源（Application/FGS 共用）；改后重启网关生效
+        var portText by remember { mutableStateOf(GatewayPrefs.port(ctx).toString()) }
+        OutlinedTextField(
+            value = portText,
+            onValueChange = { raw ->
+                val digits = raw.filter { it.isDigit() }.take(5)
+                portText = digits
+                digits.toIntOrNull()?.let { if (it in 1..65535) GatewayPrefs.setPort(ctx, it) }
+            },
+            label = { Text("内核端口（1-65535，重启网关生效）") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+        )
         ToggleRow(
             label = "局域网监听 0.0.0.0",
             subtitle = "重启网关生效；无 API Key 时 /v1 拒绝服务",
@@ -228,6 +242,17 @@ fun GatewayControlPage(modifier: Modifier = Modifier, onOpenDrawer: () -> Unit =
                 AlarmScheduler.cancel(ctx)
                 append("签到闹钟已取消")
             }
+        }
+        // B 包⑤：后台任务调度独立于网关（进程活着就跑签到/凭证维护/模型刷新）
+        var schedulerOn by remember { mutableStateOf(GatewayPrefs.schedulerOn(ctx)) }
+        ToggleRow("后台任务调度", "独立于网关 · 进程活着就跑", schedulerOn) { on ->
+            schedulerOn = on
+            GatewayPrefs.setSchedulerOn(ctx, on)
+            val r = runCatching { Gateway.schedulerSet(on) }.getOrNull()
+            append(
+                if (r?.optBoolean("ok") == true) "后台调度 = $on"
+                else "后台调度 = $on（内核未响应：${r?.optString("error") ?: "无 Core"}）",
+            )
         }
 
         Spacer(Modifier.height(10.dp))

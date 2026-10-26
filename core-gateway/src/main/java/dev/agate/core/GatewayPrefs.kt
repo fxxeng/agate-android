@@ -23,6 +23,8 @@ object GatewayPrefs {
     private const val KEY_RECENT_PROVIDERS = "recent_providers"
     private const val KEY_WIZARD_DISMISSED = "wizard_dismissed"
     private const val KEY_THEME_MODE = "theme_mode"
+    private const val KEY_PORT = "port"
+    private const val KEY_SCHEDULER_ON = "scheduler_on"
 
     /** 局域网监听（0.0.0.0 + 内核 panel gate + fail-closed）。默认关。 */
     /**
@@ -68,6 +70,26 @@ object GatewayPrefs {
 
     fun setThemeMode(ctx: Context, value: String) {
         prefs(ctx).edit().putString(KEY_THEME_MODE, value).apply()
+    }
+
+    /**
+     * 内核端口（B 包①单一来源）：Application 初始化 Core、FGS 启动网关、
+     * 设置页展示共用这一份；改后重启网关生效。默认 8787。
+     */
+    fun port(ctx: Context): Int = prefs(ctx).getInt(KEY_PORT, 8787)
+
+    fun setPort(ctx: Context, value: Int) {
+        prefs(ctx).edit().putInt(KEY_PORT, value.coerceIn(1, 65535)).apply()
+    }
+
+    /**
+     * 后台任务调度开关（B 包⑤拍板：独立于网关，默认开）。
+     * App 进程活着就跑（凭证维护/模型刷新/签到调度）；关掉即纯手动。
+     */
+    fun schedulerOn(ctx: Context): Boolean = prefs(ctx).getBoolean(KEY_SCHEDULER_ON, true)
+
+    fun setSchedulerOn(ctx: Context, value: Boolean) {
+        prefs(ctx).edit().putBoolean(KEY_SCHEDULER_ON, value).apply()
     }
 
     fun setWizardDismissed(ctx: Context, value: Boolean) {
