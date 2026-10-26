@@ -127,6 +127,11 @@ rqrr = "0.11"
 
 # AutoClaw 凭证解密的 DPAPI（providers/autoclaw/crypto.rs）。仅 Windows
 # 目标生效；其它平台该适配器的「导入桌面端登录态」是桩实现。
+# jni_bridge 的 api_call（P2 通道层）：Router::oneshot 走 tower 的 ServiceExt。
+# 原本只在 [dev-dependencies]（上游仅测试用）；Android 管理面内核直调使它进入
+# 主依赖。axum 0.8 已传递依赖同版本 tower，仅显式声明，不新增产物体积。
+tower = { version = "0.5", features = ["util"] }
+
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.61", features = [
     "Win32_Security_Cryptography",
@@ -137,9 +142,6 @@ windows = { version = "0.61", features = [
 ] }
 
 [dev-dependencies]
-# 路由级测试用 `ServiceExt::oneshot` 直接打 Router（不占端口、不跑 serve），
-# 见 `server/http.rs` 的 CORS 用例。util 是 oneshot 所在的那个 feature。
-tower = { version = "0.5", features = ["util"] }
 # 尺寸墙探针要给同一个请求体做 gzip 对照（`codearts/chat.rs` 的 size_wall 用例）。
 # 只在测试目标里链，不进 release 产物；锁文件里本来就有这个包，没有新增解析结果。
 flate2 = "1"
