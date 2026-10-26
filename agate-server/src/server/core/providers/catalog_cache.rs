@@ -76,6 +76,8 @@ pub const SCOPE_QODER_GLOBAL: &str = "qoderGlobal";
 pub const SCOPE_QODER_CN: &str = "qoderCn";
 /// CatPaw（`/api/agent/maas/model-types`）
 pub const SCOPE_CATPAW: &str = "catpaw";
+/// 智谱清言的远程模型目录（`operation/detail?tag=available_models`）
+pub const SCOPE_CHATGLM: &str = "chatglm";
 /// AutoClaw 国内版
 pub const SCOPE_AUTOCLAW_CN: &str = "autoclawCn";
 /// AutoClaw 国际版
@@ -126,6 +128,7 @@ pub const ALL_SCOPES: &[&str] = &[
     SCOPE_MONKEYCODE_INTL,
     SCOPE_COMMANDCODE,
     SCOPE_ANTIGRAVITY,
+    SCOPE_CHATGLM,
 ];
 
 /// 一份清单缓存
