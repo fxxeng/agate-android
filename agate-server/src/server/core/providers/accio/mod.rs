@@ -390,6 +390,10 @@ impl ProviderAdapter for AccioAdapter {
                 return Err(error);
             }
 
+            // 2xx 也可能是风控拦截页（Content-Type 不是 SSE）：在读流之前拦掉，
+            // 否则流式路径会静默产出空回答、非流式会聚合出空 completion。
+            chat::ensure_event_stream(&response)?;
+
             let translator = chat::Translator::new(chat::response_id(), plan.model_name.clone());
             let limit = chat::LimitContext {
                 store: store.clone(),

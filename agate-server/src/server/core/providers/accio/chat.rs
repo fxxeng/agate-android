@@ -59,6 +59,102 @@ pub struct ChatPlan {
 }
 
 /// 客户端请求体 → 一次上游调用的完整计划。
+// ── 风控识别与流形态校验（对齐参考实现 `providers/accio/chat.rs`）──────
+//
+// 上游被判定为「脚本/异常出口」时不会返回业务错误，而是：
+//   - 响应头带 `xpunish` / `rgv587_flag` / `x5secdata`（腾讯防水墙标记）；
+//   - 或返回一张拦截页（HTML/跳转脚本里含 `/punish/`）；
+//   - 状态码常见 200 / 302 / 405 / 502 混用。
+// 若不识别，网关会把它当普通响应：流式路径静默产出空回答、非流式聚合出空
+// completion —— 用户只看到「模型没说话」，排查成本极高。
+const ANTI_BOT_HEADER_NAMES: [&str; 3] = ["xpunish", "rgv587_flag", "x5secdata"];
+const ANTI_BOT_TEXT_MARKERS: [&str; 2] = ["/punish/", "rgv587_flag"];
+
+/// 响应头里的风控标记（命中即说明这次请求被拦了）。
+fn anti_bot_header(headers: &reqwest::header::HeaderMap) -> Option<String> {
+    for name in ANTI_BOT_HEADER_NAMES {
+        if let Some(value) = headers.get(name) {
+            let text = value.to_str().unwrap_or("").trim().to_string();
+            return Some(if text.is_empty() {
+                name.to_string()
+            } else {
+                format!("{name}={text}")
+            });
+        }
+    }
+    None
+}
+
+/// 正文里的风控标记（拦截页不一定带 header）。
+fn anti_bot_page_text(text: &str) -> Option<&'static str> {
+    ANTI_BOT_TEXT_MARKERS
+        .iter()
+        .copied()
+        .find(|marker| text.contains(*marker))
+}
+
+/// 风控拦截 → 502（**不是 401**：凭证没问题，是出口 IP 被标记了，换号重试无用）。
+fn anti_bot_error(evidence: &str) -> GatewayError {
+    GatewayError::with_status(
+        502,
+        format!(
+            "Accio 被上游风控拦截（{evidence}）：当前出口 IP 可能已被标记，请更换出口 IP 或稍后重试"
+        ),
+    )
+}
+
+/// 非事件流 → 502（多半也是拦截页，但如实把 Content-Type 报出来便于定位）。
+fn not_sse_error(content_type: &str) -> GatewayError {
+    let shown = if content_type.trim().is_empty() {
+        "缺失"
+    } else {
+        content_type
+    };
+    GatewayError::with_status(
+        502,
+        format!(
+            "Accio 上游未返回事件流（Content-Type: {shown}），可能是风控拦截页：请更换出口 IP 或稍后重试"
+        ),
+    )
+}
+
+fn is_event_stream(content_type: &str) -> bool {
+    content_type.to_ascii_lowercase().contains("text/event-stream")
+}
+
+fn content_type_of(response: &reqwest::Response) -> String {
+    response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("")
+        .to_string()
+}
+
+/// 流式请求的前置校验：先看风控头，再看 Content-Type。
+///
+/// 只对「要按 SSE 解析」的响应调用（`mod.rs` 在拿到 2xx 后、读流之前）。
+pub fn ensure_event_stream(response: &reqwest::Response) -> Result<(), GatewayError> {
+    if let Some(evidence) = anti_bot_header(response.headers()) {
+        return Err(anti_bot_error(&evidence));
+    }
+    let content_type = content_type_of(response);
+    if !is_event_stream(&content_type) {
+        return Err(not_sse_error(&content_type));
+    }
+    Ok(())
+}
+
+/// 取 URL 的 `scheme://host`（Origin/Referer 用）。
+fn url_origin(url: &str) -> Option<String> {
+    let parsed = reqwest::Url::parse(url).ok()?;
+    Some(format!(
+        "{}://{}",
+        parsed.scheme(),
+        parsed.host_str()?
+    ))
+}
+
 pub fn build_plan(
     credentials: &Credentials,
     body: &Value,
@@ -129,8 +225,21 @@ pub fn build_plan(
 
     let body_bytes = serde_json::to_vec(&built.body)
         .map_err(|_| GatewayError::with_status(500, "Accio 请求体序列化失败"))?;
+    let url = protocol::generate_content_url(&endpoints::llm_base(), &request_id);
+    // 浏览器指纹头：风控按「像不像真浏览器」判，缺 UA / Sec-Fetch-* 更容易被拦
+    if let Some(origin) = url_origin(&url) {
+        headers.push(("Origin".to_string(), origin.clone()));
+        headers.push(("Referer".to_string(), format!("{origin}/")));
+    }
+    headers.push(("Sec-Fetch-Site".to_string(), "same-site".to_string()));
+    headers.push(("Sec-Fetch-Mode".to_string(), "cors".to_string()));
+    headers.push(("Sec-Fetch-Dest".to_string(), "empty".to_string()));
+    headers.push((
+        "User-Agent".to_string(),
+        endpoints::DESKTOP_USER_AGENT.to_string(),
+    ));
     Ok(ChatPlan {
-        url: protocol::generate_content_url(&endpoints::llm_base(), &request_id),
+        url,
         headers,
         body: body_bytes,
         model_name: model_name.to_string(),
@@ -159,7 +268,13 @@ pub async fn send(
         crate::server::config::timeout_settings().headers_ms(),
     );
     match tokio::time::timeout(budget, builder.send()).await {
-        Ok(Ok(response)) => Ok(response),
+        Ok(Ok(response)) => {
+            // 风控拦截可能带 2xx（body 是拦截页）：在交出去之前就判掉
+            if let Some(evidence) = anti_bot_header(response.headers()) {
+                return Err(anti_bot_error(&evidence));
+            }
+            Ok(response)
+        }
         Ok(Err(error)) if error.is_timeout() => Err(GatewayError::with_status(
             502,
             format!(
@@ -180,7 +295,15 @@ pub async fn send(
 
 /// 失败响应 → 客户端可用错误（流内错误另走 [`drive_stream`]）。
 pub async fn http_error(status: u16, response: reqwest::Response) -> GatewayError {
+    // 失败响应同样可能是风控页：先看头，再看正文标记（实测无效凭证也会拿到
+    // 同一张拦截页，所以不能只按状态码分类）
+    if let Some(evidence) = anti_bot_header(response.headers()) {
+        return anti_bot_error(&evidence);
+    }
     let text = response.text().await.unwrap_or_default();
+    if let Some(marker) = anti_bot_page_text(&text) {
+        return anti_bot_error(marker);
+    }
     let detail: String = text.chars().take(300).collect();
     let kind = protocol::classify_upstream_error(status, &text);
     let mapped = match kind {
@@ -465,8 +588,13 @@ pub async fn drive_aggregate(
     telemetry: std::sync::Arc<RequestTelemetry>,
     limit: &LimitContext,
 ) -> Result<Value, GatewayError> {
+    let content_type = content_type_of(&response);
     let mut source = response.bytes_stream();
     let mut buffer = LineBuffer::new();
+    // 有没有见过真正的 data 帧：一次都没有 → 上游给的是拦截页/空响应，
+    // 而不是「模型没说话」。静默返回空 completion 是最难排查的一种表现。
+    let mut saw_data = false;
+    let mut raw_head = String::new();
     loop {
         let Some(item) = source.next().await else {
             break;
@@ -478,6 +606,9 @@ pub async fn drive_aggregate(
             )
         })?;
         let text = String::from_utf8_lossy(&chunk).to_string();
+        if raw_head.len() < 1024 {
+            raw_head.push_str(&text.chars().take(1024 - raw_head.len()).collect::<String>());
+        }
         for line in buffer.push(&text) {
             let Some(data) = line.strip_prefix("data:") else {
                 continue;
@@ -485,6 +616,7 @@ pub async fn drive_aggregate(
             let Some(frame) = stream::parse_frame(data) else {
                 continue;
             };
+            saw_data = true;
             if frame.is_error() {
                 let error = frame_error(&frame);
                 if error.status_code == 429 {
@@ -498,6 +630,13 @@ pub async fn drive_aggregate(
                 return Ok(completion_body(&translator));
             }
         }
+    }
+    if !saw_data {
+        // 正文里带风控标记时给更具指向性的文案
+        if let Some(marker) = anti_bot_page_text(&raw_head) {
+            return Err(anti_bot_error(marker));
+        }
+        return Err(not_sse_error(&content_type));
     }
     Ok(completion_body(&translator))
 }

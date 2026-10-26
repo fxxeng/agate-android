@@ -71,7 +71,14 @@ pub const DEFAULT_TENANT: &str = "accio-agent";
 /// ADK 推理请求的来源标记（桌面端默认值 `ADK_IAI_TAG || "phoenix-desktop"`）
 pub const DEFAULT_IAI_TAG: &str = "phoenix-desktop";
 /// 推理请求头里的客户端版本（桌面端取 appVersion；缺省给一个近版号）
-pub const DEFAULT_APP_VERSION: &str = "0.32.6";
+pub const DEFAULT_APP_VERSION: &str = "0.32.6";pub const DEFAULT_APP_VERSION: &str = "0.32.6";
+
+/// 桌面端浏览器指纹 UA。
+///
+/// 风控链路（腾讯防水墙那套 `xpunish` / `rgv587_flag`）对「不是浏览器」的
+/// 客户端更敏感：缺 UA / 缺 Sec-Fetch-* 的请求更容易被判成脚本。这里给一份
+/// 常规 Chrome UA，与 Origin/Referer 一起补齐，尽量贴近真实桌面客户端。
+pub const DESKTOP_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
 
 /// 推理请求头 `appKey`（**必填**，见下）。
 ///

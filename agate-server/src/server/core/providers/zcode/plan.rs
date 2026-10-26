@@ -610,14 +610,25 @@ fn merged_texts(
 /// 官方三块 + 客户端自带 system（去掉缓存断点）。
 fn system_blocks(texts: &GatewayBlocks, existing: Option<&Value>) -> Vec<Value> {
     let ephemeral = json!({ "type": "ephemeral" });
-    let mut blocks = vec![
+    // ⚠️ 上游只认**恰好 3 块** system。客户端自带的 system 若单独成块，
+    // 就会变成第 4 段 —— ZCode 直接回 `405 / 3012 method not allowed`
+    // （真机实测：测试请求只有官方三段能过，实际调用多带客户端的指令就挂）。
+    // 因此这里把客户端 system **并入第三段**（动态段）尾部，而不是追加新块。
+    let mut dynamic = format!("\n\n{}", texts.dynamic);
+    for extra in user_system_blocks(existing) {
+        if let Some(text) = extra.get("text").and_then(Value::as_str) {
+            let text = text.trim();
+            if !text.is_empty() {
+                dynamic.push_str("\n\n");
+                dynamic.push_str(text);
+            }
+        }
+    }
+    vec![
         text_block(texts.identity.clone(), Some(ephemeral.clone())),
         text_block(texts.stable.clone(), Some(ephemeral.clone())),
-        // 动态块以 `\n\n` 开头，是官方装配的形状（不是排版疏忽）
-        text_block(format!("\n\n{}", texts.dynamic), Some(ephemeral)),
-    ];
-    blocks.extend(user_system_blocks(existing));
-    blocks
+        text_block(dynamic, Some(ephemeral)),
+    ]
 }
 
 /// 客户端自带 system → 文本块数组（**丢弃** cache_control，理由见模块头）。
