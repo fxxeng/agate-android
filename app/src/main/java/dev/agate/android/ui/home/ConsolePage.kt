@@ -315,6 +315,7 @@ private fun Dot() {
 /* ── 停止态独立卡（v44 .state-stopped）── */
 @Composable
 private fun StoppedCard(onStart: () -> Unit) {
+    val ctx = LocalContext.current
     val C = agateColors()
     Column(
         Modifier
@@ -346,6 +347,7 @@ private fun StoppedCard(onStart: () -> Unit) {
 /* ── 新手向导（v44 ob-card：accent 边框 + 收起单行 + 展开 3 步）── */
 @Composable
 private fun WizardCard(onNavigate: (String) -> Unit, onDismiss: () -> Unit) {
+    val ctx = LocalContext.current
     val C = agateColors()
     var expanded by remember { mutableStateOf(false) }
     Column(
