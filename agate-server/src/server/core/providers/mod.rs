@@ -823,12 +823,9 @@ pub fn meta(kind: ProviderKind) -> &'static ProviderMeta {
 /// 家有语义。`commandcode` / `monkeycode` 这类没接余额的家显示阈值输入框，
 /// 用户填完永远看不到效果，会以为功能坏了。
 fn usage_capable(kind: ProviderKind) -> bool {
-    // 自定义家按**实例**配置 `balanceScheme` 决定能力，注册表这里拿不到具体
-    // 实例 id，只能如实报「取决于配置」→ 给 true（界面显示设置，真没配方案时
-    // 查询会回「未配置查询」这句中性文案，比藏起设置更好解释）。
-    if kind == ProviderKind::Custom {
-        return true;
-    }
+    // 注意：注册表里的 `kind` 只可能是内置家 —— 自定义提供商的 kind 不从
+    // `ProviderKind` 枚举走（它们按实例 id 存在，见 `custom_providers`），
+    // 因此这里没有「Custom」这一支可判，也不需要。
     crate::server::core::providers::adapter::adapter_for(kind).supports_usage()
 }
 
