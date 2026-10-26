@@ -313,7 +313,7 @@ fn api_call(method: &str, path: &str, body: Option<String>, api_key: &str) -> Va
     if !api_key.is_empty() {
         builder = builder.header("authorization", format!("Bearer {api_key}"));
     }
-    let Ok(request) = builder.body(body.unwrap_or_default()) else {
+    let Ok(request) = builder.body(body.unwrap_or_default().into_bytes()) else {
         return json!({ "ok": false, "error": "build request failed" });
     };
     // oneshot 派到内核全局 runtime，mpsc 同步等结果（与 checkin_run_now 同款模式）。
