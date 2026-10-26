@@ -71,7 +71,7 @@ pub const DEFAULT_TENANT: &str = "accio-agent";
 /// ADK 推理请求的来源标记（桌面端默认值 `ADK_IAI_TAG || "phoenix-desktop"`）
 pub const DEFAULT_IAI_TAG: &str = "phoenix-desktop";
 /// 推理请求头里的客户端版本（桌面端取 appVersion；缺省给一个近版号）
-pub const DEFAULT_APP_VERSION: &str = "0.32.6";pub const DEFAULT_APP_VERSION: &str = "0.32.6";
+pub const DEFAULT_APP_VERSION: &str = "0.32.6";
 
 /// 桌面端浏览器指纹 UA。
 ///
