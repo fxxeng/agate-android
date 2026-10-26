@@ -110,6 +110,7 @@ pub mod catalog;
 pub mod catalog_cache;
 pub mod catalog_refresh;
 pub mod catpaw;
+pub mod chatglm;
 pub mod cline;
 /// CodeArts（华为云 snap-access）。适配器实现在 `codearts/`，
 /// 语义来源与施工计划见 `cpa-deploy/notes/agate-codearts-port-plan.md`。
@@ -457,6 +458,9 @@ pub enum ProviderKind {
     /// 翻译器（`protocol::antigravity_outbound` / `antigravity_stream`），
     /// **`is_stateful` 保持 false**（不走 `forward_conversation`）。
     Antigravity,
+    /// 智谱清言（`chatglm.cn`）：SSE 帧混着增量与收尾全文快照，走
+    /// `UpstreamResponse::ChatglmSnapshot` 那台按帧语义差分的翻译机。
+    Chatglm,
     /// OfficeAce（华为云果办 / OfficeClaw / jiuwenclaw）。
     ///
     /// 上游是 OpenAI 兼容的华为 AgentArts 模型网关（`Basic` 鉴权，见
@@ -555,6 +559,7 @@ pub const PROVIDERS: &[ProviderMeta] = &[
     // 伴生（规格 §6：没有 region 参数，sandbox/daily/prod 是环境不是地区）。
     // 排在末尾（2026-10 接入，后到居后，与 Kuku / Command Code 同一处置）。
     ProviderMeta { id: "antigravity", label: "Antigravity" },
+    ProviderMeta { id: "chatglm", label: "智谱清言" },
     // OfficeAce（华为云果办 / OfficeClaw）：排末尾（新家按约定追加在末尾）。
     // 它的可用名单与 codearts / catpaw / trae / zcode 大面积同名（glm-5.2 /
     // glm-5.3 / deepseek-v4-flash-0731 / kimi-k2.6 …），注册表顺序决定目录
@@ -647,6 +652,7 @@ pub fn kind_from_id(id: &str) -> Option<ProviderKind> {
         "monkeycode-intl" => Some(ProviderKind::MonkeyCodeIntl),
         "commandcode" => Some(ProviderKind::CommandCode),
         "antigravity" => Some(ProviderKind::Antigravity),
+        "chatglm" => Some(ProviderKind::Chatglm),
         "officeace" => Some(ProviderKind::OfficeAce),
         "orcaterm" => Some(ProviderKind::OrcaTerm),
         // 走到这里 = 上面的注册表判定已放行、这个 match 却没有对应分支：
@@ -689,6 +695,7 @@ pub const fn kind_id(kind: ProviderKind) -> &'static str {
         ProviderKind::MonkeyCodeIntl => "monkeycode-intl",
         ProviderKind::CommandCode => "commandcode",
         ProviderKind::Antigravity => "antigravity",
+        ProviderKind::Chatglm => "chatglm",
         ProviderKind::OfficeAce => "officeace",
         ProviderKind::OrcaTerm => "orcaterm",
     }
