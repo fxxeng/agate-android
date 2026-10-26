@@ -1077,7 +1077,7 @@ pub fn probe_port(port: u16) -> Result<(), PortConflict> {
 /// 首次拉起后进程内常驻 —— 「真停」等模块补 watch 通道后再做（P5）。
 pub fn start_gateway_tasks(state: &ServerState) {
     static STARTED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
-    if STARTED.set(()).is_some() {
+    if STARTED.set(()).is_ok() {
         return;
     }
     // 订阅内核（mihomo sidecar）的命令 worker：单条队列串行消费内核操作
