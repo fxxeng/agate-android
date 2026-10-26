@@ -96,6 +96,39 @@ fn configure(id: &str, body: &Bytes) -> Response {
         Err(error) => return bad_request(error.message),
     };
     let mut patch = IntervalTaskPatch::default();
+    // ── 「自动续期」按家关闭清单（只对这一条任务开放）─────────────
+    // 与 enabled/interval 同一次请求里可以一起改；只传清单也合法
+    // （此时下面 patch 为空，不会命中「没有需要更新的字段」）。
+    let mut disabled_touched = false;
+    if id == scheduled_tasks::TASK_CREDENTIAL_MAINTENANCE {
+        if let Some(raw) = payload.as_object().and_then(|object| object.get("disabledProviders")) {
+            let Some(list) = raw.as_array() else {
+                return bad_request("disabledProviders 必须是数组");
+            };
+            let mut out: Vec<String> = Vec::new();
+            for item in list {
+                let Some(text) = item.as_str() else {
+                    return bad_request("disabledProviders 的元素必须是提供商 id 字符串");
+                };
+                let id_text = text.trim();
+                if id_text.is_empty() {
+                    continue;
+                }
+                // 白名单校验：写进一个谁都不认识的 id，维护循环永远不会命中它，
+                // 用户会以为「关掉了」而其实什么都没变
+                if crate::server::core::providers::kind_from_id(id_text).is_none() {
+                    return bad_request(format!("未知的提供商：{id_text}"));
+                }
+                if !out.iter().any(|existing| existing == id_text) {
+                    out.push(id_text.to_string());
+                }
+            }
+            if !crate::server::config::set_credential_maintenance_disabled_providers(out) {
+                return bad_request("保存自动续期设置失败");
+            }
+            disabled_touched = true;
+        }
+    }
     if let Some(object) = payload.as_object() {
         if let Some(value) = object.get("enabled") {
             // 与 auto_checkin 的 configure 同一口径：`enabled !== undefined` 时
@@ -116,6 +149,11 @@ fn configure(id: &str, body: &Bytes) -> Response {
                 None => return bad_request(format!("「{id}」的间隔必须是整数")),
             }
         }
+    }
+    // 只改了按家清单：核心任务的开关/间隔没动，不必走 configure（它会以
+    // 「没有需要更新的字段」400），直接回最新的那条任务
+    if disabled_touched && patch.enabled.is_none() && patch.interval.is_none() {
+        return ok_json(scheduled_tasks::task_by_id(id));
     }
     match scheduled_tasks::configure(id, patch) {
         Ok(task) => ok_json(task),

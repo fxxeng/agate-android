@@ -39,6 +39,47 @@ object ScheduledTaskOps {
         if (obj.optBoolean("success")) obj.optJSONObject("data")?.optJSONArray("tasks") else null
     }
 
+    /**
+     * 「自动续期」按家关闭清单（黑名单；空集合 = 全家开启）。
+     * 内核把它挂在 `GET /api/scheduled-tasks` 的**顶层**字段
+     * `credentialMaintenanceDisabledProviders`（不在单条 task 里）。
+     */
+    suspend fun disabledProviders(): Set<String>? = withContext(Dispatchers.IO) {
+        val reply = CoreTransport.get("/api/scheduled-tasks") as? CoreTransport.Reply.Ok
+            ?: return@withContext null
+        if (reply.status < 200 || reply.status >= 300) return@withContext null
+        val obj = runCatching { JSONObject(reply.text) }.getOrNull() ?: return@withContext null
+        val data = obj.optJSONObject("data") ?: return@withContext null
+        val arr = data.optJSONArray("credentialMaintenanceDisabledProviders")
+            ?: return@withContext emptySet()
+        val out = HashSet<String>()
+        for (i in 0 until arr.length()) {
+            val id = arr.optString(i)
+            if (id.isNotBlank()) out += id
+        }
+        out
+    }
+
+    /** 写「自动续期」按家关闭清单（只对这一条任务有效）。 */
+    suspend fun setDisabledProviders(providers: List<String>): OpResult = withContext(Dispatchers.IO) {
+        val body = JSONObject().put("disabledProviders", JSONArray(providers))
+        val reply = CoreTransport.post(
+            "/api/scheduled-tasks/$TASK_CREDENTIAL_MAINTENANCE",
+            body.toString(),
+        )
+        when (reply) {
+            is CoreTransport.Reply.Ok -> {
+                val obj = runCatching { JSONObject(reply.text) }.getOrNull()
+                if (reply.status in 200..299 && obj?.optBoolean("success") == true) {
+                    OpResult(true, null)
+                } else {
+                    OpResult(false, obj?.optString("error")?.ifBlank { "保存失败" } ?: "保存失败")
+                }
+            }
+            is CoreTransport.Reply.Down -> OpResult(false, reply.message)
+        }
+    }
+
     suspend fun configure(id: String, enabled: Boolean? = null, interval: Int? = null): OpResult =
         withContext(Dispatchers.IO) {
             val body = JSONObject()

@@ -1393,6 +1393,48 @@ pub fn set_retention(patch: RetentionPatch) -> bool {
 /// 与 `set_retention` 同一模式：内存快照与 raw 底稿一起改 —— 前者让正在跑的
 /// 循环下一轮就用新间隔（不必重启进程），后者保证写盘时不吃掉兄弟字段
 /// （只改一条任务时，`scheduledTasks` 下其余各条必须原样保留）。
+/// 「自动续期」按家关闭清单（黑名单，见 `KEY_CREDENTIAL_MAINTENANCE_DISABLED`）。
+///
+/// 只读快照；调用方（凭证维护循环）每次跑一轮读一次即可 —— 配置改动极少，
+/// 不值得缓存。异常形态（数组里混入非字符串、整块被手改成非对象）一律跳过，
+/// 与 config 其它读取处同一取舍：坏数据不该让维护任务整个停摆。
+pub fn credential_maintenance_disabled_providers() -> Vec<String> {
+    let config = current();
+    config
+        .raw()
+        .get(KEY_SCHEDULED_TASKS)
+        .and_then(Value::as_object)
+        .and_then(|tasks| tasks.get(KEY_CREDENTIAL_MAINTENANCE_DISABLED))
+        .and_then(Value::as_array)
+        .map(|list| {
+            list.iter()
+                .filter_map(Value::as_str)
+                .map(|text| text.trim().to_string())
+                .filter(|text| !text.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// 写入「自动续期」按家关闭清单。返回是否落盘成功。
+pub fn set_credential_maintenance_disabled_providers(providers: Vec<String>) -> bool {
+    update(move |config| {
+        let root = config
+            .raw
+            .entry(KEY_SCHEDULED_TASKS.to_string())
+            .or_insert_with(|| Value::Object(Map::new()));
+        if !root.is_object() {
+            *root = Value::Object(Map::new());
+        }
+        if let Some(tasks) = root.as_object_mut() {
+            tasks.insert(
+                KEY_CREDENTIAL_MAINTENANCE_DISABLED.to_string(),
+                Value::Array(providers.iter().map(|id| Value::String(id.clone())).collect()),
+            );
+        }
+    })
+}
+
 pub fn set_scheduled_task(
     key: &str,
     patch: IntervalTaskPatch,

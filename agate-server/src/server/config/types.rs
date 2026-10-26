@@ -472,6 +472,17 @@ pub struct RetentionPatch {
 pub const KEY_SCHEDULED_TASKS: &str = "scheduledTasks";
 /// 凭证自动维护在 `scheduledTasks` 下的子键
 pub const KEY_CREDENTIAL_MAINTENANCE: &str = "credentialMaintenance";
+
+/// 「自动续期」按家关闭清单（黑名单）。
+///
+/// 语义：**默认空数组 = 全部提供商都参与自动续期**；把某家 id 放进来 = 它不参与。
+/// 用黑名单而不是白名单，是为了让「新注册一家」默认就是开启的 ——
+/// 白名单会让新增家默认关闭，用户会以为坏了。
+///
+/// 位置放在 `scheduledTasks` 下与 `credentialMaintenance` 平级（而不是塞进
+/// `IntervalTask`）：那个结构被六条任务共用，且 `ScheduledSettings` 是 `Copy`
+/// 的，塞 `Vec<String>` 会牵连全仓。
+pub const KEY_CREDENTIAL_MAINTENANCE_DISABLED: &str = "credentialMaintenanceDisabledProviders";
 /// 模型目录定时刷新在 `scheduledTasks` 下的子键
 pub const KEY_MODEL_REFRESH: &str = "modelRefresh";
 /// 日志页自动刷新在 `scheduledTasks` 下的子键（**前端**定时器，后端只存配置）

@@ -102,6 +102,12 @@ pub async fn refresh_expiring_accounts(store: &AccountStore) -> Vec<Value> {
     // 界面上逐条对照时，顺序一致省掉一次按 id 重排。
     let mut slots: Vec<Option<Value>> = vec![None; accounts.len()];
     let mut pending: Vec<(usize, String, ProviderKind)> = Vec::new();
+    // 「按家关闭自动续期」的黑名单（默认空 = 全家开启，见 config 的常量说明）。
+    // 每轮读一次：配置改动极少，且维护循环本身是分钟级。
+    let disabled: std::collections::HashSet<String> =
+        crate::server::config::credential_maintenance_disabled_providers()
+            .into_iter()
+            .collect();
     for (index, account) in accounts.iter().enumerate() {
         let id = account
             .get("id")
@@ -124,6 +130,12 @@ pub async fn refresh_expiring_accounts(store: &AccountStore) -> Vec<Value> {
             slots[index] = Some(skipped(&id, provider, "未注册的提供商"));
             continue;
         };
+        // 用户在「提供商详情 → 自动化」里关掉了这一家的自动续期：
+        // 只跳过**定时维护**这条路径；转发时的按需续期不受影响（那是另一条链路）。
+        if disabled.contains(provider) {
+            slots[index] = Some(skipped(&id, provider, "该提供商已关闭自动续期"));
+            continue;
+        }
         let adapter = adapter_for(kind);
         if !adapter.supports_refresh() {
             slots[index] = Some(skipped(

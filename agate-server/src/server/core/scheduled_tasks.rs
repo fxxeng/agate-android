@@ -207,6 +207,11 @@ pub fn list() -> Value {
     // 逐条任务各读一次库（四次读 + 四次解析）没有意义。
     let states = task_state::read_all();
     json!({
+        // 「自动续期」按家关闭清单（黑名单，默认空 = 全家开启）。
+        // 单独挂在顶层而不是塞进某条任务里：它只对 credential_maintenance 有意义，
+        // 塞进 IntervalTask 会让六条任务的形状各自漂移。
+        "credentialMaintenanceDisabledProviders":
+            crate::server::config::credential_maintenance_disabled_providers(),
         "tasks": TASKS
             .iter()
             .map(|task| {

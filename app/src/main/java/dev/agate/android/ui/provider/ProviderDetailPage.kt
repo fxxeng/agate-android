@@ -95,6 +95,8 @@ fun ProviderDetailPage(providerId: String, onBack: () -> Unit, onAddAccount: () 
     var confirmRemoveAll by remember { mutableStateOf(false) }
     // 自动化：凭证自动维护（自动续期）是**全局**定时任务，这里只做该家的入口与节奏调整
     var credTask by remember { mutableStateOf<JSONObject?>(null) }
+    // 「自动续期」按家关闭清单（黑名单；空 = 全家开启）。null = 还没读到
+    var disabledProviders by remember { mutableStateOf<Set<String>?>(null) }
     var editingInterval by remember { mutableStateOf(false) }
     var intervalText by remember { mutableStateOf("") }
 
@@ -129,6 +131,7 @@ fun ProviderDetailPage(providerId: String, onBack: () -> Unit, onAddAccount: () 
 
     LaunchedEffect(Unit) {
         ScheduledTaskOps.configure(GatewayPrefs.apiKey(ctx))
+        disabledProviders = ScheduledTaskOps.disabledProviders()
         val arr = ScheduledTaskOps.list()
         if (arr != null) {
             for (i in 0 until arr.length()) {
@@ -202,6 +205,19 @@ fun ProviderDetailPage(providerId: String, onBack: () -> Unit, onAddAccount: () 
                 onJumpToAccounts = { tab = 1 },
                 credTask = credTask,
                 checkinSupported = preset?.supportsCheckin == true,
+                autoRefreshOn = disabledProviders?.let { providerId !in it },
+                onToggleAutoRefresh = { enabled ->
+                    val current = disabledProviders ?: emptySet()
+                    val next = if (enabled) current - providerId else current + providerId
+                    scope.launch {
+                        val r = ScheduledTaskOps.setDisabledProviders(next.toList().sorted())
+                        toast(
+                            if (r.ok) (if (enabled) "已开启该家自动续期" else "已关闭该家自动续期")
+                            else (r.error ?: "保存失败")
+                        )
+                        if (r.ok) disabledProviders = next
+                    }
+                },
                 onEditInterval = {
                     intervalText = (credTask?.optInt("interval", 10) ?: 10).toString()
                     editingInterval = true
@@ -444,6 +460,8 @@ private fun OverviewTab(
     onJumpToAccounts: () -> Unit,
     credTask: JSONObject?,
     checkinSupported: Boolean,
+    autoRefreshOn: Boolean?,
+    onToggleAutoRefresh: (Boolean) -> Unit,
     onEditInterval: () -> Unit,
     onRefreshProvider: () -> Unit,
 ) {
@@ -497,9 +515,19 @@ private fun OverviewTab(
                         credTask?.let { t ->
                             val on = t.optBoolean("enabled", true)
                             val n = t.optInt("interval", 10)
-                            if (on) "已开启 · 每 $n 分钟检查临期凭证" else "已关闭 · 转发时仍按需续期"
+                            when {
+                                !on -> "全局已关闭 · 转发时仍按需续期"
+                                autoRefreshOn == false -> "该家已关闭 · 全局每 $n 分钟检查（不含本家）"
+                                else -> "已开启 · 每 $n 分钟检查临期凭证"
+                            }
                         } ?: "节奏读取中…",
                         color = C.textSub, fontSize = 12.sp,
+                    )
+                }
+                if (autoRefreshOn != null) {
+                    androidx.compose.material3.Switch(
+                        checked = autoRefreshOn,
+                        onCheckedChange = onToggleAutoRefresh,
                     )
                 }
                 SmallAction("改间隔", enabled = !busy && credTask != null, onClick = onEditInterval)
