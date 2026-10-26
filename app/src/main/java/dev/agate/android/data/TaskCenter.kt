@@ -10,7 +10,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import okhttp3.OkHttpClient
-import okhttp3.Request
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
@@ -54,7 +53,6 @@ object TaskCenter {
         val keepalive: List<String> = emptyList(),
     )
 
-    private const val PORT = 8787
     private const val INTERVAL_MS = 8_000L
 
     private val _snapshot = MutableStateFlow(TaskSnapshot())
@@ -67,15 +65,10 @@ object TaskCenter {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var pollJob: Job? = null
 
-    private val client by lazy {
-        OkHttpClient.Builder()
-            .connectTimeout(3, TimeUnit.SECONDS)
-            .readTimeout(6, TimeUnit.SECONDS)
-            .build()
-    }
 
     fun configure(apiKey: String) {
         this.apiKey = apiKey
+        CoreTransport.configure(apiKey)
     }
 
     fun startPolling() {
@@ -98,7 +91,7 @@ object TaskCenter {
             val checkin = getJson("/api/auto-checkin")
             val keepalive = getJson("/api/checkin-keepalive")
             if (checkin == null && keepalive == null) {
-                _error.value = "无法连接内核（网关未运行？）"
+                _error.value = "无法连接内核"
                 return@launch
             }
             _error.value = null
@@ -158,19 +151,13 @@ object TaskCenter {
         return out
     }
 
-    private fun getJson(path: String): JSONObject? {
-        val builder = Request.Builder().url("http://127.0.0.1:$PORT$path")
-        if (apiKey.isNotBlank()) builder.header("Authorization", "Bearer $apiKey")
-        return try {
-            client.newCall(builder.build()).execute().use { resp ->
-                if (!resp.isSuccessful) return null
-                val body = resp.body?.string() ?: return null
-                val obj = JSONObject(body)
-                if (!obj.optBoolean("success")) return null
-                obj.optJSONObject("data")
-            }
-        } catch (_: Exception) {
-            null
-        }
+    // P2：经 CoreTransport 内核直调（调用方均在 scope.launch 协程内，suspend 合法）
+    private suspend fun getJson(path: String): JSONObject? {
+        val r = CoreTransport.get(path)
+        val ok = r as? CoreTransport.Reply.Ok ?: return null
+        if (ok.status < 200 || ok.status >= 300) return null
+        val obj = runCatching { JSONObject(ok.text) }.getOrNull() ?: return null
+        if (!obj.optBoolean("success")) return null
+        return obj.optJSONObject("data")
     }
 }

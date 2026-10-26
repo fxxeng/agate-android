@@ -111,7 +111,7 @@ fun ProviderDetailPage(providerId: String, onBack: () -> Unit, onAddAccount: () 
         scope.launch {
             val data = AccountOps.usage(id)
             busy = false
-            if (data == null) { toast("余额查询失败（网关未运行？）"); return@launch }
+            if (data == null) { toast("余额查询失败"); return@launch }
             val arr = data.optJSONArray("results")
             if (arr != null) {
                 for (i in 0 until arr.length()) {

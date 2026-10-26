@@ -353,7 +353,7 @@ private fun EmptyHint(fetched: Boolean) {
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Text(
-            if (fetched) "还没有可暴露的模型" else "网关未运行 / 尚未加载清单",
+            if (fetched) "还没有可暴露的模型" else "尚未加载模型清单",
             color = C.textSub,
             fontSize = 14.sp,
         )

@@ -4,8 +4,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
@@ -27,22 +25,13 @@ import java.util.concurrent.TimeUnit
  */
 object AccountOps {
 
-    private const val PORT = 8787
-    private val JSON_MEDIA = "application/json; charset=utf-8".toMediaType()
 
-    private val client by lazy {
-        OkHttpClient.Builder()
-            .connectTimeout(8, TimeUnit.SECONDS)
-            // 粘贴型添加会去上游校验凭证（kuku enrich_identity 等），
-            // 余额查询要逐账号打上游，统一放宽到 40s
-            .readTimeout(40, TimeUnit.SECONDS)
-            .build()
-    }
 
     @Volatile private var apiKey: String = ""
 
     fun configure(apiKey: String) {
         this.apiKey = apiKey
+        CoreTransport.configure(apiKey)
     }
 
     class OpResult(val ok: Boolean, val data: JSONObject?, val error: String?)
@@ -157,57 +146,46 @@ object AccountOps {
         return post("/api/accounts", body)
     }
 
-    private suspend fun get(path: String): JSONObject? = withContext(Dispatchers.IO) {
-        val builder = Request.Builder().url("http://127.0.0.1:$PORT$path").get()
-        if (apiKey.isNotBlank()) builder.header("Authorization", "Bearer $apiKey")
-        try {
-            client.newCall(builder.build()).execute().use { resp ->
-                if (!resp.isSuccessful) return@withContext null
-                val text = resp.body?.string() ?: return@withContext null
-                val obj = JSONObject(text)
-                if (obj.optBoolean("success")) obj.optJSONObject("data") else null
-            }
+    // P2：经 CoreTransport 内核直调（不经端口，Core 态可用）
+    private suspend fun get(path: String): JSONObject? {
+        val r = CoreTransport.get(path)
+        val ok = r as? CoreTransport.Reply.Ok ?: return null
+        if (ok.status < 200 || ok.status >= 300) return null
+        val obj = try {
+            JSONObject(ok.text)
         } catch (_: Exception) {
-            null
+            return null
         }
+        return if (obj.optBoolean("success")) obj.optJSONObject("data") else null
     }
 
-    private suspend fun patch(path: String, body: JSONObject): OpResult =
-        withContext(Dispatchers.IO) {
-            val builder = Request.Builder()
-                .url("http://127.0.0.1:$PORT$path")
-                .patch(body.toString().toRequestBody(JSON_MEDIA))
-            if (apiKey.isNotBlank()) builder.header("Authorization", "Bearer $apiKey")
-            try {
-                client.newCall(builder.build()).execute().use { resp ->
-                    val text = resp.body?.string() ?: return@withContext OpResult(false, null, "空响应")
-                    val obj = JSONObject(text)
-                    if (obj.optBoolean("success")) OpResult(true, obj.optJSONObject("data"), null)
-                    else OpResult(false, obj.optJSONObject("data"), obj.optString("error").ifBlank { "操作失败" })
-                }
-            } catch (e: Exception) {
-                OpResult(false, null, e.message ?: "网络错误")
-            }
+    // P2：经 CoreTransport 内核直调
+    private suspend fun patch(path: String, body: JSONObject): OpResult {
+        val r = CoreTransport.call("PATCH", path, body.toString())
+        if (r !is CoreTransport.Reply.Ok) {
+            return OpResult(false, null, (r as? CoreTransport.Reply.Down)?.message ?: "链路错误")
         }
+        val obj = try {
+            JSONObject(r.text)
+        } catch (_: Exception) {
+            return OpResult(false, null, "内核响应异常")
+        }
+        return if (obj.optBoolean("success")) OpResult(true, obj.optJSONObject("data"), null)
+        else OpResult(false, obj.optJSONObject("data"), obj.optString("error").ifBlank { "操作失败" })
+    }
 
-    private suspend fun post(path: String, body: JSONObject): OpResult =
-        withContext(Dispatchers.IO) {
-            val builder = Request.Builder()
-                .url("http://127.0.0.1:$PORT$path")
-                .post(body.toString().toRequestBody(JSON_MEDIA))
-            if (apiKey.isNotBlank()) builder.header("Authorization", "Bearer $apiKey")
-            try {
-                client.newCall(builder.build()).execute().use { resp ->
-                    val text = resp.body?.string() ?: return@withContext OpResult(false, null, "空响应")
-                    val obj = JSONObject(text)
-                    if (obj.optBoolean("success")) {
-                        OpResult(true, obj.optJSONObject("data"), null)
-                    } else {
-                        OpResult(false, obj.optJSONObject("data"), obj.optString("error").ifBlank { "操作失败" })
-                    }
-                }
-            } catch (e: Exception) {
-                OpResult(false, null, e.message ?: "网络错误")
-            }
+    // P2：经 CoreTransport 内核直调（错误信封随 status 一并透传，不拦 4xx/5xx）
+    private suspend fun post(path: String, body: JSONObject): OpResult {
+        val r = CoreTransport.post(path, body.toString())
+        if (r !is CoreTransport.Reply.Ok) {
+            return OpResult(false, null, (r as? CoreTransport.Reply.Down)?.message ?: "链路错误")
         }
+        val obj = try {
+            JSONObject(r.text)
+        } catch (_: Exception) {
+            return OpResult(false, null, "内核响应异常")
+        }
+        return if (obj.optBoolean("success")) OpResult(true, obj.optJSONObject("data"), null)
+        else OpResult(false, obj.optJSONObject("data"), obj.optString("error").ifBlank { "操作失败" })
+    }
 }

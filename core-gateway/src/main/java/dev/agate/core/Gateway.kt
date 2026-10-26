@@ -42,6 +42,20 @@ object Gateway {
     private external fun nativeVersion(): String
     private external fun nativeSetLogCallback(callback: Any?): String
 
+    private external fun nativeApiCall(method: String, path: String, body: String?, apiKey: String): String
+
+    /**
+     * 管理面内核直调（P2 通道层）：method+path+body 经 JNI 走内核内存 Router，
+     * 不经 127.0.0.1 端口 —— Core 态（网关未运行）下管理操作照常可用。
+     * 返回 {ok, status, body} JSON 文本；链路异常返回 null。
+     */
+    fun apiCall(method: String, path: String, body: String?, apiKey: String): String? =
+        try {
+            nativeApiCall(method, path, body, apiKey)
+        } catch (_: Throwable) {
+            null
+        }
+
     data class StartResult(
         val ok: Boolean,
         val port: Int,

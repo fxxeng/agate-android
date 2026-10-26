@@ -4,8 +4,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
@@ -21,36 +19,24 @@ object ScheduledTaskOps {
 
     const val TASK_CREDENTIAL_MAINTENANCE = "credential_maintenance"
 
-    private const val PORT = 8787
-    private val JSON_MEDIA = "application/json; charset=utf-8".toMediaType()
 
-    private val client by lazy {
-        OkHttpClient.Builder()
-            .connectTimeout(5, TimeUnit.SECONDS)
-            .readTimeout(10, TimeUnit.SECONDS)
-            .build()
-    }
 
     @Volatile private var apiKey: String = ""
 
     fun configure(apiKey: String) {
         this.apiKey = apiKey
+        CoreTransport.configure(apiKey)
     }
 
     class OpResult(val ok: Boolean, val error: String?)
 
+    // P2：经 CoreTransport 内核直调（不经端口，Core 态可用）
     suspend fun list(): JSONArray? = withContext(Dispatchers.IO) {
-        val builder = Request.Builder().url("http://127.0.0.1:$PORT/api/scheduled-tasks").get()
-        if (apiKey.isNotBlank()) builder.header("Authorization", "Bearer $apiKey")
-        try {
-            client.newCall(builder.build()).execute().use { resp ->
-                if (!resp.isSuccessful) return@withContext null
-                val obj = JSONObject(resp.body?.string() ?: return@withContext null)
-                if (obj.optBoolean("success")) obj.optJSONObject("data")?.optJSONArray("tasks") else null
-            }
-        } catch (_: Exception) {
-            null
-        }
+        val r = CoreTransport.get("/api/scheduled-tasks")
+        val ok = r as? CoreTransport.Reply.Ok ?: return@withContext null
+        if (ok.status < 200 || ok.status >= 300) return@withContext null
+        val obj = runCatching { JSONObject(ok.text) }.getOrNull() ?: return@withContext null
+        if (obj.optBoolean("success")) obj.optJSONObject("data")?.optJSONArray("tasks") else null
     }
 
     suspend fun configure(id: String, enabled: Boolean? = null, interval: Int? = null): OpResult =
@@ -58,19 +44,12 @@ object ScheduledTaskOps {
             val body = JSONObject()
             enabled?.let { body.put("enabled", it) }
             interval?.let { body.put("interval", it) }
-            val builder = Request.Builder()
-                .url("http://127.0.0.1:$PORT/api/scheduled-tasks/$id")
-                .post(body.toString().toRequestBody(JSON_MEDIA))
-            if (apiKey.isNotBlank()) builder.header("Authorization", "Bearer $apiKey")
-            try {
-                client.newCall(builder.build()).execute().use { resp ->
-                    val text = resp.body?.string() ?: ""
-                    val obj = runCatching { JSONObject(text) }.getOrNull()
-                    if (resp.isSuccessful && obj?.optBoolean("success") == true) OpResult(true, null)
-                    else OpResult(false, obj?.optString("error")?.ifBlank { "保存失败" } ?: "保存失败")
-                }
-            } catch (e: Exception) {
-                OpResult(false, e.message ?: "网络错误")
+            val r = CoreTransport.post("/api/scheduled-tasks/$id", body.toString())
+            if (r !is CoreTransport.Reply.Ok) {
+                return@withContext OpResult(false, (r as? CoreTransport.Reply.Down)?.message ?: "链路错误")
             }
+            val obj = runCatching { JSONObject(r.text) }.getOrNull()
+            if (r.status in 200..299 && obj?.optBoolean("success") == true) OpResult(true, null)
+            else OpResult(false, obj?.optString("error")?.ifBlank { "保存失败" } ?: "保存失败")
         }
 }

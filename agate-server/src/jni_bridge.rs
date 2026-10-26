@@ -278,6 +278,89 @@ fn checkin_run_now(timeout_ms: u64) -> Value {
     }
 }
 
+// =====================================================================
+// 管理面内核直调（P2 通道层）：Android 管理操作不经端口/网络栈。
+// 网关「运行/停止」只决定 8787 端口开不开（B2 语义），管理面在
+// Core 态（进程存活、端口未监听）必须照常可用。
+// =====================================================================
+
+/// `/api/*` 管理请求的进程内直调路由缓存：进程内单 Core、`ensure_core`
+/// 幂等永不重建 ServerState，Router 只组装一次。
+static API_ROUTER: OnceLock<axum::Router> = OnceLock::new();
+
+fn api_call(method: &str, path: &str, body: Option<String>, api_key: &str) -> Value {
+    // 参数显式校验：非法参数返回明确错误，不静默兜底。
+    let Ok(method) = axum::http::Method::from_bytes(method.to_uppercase().as_bytes()) else {
+        return json!({ "ok": false, "error": format!("invalid method: {method}") });
+    };
+    if !path.starts_with('/') {
+        return json!({ "ok": false, "error": "path must start with /" });
+    }
+    let Ok(uri) = axum::http::Uri::try_from(path.to_owned()) else {
+        return json!({ "ok": false, "error": format!("invalid path: {path}") });
+    };
+    let Some(state) = (|| {
+        let guard = CORE.lock().ok()?;
+        guard.as_ref()?.clone()
+    })() else {
+        return json!({ "ok": false, "error": "core_not_ready" });
+    };
+    let router = API_ROUTER.get_or_init(|| server::http::router(state));
+    let mut builder = axum::http::Request::builder().method(method).uri(uri);
+    if body.is_some() {
+        builder = builder.header("content-type", "application/json");
+    }
+    if !api_key.is_empty() {
+        builder = builder.header("authorization", format!("Bearer {api_key}"));
+    }
+    let Ok(request) = builder.body(body.unwrap_or_default()) else {
+        return json!({ "ok": false, "error": "build request failed" });
+    };
+    // oneshot 派到内核全局 runtime，mpsc 同步等结果（与 checkin_run_now 同款模式）。
+    let (tx, rx) = std::sync::mpsc::channel::<Option<(u16, String)>>();
+    crate::spawn_task(async move {
+        let result = match router.oneshot(request).await {
+            Ok(resp) => {
+                let status = resp.status().as_u16();
+                match axum::body::to_bytes(resp.into_body(), 4 * 1024 * 1024).await {
+                    Ok(bytes) => Some((status, String::from_utf8_lossy(&bytes).into_owned())),
+                    Err(_) => Some((status, "{\"success\":false,\"error\":\"body read failed\"}".to_owned())),
+                }
+            }
+            Err(_) => None,
+        };
+        let _ = tx.send(result);
+    });
+    match rx.recv_timeout(std::time::Duration::from_millis(120_000)) {
+        Ok(Some((status, text))) => json!({ "ok": true, "status": status, "body": text }),
+        Ok(None) => json!({ "ok": false, "error": "router dispatch failed" }),
+        Err(_) => json!({ "ok": false, "error": "timeout after 120s" }),
+    }
+}
+
+/// 管理面内核直调入口（P2 通道层）：method+path+body 走内存 `Router::oneshot`，
+/// 完整复用 HTTP 路由与中间件栈（鉴权/CORS/错误信封一致），但不 bind 端口。
+/// 返回 `{ok, status, body}`，body 为响应原文，调用方自行解析业务信封。
+#[no_mangle]
+pub extern "system" fn Java_dev_agate_core_Gateway_nativeApiCall<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    method: JString<'local>,
+    path: JString<'local>,
+    body: JString<'local>,
+    api_key: JString<'local>,
+) -> jstring {
+    let get = |s: &JString<'local>| -> String {
+        env.get_string(s).map(|v| v.to_string_lossy().into_owned()).unwrap_or_default()
+    };
+    let method = get(&method);
+    let path = get(&path);
+    let api_key = get(&api_key);
+    let body = get(&body);
+    let body = if body.is_empty() { None } else { Some(body) };
+    json_reply(&mut env, api_call(&method, &path, body, &api_key))
+}
+
 fn start_gateway(data_dir: &str, port: u16, bind_lan: bool, api_key: Option<&str>) -> Value {
     // api_key → env（每次启动按本次参数注入；trigger_task 的内部请求也读它）
     if let Some(key) = api_key.map(str::trim).filter(|k| !k.is_empty()) {

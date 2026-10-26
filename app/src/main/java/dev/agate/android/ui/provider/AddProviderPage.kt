@@ -148,10 +148,10 @@ fun AddProviderPage(onBack: () -> Unit, initialProviderId: String? = null) {
                         .border(1.dp, C.amber.copy(alpha = 0.45f), RoundedCornerShape(14.dp))
                         .padding(14.dp),
                 ) {
-                    Text("网关未运行", color = C.textMain, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                    Text("网关未运行（不影响登录与添加）", color = C.textMain, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "登录与添加账号都由网关内核执行，需先启动网关（启动后本页会自动恢复）。",
+                        "登录与添加账号由内核直调执行，无需网关；仅外部客户端调用 /v1 接口时才需要启动网关。",
                         color = C.textSub, fontSize = 12.sp,
                     )
                     Spacer(Modifier.height(10.dp))

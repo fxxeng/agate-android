@@ -4,8 +4,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
@@ -19,20 +17,13 @@ import java.util.concurrent.TimeUnit
  */
 object LoginClient {
 
-    private const val PORT = 8787
-    private val JSON_MEDIA = "application/json; charset=utf-8".toMediaType()
 
-    private val client by lazy {
-        OkHttpClient.Builder()
-            .connectTimeout(5, TimeUnit.SECONDS)
-            .readTimeout(8, TimeUnit.SECONDS)
-            .build()
-    }
 
     @Volatile private var apiKey: String = ""
 
     fun configure(apiKey: String) {
         this.apiKey = apiKey
+        CoreTransport.configure(apiKey)
     }
 
     /** call() 的三态：连不上 / HTTP 状态码 / 拿到 JSON —— 401 不再被吞成「网关未运行」。 */
@@ -105,29 +96,19 @@ object LoginClient {
         resp.optBoolean("success")
     }
 
-    private fun getJson(path: String): HttpResult = call(
-        Request.Builder().url("http://127.0.0.1:$PORT$path").get().build(),
-    )
+    // P2：经 CoreTransport 内核直调（不经端口，Core 态可用）
+    private suspend fun getJson(path: String): HttpResult = transact(CoreTransport.get(path))
 
-    private fun postJson(path: String, body: JSONObject): HttpResult = call(
-        Request.Builder()
-            .url("http://127.0.0.1:$PORT$path")
-            .post(body.toString().toRequestBody(JSON_MEDIA))
-            .build(),
-    )
+    private suspend fun postJson(path: String, body: JSONObject): HttpResult =
+        transact(CoreTransport.post(path, body.toString()))
 
-    private fun call(request: Request): HttpResult = try {
-        val authed = if (apiKey.isNotBlank()) request.newBuilder()
-            .header("Authorization", "Bearer $apiKey")
-            .build()
-        else request
-        client.newCall(authed).execute().use { resp ->
-            val text = resp.body?.string().orEmpty()
-            val json = runCatching { JSONObject(text) }.getOrNull()
-            if (resp.isSuccessful && json != null) HttpResult.Ok(json) else HttpResult.Status(resp.code, json)
+    /** CoreTransport 回复 → 三态：2xx+JSON=Ok；有响应但非 2xx/坏 JSON=Status（401 语义保留）；链路断=Unreachable。 */
+    private suspend fun transact(r: CoreTransport.Reply): HttpResult = when (r) {
+        is CoreTransport.Reply.Ok -> {
+            val json = runCatching { JSONObject(r.text) }.getOrNull()
+            if (r.status in 200..299 && json != null) HttpResult.Ok(json) else HttpResult.Status(r.status, json)
         }
-    } catch (_: Exception) {
-        HttpResult.Unreachable
+        is CoreTransport.Reply.Down -> HttpResult.Unreachable
     }
 
     private fun errorOf(resp: JSONObject): String =
@@ -136,7 +117,7 @@ object LoginClient {
     /** 非 Ok 的可读文案：401 是「Key 没过闸门」，不再说成网关没运行。 */
     private fun describe(r: HttpResult): String = when (r) {
         is HttpResult.Ok -> ""
-        is HttpResult.Unreachable -> "无法连接内核（网关未运行？）"
+        is HttpResult.Unreachable -> "无法连接内核"
         is HttpResult.Status -> {
             val detail = r.json?.optString("error").orEmpty()
             when {

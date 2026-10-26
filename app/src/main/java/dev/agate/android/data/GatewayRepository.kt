@@ -170,6 +170,7 @@ object GatewayRepository {
     /** 壳侧凭证：FGS 启动内核前把 GatewayPrefs 的 Key 同步进来。 */
     fun configure(apiKey: String) {
         this.apiKey = apiKey
+        CoreTransport.configure(apiKey)
     }
 
     fun start() {
@@ -240,7 +241,7 @@ object GatewayRepository {
                 getJson("/api/routing/queue", envelope = true)?.let { routing = it }
 
                 if (!anySuccess) {
-                    _snapshotError.value = "无法连接内核（网关未运行？）"
+                    _snapshotError.value = "无法连接内核"
                     return@launch
                 }
                 _snapshotError.value = null
@@ -347,24 +348,22 @@ object GatewayRepository {
         return out
     }
 
-    /** 统一带 Bearer Key 的 GET；envelope=true 解 `{success,data}` 信封，否则裸值。 */
-    private fun getJson(path: String, envelope: Boolean): JSONObject? {
-        val builder = Request.Builder().url("http://127.0.0.1:$PORT$path")
-        if (apiKey.isNotBlank()) builder.header("Authorization", "Bearer $apiKey")
-        return try {
-            pollClient.newCall(builder.build()).execute().use { resp ->
-                if (!resp.isSuccessful) return null
-                val body = resp.body?.string() ?: return null
-                val obj = JSONObject(body)
-                if (envelope) {
-                    if (!obj.optBoolean("success")) return null
-                    obj.optJSONObject("data")
-                } else {
-                    obj
-                }
-            }
-        } catch (_: Exception) {
-            null
+    /**
+     * 统一带 Bearer Key 的 GET；envelope=true 解 `{success,data}` 信封，否则裸值。
+     * P2：经 CoreTransport 内核直调（调用方均在 scope.launch 协程内）。
+     * SSE `/api/events` 不走本通道 —— 流式响应不适合 oneshot，且实时事件只在
+     * 网关运行时有意义（无网关时轮询降级路径即本函数）。
+     */
+    private suspend fun getJson(path: String, envelope: Boolean): JSONObject? {
+        val r = CoreTransport.get(path)
+        val ok = r as? CoreTransport.Reply.Ok ?: return null
+        if (ok.status < 200 || ok.status >= 300) return null
+        val obj = runCatching { JSONObject(ok.text) }.getOrNull() ?: return null
+        if (envelope) {
+            if (!obj.optBoolean("success")) return null
+            obj.optJSONObject("data")
+        } else {
+            obj
         }
     }
 

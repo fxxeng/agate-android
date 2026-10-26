@@ -147,7 +147,7 @@ fun ProviderPage(
             if (!silent) {
                 Toast.makeText(
                     ctx,
-                    if (usage == null) "余额查询失败（网关未运行？）" else "已刷新 ${metrics.size} 个账号余额",
+                    if (usage == null) "余额查询失败" else "已刷新 ${metrics.size} 个账号余额",
                     Toast.LENGTH_SHORT,
                 ).show()
             }
