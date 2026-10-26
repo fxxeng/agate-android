@@ -133,9 +133,16 @@ fun ProviderPage(
                     val row = arr.optJSONObject(i) ?: continue
                     val id = row.optString("id")
                     if (id.isBlank()) continue
-                    val err = row.optString("error")
-                    out[id] = if (err.isNotBlank()) AcctMetric(text = "查询失败：$err", failed = true)
-                    else parseUsageMetric(row.optJSONObject("usage"))
+                    // ⚠️ error 是 JSON null 时 `optString` 会返回字符串 "null"
+                    //（org.json 的 objectToString），旧实现把它当成错误文案，
+                    // 真机上显示「查询失败：null」。这里只认真正的字符串。
+                    val errRaw = row.opt("error")
+                    val err = (errRaw as? String)?.trim().orEmpty()
+                    out[id] = when {
+                        err.isNotEmpty() -> AcctMetric(text = "查询失败：$err", failed = true)
+                        row.optJSONObject("usage") == null -> AcctMetric(text = "未返回余额数据")
+                        else -> parseUsageMetric(row.optJSONObject("usage"))
+                    }
                 }
                 metrics = out
             }

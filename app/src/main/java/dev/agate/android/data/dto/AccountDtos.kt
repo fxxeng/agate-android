@@ -45,6 +45,25 @@ object AccountDtos {
         "nameCustom", "name", "nickname", "loginName", "uid", "userId", "phone", "label",
     )
 
+    /**
+     * 从字段链里取展示名。
+     *
+     * ⚠️ 不能用 `optString(key)` 直接判空：`org.json` 的 `optString` 会把
+     * 布尔/对象类型 `toString()` 出来 —— 某个家把 `name` 写成 `false` 时，
+     * 界面就会显示成「false」（真机踩到过：WorkBuddy 国际版账号名变成 false）。
+     * 这里只接受「非空字符串」与「非 0 数字」，其余类型一律跳过。
+     */
+    private fun pickName(acc: JSONObject): String? {
+        for (key in NAME_FIELDS) {
+            when (val value = acc.opt(key)) {
+                is String -> value.trim().takeIf { it.isNotEmpty() }?.let { return it }
+                is Number -> value.toLong().takeIf { it != 0L }?.toString()?.let { return it }
+                else -> Unit // Boolean / JSONObject.NULL / 对象：跳过
+            }
+        }
+        return null
+    }
+
     /** session 为 null（本次未拉到）返回空视图；调用方按「沿用上一份快照」处理。 */
     fun parseSession(session: JSONObject?): AccountsSnapshot {
         if (session == null) return AccountsSnapshot(emptyList(), emptyMap(), emptyMap())
@@ -58,9 +77,7 @@ object AccountDtos {
             val acc = arr.optJSONObject(i) ?: continue
             val id = acc.optString("id")
             if (id.isBlank()) continue
-            val name = NAME_FIELDS.firstOrNull { acc.optString(it).isNotBlank() }
-                ?.let { acc.optString(it) }
-                ?: id.takeLast(8)
+            val name = pickName(acc) ?: id.takeLast(8)
             list += AccountDto(
                 id = id,
                 provider = acc.optString("provider"),
