@@ -15,8 +15,10 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -71,6 +73,8 @@ fun ModelMappingPage(
     var showAdd by remember { mutableStateOf(false) }
     // 行内等级选择展开态：alias|target|provider 标识哪一行
     var expandedRow by remember { mutableStateOf<String?>(null) }
+    // 删除映射的待确认项（误删一条映射要重新配一遍，值得一次确认）
+    var pendingDelete by remember { mutableStateOf<Triple<String, String, String?>?>(null) }
 
     fun toast(ok: Boolean, what: String, error: String?) {
         Toast.makeText(ctx, if (ok) "${what}成功" else "${what}失败：${error ?: "未知"}", Toast.LENGTH_SHORT).show()
@@ -222,13 +226,7 @@ fun ModelMappingPage(
                     onExpandLevel = {
                         expandedRow = if (expandedRow == row.key()) null else row.key()
                     },
-                    onDelete = {
-                        scope.launch {
-                            applyResult(
-                                ModelOps.removeMapping(row.alias, row.target, row.provider), "删除映射",
-                            )
-                        }
-                    },
+                    onDelete = { pendingDelete = Triple(row.alias, row.target, row.provider) },
                 )
                 Spacer(Modifier.height(8.dp))
             }
@@ -246,6 +244,23 @@ fun ModelMappingPage(
             )
             Spacer(Modifier.height(28.dp))
         }
+    }
+
+    pendingDelete?.let { (alias, target, provider) ->
+        AlertDialog(
+            onDismissRequest = { pendingDelete = null },
+            title = { Text("删除映射") },
+            text = { Text("删除「$alias → $target」这条映射？删除后该别名会回落到默认绑定。", fontSize = 13.sp) },
+            confirmButton = {
+                TextButton(onClick = {
+                    pendingDelete = null
+                    scope.launch {
+                        applyResult(ModelOps.removeMapping(alias, target, provider), "删除映射")
+                    }
+                }) { Text("删除") }
+            },
+            dismissButton = { TextButton(onClick = { pendingDelete = null }) { Text("取消") } },
+        )
     }
 }
 
@@ -646,4 +661,5 @@ private fun CustomModelCard(
             }
         }
     }
+
 }

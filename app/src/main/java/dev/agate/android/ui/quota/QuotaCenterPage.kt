@@ -82,10 +82,11 @@ fun QuotaCenterPage(
     var hint by remember { mutableStateOf<String?>(null) }
     var lastAt by remember { mutableStateOf<String?>(null) }
 
-    suspend fun refresh() {
+    suspend fun refresh(force: Boolean = false) {
         busy = true
         hint = null
-        val data = AccountOps.usage()
+        // 进入页面走缓存（force=false），只有「刷新全部」才真的打上游
+        val data = AccountOps.usage(force = force)
         busy = false
         if (data == null) {
             hint = "查询失败：内核未响应"
@@ -117,7 +118,7 @@ fun QuotaCenterPage(
 
     LaunchedEffect(Unit) {
         AccountOps.configure(GatewayPrefs.apiKey(ctx))
-        refresh()
+        refresh(force = false)
     }
 
     Column(Modifier.fillMaxSize().background(C.bg)) {
@@ -164,7 +165,7 @@ fun QuotaCenterPage(
                         color = C.textDim, fontSize = 11.sp, modifier = Modifier.weight(1f),
                     )
                     Button(
-                        onClick = { if (!busy) scope.launch { refresh() } },
+                        onClick = { if (!busy) scope.launch { refresh(force = true) } },
                         enabled = !busy,
                         colors = ButtonDefaults.buttonColors(containerColor = C.accent, contentColor = C.onAccent),
                     ) { Text(if (busy) "查询中…" else "刷新全部", fontWeight = FontWeight.SemiBold) }

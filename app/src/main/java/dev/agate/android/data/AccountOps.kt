@@ -100,10 +100,32 @@ object AccountOps {
         return post("/api/accounts/batch", body).ok
     }
 
-    /** GET /api/accounts/usage[?id=] → {results:[{id,name,usage,error,code?}], skipped}。 */
-    suspend fun usage(id: String? = null): JSONObject? {
+    /**
+     * GET /api/accounts/usage[?id=] → `{results:[{id,name,usage,error,code?}], skipped}`。
+     *
+     * ── 为什么要 [force] ────────────────────────────────────────
+     * 这个接口会真的打到各家上游，官方对余额类接口有频次风控。页面原本「进入即查」，
+     * 来回翻几页就是连串请求。现在默认走缓存（见 [UsageCache]）：
+     * - `force = false`：新鲜缓存直接用；有过期缓存也先给旧的（不让上游背锅）；
+     *   只有**从没查过**才真的发一次请求；
+     * - `force = true`：用户显式点「查询余额」时才用，且受 20 秒硬节流保护。
+     *
+     * 返回 null 只表示「既没有缓存、请求也失败」。
+     */
+    suspend fun usage(id: String? = null, force: Boolean = false): JSONObject? {
+        if (!force) {
+            val cached = UsageCache.cached(id)
+            if (cached != null && UsageCache.isFresh(id)) return cached
+            // 有过期数据：先用旧的，不打扰上游（下次点按钮才刷）
+            if (cached != null) return cached
+        } else if (UsageCache.throttleRemaining(id) > 0) {
+            // 连点保护：拿缓存顶上，避免又发一轮
+            UsageCache.cached(id)?.let { return it }
+        }
         val q = if (id.isNullOrBlank()) "" else "?id=" + java.net.URLEncoder.encode(id, "UTF-8")
-        return get("/api/accounts/usage$q")
+        val body = get("/api/accounts/usage$q") ?: return UsageCache.cached(id)
+        UsageCache.put(id, body)
+        return body
     }
 
     /** GET /api/accounts/connections → {counts:{id:count}}。 */

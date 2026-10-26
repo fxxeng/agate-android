@@ -93,6 +93,9 @@ fun ProviderDetailPage(providerId: String, onBack: () -> Unit, onAddAccount: () 
     var editConc by remember { mutableStateOf("") }
     var confirmRemove by remember { mutableStateOf<AccountDto?>(null) }
     var confirmRemoveAll by remember { mutableStateOf(false) }
+    // 「删除提供商」与「删除全部账号」是两件事（前者连配置一起没），
+    // 共用一个状态会让文案互相冒充 —— 分开。
+    var confirmDeleteProvider by remember { mutableStateOf(false) }
     // 自动化：凭证自动维护（自动续期）是**全局**定时任务，这里只做该家的入口与节奏调整
     var credTask by remember { mutableStateOf<JSONObject?>(null) }
     // 「自动续期」按家关闭清单（黑名单；空 = 全家开启）。null = 还没读到
@@ -107,11 +110,13 @@ fun ProviderDetailPage(providerId: String, onBack: () -> Unit, onAddAccount: () 
 
     fun toast(m: String) = Toast.makeText(ctx, m, Toast.LENGTH_SHORT).show()
 
-    fun loadUsage(id: String? = null) {
+    fun loadUsage(id: String? = null, force: Boolean = false) {
         if (busy) return
         busy = true
         scope.launch {
-            val data = AccountOps.usage(id)
+            // force=false 时由 UsageCache 决定：新鲜缓存直接返回，过期缓存也先用
+            // 旧的（进详情页不再自动打上游，避免频繁请求被官方风控）
+            val data = AccountOps.usage(id, force = force)
             busy = false
             if (data == null) { toast("余额查询失败"); return@launch }
             val arr = data.optJSONArray("results")
@@ -125,7 +130,7 @@ fun ProviderDetailPage(providerId: String, onBack: () -> Unit, onAddAccount: () 
                     else formatUsage(row.optJSONObject("usage")) ?: "已查询"
                 }
             }
-            toast("余额已更新")
+            toast(if (force) "余额已更新" else "余额已载入（缓存）")
         }
     }
 
@@ -145,7 +150,7 @@ fun ProviderDetailPage(providerId: String, onBack: () -> Unit, onAddAccount: () 
     }
 
     LaunchedEffect(accounts.map { it.id }) {
-        if (accounts.isNotEmpty()) loadUsage()
+        if (accounts.isNotEmpty()) loadUsage(force = false)
     }
 
     fun batchAction(action: String, ids: List<String> = accounts.map { it.id }, done: String) {
@@ -200,7 +205,7 @@ fun ProviderDetailPage(providerId: String, onBack: () -> Unit, onAddAccount: () 
                 presetLabel = preset?.desc ?: "自定义 / 中转上游",
                 channel = preset?.let { channelLabel(it) } ?: "自定义",
                 providerId = providerId,
-                onQueryUsage = { loadUsage() },
+                onQueryUsage = { loadUsage(force = true) },
                 onToggleAll = { enable -> batchAction(if (enable) "enable" else "disable", done = if (enable) "已全部启用" else "已全部禁用") },
                 onJumpToAccounts = { tab = 1 },
                 credTask = credTask,
@@ -246,7 +251,7 @@ fun ProviderDetailPage(providerId: String, onBack: () -> Unit, onAddAccount: () 
                 accounts = accounts,
                 usageLabel = usageLabel,
                 busy = busy,
-                onQueryUsage = { loadUsage() },
+                onQueryUsage = { loadUsage(force = true) },
                 onEdit = { acc ->
                     editing = acc
                     editName = acc.displayName
@@ -293,7 +298,7 @@ fun ProviderDetailPage(providerId: String, onBack: () -> Unit, onAddAccount: () 
                     } else if (!busy) {
                         busy = true
                         scope.launch {
-                            val data = AccountOps.usage(first.id)
+                            val data = AccountOps.usage(first.id, force = true)
                             busy = false
                             val row = data?.optJSONArray("results")?.optJSONObject(0)
                             val err = row?.optString("error").orEmpty()
@@ -305,7 +310,7 @@ fun ProviderDetailPage(providerId: String, onBack: () -> Unit, onAddAccount: () 
                         }
                     }
                 },
-                onDeleteProvider = { confirmRemoveAll = true },
+                onDeleteProvider = { confirmDeleteProvider = true },
                 onRefreshExpiring = {
                     if (!busy) {
                         busy = true
@@ -426,7 +431,7 @@ fun ProviderDetailPage(providerId: String, onBack: () -> Unit, onAddAccount: () 
     if (confirmRemoveAll) {
         AlertDialog(
             onDismissRequest = { confirmRemoveAll = false },
-            title = { Text("删除提供商") },
+            title = { Text("删除全部账号") },
             text = { Text("将删除「${preset?.label ?: providerId}」下全部 ${accounts.size} 个账号，凭证一并清除，不可恢复。", fontSize = 13.sp) },
             confirmButton = {
                 TextButton(onClick = {
@@ -442,6 +447,33 @@ fun ProviderDetailPage(providerId: String, onBack: () -> Unit, onAddAccount: () 
                 }) { Text("删除", color = C.red) }
             },
             dismissButton = { TextButton(onClick = { confirmRemoveAll = false }) { Text("取消") } },
+        )
+    }
+
+    if (confirmDeleteProvider) {
+        AlertDialog(
+            onDismissRequest = { confirmDeleteProvider = false },
+            title = { Text("删除提供商") },
+            text = {
+                Text(
+                    "将移除「${preset?.label ?: providerId}」这一家：连同其 ${accounts.size} 个账号、凭证与设置一并删除，不可恢复。",
+                    fontSize = 13.sp,
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmDeleteProvider = false
+                    if (accounts.isEmpty()) { onBack(); return@TextButton }
+                    busy = true
+                    scope.launch {
+                        val ok = AccountOps.batch(accounts.map { it.id }, "remove")
+                        busy = false
+                        toast(if (ok) "已删除该提供商" else "删除失败")
+                        if (ok) { GatewayRepository.refreshOnce(); onBack() }
+                    }
+                }) { Text("删除", color = C.red) }
+            },
+            dismissButton = { TextButton(onClick = { confirmDeleteProvider = false }) { Text("取消") } },
         )
     }
 }
