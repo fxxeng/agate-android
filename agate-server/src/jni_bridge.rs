@@ -314,7 +314,14 @@ fn api_call(method: &str, path: &str, body: Option<String>, api_key: &str) -> Va
     if !api_key.is_empty() {
         builder = builder.header("authorization", format!("Bearer {api_key}"));
     }
-    let Ok(request) = builder.body(body.map(axum::body::Bytes::from).unwrap_or_default()) else {
+    // 请求体用 axum::body::Body（上游 CORS 测试同款）——bytes::Bytes 直传会
+    // 撞上 http-body 版本分裂的 trait impl 不匹配，Body 由 axum 自己的依赖树提供。
+    let Ok(request) = builder
+        .body(match &body {
+            Some(b) => axum::body::Body::from(b.clone()),
+            None => axum::body::Body::empty(),
+        })
+    else {
         return json!({ "ok": false, "error": "build request failed" });
     };
     // oneshot 派到内核全局 runtime，mpsc 同步等结果（与 checkin_run_now 同款模式）。
