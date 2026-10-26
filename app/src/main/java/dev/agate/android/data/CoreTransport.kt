@@ -2,6 +2,7 @@ package dev.agate.android.data
 
 import dev.agate.core.Gateway
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 
@@ -17,10 +18,21 @@ import org.json.JSONObject
  * - `KernelOps.isUp()`：探测端口活性，语义上必须走 TCP；
  * - `GatewayRepository` 的 SSE `/api/events`：流式响应不适合 oneshot，
  *   且实时事件只在网关运行时有意义（无网关时已有轮询降级）。
+ *
+ * ── 三道韧性处理（对应《问题审计》§2/§3）──────────────
+ * 1. `core_not_ready` 是「内核仍在 bootstrap」（`AgateApp` 后台线程初始化），
+ *    不是业务错误 —— 重试 3 次、间隔 200ms，冷启动首屏不再直接报错。
+ * 2. 内核 error 是英文内部串（`core_not_ready` / `timeout after 120s`），
+ *    直接透给用户看不懂 —— 统一走 [humanize] 映射。
+ * 3. 链路异常（JNI 抛错 / 返回非 JSON）也归 `Down`，与业务错误区分。
  */
 object CoreTransport {
 
     @Volatile private var apiKey: String = ""
+
+    /** `core_not_ready` 的重试次数与间隔（总计约 0.6s，覆盖冷启动窗口）。 */
+    private const val RETRY = 3
+    private const val RETRY_DELAY_MS = 200L
 
     fun configure(apiKey: String) {
         this.apiKey = apiKey
@@ -36,23 +48,54 @@ object CoreTransport {
 
     suspend fun call(method: String, path: String, body: String? = null): Reply =
         withContext(Dispatchers.IO) {
-            val raw = try {
-                Gateway.apiCall(method, path, body, apiKey)
-            } catch (_: Throwable) {
-                null
-            } ?: return@withContext Reply.Down("内核未就绪")
-            val obj = try {
-                JSONObject(raw)
-            } catch (_: Exception) {
-                return@withContext Reply.Down("内核响应异常")
+            var lastError: String? = null
+            for (attempt in 0 until RETRY) {
+                val raw = try {
+                    Gateway.apiCall(method, path, body, apiKey)
+                } catch (_: Throwable) {
+                    null
+                }
+                if (raw == null) {
+                    lastError = "core_not_ready"
+                    if (attempt < RETRY - 1) delay(RETRY_DELAY_MS)
+                    continue
+                }
+                val obj = try {
+                    JSONObject(raw)
+                } catch (_: Exception) {
+                    return@withContext Reply.Down("内核响应异常")
+                }
+                if (obj.optBoolean("ok")) {
+                    return@withContext Reply.Ok(obj.optInt("status", 0), obj.optString("body"))
+                }
+                val error = obj.optString("error")
+                lastError = error
+                // 只有「内核还没就绪」值得重试；业务错误立即回落
+                if (error.contains("core_not_ready") && attempt < RETRY - 1) {
+                    delay(RETRY_DELAY_MS)
+                    continue
+                }
+                return@withContext Reply.Down(humanize(error))
             }
-            if (!obj.optBoolean("ok")) {
-                return@withContext Reply.Down(obj.optString("error").ifBlank { "内核未就绪" })
-            }
-            Reply.Ok(obj.optInt("status", 0), obj.optString("body"))
+            Reply.Down(humanize(lastError))
         }
 
     suspend fun get(path: String): Reply = call("GET", path)
 
     suspend fun post(path: String, body: String): Reply = call("POST", path, body)
+
+    /** 内核内部错误串 → 用户可读文案（未识别的原样返回，便于排查）。 */
+    private fun humanize(raw: String?): String {
+        val text = raw?.trim().orEmpty()
+        return when {
+            text.isEmpty() -> "内核未就绪"
+            text.contains("core_not_ready") -> "内核启动中，请稍后再试"
+            text.startsWith("timeout after") -> "操作超时（超过 2 分钟），请稍后重试"
+            text.contains("router dispatch failed") -> "内核处理失败，请重试"
+            text.startsWith("invalid method") ||
+                text.startsWith("invalid path") ||
+                text.contains("path must start") -> "内核参数错误"
+            else -> text
+        }
+    }
 }

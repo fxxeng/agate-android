@@ -139,31 +139,6 @@ fun AddProviderPage(onBack: () -> Unit, initialProviderId: String? = null) {
                 .padding(horizontal = 16.dp)
                 .padding(bottom = 24.dp)
         ) {
-            if (kernelUp == false) {
-                Spacer(Modifier.height(8.dp))
-                Column(
-                    Modifier
-                        .fillMaxWidth()
-                        .background(C.amber.copy(alpha = 0.10f), RoundedCornerShape(14.dp))
-                        .border(1.dp, C.amber.copy(alpha = 0.45f), RoundedCornerShape(14.dp))
-                        .padding(14.dp),
-                ) {
-                    Text("网关未运行（不影响登录与添加）", color = C.textMain, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        "登录与添加账号由内核直调执行，无需网关；仅外部客户端调用 /v1 接口时才需要启动网关。",
-                        color = C.textSub, fontSize = 12.sp,
-                    )
-                    Spacer(Modifier.height(10.dp))
-                    Button(
-                        onClick = { AgateForegroundService.start(ctx) },
-                        colors = ButtonDefaults.buttonColors(containerColor = C.accent, contentColor = C.onAccent),
-                    ) { Text("启动网关", fontWeight = FontWeight.SemiBold) }
-                }
-            }
-
-            Spacer(Modifier.height(8.dp))
-
             // ptabs：v44 胶囊页签（官方 / 中转 / 自定义），中转与自定义为占位
             var tab by remember { mutableStateOf(0) }
             Row(
@@ -282,6 +257,30 @@ fun AddProviderPage(onBack: () -> Unit, initialProviderId: String? = null) {
                                 onBack()
                             }
                         }
+                        // 这五家的回调落在网关端口上：Core 态（网关未运行）收不到回调
+                        if (picked.needsGateway && kernelUp != true) {
+                            Column(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .background(C.amber.copy(alpha = 0.10f), RoundedCornerShape(12.dp))
+                                    .border(1.dp, C.amber.copy(alpha = 0.45f), RoundedCornerShape(12.dp))
+                                    .padding(12.dp),
+                            ) {
+                                Text(
+                                    "该家的登录回调落在本机端口，需要先运行网关（粘贴/导入通道不受影响）。",
+                                    color = C.textMain, fontSize = 12.sp,
+                                )
+                                Spacer(Modifier.height(8.dp))
+                                Button(
+                                    onClick = { AgateForegroundService.start(ctx) },
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = C.accent, contentColor = C.onAccent,
+                                    ),
+                                ) { Text("运行网关并继续", fontWeight = FontWeight.SemiBold) }
+                            }
+                            Spacer(Modifier.height(12.dp))
+                        }
+
                         // 通道按内核核实结果渲染（IMPORT_DESKTOP 在 Android 不出现）
                         val usable = picked.channels.filter { it != AuthChannel.IMPORT_DESKTOP }
                         var channel by remember(picked.id) { mutableStateOf(usable.first()) }
@@ -1131,9 +1130,9 @@ private fun ImportFileForm(preset: ProviderPreset, onDone: (Boolean, String) -> 
                     hint = "读取文件失败（权限或路径不可用）"
                     return@launch
                 }
-                if (bytes.size > 8 * 1024 * 1024) {
+                if (bytes.size > 4 * 1024 * 1024) {
                     busy = false
-                    hint = "文件过大（超过 8MB）"
+                    hint = "文件过大（超过 4MB），请改用文本 JSON"
                     return@launch
                 }
                 val asText = runCatching { String(bytes, Charsets.UTF_8) }.getOrNull()

@@ -43,6 +43,13 @@ data class ProviderPreset(
     /** 能力标签：是否支持自动签到（来自内核 CHECKIN_PROVIDERS）。 */
     val supportsCheckin: Boolean = false,
     /**
+     * 登录是否依赖「网关端口」收回调。
+     * true 的五家（accio/accio-cn/codearts/antigravity/catpaw）回调落在
+     * `127.0.0.1:<网关端口>`，Core 态不监听该端口 → 网关未运行时登录必失败。
+     * trae 例外：它自己 bind 临时端口。
+     */
+    val needsGateway: Boolean = false,
+    /**
      * 非空 = 整家置灰不可添加（F12）。如 Kuku：换票引擎是官方 Windows
      * 客户端的 genflowengine.dll，Android 无从加载 → 入口置灰，已有账号不动。
      */
@@ -77,6 +84,7 @@ object PresetRegistry {
         ProviderPreset(
             "catpaw", "CatPaw", "美团 · 网页登录", LoginKind.WEBVIEW,
             listOf(AuthChannel.EMBEDDED, AuthChannel.IMPORT_FILE),
+            needsGateway = true,
         ),
         // AutoClaw 国内：手机验证码
         ProviderPreset(
@@ -113,11 +121,13 @@ object PresetRegistry {
             "accio", "Accio", "国际版网页登录", LoginKind.WEBVIEW,
             listOf(AuthChannel.EMBEDDED, AuthChannel.EXTERNAL, AuthChannel.PASTE),
             pasteHint = "粘贴 accessToken 或 refreshToken", pasteMultiline = true,
+            needsGateway = true,
         ),
         ProviderPreset(
             "accio-cn", "Accio 国内版", "国内版网页登录", LoginKind.WEBVIEW,
             listOf(AuthChannel.EMBEDDED, AuthChannel.EXTERNAL, AuthChannel.PASTE),
             pasteHint = "粘贴 accessToken 或 refreshToken", pasteMultiline = true,
+            needsGateway = true,
         ),
         // ZCode：CLI init 轮询
         ProviderPreset(
@@ -130,6 +140,7 @@ object PresetRegistry {
             listOf(AuthChannel.EMBEDDED, AuthChannel.EXTERNAL, AuthChannel.PASTE),
             pasteHint = "粘贴 AK/SK 或 STS + domain/user", pasteMultiline = true,
             supportsCheckin = true,
+            needsGateway = true,
         ),
         // Trae：进程内 loopback + PKCE
         ProviderPreset(
@@ -171,6 +182,7 @@ object PresetRegistry {
             listOf(AuthChannel.EMBEDDED, AuthChannel.EXTERNAL, AuthChannel.PASTE),
             pasteHint = "Google refresh token（1// 开头）", pasteMultiline = true,
             pasteSecondaryHint = "Google 账号邮箱（可选，同账号去重）",
+            needsGateway = true,
         ),
         // OfficeAce：服务端中介轮询
         ProviderPreset(
