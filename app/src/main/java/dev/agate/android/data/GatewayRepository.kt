@@ -359,7 +359,7 @@ object GatewayRepository {
         val ok = r as? CoreTransport.Reply.Ok ?: return null
         if (ok.status < 200 || ok.status >= 300) return null
         val obj = runCatching { JSONObject(ok.text) }.getOrNull() ?: return null
-        if (envelope) {
+        return if (envelope) {
             if (!obj.optBoolean("success")) return null
             obj.optJSONObject("data")
         } else {
