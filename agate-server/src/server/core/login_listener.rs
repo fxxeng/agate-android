@@ -47,8 +47,10 @@ pub fn ensure(state: &ServerState) -> Result<(), String> {
     if held() {
         return Ok(());
     }
-    // 网关在跑：端口本来就有监听者，回调能正常落（探测失败才去 bind）
-    if crate::server::probe_port(state.port).is_ok() {
+    // `probe_port` 的语义是「试绑一下」：**Ok = 端口空闲**，Err = 已被占用。
+    // 占用者多半是网关自己（它 bind 的就是这个端口）——那种情况回调本来就能落，
+    // 不需要我们再起一套；只有空闲（Core 态）才需要临时占起来。
+    if crate::server::probe_port(state.port).is_err() {
         return Ok(());
     }
     let mut guard = HOLDER.lock().map_err(|_| "state poisoned".to_string())?;
