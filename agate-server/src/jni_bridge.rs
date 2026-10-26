@@ -299,9 +299,9 @@ fn api_call(method: &str, path: &str, body: Option<String>, api_key: &str) -> Va
     let Ok(uri) = axum::http::Uri::try_from(path.to_owned()) else {
         return json!({ "ok": false, "error": format!("invalid path: {path}") });
     };
-    let Some(state) = (|| {
+    let Some(state) = (|| -> Option<ServerState> {
         let guard = CORE.lock().ok()?;
-        guard.as_ref()?.clone()
+        Some(guard.as_ref()?.state.clone())
     })() else {
         return json!({ "ok": false, "error": "core_not_ready" });
     };
@@ -319,7 +319,7 @@ fn api_call(method: &str, path: &str, body: Option<String>, api_key: &str) -> Va
     // oneshot 派到内核全局 runtime，mpsc 同步等结果（与 checkin_run_now 同款模式）。
     let (tx, rx) = std::sync::mpsc::channel::<Option<(u16, String)>>();
     crate::spawn_task(async move {
-        let result = match router.oneshot(request).await {
+        let result = match router.clone().oneshot(request).await {
             Ok(resp) => {
                 let status = resp.status().as_u16();
                 match axum::body::to_bytes(resp.into_body(), 4 * 1024 * 1024).await {
@@ -350,7 +350,7 @@ pub extern "system" fn Java_dev_agate_core_Gateway_nativeApiCall<'local>(
     body: JString<'local>,
     api_key: JString<'local>,
 ) -> jstring {
-    let get = |s: &JString<'local>| -> String {
+    let mut get = |s: &JString<'local>| -> String {
         env.get_string(s).map(|v| v.to_string_lossy().into_owned()).unwrap_or_default()
     };
     let method = get(&method);
