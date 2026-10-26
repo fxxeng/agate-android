@@ -34,6 +34,7 @@ use jni::sys::{jboolean, jint, jlong, jobject, jstring};
 use jni::{JNIEnv, JavaVM};
 use serde_json::{json, Value};
 use tokio::sync::oneshot;
+use tower::ServiceExt;
 
 use crate::server::{self, ServerState};
 
