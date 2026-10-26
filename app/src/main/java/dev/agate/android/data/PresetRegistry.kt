@@ -44,9 +44,10 @@ data class ProviderPreset(
     val supportsCheckin: Boolean = false,
     /**
      * 登录是否依赖「网关端口」收回调。
-     * true 的五家（accio/accio-cn/codearts/antigravity/catpaw）回调落在
+     * true 的四家（accio/accio-cn/codearts/antigravity）回调落在
      * `127.0.0.1:<网关端口>`，Core 态不监听该端口 → 网关未运行时登录必失败。
-     * trae 例外：它自己 bind 临时端口。
+     * 两个例外：`trae` 自己 bind 临时端口；`catpaw` 有 poll-token 兜底
+     * （不经过浏览器，不受 PNA/CORS 影响），网关没开也能完成。
      */
     val needsGateway: Boolean = false,
     /**
@@ -84,7 +85,6 @@ object PresetRegistry {
         ProviderPreset(
             "catpaw", "CatPaw", "美团 · 网页登录", LoginKind.WEBVIEW,
             listOf(AuthChannel.EMBEDDED, AuthChannel.IMPORT_FILE),
-            needsGateway = true,
         ),
         // AutoClaw 国内：手机验证码
         ProviderPreset(
