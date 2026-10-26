@@ -429,7 +429,12 @@ fun AgateNavHost(
                 composable(Routes.TASK_KEEPALIVE) { skeleton(it, navController, "保活链", "M4", "日活任务链编辑：WorkBuddy intl 活跃任务等。", ::openDrawer) }
                 composable(Routes.TASK_SCHEDULES) { skeleton(it, navController, "周期任务", "M4", "后台周期任务总览与下次执行时间。", ::openDrawer) }
                 composable(Routes.TASK_HISTORY) { skeleton(it, navController, "签到台账", "M4", "批量轮次记录、失败明细前 5 条、checkinAt 落账。", ::openDrawer) }
-                composable(Routes.QUOTA) { skeleton(it, navController, "额度中心", "M4", "各账号余额与额度水位、刷新与下限限制器联动。", ::openDrawer) }
+                composable(Routes.QUOTA) {
+                    dev.agate.android.ui.quota.QuotaCenterPage(
+                        onOpenDrawer = { openDrawer() },
+                        onOpenProvider = { pid -> navController.navigate("provider_detail/$pid") },
+                    )
+                }
                 composable(Routes.REPORTS) { skeleton(it, navController, "数据报表", "M4", "6 档时间窗、365 天热力图、24h 双轴、三维构成占比。", ::openDrawer) }
                 composable(Routes.LOGS) { skeleton(it, navController, "调用记录", "M3", "转发请求流水、调用报文、出网取证 Diff、筛选 Sheet。", ::openDrawer) }
                 composable(Routes.APPLOGS) { skeleton(it, navController, "应用日志", "M3", "内核 console_line 转发的应用侧日志流。", ::openDrawer) }
