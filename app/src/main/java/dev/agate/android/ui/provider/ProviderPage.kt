@@ -66,6 +66,7 @@ import dev.agate.android.ui.theme.agateColors
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import org.json.JSONArray
 import org.json.JSONObject
 
 /** 折叠组视图：家 preset（可能为 null=自定义）+ 账号列表。 */
@@ -99,6 +100,7 @@ fun ProviderPage(
     onOpenAdd: () -> Unit = {},
     onOpenDetail: (String) -> Unit = {},
     onOpenQuotaCenter: () -> Unit = {},
+    onOpenLimiter: (AccountDto) -> Unit = {},
 ) {
     val C = agateColors()
     val ctx = LocalContext.current
@@ -108,6 +110,8 @@ fun ProviderPage(
     val scope = rememberCoroutineScope()
 
     var metrics by remember { mutableStateOf<Map<String, AcctMetric>>(emptyMap()) }
+    // 「额度设限」的编辑目标（null = 弹窗关闭）
+    var limiterTarget by remember { mutableStateOf<AccountDto?>(null) }
     var inflight by remember { mutableStateOf<Map<String, Int>>(emptyMap()) }
     var querying by remember { mutableStateOf(false) }
 
@@ -338,13 +342,40 @@ fun ProviderPage(
                         inflight = inflight,
                         mult = multByProvider[g.providerId],
                         checkinSupported = g.providerId in checkinProviders,
+                        usageCapableProviders = snap.providerUsage,
                         onOpenDetail = { onOpenDetail(g.providerId) },
                         onOpenQuotaCenter = onOpenQuotaCenter,
+                        onOpenLimiter = onOpenLimiter,
                     )
                     Spacer(Modifier.height(10.dp))
                 }
             }
         }
+    }
+    // ── 额度设限弹窗 ──
+    // 只在用户点了某账号的入口后出现；保存走 PATCH /api/accounts 的 `limiters`
+    // （整块替换），内核归一化后同步旧 `lowBalance` 供降级兼容。
+    limiterTarget?.let { acc ->
+        AccountLimiterDialog(
+            accountName = acc.displayName,
+            current = balanceLimiterOf(acc.raw),
+            onDismiss = { limiterTarget = null },
+            onSave = { result ->
+                limiterTarget = null
+                scope.launch {
+                    val body = JSONObject()
+                    body.put("limiters", JSONArray().apply { result?.let { put(it.toJson()) } })
+                    val r = AccountOps.update(acc.id, body)
+                    Toast.makeText(
+                        ctx,
+                        if (r.ok) (result?.let { "已设置额度限制" } ?: "已取消额度限制")
+                        else (r.error ?: "保存失败"),
+                        Toast.LENGTH_SHORT,
+                    ).show()
+                    if (r.ok) GatewayRepository.refreshOnce()
+                }
+            },
+        )
     }
 }
 
@@ -357,11 +388,16 @@ private fun ProviderCard(
     inflight: Map<String, Int>,
     mult: Pair<Double, Double>?,
     checkinSupported: Boolean,
+    /** provider id → 该家是否支持余额查询（内核能力投影）。 */
+    usageCapableProviders: Map<String, Boolean>,
     onOpenDetail: () -> Unit,
     onOpenQuotaCenter: () -> Unit = {},
+    onOpenLimiter: (AccountDto) -> Unit = {},
 ) {
     val C = agateColors()
     var expanded by remember(g.providerId) { mutableStateOf(false) }
+    // 这一家有没有余额能力（决定要不要显示「额度限设」入口）
+    val usageCapable = usageCapableProviders[g.providerId] ?: false
     val readyCount = g.accounts.count { it.enabled && it.hasCredentials }
     val downCount = g.accounts.size - readyCount
 
@@ -474,7 +510,9 @@ private fun ProviderCard(
                     isHead = heads[g.providerId] == acc.id,
                     metric = metrics[acc.id],
                     inflight = inflight[acc.id] ?: 0,
+                    usageCapable = usageCapable,
                     onOpenQuotaCenter = onOpenQuotaCenter,
+                    onOpenLimiter = onOpenLimiter,
                 )
                 Spacer(Modifier.height(8.dp))
             }
@@ -490,7 +528,9 @@ private fun AcctBlock(
     isHead: Boolean,
     metric: AcctMetric?,
     inflight: Int,
+    usageCapable: Boolean,
     onOpenQuotaCenter: () -> Unit = {},
+    onOpenLimiter: (AccountDto) -> Unit = {},
 ) {
     val C = agateColors()
     val cap = acc.raw.optInt("maxConcurrent", 0)
@@ -516,6 +556,19 @@ private fun AcctBlock(
                 acc.lowBalance -> AgateBadge("余额低", BadgeTone.AMBER)
                 else -> AgateBadge("就绪", BadgeTone.GREEN)
             }
+        }
+
+        // 额度设限：**只对支持余额查询的家显示**（判据来自内核
+        // `ProviderAdapter::supports_usage`，经 /api/session 的 providers[].usage 带下来）。
+        // commandcode / monkeycode 这类没接余额的家显示阈值输入框，用户填完永远
+        // 看不到效果，会以为功能坏了 —— 不如不显示。
+        if (usageCapable) {
+            LimiterEntryRow(
+                summary = balanceLimiterOf(acc.raw)?.let {
+                    "低于 ${it.threshold.toInt()} 时${if (it.action == "disable") "禁用" else "跳过"}"
+                } ?: "未设限",
+                onOpen = { onOpenLimiter(acc) },
+            )
         }
         Spacer(Modifier.height(6.dp))
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {

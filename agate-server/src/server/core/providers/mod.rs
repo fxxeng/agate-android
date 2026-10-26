@@ -817,6 +817,21 @@ pub fn meta(kind: ProviderKind) -> &'static ProviderMeta {
 /// `count` 由调用方传入的计数函数给出（账号存储那边按 provider 数账号总数）。
 /// 用它而不是让本模块去读账号文件：本模块是**纯静态元数据**，不认识磁盘，
 /// 于是它可以在任何初始化顺序下被调用。
+/// 该家是否支持余额（额度）查询 —— `ProviderAdapter::supports_usage` 的对外投影。
+///
+/// 为什么要在注册表摘要里带出去：用量设置（低余额限流阈值）只对**能读出余额**的
+/// 家有语义。`commandcode` / `monkeycode` 这类没接余额的家显示阈值输入框，
+/// 用户填完永远看不到效果，会以为功能坏了。
+fn usage_capable(kind: ProviderKind) -> bool {
+    // 自定义家按**实例**配置 `balanceScheme` 决定能力，注册表这里拿不到具体
+    // 实例 id，只能如实报「取决于配置」→ 给 true（界面显示设置，真没配方案时
+    // 查询会回「未配置查询」这句中性文案，比藏起设置更好解释）。
+    if kind == ProviderKind::Custom {
+        return true;
+    }
+    crate::server::core::providers::adapter::adapter_for(kind).supports_usage()
+}
+
 pub fn summary_json<F>(count: F) -> Vec<Value>
 where
     F: Fn(&str) -> usize,
@@ -830,6 +845,11 @@ where
                 "id": detail.id,
                 "label": detail.label,
                 "count": count(detail.id),
+                // 「这家有没有余额查询能力」：界面据此决定要不要显示余额相关的
+                // 设置（低余额限流阈值）—— 不支持的家显示成「未配置查询」是误导。
+                // 判据单一来源：适配器的 `supports_usage`（自定义家走
+                // `custom::balance::supports_usage`，见 `usage_query`）。
+                "usage": usage_capable(kind),
             })
         })
         .collect()

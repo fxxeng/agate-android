@@ -418,16 +418,22 @@ private fun ProviderQuotaCard(
                     valueColor = C.textMain,
                 )
 
-                // ── 额度包明细 ──
-                // 汇总只说「还剩多少」，这份清单说清「哪几份、各剩多少、何时作废」。
-                // workbuddy 的 `credits[]` 里很多包 `remain` 已经归零（用完的历史包），
-                // 仍如实列出并标灰 —— 它们是「为什么总数是这个数」的解释。
+                // ── 额度包明细（只列「还能花」的）──
+                // 已用完 / 已过期的包**不显示**：上游发得勤时一列几十份、大半是花完
+                // 的，混排的结果是「打开先看到一堆没用的」，列表也会长到读不完。
+                // 口径与 3.0.8 的 `CreditRow.spent` 一致：剩余读到 0、或（剩余读不到
+                // 但）已用 ≥ 总量、或已过期，都算花不出去；两者都读不到时**不猜**
+                // ——宁留在列表里让人看见，也不凭空折叠。
                 head?.let { acc ->
-                    packs[acc.id]?.takeIf { it.isNotEmpty() }?.let { list ->
+                    val live = packs[acc.id].orEmpty().filterNot { it.spent() }
+                    if (live.isNotEmpty()) {
                         Spacer(Modifier.height(6.dp))
-                        Text("额度包 ${list.size} 份", color = C.textDim, fontSize = 11.sp)
+                        Text("可用额度包 ${live.size} 份", color = C.textDim, fontSize = 11.sp)
                         Spacer(Modifier.height(2.dp))
-                        list.forEach { pack ->
+                        // 顺序照后端给的：各家都在后端按自己的口径排好了
+                        // （Trae 最近到期在前、WorkBuddy 套餐优先级 + 到期升序）。
+                        // 前端再排一次只会让两处口径分叉。
+                        live.forEach { pack ->
                             PackRow(pack)
                         }
                     }
@@ -525,8 +531,42 @@ internal data class QuotaPack(
     val remain: Double?,
     val total: Double?,
     val used: Double?,
+    /** 这一行自己的单位（与主读数不同单位时才由后端带上）。 */
+    val unit: String?,
+    val grantAt: Long?,
+    val startAt: Long?,
     val expireAt: Long?,
-)
+    /** 每日重置的包：`expireAt` 对它是「今天 24 点」，不是作废。 */
+    val daily: Boolean,
+    /** 上游给的「不限量」标记（写成 -1 那种哨兵值会被读成欠费）。 */
+    val unlimited: Boolean,
+    /** 发放原因（WorkBuddy 的官方活动 / 拉新奖励…）。 */
+    val grantReason: String?,
+) {
+    /**
+     * 「这份包还花不花得出去」。口径照 3.0.8 的 `CreditRow.spent`：
+     *   - 剩余读到 0 → 用完；
+     *   - 剩余读不到、但已用 ≥ 总量 → 也算用完（上游只给 used/total 那一档
+     *     同样答得出这个问题，不该因为缺 `remain` 就漏判）；
+     *   - 到期时刻已过 → 过期（**日包除外**：它的 expireAt 是今天 24 点，
+     *     含义是「重置回满」而不是作废）；
+     *   - 两者都读不到 → **不猜**（返回 false，留在列表里让人看见）。
+     */
+    fun spent(now: Long = System.currentTimeMillis()): Boolean {
+        val exhausted = (remain != null && remain <= 0.0) ||
+            (remain == null && used != null && total != null && used >= total)
+        val expired = expireAt != null && expireAt > 0 && expireAt <= now
+        return !unlimited && !daily && (exhausted || expired)
+    }
+
+    /** 剩余比例（有真总量才算；画不出比例就不装作有）。 */
+    val percent: Int?
+        get() = if (total != null && total > 0 && remain != null) {
+            ((remain / total) * 100).toInt().coerceIn(0, 100)
+        } else {
+            null
+        }
+}
 
 /**
  * 从 usage 里取额度包明细。
@@ -545,21 +585,31 @@ private fun parsePacks(usage: JSONObject): List<QuotaPack> {
         }
     }
 
+    fun row(o: JSONObject, index: Int): QuotaPack = QuotaPack(
+        name = o.optString("name").trim().ifBlank { "额度包 ${index + 1}" },
+        remain = num(o, "remain", "left", "balance", "available"),
+        total = num(o, "total", "quota", "granted"),
+        used = num(o, "used", "usage", "consumed"),
+        unit = o.optString("unit").trim().ifBlank { null },
+        grantAt = parseEpochMs(o.opt("grantAt")),
+        startAt = parseEpochMs(o.opt("startAt")),
+        expireAt = parseEpochMs(o.opt("expireAt")),
+        daily = o.optBoolean("daily", false),
+        // 后端只在「不限量」时给这个键（true）；缺键按 false，不猜
+        unlimited = (o.opt("unlimited") as? Boolean) == true,
+        grantReason = o.optString("grantReason").trim().ifBlank { null },
+    )
+
+    // 优先 `credits[]`（12 家产出：workbuddy / trae / officeace / zcode / qoder /
+    // autoclaw / catpaw / codearts / loomy / raccoon / chatglm …）
     usage.optJSONArray("credits")?.let { arr ->
         val out = ArrayList<QuotaPack>(arr.length())
         for (i in 0 until arr.length()) {
-            val o = arr.optJSONObject(i) ?: continue
-            out += QuotaPack(
-                name = o.optString("name").ifBlank { "额度包 ${i + 1}" },
-                remain = num(o, "remain", "left", "balance", "available"),
-                total = num(o, "total", "quota", "granted"),
-                used = num(o, "used", "usage", "consumed"),
-                expireAt = parseEpochMs(o.opt("expireAt")),
-            )
+            arr.optJSONObject(i)?.let { out += row(it, i) }
         }
         if (out.isNotEmpty()) return out
     }
-
+    // 没有 credits 才退 wallets（归一化形状）
     usage.optJSONArray("wallets")?.let { arr ->
         val out = ArrayList<QuotaPack>(arr.length())
         for (i in 0 until arr.length()) {
@@ -569,7 +619,13 @@ private fun parsePacks(usage: JSONObject): List<QuotaPack> {
                 remain = num(o, "balance", "remain", "left"),
                 total = num(o, "quota", "total"),
                 used = num(o, "used"),
+                unit = o.optString("unit").trim().ifBlank { null },
+                grantAt = null,
+                startAt = null,
                 expireAt = parseEpochMs(o.opt("expireAt")),
+                daily = false,
+                unlimited = false,
+                grantReason = null,
             )
         }
         return out
@@ -577,46 +633,116 @@ private fun parsePacks(usage: JSONObject): List<QuotaPack> {
     return emptyList()
 }
 
-/** 额度包明细行：名称 + 剩余 / 总量 + 到期。 */
+/**
+ * 额度包明细行（契约与 3.0.8 的 `CreditRow` 对齐）。
+ *
+ * 版式：左边名称，右边读数「剩 x / y 单位」，下面一行小字是「领取 → 到期」这条
+ * 时间线。三点是刻意的：
+ *   - **单位贴在整串末尾**（「剩 400 / 500 额度」），不夹在中间 —— 中间那版读起来
+ *     像「剩 400 额度 / 共 500 额度」的省略写法，数字与单位的归属全靠猜；
+ *   - 左边那一半**名字跟着来源变**：`grantAt`（上游发放时刻）才叫「领取」，
+ *     只有 `startAt`（抵扣开始）时写「生效」—— 缺了发放时刻还标「领取」等于替
+ *     上游编一个到手时间；
+ *   - 日包的「到期」写「每日重置」：它的 expireAt 是今天 24 点，照「到期」写会让
+ *     人以为额度明天就没了（实际是重置回满）。
+ */
 @Composable
 private fun PackRow(pack: QuotaPack) {
     val C = agateColors()
-    val drained = pack.remain != null && pack.remain!! <= 0.0
-    Row(
-        Modifier.fillMaxWidth().padding(vertical = 5.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            pack.name,
-            color = if (drained) C.textDim else C.textSub,
-            fontSize = 11.sp,
-            modifier = Modifier.weight(1f),
-        )
-        val remainText = pack.remain?.let { if (drained) "已用完" else fmtNum(it) } ?: "—"
-        val totalText = pack.total?.let { " / ${fmtNum(it)}" } ?: ""
-        Text(
-            remainText + totalText,
-            color = if (drained) C.textDim else C.textMain,
-            fontSize = 11.sp,
-            fontWeight = FontWeight.SemiBold,
-        )
-        pack.expireAt?.let { at ->
-            val days = (at - System.currentTimeMillis()) / 86_400_000L
-            Spacer(Modifier.size(8.dp))
+    val now = System.currentTimeMillis()
+    val expired = pack.expireAt != null && pack.expireAt > 0 && pack.expireAt <= now
+
+    // ── 读数 ──
+    val amount = when {
+        pack.unlimited -> "不限"
+        pack.remain != null && pack.total != null && pack.total > 0 ->
+            "剩 ${fmtNum(pack.remain)} / ${fmtNum(pack.total)}"
+        pack.remain != null -> "剩 ${fmtNum(pack.remain)}"
+        pack.used != null -> "已用 ${fmtNum(pack.used)}"
+        else -> "—"
+    }
+    val unitSuffix = if (!pack.unlimited && pack.unit != null && amount != "—") " ${pack.unit}" else ""
+
+    // ── 时间线：领取/生效 → 到期 ──
+    val timeline = buildString {
+        when {
+            pack.grantAt != null && pack.grantAt > 0 -> append("${shortTime(pack.grantAt)} 领取")
+            pack.startAt != null && pack.startAt > 0 -> append("${shortTime(pack.startAt)} 生效")
+        }
+        when {
+            pack.daily -> {
+                if (isNotEmpty()) append(" · ")
+                append("每日重置")
+            }
+            pack.expireAt != null && pack.expireAt > 0 -> {
+                if (isNotEmpty()) append(" · ")
+                append(if (expired) "已过期" else "${shortTime(pack.expireAt)} 到期")
+            }
+        }
+        pack.grantReason?.let {
+            if (isNotEmpty()) append(" · ")
+            append(it)
+        }
+    }
+
+    Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
-                if (days < 0) "已过期" else "${days}天",
+                pack.name,
+                color = C.textSub,
+                fontSize = 11.sp,
+                modifier = Modifier.weight(1f),
+                maxLines = 1,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+            )
+            Text(
+                amount + unitSuffix,
+                color = if (expired) C.textDim else C.textMain,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.SemiBold,
+            )
+        }
+        if (timeline.isNotEmpty()) {
+            Spacer(Modifier.height(1.dp))
+            Text(
+                timeline,
                 color = when {
-                    days < 0 -> C.textDim
-                    days <= 3 -> C.red
-                    days <= 7 -> C.amber
+                    expired -> C.textDim
+                    pack.expireAt != null && (pack.expireAt - now) <= 3L * 86_400_000L -> C.red
+                    pack.expireAt != null && (pack.expireAt - now) <= 7L * 86_400_000L -> C.amber
                     else -> C.textDim
                 },
                 fontSize = 10.sp,
+                maxLines = 1,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
             )
+        }
+        // 剩余比例条：有真总量才画（画不出比例就不装作有）
+        pack.percent?.let { pct ->
+            Spacer(Modifier.height(3.dp))
+            Box(
+                Modifier.fillMaxWidth().height(2.dp).background(C.insetBg, RoundedCornerShape(1.dp)),
+            ) {
+                Box(
+                    Modifier
+                        .fillMaxWidth(pct / 100f)
+                        .height(2.dp)
+                        .background(
+                            if (pct <= 20) C.red else if (pct <= 40) C.amber else C.accent,
+                            RoundedCornerShape(1.dp),
+                        ),
+                )
+            }
         }
     }
     Box(Modifier.fillMaxWidth().height(1.dp).background(C.border))
 }
+
+/** `MM-DD HH:mm`：弹层要一眼扫完，年份是噪音（完整时刻在别处）。 */
+private fun shortTime(atMs: Long): String =
+    java.time.Instant.ofEpochMilli(atMs)
+        .atZone(java.time.ZoneId.systemDefault())
+        .let { "%02d-%02d %02d:%02d".format(it.monthValue, it.dayOfMonth, it.hour, it.minute) }
 
 // ── 到期解析（各家余额构成不同，统一走通用扫描）──────────────────
 //

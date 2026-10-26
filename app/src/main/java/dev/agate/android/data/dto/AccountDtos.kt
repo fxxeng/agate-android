@@ -34,6 +34,12 @@ data class AccountsSnapshot(
     val accounts: List<AccountDto>,
     /** provider id → 账号总数（含禁用，与分组标题「N 个账号」口径一致）。 */
     val providerCounts: Map<String, Int>,
+    /**
+     * provider id → 该家是否支持余额查询（内核 `ProviderAdapter::supports_usage`
+     * 的投影）。**支持的才显示额度设置**：commandcode / monkeycode 这类没接余额的
+     * 家显示阈值输入框，用户填完永远看不到效果。
+     */
+    val providerUsage: Map<String, Boolean>,
     /** provider id → 该家队首账号 id（界面 ★ 判据；全局 currentAccountId 不分家，不用）。 */
     val currentAccountIds: Map<String, String>,
 )
@@ -66,11 +72,11 @@ object AccountDtos {
 
     /** session 为 null（本次未拉到）返回空视图；调用方按「沿用上一份快照」处理。 */
     fun parseSession(session: JSONObject?): AccountsSnapshot {
-        if (session == null) return AccountsSnapshot(emptyList(), emptyMap(), emptyMap())
+        if (session == null) return AccountsSnapshot(emptyList(), emptyMap(), emptyMap(), emptyMap())
         val envelope = session.optJSONObject("accounts")
-            ?: return AccountsSnapshot(emptyList(), emptyMap(), emptyMap())
+            ?: return AccountsSnapshot(emptyList(), emptyMap(), emptyMap(), emptyMap())
         val arr = envelope.optJSONArray("accounts")
-            ?: return AccountsSnapshot(emptyList(), emptyMap(), emptyMap())
+            ?: return AccountsSnapshot(emptyList(), emptyMap(), emptyMap(), emptyMap())
 
         val list = ArrayList<AccountDto>(arr.length())
         for (i in 0 until arr.length()) {
@@ -93,11 +99,14 @@ object AccountDtos {
         }
 
         val counts = HashMap<String, Int>()
+        val usage = HashMap<String, Boolean>()
         envelope.optJSONArray("providers")?.let { ps ->
             for (i in 0 until ps.length()) {
                 val p = ps.optJSONObject(i) ?: continue
                 val pid = p.optString("id")
-                if (pid.isNotBlank()) counts[pid] = p.optInt("count", 0)
+                if (pid.isBlank()) continue
+                counts[pid] = p.optInt("count", 0)
+                usage[pid] = p.optBoolean("usage", false)
             }
         }
 
@@ -108,6 +117,6 @@ object AccountDtos {
                 if (v.isNotBlank()) heads[key] = v
             }
         }
-        return AccountsSnapshot(list, counts, heads)
+        return AccountsSnapshot(list, counts, usage, heads)
     }
 }

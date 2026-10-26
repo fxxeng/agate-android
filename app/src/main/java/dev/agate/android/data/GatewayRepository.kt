@@ -83,6 +83,12 @@ object GatewayRepository {
         val providerCounts: Map<String, Int> = emptyMap(),
         /** provider id → 该家队首账号 id（★ 判据） */
         val currentAccountIds: Map<String, String> = emptyMap(),
+        /**
+         * provider id → 该家是否支持余额查询（内核 `ProviderAdapter::supports_usage`
+         * 经 /api/session 的 `providers[].usage` 带下来）。界面据此决定要不要显示
+         * 「额度设限」入口 —— 不支持的家显示阈值输入框永远看不到效果。
+         */
+        val providerUsage: Map<String, Boolean> = emptyMap(),
         /** /api/routing/queue → 实时出战队列（首页 v44 hq 卡）；解析失败沿用上份 */
         val routingQueue: List<QueueRow> = emptyList(),
         /** /api/stats/summary overview → 平均时延（字段名随上游，读不到为 null 显示占位） */
@@ -283,6 +289,7 @@ object GatewayRepository {
                     accountList = if (session != null) parsed.accounts else prev.accountList,
                     providerCounts = if (session != null) parsed.providerCounts else prev.providerCounts,
                     currentAccountIds = if (session != null) parsed.currentAccountIds else prev.currentAccountIds,
+                    providerUsage = if (session != null) parsed.providerUsage else prev.providerUsage,
                     routingQueue = parseRoutingQueue(routing) ?: prev.routingQueue,
                     avgLatencyMs = firstNonNull(
                         overview?.optLong("avgLatencyMs", -1L),
