@@ -73,7 +73,7 @@ fun ModelMappingPage(
     var expandedRow by remember { mutableStateOf<String?>(null) }
 
     fun toast(ok: Boolean, what: String, error: String?) {
-        Toast.makeText(ctx, if (ok) "$what成功" else "$what失败：${error ?: "未知"}", Toast.LENGTH_SHORT).show()
+        Toast.makeText(ctx, if (ok) "${what}成功" else "${what}失败：${error ?: "未知"}", Toast.LENGTH_SHORT).show()
     }
 
     fun applyResult(r: ModelOps.OpResult, what: String) {
@@ -420,22 +420,24 @@ private fun AddMappingCard(
                     )
                 }
             }
-        } else if (picked != null) {
+        } else {
             val m = picked
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable { picking = true }
-                    .background(C.segBg, AgateShape.small)
-                    .padding(horizontal = 10.dp, vertical = 9.dp),
-            ) {
-                Text(
-                    "${m.optString("id")} · ${m.optString("providerLabel")}",
-                    style = AgateType.BodyS, color = C.textMain,
-                    modifier = Modifier.weight(1f),
-                )
-                Text("更换 ❯", style = AgateType.Caption, color = C.accent)
+            if (m != null) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { picking = true }
+                        .background(C.segBg, AgateShape.small)
+                        .padding(horizontal = 10.dp, vertical = 9.dp),
+                ) {
+                    Text(
+                        "${m.optString("id")} · ${m.optString("providerLabel")}",
+                        style = AgateType.BodyS, color = C.textMain,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Text("更换 ❯", style = AgateType.Caption, color = C.accent)
+                }
             }
         }
 
