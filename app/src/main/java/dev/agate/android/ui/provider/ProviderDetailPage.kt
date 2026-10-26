@@ -257,7 +257,19 @@ fun ProviderDetailPage(providerId: String, onBack: () -> Unit, onAddAccount: () 
             )
             else -> SettingsTab(
                 accounts = accounts,
+                providerId = providerId,
                 busy = busy,
+                onPatchAccount = { acc, patch ->
+                    if (!busy) {
+                        busy = true
+                        scope.launch {
+                            val r = AccountOps.update(acc.id, patch)
+                            busy = false
+                            toast(if (r.ok) "已保存（${acc.displayName}）" else (r.error ?: "保存失败"))
+                            if (r.ok) GatewayRepository.refreshOnce()
+                        }
+                    }
+                },
                 onTest = {
                     val first = accounts.firstOrNull()
                     if (first == null) {
@@ -663,7 +675,9 @@ private fun AccountBlock(
 @Composable
 private fun SettingsTab(
     accounts: List<AccountDto>,
+    providerId: String,
     busy: Boolean,
+    onPatchAccount: (AccountDto, JSONObject) -> Unit,
     onTest: () -> Unit,
     onDeleteProvider: () -> Unit,
     onRefreshExpiring: () -> Unit,
@@ -671,6 +685,92 @@ private fun SettingsTab(
     val C = agateColors()
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp)) {
         Spacer(Modifier.height(10.dp))
+        // ── 家专属设置（只在这几家出现；字段来自内核的按家白名单）──
+        val firstAccount = accounts.firstOrNull()
+        when (providerId) {
+            "catpaw" -> {
+                var token by remember { mutableStateOf("") }
+                Card {
+                    Text("余额查询凭证", color = C.textMain, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "CatPaw 的余额要带 passport cookie（token2）才能查。留空 = 不修改。",
+                        color = C.textSub, fontSize = 12.sp,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = token,
+                        onValueChange = { token = it.trim() },
+                        singleLine = true,
+                        placeholder = { Text("粘贴 token2 / balanceToken", fontSize = 12.sp) },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            if (firstAccount == null) "该家还没有账号" else "应用到：${firstAccount.displayName}",
+                            color = C.textDim, fontSize = 11.sp, modifier = Modifier.weight(1f),
+                        )
+                        SmallAction(
+                            "保存",
+                            false,
+                            !busy && firstAccount != null && token.isNotBlank(),
+                            onClick = {
+                                val acc = firstAccount ?: return@SmallAction
+                                onPatchAccount(acc, JSONObject().put("balanceToken", token))
+                                token = ""
+                            },
+                        )
+                    }
+                }
+                Spacer(Modifier.height(12.dp))
+            }
+            "zcode", "zcode-intl" -> {
+                val current = firstAccount?.raw?.optString("zcodePlan").orEmpty()
+                    .ifBlank { "coding-plan" }
+                Card {
+                    Text("套餐通道", color = C.textMain, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "编码套餐与活动套餐走不同的上游通道；切换后新请求立即生效。",
+                        color = C.textSub, fontSize = 12.sp,
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        listOf("coding-plan" to "编码套餐", "start-plan" to "活动套餐").forEach { (value, label) ->
+                            val active = current == value
+                            Text(
+                                label,
+                                color = if (active) C.onAccent else C.textSub,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier
+                                    .background(
+                                        if (active) C.accent else C.insetBg,
+                                        RoundedCornerShape(999.dp),
+                                    )
+                                    .border(
+                                        1.dp,
+                                        if (active) Color.Transparent else C.border,
+                                        RoundedCornerShape(999.dp),
+                                    )
+                                    .clickable {
+                                        val acc = firstAccount ?: return@clickable
+                                        if (!active) onPatchAccount(acc, JSONObject().put("zcodePlan", value))
+                                    }
+                                    .padding(horizontal = 14.dp, vertical = 8.dp),
+                            )
+                        }
+                    }
+                    if (firstAccount == null) {
+                        Spacer(Modifier.height(6.dp))
+                        Text("该家还没有账号", color = C.textDim, fontSize = 11.sp)
+                    }
+                }
+                Spacer(Modifier.height(12.dp))
+            }
+        }
+
         Card {
             Text("操作", color = C.textMain, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.height(6.dp))
