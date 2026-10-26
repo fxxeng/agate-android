@@ -63,6 +63,18 @@ object PresetRegistry {
 
     val ALL: List<ProviderPreset> = listOf(
         // WorkBuddy：上游推 authUrl → 轮询 auth/token；可粘贴 auth.json（需 uid）
+        // 智谱清言（chatglm.cn）：无状态转发 + 双凭证形态 —— 访客免登录可换证、
+        // 登录账号有积分。客户端这边只给两条最稳的通道：粘贴 accessToken /
+        // refreshToken，或导入本机桌面客户端登录态（`importDesktop: true`，
+        // 内核 `api::accounts` 的 Chatglm 分支直接认这两个字段）。
+        // 不做内嵌网页登录：那需要跑上游的签名三件套 + 设备号，网页端流程在
+        // WebView 里不可靠。
+        ProviderPreset(
+            "chatglm", "智谱清言", "chatglm.cn · 粘贴 Token 或导入桌面登录态", LoginKind.WEBVIEW,
+            listOf(AuthChannel.PASTE, AuthChannel.IMPORT_DESKTOP),
+            pasteHint = "粘贴 accessToken（或 refreshToken）",
+            pasteSecondaryHint = "留空则按访客（guest）添加",
+        ),
         ProviderPreset(
             "workbuddy", "WorkBuddy 国内版", "copilot.tencent.com 网页登录", LoginKind.WEBVIEW,
             listOf(AuthChannel.EMBEDDED, AuthChannel.EXTERNAL, AuthChannel.PASTE),
