@@ -85,6 +85,7 @@ pub mod key_scope;
 pub mod legacy_api_key;
 pub mod limiter;
 pub mod login;
+pub mod login_listener;
 pub mod model_meta;
 pub mod model_rules;
 pub mod models;

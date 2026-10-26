@@ -370,6 +370,9 @@ pub extern "system" fn Java_dev_agate_core_Gateway_nativeApiCall<'local>(
 }
 
 fn start_gateway(data_dir: &str, port: u16, bind_lan: bool, api_key: Option<&str>) -> Value {
+    // 登录期可能临时占着该端口（Core 态收回调用，见 core::login_listener）：
+    // 必须先释放并等端口归还，否则下面的 bind 会撞自己。
+    crate::server::core::login_listener::release();
     // api_key → env（每次启动按本次参数注入；trigger_task 的内部请求也读它）
     if let Some(key) = api_key.map(str::trim).filter(|k| !k.is_empty()) {
         std::env::set_var("AGATE_PROXY_API_KEY", key);

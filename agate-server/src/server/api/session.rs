@@ -212,6 +212,22 @@ pub async fn login_start(State(state): State<ServerState>, body: Bytes) -> Respo
             None => return management_error(400, format!("未知的提供商：{other}")),
         },
     };
+    // ── 需要 loopback 回调的家：Core 态临时占住端口 ──────────────
+    // 四家的 redirect 拼的是 `127.0.0.1:<网关端口>`，而 Core 态不监听端口
+    // （见 `core::login_listener` 的模块头）。不先确保监听，授权完成后回调
+    // 会打空，用户干等到 5 分钟超时。网关已在跑时 ensure() 是空操作。
+    if matches!(
+        kind,
+        crate::server::core::providers::ProviderKind::Accio
+            | crate::server::core::providers::ProviderKind::AccioCn
+            | crate::server::core::providers::ProviderKind::CodeArts
+            | crate::server::core::providers::ProviderKind::Antigravity
+    ) {
+        if let Err(reason) = crate::server::core::login_listener::ensure(&state) {
+            return management_error(400, reason);
+        }
+    }
+
     // Qoder：设备授权，两站同构。拆家后界面上是两张卡片（`qoder` /
     // `qoder-intl`），点哪张就发哪个 provider id —— 地区由 **provider id**
     // 反查（与下面 ZCode 同一条理由：`edition` 是前端回显字段，拿它定地区
