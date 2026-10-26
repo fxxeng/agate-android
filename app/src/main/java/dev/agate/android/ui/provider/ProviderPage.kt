@@ -562,10 +562,42 @@ private fun AcctBlock(
 /** 余额百分比/文案：usage 各家字段不同，按候选键取值。 */
 internal fun parseUsageMetric(o: JSONObject?): AcctMetric {
     if (o == null) return AcctMetric()
+
     fun d(vararg ks: String): Double? = ks.firstNotNullOfOrNull { k ->
-        if (o.has(k)) o.optDouble(k, Double.NaN).takeIf { !it.isNaN() } else null
+        // 布尔不能当数字（JSONObject.getBoolean 是真假两值；这里只认数字与数字串）
+        val raw = o.opt(k) ?: return@firstNotNullOfOrNull null
+        when (raw) {
+            is Number -> raw.toDouble().takeIf { it.isFinite() }
+            is String -> raw.trim().toDoubleOrNull()?.takeIf { it.isFinite() }
+            else -> null
+        }
     }
-    val left = d("left", "remain", "remaining", "balance", "available", "total_granted")
+
+    // ── 形状 1：WorkBuddy 既有契约 `{kind, unlimited, totalLeft, planLeft, bonusLeft}` ──
+    // 这个形状**没有** total/used 一类字段，当年必须在这里单开一支；否则
+    // `totalLeft` 认不出来，界面就恒显示「--」（真机踩到过）。
+    // 判据是字段存在性，与内核 `usage_records::extract_remaining` 同源。
+    if (o.has("totalLeft")) {
+        val unlimited = o.optBoolean("unlimited", false) ||
+            (o.opt("unlimited")?.let { it !is Boolean && it.toString().isNotEmpty() } == true)
+        val total = d("totalLeft")
+        if (unlimited) return AcctMetric(text = "∞ 不限量")
+
+        // 三份明细（总 / 套餐 / 奖励）都是上游给的数，只做展示不做二次计算
+        val parts = ArrayList<String>(3)
+        total?.let { parts += "共${fmtNum(it)}" }
+        d("planLeft")?.let { parts += "套餐${fmtNum(it)}" }
+        d("bonusLeft")?.let { parts += "奖励${fmtNum(it)}" }
+        return when {
+            total != null && parts.isNotEmpty() -> AcctMetric(text = parts.joinToString(" · "), pct = null)
+            else -> AcctMetric(text = null)
+        }
+    }
+
+    // ── 形状 2：归一化形状 `{available, availableView, unit, wallets, total, used}` ──
+    // `availableView` 是后端给的**紧凑展示串**（如「1亿 token」）；余额列只有
+    // 几十像素宽，数字太长会挤爆，有展示串就用它，没有才按数值拼。
+    val left = d("available", "left", "remain", "remaining", "balance", "total_granted")
     val total = d("total", "quota", "granted")
     val used = d("used", "usage", "consumed")
     val pct = when {
@@ -573,13 +605,56 @@ internal fun parseUsageMetric(o: JSONObject?): AcctMetric {
         total != null && total > 0 && used != null -> (((total - used) / total) * 100).toInt().coerceIn(0, 100)
         else -> null
     }
+
+    // 钱包/额度桶明细：主读数缺失（上游只给比例，如 Accio 的 usagePercent）时，
+    // 从有实际读数的钱包里兜一个出来 —— 有可读的就不再显示「可用 —」。
+    val wallets = o.optJSONArray("wallets")
+    val fallbackWallet = if (left == null && wallets != null) {
+        var picked: Pair<Double, String>? = null
+        for (i in 0 until wallets.length()) {
+            val w = wallets.optJSONObject(i) ?: continue
+            val value = w.opt("balance")?.let { raw ->
+                when (raw) {
+                    is Number -> raw.toDouble()
+                    is String -> raw.trim().toDoubleOrNull()
+                    else -> null
+                }
+            } ?: continue
+            val unit = w.optString("unit").ifBlank { "" }
+            if (picked == null) picked = value to unit
+        }
+        picked
+    } else {
+        null
+    }
+
+    val unit = o.optString("unit").ifBlank { "" }
+    val view = o.optString("availableView").ifBlank { null }
     val text = when {
+        view != null -> view
         left != null && pct != null -> "${fmtNum(left)} · $pct%"
-        left != null -> fmtNum(left)
+        left != null -> "${fmtNum(left)}${if (unit.isNotEmpty()) " $unit" else ""}"
+        fallbackWallet != null ->
+            "${fmtNum(fallbackWallet.first)}" + if (fallbackWallet.second.isNotEmpty()) " ${fallbackWallet.second}" else ""
         used != null -> "已用 ${fmtNum(used)}"
         else -> null
     }
-    return AcctMetric(text = text, pct = pct)
+
+    // 半次失败：一台网关读到、另一台没读到（CodeArts 的订阅统计 / 福利网关）。
+    // 读数是真的但不完整 —— 不能显示成一片绿，否则会被读成「额度用完了」。
+    val partial = listOf(
+        o.optString("statisticsError"),
+        o.optString("benefitError"),
+    ).count { it.isNotBlank() }
+
+    return AcctMetric(
+        text = when {
+            text == null -> null
+            partial > 0 -> "$text · ⚠ 部分未读到"
+            else -> text
+        },
+        pct = pct,
+    )
 }
 
 /** 倍率展示：整数不带小数，其余去掉多余的 0。 */

@@ -80,6 +80,8 @@ fun QuotaCenterPage(
 
     var metrics by remember { mutableStateOf<Map<String, AcctMetric>>(emptyMap()) }
     var expiries by remember { mutableStateOf<Map<String, Expiry>>(emptyMap()) }
+    // 原始 usage JSON（诊断用）：解析不出数时，展开能看到内核到底回了什么
+    var raws by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
     var skipped by remember { mutableStateOf(0) }
     var busy by remember { mutableStateOf(false) }
     var hint by remember { mutableStateOf<String?>(null) }
@@ -99,6 +101,7 @@ fun QuotaCenterPage(
         }
         val out = HashMap<String, AcctMetric>()
         val exp = HashMap<String, Expiry>()
+        val raw = HashMap<String, String>()
         data.optJSONArray("results")?.let { arr ->
             for (i in 0 until arr.length()) {
                 val row = arr.optJSONObject(i) ?: continue
@@ -112,11 +115,15 @@ fun QuotaCenterPage(
                     usage == null -> AcctMetric(text = "未返回余额数据")
                     else -> parseUsageMetric(usage)
                 }
-                if (usage != null) extractExpiry(usage)?.let { exp[id] = it }
+                if (usage != null) {
+                    extractExpiry(usage)?.let { exp[id] = it }
+                    raw[id] = usage.toString()
+                }
             }
         }
         metrics = out
         expiries = exp
+        raws = raw
         skipped = data.optInt("skipped", 0)
         lastAt = android.text.format.DateFormat.format("HH:mm", System.currentTimeMillis()).toString()
     }
@@ -240,6 +247,7 @@ fun QuotaCenterPage(
                         accounts = visible,
                         metrics = metrics,
                         expiries = expiries,
+                        raws = raws,
                         expanded = provider in expanded,
                         onToggle = {
                             expanded = if (provider in expanded) expanded - provider else expanded + provider
@@ -267,11 +275,13 @@ private fun ProviderQuotaCard(
     accounts: List<AccountDto>,
     metrics: Map<String, AcctMetric>,
     expiries: Map<String, Expiry>,
+    raws: Map<String, String>,
     expanded: Boolean,
     onToggle: () -> Unit,
     onOpenProvider: () -> Unit,
 ) {
     val C = agateColors()
+    val ctx = LocalContext.current
     val label = PresetRegistry.labelOf(provider)
 
     // 家级读数：优先「最早到期」的账号，失败项排前
@@ -399,6 +409,32 @@ private fun ProviderQuotaCard(
                     right = headExpiry?.describe() ?: "该家未返回",
                     valueColor = C.textMain,
                 )
+                // 诊断行：解析不出数时（界面显示 —）照着它就能定位是上游形状不认识
+                // 还是那次请求确实没返回读数。取第一个账号的原始 JSON。
+                head?.let { acc ->
+                    raws[acc.id]?.let { raw ->
+                        Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+                            Text("原始读数（诊断）", color = C.textDim, fontSize = 11.sp)
+                            Spacer(Modifier.height(2.dp))
+                            Text(
+                                raw.take(400),
+                                color = C.textSub,
+                                fontSize = 10.sp,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .background(C.insetBg, RoundedCornerShape(8.dp))
+                                    .clickable {
+                                        val clipboard = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+                                            as android.content.ClipboardManager
+                                        clipboard.setPrimaryClip(
+                                            android.content.ClipData.newPlainText("usage", raw),
+                                        )
+                                    }
+                                    .padding(8.dp),
+                            )
+                        }
+                    }
+                }
                 Row(
                     Modifier.fillMaxWidth().clickable { onOpenProvider() }.padding(vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
