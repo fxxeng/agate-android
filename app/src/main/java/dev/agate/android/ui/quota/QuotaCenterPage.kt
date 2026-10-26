@@ -34,6 +34,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.agate.android.data.AccountOps
 import dev.agate.core.GatewayPrefs
+import org.json.JSONArray
+import org.json.JSONObject
 import dev.agate.android.data.GatewayRepository
 import dev.agate.android.data.PresetRegistry
 import dev.agate.android.data.dto.AccountDto
@@ -73,6 +75,8 @@ fun QuotaCenterPage(
     val snap by GatewayRepository.snapshot.collectAsState()
 
     var metrics by remember { mutableStateOf<Map<String, AcctMetric>>(emptyMap()) }
+    // 账号 → 最近到期信息（各家字段不同，故用通用扫描，见 extractExpiry）
+    var expiries by remember { mutableStateOf<Map<String, Expiry>>(emptyMap()) }
     var skipped by remember { mutableStateOf(0) }
     var busy by remember { mutableStateOf(false) }
     var hint by remember { mutableStateOf<String?>(null) }
@@ -88,6 +92,7 @@ fun QuotaCenterPage(
             return
         }
         val out = HashMap<String, AcctMetric>()
+        val exp = HashMap<String, Expiry>()
         data.optJSONArray("results")?.let { arr ->
             for (i in 0 until arr.length()) {
                 val row = arr.optJSONObject(i) ?: continue
@@ -95,14 +100,17 @@ fun QuotaCenterPage(
                 if (id.isBlank()) continue
                 // ⚠️ error 为 JSON null 时不能用 optString（会得到字符串 "null"）
                 val err = (row.opt("error") as? String)?.trim().orEmpty()
+                val usage = row.optJSONObject("usage")
                 out[id] = when {
                     err.isNotEmpty() -> AcctMetric(text = "查询失败：$err", failed = true)
-                    row.optJSONObject("usage") == null -> AcctMetric(text = "未返回余额数据")
-                    else -> parseUsageMetric(row.optJSONObject("usage"))
+                    usage == null -> AcctMetric(text = "未返回余额数据")
+                    else -> parseUsageMetric(usage)
                 }
+                if (usage != null) extractExpiry(usage)?.let { exp[id] = it }
             }
         }
         metrics = out
+        expiries = exp
         skipped = data.optInt("skipped", 0)
         lastAt = android.text.format.DateFormat.format("HH:mm:ss", System.currentTimeMillis()).toString()
     }
@@ -128,6 +136,7 @@ fun QuotaCenterPage(
             val accounts = snap.accountList
             val lowOnes = accounts.filter { isLow(it, metrics[it.id]) }
             val failedOnes = accounts.filter { metrics[it.id]?.failed == true }
+            val expiringSoon = accounts.filter { (expiries[it.id]?.days ?: Long.MAX_VALUE) <= 7 }
 
             // ── 概览 ──
             Column(
@@ -143,12 +152,15 @@ fun QuotaCenterPage(
                     StatCell("账号", accounts.size.toString(), C.textMain, Modifier.weight(1f))
                     StatCell("低余额", lowOnes.size.toString(), if (lowOnes.isEmpty()) C.textMain else C.red, Modifier.weight(1f))
                     StatCell("查询失败", failedOnes.size.toString(), if (failedOnes.isEmpty()) C.textMain else C.amber, Modifier.weight(1f))
-                    StatCell("未就绪", skipped.toString(), C.textSub, Modifier.weight(1f))
+                    StatCell("7 天内到期", expiringSoon.size.toString(), if (expiringSoon.isEmpty()) C.textMain else C.amber, Modifier.weight(1f))
                 }
                 Spacer(Modifier.height(10.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        lastAt?.let { "上次刷新 $it" } ?: "尚未刷新",
+                        buildString {
+                            append(lastAt?.let { "上次刷新 $it" } ?: "尚未刷新")
+                            if (skipped > 0) append(" · $skipped 个未就绪")
+                        },
                         color = C.textDim, fontSize = 11.sp, modifier = Modifier.weight(1f),
                     )
                     Button(
@@ -175,6 +187,7 @@ fun QuotaCenterPage(
             grouped.entries
                 .sortedWith(
                     compareBy(
+                        { entry -> entry.value.minOfOrNull { expiries[it.id]?.days ?: Long.MAX_VALUE } ?: Long.MAX_VALUE },
                         { entry -> entry.value.none { isLow(it, metrics[it.id]) } },
                         { entry -> -entry.value.size },
                     ),
@@ -197,7 +210,8 @@ fun QuotaCenterPage(
                     }
                     Spacer(Modifier.height(6.dp))
                     list.sortedWith(
-                        compareByDescending<AccountDto> { isLow(it, metrics[it.id]) }
+                        compareBy<AccountDto> { expiries[it.id]?.days ?: Long.MAX_VALUE }
+                            .thenByDescending { isLow(it, metrics[it.id]) }
                             .thenByDescending { metrics[it.id]?.failed == true },
                     ).forEach { acc ->
                         val m = metrics[acc.id]
@@ -217,14 +231,24 @@ fun QuotaCenterPage(
                         ) {
                             Column(Modifier.weight(1f)) {
                                 Text(acc.displayName, color = C.textMain, fontSize = 14.sp)
+                                val expiry = expiries[acc.id]
                                 Text(
-                                    when {
-                                        m == null -> "未查询"
-                                        m.failed -> "查询失败"
-                                        else -> m.text ?: "无额度数据"
+                                    buildString {
+                                        append(
+                                            when {
+                                                m == null -> "未查询"
+                                                m.failed -> "查询失败"
+                                                else -> m.text ?: "无额度数据"
+                                            },
+                                        )
+                                        if (expiry != null) {
+                                            append(" · ")
+                                            append(expiry.describe())
+                                        }
                                     },
                                     color = when {
                                         m?.failed == true -> C.red
+                                        expiry != null && expiry.days <= 3 -> C.red
                                         m == null -> C.textDim
                                         else -> C.textSub
                                     },
@@ -233,6 +257,10 @@ fun QuotaCenterPage(
                             }
                             when {
                                 m?.failed == true -> AgateBadge("失败", BadgeTone.RED)
+                                expiries[acc.id]?.let { it.days <= 3 } == true ->
+                                    AgateBadge("${expiries[acc.id]!!.days}天到期", BadgeTone.RED)
+                                expiries[acc.id]?.let { it.days <= 7 } == true ->
+                                    AgateBadge("${expiries[acc.id]!!.days}天到期", BadgeTone.AMBER)
                                 isLow(acc, m) -> AgateBadge("低余额", BadgeTone.RED)
                                 m?.pct != null -> AgateBadge("${m.pct}%", BadgeTone.GREEN)
                                 !acc.enabled -> AgateBadge("已禁用", BadgeTone.GRAY)
@@ -244,6 +272,87 @@ fun QuotaCenterPage(
             Spacer(Modifier.height(24.dp))
         }
     }
+}
+
+// ── 到期解析（各家余额构成不同，统一走通用扫描）──────────────────
+//
+// 各家的 usage 形状差异很大，但有两个共同点可抓：
+//   1. 「还剩多少」的键名在少数几个里轮转（left/remain/remaining/balance/
+//      available/credits/points/totalPoint）；
+//   2. 「什么时候作废」也一样（expireAt/expiresAt/expiredAt/endAt/endTime/
+//      validEndTime/periodEnd/endsAt），单位有毫秒也有秒。
+// 所以这里不按家写死，而是**递归扫一遍**：对象上同时能读到「剩余」和
+// 「到期」就记成一个候选桶，最后取**最近一个未来到期**的桶作为展示口径。
+//
+// 为什么优先未来：已经过期但还剩数的桶是历史残留（上游常在过期后一段时间
+// 才清零），拿它当「最近到期」会显示成「已过期」，让用户误以为整家作废。
+private val EXPIRY_KEYS = listOf(
+    "expireAt", "expiresAt", "expiredAt", "endAt", "endTime", "validEndTime",
+    "periodEnd", "period_end", "endsAt", "expireTime",
+)
+private val LEFT_KEYS = listOf(
+    "left", "remain", "remaining", "balance", "available", "credits", "points", "totalPoint",
+)
+
+/** 一个可展示的到期信息（`days` 为剩余天数，负数表示已过期）。 */
+internal data class Expiry(val atMs: Long, val days: Long) {
+    fun describe(): String = when {
+        days < 0 -> "已过期"
+        days == 0L -> "今天到期"
+        days <= 30 -> "$days 天后到期"
+        else -> java.time.Instant.ofEpochMilli(atMs)
+            .atZone(java.time.ZoneId.systemDefault())
+            .toLocalDate()
+            .let { "${it.monthValue}月${it.dayOfMonth}日到期" }
+    }
+}
+
+/** 从 usage 里挑出**最近一个未来到期**的额度桶；没有到期信息返回 null。 */
+private fun extractExpiry(usage: JSONObject): Expiry? {
+    val candidates = ArrayList<Pair<Double, Long>>() // (剩余, 到期毫秒)
+    scanQuota(usage, candidates, 0)
+    if (candidates.isEmpty()) return null
+    val now = System.currentTimeMillis()
+    val hasLeft = candidates.filter { it.first > 0.0 }
+    val pool = if (hasLeft.isNotEmpty()) hasLeft else candidates
+    val pick = pool.filter { it.second > now }.minByOrNull { it.second }
+        ?: pool.maxByOrNull { it.second } ?: return null
+    val days = (pick.second - now) / 86_400_000L
+    return Expiry(atMs = pick.second, days = days)
+}
+
+private fun scanQuota(node: Any?, out: MutableList<Pair<Double, Long>>, depth: Int) {
+    if (depth > 6 || node == null) return
+    when (node) {
+        is JSONObject -> {
+            val left = LEFT_KEYS.firstNotNullOfOrNull { key ->
+                if (node.has(key)) node.optDouble(key, Double.NaN).takeIf { !it.isNaN() } else null
+            }
+            val at = EXPIRY_KEYS.firstNotNullOfOrNull { key -> parseEpochMs(node.opt(key)) }
+            if (left != null && at != null) out += left to at
+            for (key in node.keys()) scanQuota(node.opt(key), out, depth + 1)
+        }
+        is JSONArray -> for (i in 0 until node.length()) scanQuota(node.opt(i), out, depth + 1)
+    }
+}
+
+/** 到期时间三种形态：毫秒数 / 秒数 / 可解析的时间串。 */
+private fun parseEpochMs(value: Any?): Long? {
+    val raw = when (value) {
+        null, JSONObject.NULL -> return null
+        is Number -> value.toLong()
+        is String -> {
+            val text = value.trim()
+            if (text.isEmpty()) return null
+            text.toLongOrNull() ?: runCatching {
+                java.time.OffsetDateTime.parse(text).toInstant().toEpochMilli()
+            }.getOrNull() ?: return null
+        }
+        else -> return null
+    }
+    if (raw <= 0) return null
+    // 秒级（10 位）与毫秒级（13 位）混用：小于 1e11 视为秒
+    return if (raw < 100_000_000_000L) raw * 1000 else raw
 }
 
 /** 低余额判据：内核标记优先，其次按比例（≤20%）。 */
