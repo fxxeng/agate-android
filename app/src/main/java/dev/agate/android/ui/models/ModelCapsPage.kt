@@ -29,15 +29,15 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import android.widget.Toast
-import dev.agate.android.data.GatewayPrefs
+import dev.agate.core.GatewayPrefs
 import dev.agate.android.data.ModelOps
 import dev.agate.android.ui.components.AgateBadge
 import dev.agate.android.ui.components.AgateFormInput
 import dev.agate.android.ui.components.AgateSearchBar
-import dev.agate.android.ui.components.AgateShape
-import dev.agate.android.ui.components.AgateType
+import dev.agate.android.ui.theme.AgateShape
+import dev.agate.android.ui.theme.AgateType
 import dev.agate.android.ui.components.agateCard
-import dev.agate.android.ui.components.agateColors
+import dev.agate.android.ui.theme.agateColors
 import dev.agate.android.ui.components.AgatePageHeader
 import kotlinx.coroutines.launch
 import org.json.JSONArray
@@ -125,6 +125,11 @@ fun ModelCapsPage(
         p.put(key, value ?: JSONObject.NULL)
         patch = p
     }
+    fun removePatch(key: String) {
+        val p = patch ?: return
+        p.remove(key)
+        patch = p
+    }
 
     Column(modifier = modifier.fillMaxSize().background(C.bg)) {
         AgatePageHeader(title = "能力位", onOpenDrawer = {}, onBack = onBack)
@@ -195,6 +200,7 @@ fun ModelCapsPage(
                     patch = patch,
                     busy = loading,
                     onPatch = ::putPatch,
+                    onClearKey = ::removePatch,
                     onSave = {
                         val p = patch
                         if (p == null || p.length() == 0) {
@@ -235,6 +241,7 @@ private fun CapsEditCard(
     patch: JSONObject?,
     busy: Boolean,
     onPatch: (String, Any?) -> Unit,
+    onClearKey: (String) -> Unit,
     onSave: () -> Unit,
 ) {
     val C = agateColors()
@@ -312,7 +319,7 @@ private fun CapsEditCard(
                 TokenInput(
                     key = key, effective = effective, covered = covered,
                     onPatch = onPatch,
-                    onClear = { val p2 = patch; p2?.remove(key); if (p2 != null) patch = p2 },
+                    onClear = { onClearKey(key) },
                 )
             }
             Spacer(Modifier.height(10.dp))
