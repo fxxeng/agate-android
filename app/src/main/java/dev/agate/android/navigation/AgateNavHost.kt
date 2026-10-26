@@ -71,6 +71,8 @@ import androidx.navigation.navArgument
 import dev.agate.android.ui.components.AgateBottomBar
 import dev.agate.android.ui.components.AgateTabItem
 import dev.agate.android.ui.home.ConsolePage
+import dev.agate.android.ui.models.ModelCapsPage
+import dev.agate.android.ui.models.ModelMappingPage
 import dev.agate.android.ui.models.ModelsPage
 import dev.agate.android.ui.pages.GatewayControlPage
 import dev.agate.android.ui.pages.ShowcasePage
@@ -372,6 +374,7 @@ fun AgateNavHost(
                         onOpenDrawer = { openDrawer() },
                         onOpenSpeedtest = { navController.navigate(Routes.MODEL_SPEEDTEST) },
                         onOpenCaps = { navController.navigate(Routes.MODEL_CAPS) },
+                        onOpenMapping = { navController.navigate(Routes.MODEL_MAPPING) },
                     )
                 }
                 composable(Routes.TASKS) {
@@ -418,8 +421,8 @@ fun AgateNavHost(
                     )
                 }
                 composable(Routes.MODEL_SPEEDTEST) { skeleton(it, navController, "模型测速", "M3", "并发测速（SSE 流式）、思考等级、多账号同测。", ::openDrawer) }
-                composable(Routes.MODEL_MAPPING) { skeleton(it, navController, "模型映射", "M3", "alias → target 多家主备映射、enabled 开关、同三元组幂等。", ::openDrawer) }
-                composable(Routes.MODEL_CAPS) { skeleton(it, navController, "能力位", "M3", "六键：maxInput/maxOutput/toolCall/images/video/reasoning，capOverrides 标记。", ::openDrawer) }
+                composable(Routes.MODEL_MAPPING) { ModelMappingPage(onBack = { navController.popBackStack() }) }
+                composable(Routes.MODEL_CAPS) { ModelCapsPage(onBack = { navController.popBackStack() }) }
                 composable(Routes.TASK_WELFARE) { skeleton(it, navController, "福利中心", "M4", "一次性项：新手任务 + 平台福利。", ::openDrawer) }
                 composable(Routes.TASK_CAPTCHA) { skeleton(it, navController, "验证码池", "M4", "ZCode 活动套餐票据池、水位补货、阿里 V3 滑块铸造。", ::openDrawer) }
                 composable(Routes.TASK_CHECKIN) { skeleton(it, navController, "定时签到", "M4", "北京时间签到计划（08:00/20:00）、Qoder 国际版 10:00 窗口、分组视图。", ::openDrawer) }

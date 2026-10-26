@@ -71,6 +71,7 @@ fun ModelsPage(
     onOpenDrawer: () -> Unit = {},
     onOpenSpeedtest: () -> Unit = {},
     onOpenCaps: () -> Unit = {},
+    onOpenMapping: () -> Unit = {},
     onOpenCatalog: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
@@ -166,6 +167,13 @@ fun ModelsPage(
             }
 
             Spacer(Modifier.height(4.dp))
+            EntryCard(
+                icon = "⇄",
+                title = "模型映射",
+                sub = "alias → target 多家主备 · 思考等级 · 自定义模型",
+                onClick = { onOpenMapping() },
+            )
+            Spacer(Modifier.height(8.dp))
             // ── 模型目录刷新入口（v44 quota-entry）──
             EntryCard(
                 icon = "↻",
@@ -360,7 +368,7 @@ private fun EmptyHint(fetched: Boolean) {
 }
 
 @Composable
-private fun EntryCard(icon: String, title: String, sub: String, onClick: () -> Unit) {
+internal fun EntryCard(icon: String, title: String, sub: String, onClick: () -> Unit) {
     val C = agateColors()
     Row(
         Modifier
