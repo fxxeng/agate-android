@@ -19,6 +19,17 @@ android {
 
     buildTypes {
         release {
+            // 体积控制：R8 裁掉未用代码（material-icons-extended 那类
+            // 「几千个图标对象」在 release 里会被按可达性剔掉）+ 资源收缩。
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro",
+            )
+        }
+        debug {
+            // debug 保持不优化：Compose 预览/调试信息齐全，体积不代表发布体积
             isMinifyEnabled = false
         }
     }
