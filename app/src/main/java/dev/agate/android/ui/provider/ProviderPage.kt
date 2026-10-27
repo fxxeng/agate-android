@@ -84,6 +84,20 @@ internal data class AcctMetric(
     val text: String? = null,
     val pct: Int? = null,
     val failed: Boolean = false,
+    /**
+     * 可累加的数值读数（无则 null）。
+     *
+     * 卡片折叠态要显示**这家全部账号的累加余额** —— 展示串（[text]）是拼好的
+     * （「共8,200 · 套餐0 · 奖励8,200」），拼不回去，所以数值要单独带出来。
+     * 单位只在同一家内一致（WorkBuddy 是积分、ZCode 是 token、Cline 是 credit），
+     * 因此按家累加安全，跨家不可比。
+     */
+    val amount: Double? = null,
+    /** 读数单位（积分 / token / credits…），上游没给则 null。 */
+    val unit: String? = null,
+    /** 最近一份会作废额度的到期时刻（毫秒）与那一份的剩余量。 */
+    val expiryAt: Long? = null,
+    val expiryAmount: Double? = null,
 )
 
 /**
@@ -400,22 +414,56 @@ private fun ProviderCard(
     var expanded by remember(g.providerId) { mutableStateOf(false) }
     // 这一家有没有余额能力（决定要不要显示「额度限设」入口）
     val usageCapable = usageCapableProviders[g.providerId] ?: false
-    val readyCount = g.accounts.count { it.enabled && it.hasCredentials }
-    val downCount = g.accounts.size - readyCount
+    // ── 就绪数 vs 账号总数 ────────────────────────────────────
+    // 两者不是一回事，这是「N 就绪」徽章存在的理由：
+    //   账号总数 = 这家名下所有账号（含停用、缺凭证的）；
+    //   就绪    = 队列里**真正能用**的：启用 + 有凭证 + 未被低余额规则跳过 + 无查询失败。
+    // 「余额低」只有配了跳过规则时才算不可用（只是徽章提示的不影响选号）。
+    // 该家不支持余额查询时，就绪 = 启用 + 有凭证（不看余额）。
+    val readyCount = g.accounts.count { acc ->
+        if (!acc.enabled || !acc.hasCredentials) return@count false
+        if (!usageCapable) return@count true
+        val m = metrics[acc.id] ?: return@count true   // 还没查过：不因此判为不可用
+        if (m.failed) return@count false
+        val skippedByBalance = limiterRulesOf(acc.raw).any { rule ->
+            rule.enabled && rule.type == "balance" && rule.action == "skip" &&
+                m.amount != null && m.amount < rule.threshold
+        }
+        !skippedByBalance
+    }
 
-    // 剩余额度占比（各家账号 pct 的均值）。
-    // ⚠️ 不能把它当「有没有查过」的判据：WorkBuddy 的既有形状
-    // `{totalLeft, planLeft, bonusLeft}` 里**没有总量**，算不出比例（`pct` 恒 null），
-    // 但读数其实已经查到了 —— 拿 pct 判据会让摘要行永久显示「余额未查询」。
-    // 所以另外取一份「已查到的读数文案」，比例与文案两者有其一就算已查询。
-    val pcts = g.accounts.mapNotNull { metrics[it.id]?.pct }
-    val avgPct = if (pcts.isEmpty()) null else pcts.average().toInt()
-    val readouts = g.accounts.mapNotNull { metrics[it.id]?.text }.filter { it.isNotBlank() }
-    val summaryText = when {
-        avgPct != null -> "剩余 $avgPct%"
-        readouts.isNotEmpty() -> readouts.first()
-        g.accounts.any { metrics[it.id]?.failed == true } -> "查询失败"
-        else -> "余额未查询"
+    // ── 这家整体的读数（折叠态那一行）─────────────────────────
+    // 1) 累加余额：只累加**读到了数值**的账号（同家单位一致，可相加）；
+    // 2) 最近到期：全部账号里最早到期的那一份，带上它自己的剩余量；
+    //    日包也在内 —— 它的额度是真实可用的，到期即重置（文案落到「今日到期」）。
+    val mine = g.accounts.mapNotNull { metrics[it.id] }
+    val amounts = mine.mapNotNull { it.amount }
+    val totalAmount = if (amounts.isEmpty()) null else amounts.sum()
+    val balanceUnit = mine.firstNotNullOfOrNull { it.unit }
+    val failedCount = mine.count { it.failed }
+    val headExpiry = mine.filter { it.expiryAt != null }.minByOrNull { it.expiryAt!! }
+
+    // 2.5) 水位条只在有真比例时画 —— 无数据画满格会被读成「额度充足」
+    val avgPct = mine.mapNotNull { it.pct }.takeIf { it.isNotEmpty() }?.average()?.toInt()
+
+    // 3) 副行：常态「N 个账号 · 最低 ×倍率」；有问题时整行换成待办
+    val minMult = mult?.first
+    val pending = buildList {
+        if (failedCount > 0) add("$failedCount 个查询失败")
+        val lowCount = g.accounts.count { it.lowBalance }
+        if (lowCount > 0) add("$lowCount 个余额低")
+        val noCred = g.accounts.count { !it.hasCredentials }
+        if (noCred > 0) add("$noCred 个缺凭证")
+        val soonest = g.accounts.mapNotNull { credentialExpiryMs(it) }.minOrNull()
+        val leftMs = soonest?.minus(System.currentTimeMillis())
+        if (leftMs != null && leftMs <= 3L * 86_400_000L) {
+            add("凭证${expiryPhrase(leftMs).replace("到期", "")}到期")
+        }
+    }
+    val subLine = if (pending.isNotEmpty()) pending.joinToString(" · ")
+    else buildString {
+        append("${g.accounts.size} 个账号")
+        minMult?.let { append(" · 最低 ×${fmtMult(it)}") }
     }
 
     Column(
@@ -431,10 +479,12 @@ private fun ProviderCard(
             .padding(14.dp)
             .animateContentSize(),
     ) {
-        // 头部：头像（右下状态点）+ 名称/副行/meta + 管理 + chevron
+        // ── 第 1 行：头像 + 名称 + 就绪徽章 + 管理 + 折叠箭头 ──
+        // 名称独占剩余宽度并单行省略：数值挪到第 3 行，不再和名称抢位置
+        //（旧版挤在一行，窄屏上名称会被截成「WorkBuddy...」）。
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box {
-                AgateProviderAvatar(providerId = g.providerId, label = g.label, size = 40.dp)
+                AgateProviderAvatar(providerId = g.providerId, label = g.label, size = 38.dp)
                 Box(
                     Modifier
                         .align(Alignment.BottomEnd)
@@ -443,76 +493,114 @@ private fun ProviderCard(
                         .border(2.dp, C.cardBg, CircleShape),
                 )
             }
-            Spacer(Modifier.width(10.dp))
-            Column(Modifier.weight(1f)) {
-                Text(g.label, color = C.textMain, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
-                Text(
-                    "${g.accounts.size} 个账号 · ${g.preset?.let { channelLabel(it) } ?: "自定义"}",
-                    color = C.textSub,
-                    fontSize = 12.sp,
-                )
-                // v44 .pv-meta：倍率区间 + 签到支持（真实数据，缺则省略）
-                val meta = buildList {
-                    mult?.let { (lo, hi) ->
-                        add(
-                            if (kotlin.math.abs(lo - hi) < 0.001) "倍率 ×${fmtMult(lo)}"
-                            else "倍率 ×${fmtMult(lo)}~${fmtMult(hi)}"
-                        )
-                    }
-                    add(if (checkinSupported) "支持签到" else "不支持签到")
-                }.joinToString(" · ")
-                Text(meta, color = C.textDim, fontSize = 11.sp, maxLines = 1)
+            Spacer(Modifier.width(9.dp))
+            Text(
+                g.label,
+                color = C.textMain,
+                fontSize = 16.sp,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f, fill = false),
+            )
+            Spacer(Modifier.width(8.dp))
+            // 就绪徽章：有账号掉队时写 n/N（分子可用 / 分母总数）
+            if (g.accounts.isNotEmpty()) {
+                if (readyCount == g.accounts.size) {
+                    AgateBadge("$readyCount 就绪", BadgeTone.GREEN)
+                } else {
+                    AgateBadge(
+                        "$readyCount/${g.accounts.size} 就绪",
+                        if (readyCount == 0) BadgeTone.RED else BadgeTone.AMBER,
+                    )
+                }
             }
+            Spacer(Modifier.weight(1f))
             Text(
                 "管理",
                 color = C.accent,
-                fontSize = 13.sp,
+                fontSize = 12.sp,
                 fontWeight = FontWeight.SemiBold,
                 modifier = Modifier
                     .background(C.accent.copy(alpha = 0.10f), RoundedCornerShape(9.dp))
                     .clickable(onClick = onOpenDetail)
-                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                    .padding(horizontal = 10.dp, vertical = 5.dp),
             )
-            Spacer(Modifier.width(4.dp))
+            Spacer(Modifier.width(2.dp))
             Icon(
                 Icons.Filled.KeyboardArrowDown,
                 contentDescription = if (expanded) "收起" else "展开",
                 tint = C.textDim,
-                modifier = Modifier.size(20.dp).rotate(if (expanded) 180f else 0f),
+                modifier = Modifier.size(18.dp).rotate(if (expanded) 180f else 0f),
             )
         }
 
-        if (!expanded) {
-            // v44 .prov-sum：徽标集合 + 右侧 tnum + 细条
-            Spacer(Modifier.height(10.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                if (readyCount > 0) AgateBadge("$readyCount 就绪", BadgeTone.GREEN)
-                if (downCount > 0) {
-                    if (readyCount > 0) Spacer(Modifier.width(6.dp))
-                    AgateBadge("$downCount 停用", BadgeTone.AMBER)
+        // ── 第 2、3 行：缩进到与名称左对齐，各自独占整行 ──
+        // 缩进 38+9=47dp，与头像右侧的名称起点对齐
+        Spacer(Modifier.height(3.dp))
+        Column(Modifier.padding(start = 47.dp)) {
+            // 第 2 行：状态副行（常态是账号数 + 最低倍率；有问题时换成待办）
+            Text(
+                subLine,
+                color = if (pending.isNotEmpty()) C.amber else C.textSub,
+                fontSize = 12.sp,
+                maxLines = 1,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+            )
+            // 第 3 行：额度与最近到期**同一行**（不再换行）
+            val amountText = totalAmount?.let { fmtNum(it) + (balanceUnit?.let { u -> " $u" } ?: "") }
+            val expText = headExpiry?.let { exp ->
+                val remain = exp.expiryAmount?.let { "${fmtNum(it)} · " } ?: ""
+                remain + expiryPhrase(exp.expiryAt!! - System.currentTimeMillis())
+            }
+            if (amountText != null || expText != null) {
+                Spacer(Modifier.height(2.dp))
+                Row(verticalAlignment = Alignment.Bottom) {
+                    if (amountText != null) {
+                        Text(
+                            amountText,
+                            color = C.textMain,
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                        )
+                    }
+                    if (amountText != null && expText != null) Spacer(Modifier.width(9.dp))
+                    if (expText != null) {
+                        val leftMs = headExpiry!!.expiryAt!! - System.currentTimeMillis()
+                        Text(
+                            expText,
+                            color = when {
+                                leftMs <= 0 -> C.red
+                                leftMs <= 3L * 86_400_000L -> C.red
+                                leftMs <= 7L * 86_400_000L -> C.amber
+                                else -> C.textDim
+                            },
+                            fontSize = 12.sp,
+                            maxLines = 1,
+                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                        )
+                    }
                 }
-                Text(
-                    summaryText,
-                    color = if (g.accounts.any { metrics[it.id]?.failed == true } && avgPct == null && readouts.isEmpty()) C.red else C.textSub,
-                    fontSize = 12.sp,
-                    modifier = Modifier.weight(1f),
-                    textAlign = androidx.compose.ui.text.style.TextAlign.End,
+            }
+        }
+
+        if (!expanded) {
+            // 水位条：**只在有真比例时画**。旧实现在无数据时按「启用账号占比」画
+            // 一条满格绿条 —— 那会被读成「额度充足」，是最误导的一处。
+            if (avgPct != null) {
+                Spacer(Modifier.height(9.dp))
+                AgateProgress(
+                    fraction = avgPct / 100f,
+                    thick = false,
+                    fillColor = when {
+                        avgPct >= 50 -> C.green
+                        avgPct >= 20 -> C.accent
+                        else -> C.amber
+                    },
                 )
             }
-            Spacer(Modifier.height(4.dp))
-            AgateProgress(
-                fraction = when {
-                    avgPct != null -> avgPct / 100f
-                    else -> if (g.accounts.isEmpty()) 0f else g.accounts.count { it.enabled }.toFloat() / g.accounts.size
-                },
-                thick = false,
-                fillColor = when {
-                    avgPct == null -> if (g.hasWarn) C.amber else C.green
-                    avgPct >= 50 -> C.green
-                    avgPct >= 20 -> C.accent
-                    else -> C.amber
-                },
-            )
         } else {
             // v44 .acct 块
             Spacer(Modifier.height(10.dp))
@@ -571,37 +659,28 @@ private fun AcctBlock(
             }
         }
 
-        // 凭证有效期：按 3.0.8 的「有效期」列口径。
-        // 字段名按家不同（workbuddy / officeace / trae … 用 `expiresAt`，
-        // raccoon / autoclaw / cline … 用 `tokenExpiresAt`），两个都认即可 ——
-        // 不必抄一份 25 家的映射表，取值口径一致。
-        // 没有这个字段的家（kuku 的 BDUSS 不过期、antigravity 的 refresh token
-        // 自动续期、chatglm 的 JWT 由网关续期）**不渲染这一行**，而不是显示「—」。
-        credentialExpiryMs(acc)?.let { at ->
-            ExpiryLine(at)
-        }
-
-        // 额度设限：**只对支持余额查询的家显示**（判据来自内核
-        // `ProviderAdapter::supports_usage`，经 /api/session 的 providers[].usage 带下来）。
-        // commandcode / monkeycode 这类没接余额的家显示阈值输入框，用户填完永远
-        // 看不到效果，会以为功能坏了 —— 不如不显示。
-        if (usageCapable) {
-            LimiterEntryRow(
-                summary = limiterRulesOf(acc.raw).firstOrNull()?.summary() ?: "未设限",
-                onOpen = { onOpenLimiter(acc) },
-            )
-        }
         Spacer(Modifier.height(6.dp))
+        // ── 余额 ──
+        // 读数行只放「还剩多少 + 单位」，不再重复拼「套餐 0 · 奖励 0」（那截长文字
+        // 会挤压读数）；额度包明细去点「明细 ›」。
+        val balanceText = metric?.amount?.let { fmtNum(it) + (metric.unit?.let { u -> " $u" } ?: "") }
+            ?: metric?.text
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text("剩余额度", color = C.textSub, fontSize = 12.sp, modifier = Modifier.weight(1f))
+            Text("余额", color = C.textSub, fontSize = 12.sp, modifier = Modifier.weight(1f))
             Text(
-                metric?.text ?: "--",
-                color = if (metric?.failed == true) C.red else C.textSub,
+                balanceText ?: "未查询",
+                color = when {
+                    metric?.failed == true -> C.red
+                    balanceText == null -> C.textDim
+                    else -> C.textMain
+                },
                 fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold,
                 modifier = Modifier.weight(2f, fill = false),
                 textAlign = androidx.compose.ui.text.style.TextAlign.End,
+                maxLines = 1,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
             )
-            // 小字入口：这一行只够放一个读数，明细（额度包 / 到期）在额度中心
             Spacer(Modifier.size(6.dp))
             Text(
                 "明细 ›",
@@ -611,6 +690,40 @@ private fun AcctBlock(
                     .clickable { onOpenQuotaCenter() }
                     .padding(horizontal = 2.dp, vertical = 2.dp),
             )
+        }
+
+        // ── 凭证：有效期与自动刷新合并一行 ──
+        // 字段名按家不同（`expiresAt` / `tokenExpiresAt`），两个都认；
+        // 没有该字段的家（kuku / antigravity / chatglm）整行不渲染。
+        credentialExpiryMs(acc)?.let { at ->
+            val leftMs = at - System.currentTimeMillis()
+            Row(Modifier.fillMaxWidth().padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("凭证", color = C.textSub, fontSize = 12.sp, modifier = Modifier.weight(1f))
+                Text(
+                    expiryPhrase(leftMs) + " · 自动刷新",
+                    color = when {
+                        leftMs <= 0 -> C.red
+                        leftMs <= 24L * 3_600_000L -> C.red
+                        leftMs <= 3L * 86_400_000L -> C.amber
+                        else -> C.textSub
+                    },
+                    fontSize = 12.sp,
+                    maxLines = 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                )
+            }
+        }
+
+        // ── 额度设限：**配置了才显示** ──
+        // 两个条件都满足才渲染：该家支持余额查询 + 该账号确实配了规则。
+        // 没配就不占一行（常态界面更干净）；想设限的入口在详情页「设置」。
+        if (usageCapable) {
+            limiterRulesOf(acc.raw).firstOrNull()?.let { rule ->
+                LimiterEntryRow(
+                    summary = rule.summary(),
+                    onOpen = { onOpenLimiter(acc) },
+                )
+            }
         }
         Spacer(Modifier.height(4.dp))
         AgateProgress(
@@ -679,8 +792,16 @@ internal fun parseUsageMetric(o: JSONObject?): AcctMetric {
         total?.let { parts += "共${fmtNum(it)}" }
         d("planLeft")?.let { parts += "套餐${fmtNum(it)}" }
         d("bonusLeft")?.let { parts += "奖励${fmtNum(it)}" }
+        val exp1 = extractExpiry(o)
         return when {
-            total != null && parts.isNotEmpty() -> AcctMetric(text = parts.joinToString(" · "), pct = null)
+            total != null && parts.isNotEmpty() -> AcctMetric(
+                text = parts.joinToString(" · "),
+                pct = null,
+                amount = total,
+                unit = o.optString("unit").ifBlank { null },
+                expiryAt = exp1?.atMs,
+                expiryAmount = exp1?.amount,
+            )
             else -> AcctMetric(text = null)
         }
     }
@@ -738,6 +859,8 @@ internal fun parseUsageMetric(o: JSONObject?): AcctMetric {
         o.optString("benefitError"),
     ).count { it.isNotBlank() }
 
+    // 累加口径：优先 `available`，退回钱包里的实际读数
+    val exp2 = extractExpiry(o)
     return AcctMetric(
         text = when {
             text == null -> null
@@ -745,7 +868,113 @@ internal fun parseUsageMetric(o: JSONObject?): AcctMetric {
             else -> text
         },
         pct = pct,
+        amount = left ?: fallbackWallet?.first,
+        unit = unit.ifBlank { fallbackWallet?.second ?: "" }.ifBlank { null },
+        expiryAt = exp2?.atMs,
+        expiryAmount = exp2?.amount,
     )
+}
+
+/**
+ * 到期文案（全局唯一口径）：`今日到期` / `N 天后到期` / `已过期`。
+ *
+ * 「0 天后到期」这种说法是机器话 —— 到期当天就该写「今日到期」。
+ * 卡片读数行、账号卡的凭证行、额度包明细共用这一个函数，避免几处各写一套。
+ */
+internal fun expiryPhrase(leftMs: Long): String {
+    if (leftMs <= 0) return "已过期"
+    val days = leftMs / 86_400_000L
+    return if (days <= 0L) "今日到期" else "${days} 天后到期"
+}
+
+/**
+ * 从 usage 里挑出**最近一份到期**的额度：到期时刻 + 那一份的剩余量。
+ *
+ * ── 日包按普通包处理（这是刻意的）──────────────────────────
+ * 上游确实有「每日赠送 / 日额度」这类包（loomy 的每日赠送积分、workbuddy 的日额度
+ * 包、zcode 的 `period == "daily"` 权益、autoclaw 的赠送积分），它们的 `expireAt`
+ * 是「今天 24 点」。**但那个包里的额度是真实可用的**（比如「每日刷新给 100 积分」
+ * 就是 100），所以它跟普通额度包一样参与「最近到期」的比较与展示，只是到期文案
+ * 会落到「今日到期」—— 语义正确：今天用完就重置。
+ * 把它排除会让这类账号永远没有到期信息，反而更误导。
+ *
+ * ── 选取规则 ──────────────────────────────────────────────
+ * 优先在「剩余 > 0」的包里挑最早到期的（有余额的才是用户关心的）；
+ * 全都没剩余时退回全部里最早到期的那个；再没有未来时刻就取最晚的一个。
+ * 递归扫描的理由与额度中心一致：各家 usage 形状不同，但「剩余键」与「到期键」
+ * 就那么几个名字在轮转，按字段存在性探测比按 25 家写死映射表稳。
+ */
+internal data class ExpiryInfo(
+    val atMs: Long,
+    val amount: Double?,
+)
+
+internal fun extractExpiry(usage: JSONObject): ExpiryInfo? {
+    val candidates = ArrayList<Pair<Double, Long>>() // (剩余, 到期毫秒)
+    scanQuota(usage, candidates, 0)
+    if (candidates.isEmpty()) return null
+    val now = System.currentTimeMillis()
+
+    val withLeft = candidates.filter { it.first > 0.0 }
+    val pool = if (withLeft.isNotEmpty()) withLeft else candidates
+    val picked = pool.filter { it.second > now }.minByOrNull { it.second }
+        ?: pool.maxByOrNull { it.second }
+    return picked?.let { ExpiryInfo(it.second, it.first) }
+}
+
+private val EXPIRY_KEYS = listOf(
+    "expireAt", "expiresAt", "expiredAt", "endAt", "endTime", "validEndTime",
+    "periodEnd", "period_end", "endsAt", "expireTime",
+)
+private val LEFT_KEYS = listOf(
+    "left", "remain", "remaining", "balance", "available", "credits", "points",
+    "totalPoint", "totalLeft",
+)
+
+private fun scanQuota(
+    node: Any?,
+    out: MutableList<Pair<Double, Long>>,
+    depth: Int,
+) {
+    if (depth > 6 || node == null) return
+    when (node) {
+        is JSONObject -> {
+            val left = LEFT_KEYS.firstNotNullOfOrNull { k ->
+                when (val raw = node.opt(k)) {
+                    is Number -> raw.toDouble().takeIf { it.isFinite() }
+                    is String -> raw.trim().toDoubleOrNull()?.takeIf { it.isFinite() }
+                    else -> null
+                }
+            }
+            val at = EXPIRY_KEYS.firstNotNullOfOrNull { k -> parseEpochMs(node.opt(k)) }
+            if (left != null && at != null) out += left to at
+            for (key in node.keys()) scanQuota(node.opt(key), out, depth + 1)
+        }
+        is org.json.JSONArray -> for (i in 0 until node.length()) {
+            scanQuota(node.opt(i), out, depth + 1)
+        }
+    }
+}
+
+/**
+ * 到期时间三种形态：毫秒数 / 秒数 / 可解析的时间串。
+ * `< 1e11` 视为秒（Trae 的凭据从 auth 文件进来是 10 位秒，不归一会得到 1970）。
+ */
+internal fun parseEpochMs(value: Any?): Long? {
+    val raw = when (value) {
+        null, JSONObject.NULL -> return null
+        is Number -> value.toLong()
+        is String -> {
+            val text = value.trim()
+            if (text.isEmpty()) return null
+            text.toLongOrNull() ?: runCatching {
+                java.time.OffsetDateTime.parse(text).toInstant().toEpochMilli()
+            }.getOrNull() ?: return null
+        }
+        else -> return null
+    }
+    if (raw <= 0) return null
+    return if (raw < 100_000_000_000L) raw * 1000 else raw
 }
 
 /** 倍率展示：整数不带小数，其余去掉多余的 0。 */
@@ -785,11 +1014,12 @@ internal fun credentialExpiryMs(acc: AccountDto): Long? {
 internal fun ExpiryLine(expiresAtMs: Long) {
     val C = agateColors()
     val left = expiresAtMs - System.currentTimeMillis()
+    // 不足一天时给更细的刻度（小时 / 分钟），否则统一走 expiryPhrase
     val text = when {
         left <= 0 -> "已过期"
-        left < 3600_000L -> "${(left / 60_000L).coerceAtLeast(1)} 分钟后"
-        left < 48 * 3_600_000L -> String.format("%.1f", left / 3_600_000.0) + " 小时后"
-        else -> "${left / 86_400_000L} 天后"
+        left < 3_600_000L -> "${(left / 60_000L).coerceAtLeast(1)} 分钟后到期"
+        left < 86_400_000L -> "${(left / 3_600_000L).coerceAtLeast(1)} 小时后到期"
+        else -> expiryPhrase(left)
     }
     Row(
         Modifier.fillMaxWidth().padding(vertical = 6.dp),

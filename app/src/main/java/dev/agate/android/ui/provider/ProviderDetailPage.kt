@@ -765,7 +765,7 @@ private fun AccountBlock(
             color = if (usage?.startsWith("查询失败") == true) C.red else C.textSub,
             fontSize = 12.sp,
         )
-        // 凭证有效期（与列表页同口径：双字段 + 秒毫秒归一；没有该字段的家不渲染）
+        // 凭证（与列表页账号卡同口径：双字段 + 秒毫秒归一 + 统一到期文案）
         credentialExpiryMs(acc)?.let { at ->
             ExpiryLine(at)
         }
