@@ -1,0 +1,573 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>客户端所见清单 · 卡片优化预览</title>
+<style>
+  :root{
+    --bg:#0F172A; --card:#1E293B; --inset:#0B1220; --border:#334155;
+    --accent:#38BDF8; --textMain:#F8FAFC; --textSub:#A3B1C6; --textDim:#7C8BA1;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0;padding:22px 14px 60px;background:#080F1C;color:var(--textMain);
+    font:14px/1.6 -apple-system,"PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+  }
+  .wrap{max-width:860px;margin:0 auto}
+  h1{font-size:18px;font-weight:600;margin:0 0 6px}
+  .lead{color:var(--textSub);font-size:13px;margin:0 0 8px}
+  .rules{color:var(--textDim);font-size:12px;margin:0 0 22px}
+  h2{font-size:15px;font-weight:600;margin:32px 0 4px}
+  h2:first-of-type{margin-top:20px}
+  h3{font-size:13px;font-weight:600;margin:16px 0 6px;color:var(--textSub)}
+  .note{color:var(--textDim);font-size:12px;margin:0 0 12px}
+  .phone{width:100%;max-width:392px;margin:0 auto;background:var(--bg);
+         border:1px solid #1c2a3f;border-radius:16px;padding:12px}
+
+  .hd{display:flex;align-items:center;gap:8px;margin-bottom:10px}
+  .hd-t{font-size:17px;font-weight:600;flex:1 1 auto;min-width:0;white-space:nowrap}
+  .hd-a{font-size:12px;color:var(--accent);padding:5px 10px;border-radius:8px;
+        background:rgba(56,189,248,.12);white-space:nowrap;flex:0 0 auto}
+
+  .card{background:var(--card);border:1px solid var(--border);border-radius:16px;padding:12px}
+  .card-h{display:flex;align-items:center;gap:8px}
+  .card-t{font-size:13px;font-weight:600;flex:1 1 auto;min-width:0;
+          white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .api{font-size:10px;color:var(--textDim);border:1px solid var(--border);border-radius:6px;
+       padding:1px 6px;white-space:nowrap;flex:0 0 auto}
+  .chev{color:var(--textDim);font-size:14px;flex:0 0 auto;width:14px;text-align:center}
+
+  /* 折叠态：摘要行 */
+  .sum{display:flex;align-items:center;gap:7px;margin-top:7px;min-width:0}
+  .mode{font-size:10px;padding:2px 7px;border-radius:6px;background:rgba(56,189,248,.14);
+        color:var(--accent);border:1px solid rgba(56,189,248,.3);white-space:nowrap;flex:0 0 auto}
+  .sum-t{font-size:12px;color:var(--textSub);flex:1 1 auto;min-width:0;
+         white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .sum-n{color:var(--textMain);font-weight:600;font-variant-numeric:tabular-nums}
+  .warnchip{font-size:10px;padding:2px 7px;border-radius:6px;background:rgba(217,119,6,.16);
+        color:#FBBF24;border:1px solid rgba(217,119,6,.35);white-space:nowrap;flex:0 0 auto}
+
+  /* 展开态 */
+  .body{border-top:1px solid #1c2a3f;margin-top:10px;padding-top:10px}
+  .seg3{display:flex;background:var(--inset);border:1px solid var(--border);border-radius:10px;padding:3px}
+  .seg3 > span{flex:1;text-align:center;font-size:12px;padding:5px;border-radius:8px;
+               color:var(--textSub);white-space:nowrap}
+  .seg3 > span.on{background:rgba(56,189,248,.16);color:var(--accent);font-weight:600}
+  .brk{font-size:11px;color:var(--textSub);margin-top:8px;font-variant-numeric:tabular-nums}
+  .hint{font-size:11px;color:var(--textDim);margin-top:5px;line-height:1.5}
+  .hint.amber{color:#FBBF24}
+
+  .pins{margin-top:9px}
+  .pins-t{font-size:11px;color:var(--textDim);margin-bottom:5px}
+  .chips{display:flex;gap:5px;flex-wrap:wrap}
+  .rchip{font-size:10px;padding:3px 8px;border-radius:7px;background:var(--inset);
+         border:1px solid var(--border);color:var(--textSub);white-space:nowrap}
+  .rchip.active{background:rgba(56,189,248,.15);border-color:rgba(56,189,248,.45);color:var(--accent)}
+
+  details{margin-top:9px}
+  summary{font-size:11px;color:var(--textSub);cursor:pointer;list-style:none}
+  summary::-webkit-details-marker{display:none}
+  summary::before{content:'▸ ';color:var(--textDim)}
+  details[open] summary::before{content:'▾ '}
+  .ids{display:flex;gap:4px;flex-wrap:wrap;margin-top:7px}
+  .id{font-size:10px;padding:2px 6px;border-radius:5px;background:var(--inset);
+      border:1px solid var(--border);color:var(--textSub);white-space:nowrap;
+      font-variant-numeric:tabular-nums}
+  .id.pref{color:#7DD3FC;border-color:rgba(56,189,248,.3);background:rgba(56,189,248,.08)}
+  .more-n{font-size:10px;color:var(--textDim);align-self:center}
+  .foot{font-size:10px;color:var(--textDim);margin-top:9px;line-height:1.5}
+  .foot b{color:var(--textSub);font-weight:500}
+
+  .tools{display:flex;gap:7px;margin:10px 0}
+  .search{flex:1;min-width:0;font-size:12px;color:var(--textDim);background:var(--inset);
+          border:1px solid var(--border);border-radius:9px;padding:7px 10px;
+          white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .fbtn{flex:0 0 auto;font-size:11px;padding:7px 9px;border-radius:9px;background:var(--inset);
+        border:1px solid var(--border);color:var(--textSub);white-space:nowrap}
+
+  .seg2{display:flex;background:var(--inset);border:1px solid var(--border);border-radius:10px;
+        padding:3px;margin-bottom:10px}
+  .seg2 > span{flex:1;text-align:center;font-size:12px;padding:5px;border-radius:8px;
+               color:var(--textSub);white-space:nowrap}
+  .seg2 > span.on{background:rgba(56,189,248,.16);color:var(--accent);font-weight:600}
+
+  .agg{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:11px 12px;margin-bottom:8px}
+  .agg-h{display:flex;align-items:flex-start;gap:8px}
+  .agg-n{flex:1 1 auto;min-width:0}
+  .agg-id{font-size:13px;font-weight:600;line-height:1.35;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .agg-meta{font-size:11px;color:var(--textDim);margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .agg-r{flex:0 0 auto;text-align:right}
+  .rate{font-size:12px;font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap}
+  .rate-best{font-size:10px;color:#4ADE80;white-space:nowrap}
+
+  .provs{display:flex;gap:5px;flex-wrap:wrap;margin-top:8px;align-items:center}
+  .pv{font-size:10px;padding:2px 7px;border-radius:6px;border:1px solid;white-space:nowrap;
+      display:inline-flex;align-items:center;gap:4px}
+  .pv-a{color:#4ADE80;border-color:rgba(34,197,94,.35);background:rgba(34,197,94,.12)}
+  .pv-b{color:var(--textSub);border-color:var(--border);background:transparent}
+  .pv-dot{width:5px;height:5px;border-radius:50%;background:currentColor}
+  .pv-order{font-size:9px;opacity:.75;font-variant-numeric:tabular-nums}
+
+  .caps{display:flex;gap:5px;flex-wrap:wrap;margin-top:7px}
+  .cap{font-size:10px;padding:2px 7px;border-radius:6px;white-space:nowrap;border:1px solid}
+  .cap.on{color:#4ADE80;border-color:rgba(34,197,94,.35);background:rgba(34,197,94,.12)}
+  .cap.off{color:var(--textDim);border-color:var(--border);background:transparent}
+  .cap.und{color:#94A3B8;border-color:rgba(148,163,184,.3);border-style:dashed;background:transparent}
+
+  .meta{display:flex;gap:11px;flex-wrap:wrap;margin-top:7px;font-size:11px;color:var(--textSub)}
+  .kv{display:inline-flex;align-items:baseline;gap:3px;white-space:nowrap}
+  .kv span:first-child{color:var(--textDim)}
+  .num{font-variant-numeric:tabular-nums;color:var(--textMain);font-weight:500}
+  .from-md{border-bottom:1px dashed rgba(148,163,184,.65);padding-bottom:1px}
+  .ovr{position:relative;padding-right:7px}
+  .ovr::after{content:'';position:absolute;right:0;top:-1px;width:4px;height:4px;border-radius:50%;background:var(--accent)}
+  .alias{display:flex;gap:5px;flex-wrap:wrap;margin-top:7px;align-items:center}
+  .al{font-size:10px;padding:2px 7px;border-radius:6px;background:rgba(56,189,248,.1);
+      color:var(--accent);border:1px solid rgba(56,189,248,.28);white-space:nowrap}
+  .al-add{font-size:10px;padding:2px 7px;border-radius:6px;color:var(--textDim);
+          border:1px dashed var(--border);white-space:nowrap}
+  .acts{display:flex;gap:6px;margin-top:9px}
+  .act{font-size:11px;padding:4px 9px;border-radius:7px;border:1px solid var(--border);
+       color:var(--textSub);white-space:nowrap}
+  .act.p{color:var(--accent);border-color:rgba(56,189,248,.4);background:rgba(56,189,248,.1)}
+
+  .grp{background:var(--card);border:1px solid var(--border);border-radius:14px;margin-bottom:8px;overflow:hidden}
+  .grp-h{display:flex;align-items:center;gap:8px;padding:10px 12px}
+  .av{width:28px;height:28px;border-radius:9px;background:var(--inset);flex:0 0 28px;
+      display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:600;color:var(--textSub)}
+  .grp-t{font-size:13px;font-weight:600;flex:1 1 auto;min-width:0;
+         white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .grp-n{font-size:11px;color:var(--textDim);white-space:nowrap;flex:0 0 auto}
+  .grp-body{border-top:1px solid #1c2a3f;padding:2px 0}
+  .row{display:flex;align-items:center;gap:8px;padding:7px 12px}
+  .row + .row{border-top:1px solid rgba(51,65,85,.4)}
+  .row-id{flex:1 1 auto;min-width:0;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .row-id.hid{color:var(--textDim)}
+  .row-tag{font-size:9px;padding:1px 5px;border-radius:4px;white-space:nowrap;flex:0 0 auto}
+  .t-hid{color:#94A3B8;border:1px solid rgba(148,163,184,.3);border-style:dashed}
+  .t-und{color:var(--textDim);border:1px solid var(--border)}
+  .t-out{color:#FB7185;border:1px solid rgba(225,29,72,.35);background:rgba(225,29,72,.1)}
+  .row-rate{font-size:11px;color:var(--textSub);flex:0 0 auto;font-variant-numeric:tabular-nums;
+            white-space:nowrap;min-width:38px;text-align:right}
+
+  table{width:100%;border-collapse:collapse;font-size:12px}
+  th{text-align:left;padding:8px 11px;font-weight:500;background:var(--inset);color:var(--textDim);white-space:nowrap}
+  td{padding:8px 11px;border-top:1px solid #1c2a3f;vertical-align:top}
+  td.d{color:var(--textDim)}
+  td.s{color:var(--textSub)}
+  .tbl{background:var(--card);border:1px solid #1c2a3f;border-radius:12px;overflow:hidden}
+  .new{font-size:10px;padding:1px 5px;border-radius:4px;background:rgba(34,197,94,.15);
+       color:#4ADE80;border:1px solid rgba(34,197,94,.3);white-space:nowrap}
+  .keep{font-size:10px;padding:1px 5px;border-radius:4px;background:rgba(148,163,184,.12);
+        color:var(--textSub);border:1px solid var(--border);white-space:nowrap}
+  .drop{font-size:10px;padding:1px 5px;border-radius:4px;background:rgba(225,29,72,.13);
+        color:#FB7185;border:1px solid rgba(225,29,72,.3);white-space:nowrap}
+
+  .issue{font-size:12px;color:var(--textSub);margin:10px auto 0;padding-left:18px;max-width:840px}
+  .issue li{margin:4px 0}
+  .issue b{color:#FBBF24;font-weight:600}
+  .issue .ok{color:#4ADE80;font-weight:600}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>客户端所见清单 · 卡片优化</h1>
+  <p class="lead">
+    你指出的原则是：<b>客户端用不了的，就不要出现在客户端清单里</b>。
+    按这个原则，「只列有可用账号」「只列已上架」这两个开关都是多余的 —— 它们让用户把「用不了的东西」列给客户端，唯一结果是点了报错。
+  </p>
+  <p class="rules">
+    同时这张卡本身也重构了：它不是「读数」，是一个<b>配置推演器</b>，不该把次要信息全铺在首屏。折叠态只给一行摘要，需要时再展开。
+  </p>
+
+  <!-- ══════ 折叠态 ══════ -->
+  <h2>① 折叠态（默认，一行摘要）</h2>
+  <p class="note">首屏只占一行：当前模式 + 会下发多少项 + 需要提醒时给一枚徽章。</p>
+
+  <div class="phone">
+    <div class="hd">
+      <span class="hd-t">模型</span>
+      <span class="hd-a">测速</span>
+    </div>
+
+    <div class="card">
+      <div class="card-h">
+        <span class="card-t">客户端所见清单</span>
+        <span class="api">GET /v1/models</span>
+        <span class="chev">⌄</span>
+      </div>
+      <div class="sum">
+        <span class="mode">按模型</span>
+        <span class="sum-t"><span class="sum-n">42</span> 项会下发</span>
+      </div>
+    </div>
+
+    <div style="height:8px"></div>
+
+    <div class="card">
+      <div class="card-h">
+        <span class="card-t">客户端所见清单</span>
+        <span class="api">GET /v1/models</span>
+        <span class="chev">⌄</span>
+      </div>
+      <div class="sum">
+        <span class="mode">按提供商</span>
+        <span class="sum-t"><span class="sum-n">118</span> 项会下发</span>
+        <span class="warnchip">偏多</span>
+      </div>
+    </div>
+  </div>
+
+  <ul class="issue">
+    <li>折叠态 = <b>模式徽章 + 数字 + （必要时）提醒徽章</b>，不再铺开三模式切换、预览清单、开关</li>
+    <li>「42 项会下发」比原来的「42 个模型会出现在客户端的列表里」短一半 —— 完整句子放展开区</li>
+    <li>&gt;80 项时右侧出现琥珀「偏多」徽章，是<b>提示</b>不是警告栏；详细解释在展开区</li>
+  </ul>
+
+  <!-- ══════ 展开态 ══════ -->
+  <h2>② 展开态（点开才铺开）</h2>
+  <p class="note">完整句子、模式说明、清单预览、两种写法说明都在这层。开关去掉了。</p>
+
+  <div class="phone">
+    <div class="card">
+      <div class="card-h">
+        <span class="card-t">客户端所见清单</span>
+        <span class="api">GET /v1/models</span>
+        <span class="chev" style="transform:rotate(180deg)">⌄</span>
+      </div>
+      <div class="sum">
+        <span class="mode">按模型</span>
+        <span class="sum-t"><span class="sum-n">42</span> 项会下发</span>
+      </div>
+
+      <div class="body">
+        <div class="seg3">
+          <span class="on">按模型</span>
+          <span>按提供商</span>
+          <span>混合</span>
+        </div>
+
+        <div style="display:flex;align-items:baseline;gap:8px;margin-top:10px;flex-wrap:wrap">
+          <span style="font-size:24px;font-weight:700;font-variant-numeric:tabular-nums">42</span>
+          <span style="font-size:12px;color:var(--textSub)">个模型会出现在客户端的列表里</span>
+        </div>
+        <div class="brk">各家合计 118 条，同名合并后 42 个</div>
+        <div class="hint">
+          同名模型只出现一次，不带前缀；用哪一家由「路由」队列决定，并可在同款模型之间故障转移。
+          客户端列表最短、最好选，推荐默认。
+        </div>
+
+        <details open>
+          <summary>预览客户端看到的清单</summary>
+          <div class="ids">
+            <span class="id">claude-sonnet-4-6</span>
+            <span class="id">claude-opus-4-6</span>
+            <span class="id">deepseek-v4-flash</span>
+            <span class="id">glm-5.3</span>
+            <span class="id">gpt-5.1-mini</span>
+            <span class="id">gemini-3-flash</span>
+            <span class="more-n">… 共 42 项</span>
+          </div>
+        </details>
+
+        <div class="foot">
+          清单只决定「客户端看见什么」；两种写法在任何模式下都能调用：
+          <b>gpt-4o</b> 由「路由」队列选账号（可跨家转移），<b>provider/gpt-4o</b> 锁定这一家。
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <h3>按提供商模式（展开态）</h3>
+  <div class="phone">
+    <div class="card">
+      <div class="card-h">
+        <span class="card-t">客户端所见清单</span>
+        <span class="api">GET /v1/models</span>
+        <span class="chev" style="transform:rotate(180deg)">⌄</span>
+      </div>
+      <div class="sum">
+        <span class="mode">按提供商</span>
+        <span class="sum-t"><span class="sum-n">118</span> 项会下发</span>
+        <span class="warnchip">偏多</span>
+      </div>
+      <div class="body">
+        <div class="seg3">
+          <span>按模型</span>
+          <span class="on">按提供商</span>
+          <span>混合</span>
+        </div>
+        <div style="display:flex;align-items:baseline;gap:8px;margin-top:10px;flex-wrap:wrap">
+          <span style="font-size:24px;font-weight:700;color:#FBBF24;font-variant-numeric:tabular-nums">118</span>
+          <span style="font-size:12px;color:var(--textSub)">个模型会出现在客户端的列表里</span>
+        </div>
+        <div class="brk">7 家各列一遍，其中同名模型重复 76 条</div>
+        <div class="hint">
+          每家的每个模型都列一遍，写成「提供商/模型」。客户端可以精确指定某一家，
+          但同一个模型会重复出现很多次。
+        </div>
+        <div class="hint amber">
+          超过 80 项：Cherry Studio、Cline 等客户端的下拉列表会变得很难选，建议改用「按模型」。
+        </div>
+        <details open>
+          <summary>预览客户端看到的清单</summary>
+          <div class="ids">
+            <span class="id pref">workbuddy/claude-sonnet-4-6</span>
+            <span class="id pref">zcode/glm-5.3</span>
+            <span class="id pref">trae/claude-sonnet-4-6</span>
+            <span class="more-n">… 共 118 项</span>
+          </div>
+        </details>
+      </div>
+    </div>
+  </div>
+
+  <h3>混合模式（展开态）</h3>
+  <div class="phone">
+    <div class="card">
+      <div class="card-h">
+        <span class="card-t">客户端所见清单</span>
+        <span class="api">GET /v1/models</span>
+        <span class="chev" style="transform:rotate(180deg)">⌄</span>
+      </div>
+      <div class="sum">
+        <span class="mode">混合</span>
+        <span class="sum-t"><span class="sum-n">45</span> 项会下发</span>
+      </div>
+      <div class="body">
+        <div class="seg3">
+          <span>按模型</span>
+          <span>按提供商</span>
+          <span class="on">混合</span>
+        </div>
+        <div style="display:flex;align-items:baseline;gap:8px;margin-top:10px;flex-wrap:wrap">
+          <span style="font-size:24px;font-weight:700;font-variant-numeric:tabular-nums">45</span>
+          <span style="font-size:12px;color:var(--textSub)">个模型会出现在客户端的列表里</span>
+        </div>
+        <div class="brk">合并后 42 个 + 带前缀 3 个</div>
+        <div class="hint">
+          平时按模型合并；只为下面勾选的提供商额外列出带前缀的条目 ——
+          用于必须指定某家的场景（如自建中转、要单独核算的账号）。
+        </div>
+        <div class="pins">
+          <div class="pins-t">额外展开带前缀条目的提供商（可多选）</div>
+          <div class="chips">
+            <span class="rchip active">WorkBuddy</span>
+            <span class="rchip">ZCode</span>
+            <span class="rchip">Trae</span>
+            <span class="rchip">CatPaw</span>
+            <span class="rchip">Loomy</span>
+          </div>
+        </div>
+        <details>
+          <summary>预览客户端看到的清单</summary>
+          <div class="ids">
+            <span class="id">claude-sonnet-4-6</span>
+            <span class="id">glm-5.3</span>
+            <span class="id pref">workbuddy/claude-sonnet-4-6</span>
+            <span class="more-n">… 共 45 项</span>
+          </div>
+        </details>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════ 开关处理 ══════ -->
+  <h2>③ 两个开关：去掉</h2>
+
+  <div class="tbl" style="margin-top:12px">
+    <table>
+      <thead><tr><th>开关</th><th>V44 原设计</th><th>处理</th><th>理由</th></tr></thead>
+      <tbody>
+        <tr>
+          <td class="s">只列有可用账号的提供商</td>
+          <td class="d">默认开（可关）</td>
+          <td><span class="drop">去掉</span></td>
+          <td class="s">关掉它就是把「没登录 / 全部停用」的家列给客户端 —— <b>点了必然报错</b>，
+              客户端看见毫无意义。这个过滤既然是唯一正确行为，就应该是硬行为，不该给用户关掉的机会。</td>
+        </tr>
+        <tr>
+          <td class="s">只列已上架模型</td>
+          <td class="d">默认开（可关）</td>
+          <td><span class="drop">去掉</span></td>
+          <td class="s">同理：在分组视图里关掉的模型（下架）不该对外。<b>下架就是下架</b>，
+              列进清单只会让客户端选到用不了的模型。</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <ul class="issue">
+    <li><span class="ok">原则统一</span>：<b>客户端清单里只放「现在就能用」的东西</b> —— 这条贯穿：
+      可用账号过滤、已上架过滤、以及前面做的「只列有余额能力的家」都是同一条原则的不同表现</li>
+    <li>两个开关的语义并入<b>上架开关本身</b>：想下架就在分组视图里关模型（那里已有开关），
+      下架即刻从清单消失 —— <b>不需要第二个开关去表达同一件事</b></li>
+    <li>内核侧对应简化：「只列有可用账号」本来就是硬过滤（`active_manifests`），
+      这次<b>不做成可配</b>，省掉两个 config 位与一条容易配错的路径</li>
+  </ul>
+
+  <!-- ══════ 同类问题 ══════ -->
+  <h2>④ 同类问题一并处理</h2>
+  <p class="note">按同一条原则检查了模型页其它地方，发现三处同类问题。</p>
+
+  <div class="tbl">
+    <table>
+      <thead><tr><th>位置</th><th>现状</th><th>处理</th><th>理由</th></tr></thead>
+      <tbody>
+        <tr>
+          <td class="s">分组视图的模型行</td>
+          <td class="d">下架模型仍列出</td>
+          <td><span class="new">标「下架」+ 降透明</span></td>
+          <td class="s">管理页要能看到（用户需要知道「我下架过它」），但必须是明确的<b>管理态</b>，
+              与「客户端可见」在视觉上区分开</td>
+        </tr>
+        <tr>
+          <td class="s">聚合视图的模型卡</td>
+          <td class="d">下架模型与正常一样</td>
+          <td><span class="new">整卡降透明 + 标「下架」</span></td>
+          <td class="s">同上：管理页如实呈现，但要一眼看出「这条不在客户端清单里」</td>
+        </tr>
+        <tr>
+          <td class="s">「客户端所见清单」计数</td>
+          <td class="d">含下架模型</td>
+          <td><span class="new">只数会真正下发的</span></td>
+          <td class="s">这个数字回答的是「客户端会看到多少」，不是「我有多少模型」。
+              含下架的会虚高，与清单预览对不上</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>分组视图（下架模型在这里的呈现）</h3>
+  <div class="phone">
+    <div class="seg2">
+      <span>按模型聚合</span>
+      <span class="on">按提供商分组</span>
+    </div>
+    <div class="grp">
+      <div class="grp-h">
+        <div class="av">WB</div>
+        <span class="grp-t">WorkBuddy 国内版</span>
+        <span class="grp-n">6 个 · 4 上架</span>
+        <span class="chev">⌄</span>
+      </div>
+      <div class="grp-body">
+        <div class="row"><span class="row-id">claude-sonnet-4-6</span><span class="row-rate">×0.03</span></div>
+        <div class="row"><span class="row-id">deepseek-v4-flash</span><span class="row-rate">×0.02</span></div>
+        <div class="row"><span class="row-id">claude-opus-4-6</span><span class="row-rate">×0.15</span></div>
+        <div class="row"><span class="row-id">gemini-3-flash</span><span class="row-rate">×0.04</span></div>
+        <div class="row">
+          <span class="row-id hid">gpt-5.1-mini</span>
+          <span class="row-tag t-out">下架</span>
+          <span class="row-rate">×1</span>
+        </div>
+        <div class="row">
+          <span class="row-id hid">internal-rewrite-7b</span>
+          <span class="row-tag t-hid">不展列</span>
+          <span class="row-rate">×0</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <ul class="issue">
+    <li><b>分组头</b>从「6 个模型」改成「6 个 · 4 上架」—— 与清单数字口径一致</li>
+    <li><b>三态区分清楚</b>：<span style="color:#7C8BA1">正常</span>（会下发）/
+      <span style="color:#FB7185">下架</span>（你关掉的，不下发）/
+      <span style="color:#94A3B8">不展列</span>（官方 picker 没有，仍会下发）</li>
+    <li>「下架」用红色（是用户主动关的，需要行动）、「不展列」用灰虚（只是信息，不需要行动）——
+      <b>语义色区分「要不要管」</b></li>
+  </ul>
+
+  <!-- ══════ 整体结构 ══════ -->
+  <h2>⑤ 模型页整体结构</h2>
+  <p class="note">三块合一后的完整布局。</p>
+
+  <div class="phone">
+    <div class="hd">
+      <span class="hd-t">模型</span>
+      <span class="hd-a">测速</span>
+    </div>
+
+    <div class="card" style="margin-bottom:10px">
+      <div class="card-h">
+        <span class="card-t">客户端所见清单</span>
+        <span class="api">GET /v1/models</span>
+        <span class="chev">⌄</span>
+      </div>
+      <div class="sum">
+        <span class="mode">按模型</span>
+        <span class="sum-t"><span class="sum-n">42</span> 项会下发</span>
+      </div>
+    </div>
+
+    <div class="tools">
+      <span class="search">搜索模型 / 提供商…</span>
+      <span class="fbtn">筛选</span>
+    </div>
+
+    <div class="seg2">
+      <span class="on">按模型聚合</span>
+      <span>按提供商分组</span>
+    </div>
+
+    <div class="agg">
+      <div class="agg-h">
+        <div class="agg-n">
+          <div class="agg-id">claude-sonnet-4-6</div>
+          <div class="agg-meta">3 家可用 · 最优 WorkBuddy</div>
+        </div>
+        <div class="agg-r">
+          <div class="rate">×0.03</div>
+          <div class="rate-best">最低</div>
+        </div>
+      </div>
+      <div class="provs">
+        <span class="pv pv-a"><span class="pv-dot"></span>WorkBuddy<span class="pv-order">×0.03</span></span>
+        <span class="pv pv-b"><span class="pv-dot"></span>ZCode<span class="pv-order">×0.05</span></span>
+        <span class="pv pv-b"><span class="pv-dot"></span>Trae<span class="pv-order">×0.08</span></span>
+      </div>
+      <div class="caps">
+        <span class="cap on">工具</span><span class="cap on">图片</span>
+        <span class="cap off">视频</span><span class="cap on">思考</span>
+      </div>
+      <div class="meta">
+        <span class="kv"><span>上下文</span><span class="num">200K</span></span>
+        <span class="kv"><span>输出</span><span class="num">64K</span></span>
+      </div>
+      <div class="alias">
+        <span class="al">sonnet → claude-sonnet-4-6</span>
+        <span class="al-add">+ 别名</span>
+      </div>
+      <div class="acts">
+        <span class="act p">能力</span><span class="act">测试</span>
+      </div>
+    </div>
+
+    <div class="agg" style="opacity:.55">
+      <div class="agg-h">
+        <div class="agg-n">
+          <div class="agg-id">gpt-5.1-mini</div>
+          <div class="agg-meta">1 家可用 · 已下架</div>
+        </div>
+        <div class="agg-r"><div class="rate">×1</div></div>
+      </div>
+      <div class="provs">
+        <span class="pv pv-b"><span class="pv-dot"></span>WorkBuddy<span class="pv-order">×1</span></span>
+      </div>
+    </div>
+  </div>
+
+  <ul class="issue">
+    <li><b>清单卡折叠成两行</b>：结构上仍是第一块（因为它回答「客户端看见什么」这个页面的核心问题），但不再占大半屏</li>
+    <li><b>搜索 + 视图切换 + 模型卡</b>紧随其后，首屏能直接看到模型</li>
+    <li><b>下架模型</b>在聚合视图里降透明 + 副行「已下架」</li>
+  </ul>
+
+  <p class="note" style="margin-top:22px">确认后我一步改到位（含内核的按模式输出）。</p>
+
+</div>
+</body>
+</html>

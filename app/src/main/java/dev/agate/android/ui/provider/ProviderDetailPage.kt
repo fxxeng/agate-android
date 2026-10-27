@@ -211,6 +211,21 @@ fun ProviderDetailPage(providerId: String, onBack: () -> Unit, onAddAccount: () 
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
         )
 
+        // 账号级字段写入（zcodePlan / balanceToken 等）：两处调用共用
+        // （「账号」tab 的账号卡与「设置」tab 的专有设置），避免两份实现漂移
+        // 用 val lambda 而不是 fun：要作为参数往子组件传（局部 fun 不能直接当函数值用）
+        val patchAccount: (AccountDto, JSONObject) -> Unit = { acc, patch ->
+            if (!busy) {
+                busy = true
+                scope.launch {
+                    val r = AccountOps.update(acc.id, patch)
+                    busy = false
+                    toast(if (r.ok) "已保存（${acc.displayName}）" else (r.error ?: "保存失败"))
+                    if (r.ok) GatewayRepository.refreshOnce()
+                }
+            }
+        }
+
         when (tab) {
             0 -> OverviewTab(
                 accounts = accounts,
@@ -291,22 +306,13 @@ fun ProviderDetailPage(providerId: String, onBack: () -> Unit, onAddAccount: () 
                 onEnableAll = { batchAction("enable", done = "已全部启用") },
                 onDisableAll = { batchAction("disable", done = "已全部禁用") },
                 onDeleteAll = { confirmRemoveAll = true },
+                onPatchAccount = patchAccount,
             )
             else -> SettingsTab(
                 accounts = accounts,
                 providerId = providerId,
                 busy = busy,
-                onPatchAccount = { acc, patch ->
-                    if (!busy) {
-                        busy = true
-                        scope.launch {
-                            val r = AccountOps.update(acc.id, patch)
-                            busy = false
-                            toast(if (r.ok) "已保存（${acc.displayName}）" else (r.error ?: "保存失败"))
-                            if (r.ok) GatewayRepository.refreshOnce()
-                        }
-                    }
-                },
+                onPatchAccount = patchAccount,
                 onTest = {
                     val first = accounts.firstOrNull()
                     if (first == null) {
@@ -676,6 +682,8 @@ private fun AccountsTab(
     onEnableAll: () -> Unit,
     onDisableAll: () -> Unit,
     onDeleteAll: () -> Unit,
+    /** 账号级字段的写入（如 ZCode 的 zcodePlan / balanceToken）。 */
+    onPatchAccount: (AccountDto, JSONObject) -> Unit,
 ) {
     val C = agateColors()
     LazyColumn(
@@ -705,6 +713,7 @@ private fun AccountsTab(
                         onEdit = { onEdit(acc) },
                         onToggle = { onToggle(acc) },
                         onDelete = { onDelete(acc) },
+                        onPatchAccount = onPatchAccount,
                     )
                 }
                 Spacer(Modifier.height(10.dp))
@@ -740,6 +749,7 @@ private fun AccountBlock(
     onToggle: () -> Unit,
     onDelete: () -> Unit,
     onOpenLimiter: (AccountDto) -> Unit,
+    onPatchAccount: (AccountDto, JSONObject) -> Unit,
 ) {
     val C = agateColors()
     Column(
@@ -776,6 +786,15 @@ private fun AccountBlock(
                 onOpen = { onOpenLimiter(acc) },
             )
         }
+        // ── 套餐通道（ZCode 专属，**按账号**而不是按家）───────────────
+        //
+        // 为什么必须按账号：`zcodePlan` 存在账号自己的 raw 里（内核
+        // `zcode::plan_of` 读的就是它），而两条通道是**两份独立的额度**。
+        // 同一家的两个账号完全可能一个走编码套餐、一个走活动套餐 ——
+        // 放在「设置」tab 里只能改第一个账号，第二个账号无处可改。
+        if (acc.provider == "zcode" || acc.provider == "zcode-intl") {
+            ZcodePlanRow(acc = acc, busy = busy, onPatch = onPatchAccount)
+        }
         Spacer(Modifier.height(8.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             SmallAction("置顶", enabled = !busy, onClick = onPin)
@@ -785,6 +804,134 @@ private fun AccountBlock(
         }
     }
 
+}
+
+/**
+ * ZCode「使用套餐」行（**账号级**）。
+ *
+ * ── 为什么按账号、而不是按家 ───────────────────────────────
+ * `zcodePlan` 存在账号自己的 raw 里（内核 `zcode::plan_of` 读它），而两条通道
+ * 对应**两份独立的额度**：同一家的两个账号完全可以一个走编码套餐、一个走活动
+ * 套餐。此前这一项放在「设置」tab 并按 `firstAccount` 取值 —— 多个账号时
+ * 只能改第一个，其余账号无处可改，且看起来像「这家的设置」。
+ *
+ * ── 四条提示各自回答什么（照抄 3.0.8 的文案）────────────────
+ *   ① 两条通道的**区别**（走哪个端点、消耗哪份额度）—— 选之前必须知道；
+ *   ② 活动套餐缺 jwt 时**仍可选中**但红字说明「会失败，请重新登录」——
+ *      灰掉选项会让用户以为「这个功能不存在」，实际问题是他得重登一次；
+ *   ③ 活动套餐要**验证码令牌**，给出池内库存（0 时要明说会失败）；
+ *   ④ 令牌池由本应用**后台静默铸造**，界面关掉就铸不了 —— 这条决定了
+ *      用户该不该把界面留着。
+ */
+@Composable
+private fun ZcodePlanRow(
+    acc: AccountDto,
+    busy: Boolean,
+    onPatch: (AccountDto, JSONObject) -> Unit,
+) {
+    val C = agateColors()
+    val current = acc.raw.optString("zcodePlan").ifBlank { CODING_PLAN }
+    val hasJwt = acc.raw.optString("jwt").isNotBlank()
+    // 令牌池是网关全局的一份：这里只触发「过期就刷新」，真正的数字从缓存读
+    // （每个账号块各发一次请求会把列表刷成 N 次往返，见 CaptchaStatsCache）
+    if (current == START_PLAN) {
+        androidx.compose.runtime.LaunchedEffect(Unit) {
+            dev.agate.android.data.CaptchaStatsCache.refreshIfStale()
+        }
+    }
+
+    Column(Modifier.fillMaxWidth().padding(top = 8.dp)) {
+        Text("使用套餐", color = C.textSub, fontSize = 12.sp)
+        Spacer(Modifier.height(6.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+            listOf(
+                CODING_PLAN to "编码套餐",
+                START_PLAN to "活动套餐",
+            ).forEach { (value, label) ->
+                val active = current == value
+                Text(
+                    label,
+                    color = if (active) C.onAccent else C.textSub,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier
+                        .background(
+                            if (active) C.accent else C.insetBg,
+                            RoundedCornerShape(999.dp),
+                        )
+                        .border(
+                            1.dp,
+                            if (active) Color.Transparent else C.border,
+                            RoundedCornerShape(999.dp),
+                        )
+                        .clickable(enabled = !busy) {
+                            if (!active) onPatch(acc, JSONObject().put("zcodePlan", value))
+                        }
+                        .padding(horizontal = 11.dp, vertical = 5.dp),
+                )
+            }
+        }
+
+        // ① 两条通道的区别（常显：选之前就得知道）
+        Spacer(Modifier.height(6.dp))
+        Text(
+            if (current == START_PLAN) {
+                "走 zcode.z.ai 端点，消耗 ZCode 套餐池的额度（新用户体验额度 / 活动领取）。"
+            } else {
+                "走开放平台端点，消耗开放平台的额度（订阅套餐 / 资源包 / 充值余额）。"
+            },
+            color = C.textDim,
+            fontSize = 10.sp,
+        )
+
+        // ② 活动套餐但缺 jwt：可选中，但必须说清会失败
+        if (current == START_PLAN && !hasJwt) {
+            Spacer(Modifier.height(3.dp))
+            Text(
+                "该账号没有套餐登录态（jwt），活动套餐通道会失败：请重新登录该账号",
+                color = C.red,
+                fontSize = 10.sp,
+            )
+        }
+
+        // ③ 活动套餐要验证码令牌：给池内库存
+        if (current == START_PLAN) {
+            Spacer(Modifier.height(3.dp))
+            Text(
+                "需要阿里云验证码令牌 · " + zcodePoolHint(),
+                color = C.textDim,
+                fontSize = 10.sp,
+            )
+            // ④ 令牌由后台铸造，界面关掉就铸不了
+            Spacer(Modifier.height(2.dp))
+            Text(
+                "令牌由本应用后台静默铸造；界面关闭时无法铸造",
+                color = C.textDim,
+                fontSize = 10.sp,
+            )
+        }
+    }
+}
+
+/** 套餐通道取值（与内核 `zcode::normalize_plan` 逐字一致）。 */
+private const val CODING_PLAN = "coding-plan"
+private const val START_PLAN = "start-plan"
+
+/**
+ * 令牌池库存文案。
+ *
+ * 池统计由一个**模块级缓存**提供（5 秒内复用上次结果），因为这一段在每个
+ * ZCode 账号块里都会渲染 —— 每个账号各发一次请求会把列表刷成 N 次往返。
+ * 拿不到时说「读取中…」，不编数字。
+ */
+private fun zcodePoolHint(): String {
+    val stats = dev.agate.android.data.CaptchaStatsCache.get()
+    return if (stats == null) {
+        "读取中…"
+    } else {
+        val text = "令牌 ${stats.first} / ${stats.second}"
+        if (stats.first == 0) "$text（库存为空，正在补；补不上时转发会失败）" else text
+    }
 }
 
 /* ───────────── 设置 ───────────── */
@@ -837,50 +984,6 @@ private fun SettingsTab(
                                 token = ""
                             },
                         )
-                    }
-                }
-                Spacer(Modifier.height(12.dp))
-            }
-            "zcode", "zcode-intl" -> {
-                val current = firstAccount?.raw?.optString("zcodePlan").orEmpty()
-                    .ifBlank { "coding-plan" }
-                Card {
-                    Text("套餐通道", color = C.textMain, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        "编码套餐与活动套餐走不同的上游通道；切换后新请求立即生效。",
-                        color = C.textSub, fontSize = 12.sp,
-                    )
-                    Spacer(Modifier.height(10.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        listOf("coding-plan" to "编码套餐", "start-plan" to "活动套餐").forEach { (value, label) ->
-                            val active = current == value
-                            Text(
-                                label,
-                                color = if (active) C.onAccent else C.textSub,
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                modifier = Modifier
-                                    .background(
-                                        if (active) C.accent else C.insetBg,
-                                        RoundedCornerShape(999.dp),
-                                    )
-                                    .border(
-                                        1.dp,
-                                        if (active) Color.Transparent else C.border,
-                                        RoundedCornerShape(999.dp),
-                                    )
-                                    .clickable {
-                                        val acc = firstAccount ?: return@clickable
-                                        if (!active) onPatchAccount(acc, JSONObject().put("zcodePlan", value))
-                                    }
-                                    .padding(horizontal = 14.dp, vertical = 8.dp),
-                            )
-                        }
-                    }
-                    if (firstAccount == null) {
-                        Spacer(Modifier.height(6.dp))
-                        Text("该家还没有账号", color = C.textDim, fontSize = 11.sp)
                     }
                 }
                 Spacer(Modifier.height(12.dp))

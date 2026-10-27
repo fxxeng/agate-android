@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>模型页综合设计预览</title>
+<style>
+  :root{
+    --bg:#0F172A; --card:#1E293B; --inset:#0B1220; --border:#334155;
+    --accent:#38BDF8; --textMain:#F8FAFC; --textSub:#A3B1C6; --textDim:#7C8BA1;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0;padding:22px 14px 60px;background:#080F1C;color:var(--textMain);
+    font:14px/1.6 -apple-system,"PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+  }
+  .wrap{max-width:840px;margin:0 auto}
+  h1{font-size:18px;font-weight:600;margin:0 0 6px}
+  .lead{color:var(--textSub);font-size:13px;margin:0 0 8px}
+  .rules{color:var(--textDim);font-size:12px;margin:0 0 24px}
+  h2{font-size:15px;font-weight:600;margin:32px 0 4px}
+  h2:first-of-type{margin-top:20px}
+  .note{color:var(--textDim);font-size:12px;margin:0 0 12px}
+  .phone{
+    width:100%;max-width:392px;margin:0 auto;
+    background:var(--bg);border:1px solid #1c2a3f;border-radius:16px;padding:12px;
+  }
+
+  .hdr{display:flex;align-items:center;gap:8px;margin-bottom:10px}
+  .hdr-t{font-size:17px;font-weight:600;flex:1 1 auto;min-width:0;white-space:nowrap}
+  .hdr-a{font-size:12px;color:var(--accent);padding:5px 10px;border-radius:8px;
+         background:rgba(56,189,248,.12);white-space:nowrap;flex:0 0 auto}
+
+  .xp{background:var(--card);border:1px solid var(--border);border-radius:18px;padding:13px;margin-bottom:10px}
+  .xp-h{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+  .xp-t{font-size:13px;font-weight:600;flex:1 1 auto;white-space:nowrap}
+  .xp-api{font-size:10px;color:var(--textDim);border:1px solid var(--border);border-radius:6px;
+          padding:1px 6px;white-space:nowrap;flex:0 0 auto}
+  .xp-nums{display:flex;align-items:baseline;gap:9px;flex-wrap:wrap}
+  .xp-big{font-size:26px;font-weight:700;line-height:1.15;font-variant-numeric:tabular-nums}
+  .xp-sub{font-size:12px;color:var(--textSub)}
+  .xp-split{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+  .stat{font-size:10px;padding:3px 8px;border-radius:7px;border:1px solid;white-space:nowrap}
+  .st-shown{color:#4ADE80;border-color:rgba(34,197,94,.35);background:rgba(34,197,94,.12)}
+  .st-hidden{color:#94A3B8;border-color:rgba(148,163,184,.3);background:transparent}
+  .xp-note{font-size:11px;color:var(--textDim);margin-top:9px;line-height:1.5}
+
+  .seg{display:flex;background:var(--inset);border:1px solid var(--border);border-radius:10px;
+       padding:3px;margin-bottom:10px}
+  .seg > span{flex:1;text-align:center;font-size:12px;padding:5px;border-radius:8px;color:var(--textSub);
+              white-space:nowrap}
+  .seg > span.on{background:rgba(56,189,248,.16);color:var(--accent);font-weight:600}
+
+  .tools{display:flex;gap:7px;margin-bottom:10px}
+  .search{flex:1;min-width:0;font-size:12px;color:var(--textDim);background:var(--inset);
+          border:1px solid var(--border);border-radius:9px;padding:7px 10px;
+          white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .fbtn{flex:0 0 auto;font-size:12px;padding:7px 9px;border-radius:9px;background:var(--inset);
+        border:1px solid var(--border);color:var(--textSub);white-space:nowrap}
+
+  .agg{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:11px 12px;margin-bottom:8px}
+  .agg-h{display:flex;align-items:flex-start;gap:8px}
+  .agg-n{flex:1 1 auto;min-width:0}
+  .agg-id{font-size:13px;font-weight:600;line-height:1.35;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .agg-meta{font-size:11px;color:var(--textDim);margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .agg-r{flex:0 0 auto;text-align:right}
+  .rate{font-size:12px;font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap}
+  .rate-best{font-size:10px;color:#4ADE80;white-space:nowrap}
+
+  .provs{display:flex;gap:5px;flex-wrap:wrap;margin-top:8px;align-items:center}
+  .pv{font-size:10px;padding:2px 7px;border-radius:6px;border:1px solid;white-space:nowrap;
+      display:inline-flex;align-items:center;gap:4px}
+  .pv-a{color:#4ADE80;border-color:rgba(34,197,94,.35);background:rgba(34,197,94,.12)}
+  .pv-b{color:var(--textSub);border-color:var(--border);background:transparent}
+  .pv-dot{width:5px;height:5px;border-radius:50%;background:currentColor}
+  .pv-order{font-size:9px;opacity:.75;font-variant-numeric:tabular-nums}
+
+  .caps{display:flex;gap:5px;flex-wrap:wrap;margin-top:7px}
+  .cap{font-size:10px;padding:2px 7px;border-radius:6px;white-space:nowrap;border:1px solid}
+  .cap.on{color:#4ADE80;border-color:rgba(34,197,94,.35);background:rgba(34,197,94,.12)}
+  .cap.off{color:var(--textDim);border-color:var(--border);background:transparent}
+  .cap.und{color:#94A3B8;border-color:rgba(148,163,184,.3);border-style:dashed;background:transparent}
+
+  .meta{display:flex;gap:11px;flex-wrap:wrap;margin-top:7px;font-size:11px;color:var(--textSub)}
+  .kv{display:inline-flex;align-items:baseline;gap:3px;white-space:nowrap}
+  .kv span:first-child{color:var(--textDim)}
+  .num{font-variant-numeric:tabular-nums;color:var(--textMain);font-weight:500}
+  .from-md{border-bottom:1px dashed rgba(148,163,184,.65);padding-bottom:1px}
+  .ovr{position:relative;padding-right:7px}
+  .ovr::after{content:'';position:absolute;right:0;top:-1px;width:4px;height:4px;border-radius:50%;background:var(--accent)}
+
+  .alias{display:flex;gap:5px;flex-wrap:wrap;margin-top:7px;align-items:center}
+  .al{font-size:10px;padding:2px 7px;border-radius:6px;background:rgba(56,189,248,.1);
+      color:var(--accent);border:1px solid rgba(56,189,248,.28);white-space:nowrap}
+  .al-add{font-size:10px;padding:2px 7px;border-radius:6px;color:var(--textDim);
+          border:1px dashed var(--border);white-space:nowrap}
+
+  .acts{display:flex;gap:6px;margin-top:9px}
+  .act{font-size:11px;padding:4px 9px;border-radius:7px;border:1px solid var(--border);
+       color:var(--textSub);white-space:nowrap}
+  .act.p{color:var(--accent);border-color:rgba(56,189,248,.4);background:rgba(56,189,248,.1)}
+
+  .grp{background:var(--card);border:1px solid var(--border);border-radius:14px;margin-bottom:8px;overflow:hidden}
+  .grp-h{display:flex;align-items:center;gap:8px;padding:10px 12px}
+  .av{width:28px;height:28px;border-radius:9px;background:var(--inset);flex:0 0 28px;
+      display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:600;color:var(--textSub)}
+  .grp-t{font-size:13px;font-weight:600;flex:1 1 auto;min-width:0;
+         white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .grp-n{font-size:11px;color:var(--textDim);white-space:nowrap;flex:0 0 auto}
+  .grp-body{border-top:1px solid #1c2a3f;padding:2px 0}
+  .row{display:flex;align-items:center;gap:8px;padding:7px 12px}
+  .row + .row{border-top:1px solid rgba(51,65,85,.4)}
+  .row-id{flex:1 1 auto;min-width:0;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .row-id.hid{color:var(--textDim)}
+  .row-tag{font-size:9px;padding:1px 5px;border-radius:4px;white-space:nowrap;flex:0 0 auto}
+  .t-hid{color:#94A3B8;border:1px solid rgba(148,163,184,.3);border-style:dashed}
+  .t-und{color:var(--textDim);border:1px solid var(--border)}
+  .row-rate{font-size:11px;color:var(--textSub);flex:0 0 auto;font-variant-numeric:tabular-nums;
+            white-space:nowrap;min-width:38px;text-align:right}
+
+  table{width:100%;border-collapse:collapse;font-size:12px}
+  th{text-align:left;padding:8px 11px;font-weight:500;background:var(--inset);color:var(--textDim);white-space:nowrap}
+  td{padding:8px 11px;border-top:1px solid #1c2a3f;vertical-align:top}
+  td.d{color:var(--textDim)}
+  td.s{color:var(--textSub)}
+  .tbl{background:var(--card);border:1px solid #1c2a3f;border-radius:12px;overflow:hidden}
+  .new{font-size:10px;padding:1px 5px;border-radius:4px;background:rgba(34,197,94,.15);
+       color:#4ADE80;border:1px solid rgba(34,197,94,.3);white-space:nowrap}
+  .keep{font-size:10px;padding:1px 5px;border-radius:4px;background:rgba(148,163,184,.12);
+        color:var(--textSub);border:1px solid var(--border);white-space:nowrap}
+
+  .issue{font-size:12px;color:var(--textSub);margin:10px auto 0;padding-left:18px;max-width:392px}
+  .issue li{margin:4px 0}
+  .issue b{color:#FBBF24;font-weight:600}
+  .legend{display:flex;gap:12px;flex-wrap:wrap;font-size:11px;color:var(--textDim);margin:9px 0 0}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>模型页 · 综合设计预览</h1>
+  <p class="lead">
+    在现有的「客户端所见清单 + 双视图 + 分组」骨架上，叠加对比分析里缺的信息
+    （可见性 / 来源 / 上下文·输出 / 能力徽章 / 别名），聚合与分组两个视角都保留。
+  </p>
+  <p class="rules">
+    内核已补「可见性」：从上游 data.agents[cli].models（官方 picker 名单）比对得出
+    shown / hidden；拿不到名单时不写该键（界面显示「—」，不谎报可见）。<br>
+    其余数字全部来自 /api/models/manage：capabilities（六键生效值）+ capSources（每键来源）。
+  </p>
+
+  <h2>① 客户端所见清单（保留并强化）</h2>
+  <p class="note">原有语义不变：这份清单只决定「客户端看见什么」。新增一项拆分——里面多少在官方 picker 里。</p>
+
+  <div class="phone">
+    <div class="hdr">
+      <span class="hdr-t">模型</span>
+      <span class="hdr-a">测速</span>
+    </div>
+
+    <div class="xp">
+      <div class="xp-h">
+        <span class="xp-t">客户端所见清单</span>
+        <span class="xp-api">GET /v1/models</span>
+      </div>
+      <div class="xp-nums">
+        <span class="xp-big">42</span>
+        <span class="xp-sub">个模型会出现在客户端的列表里</span>
+      </div>
+      <div class="xp-split">
+        <span class="stat st-shown">18 官方可见</span>
+        <span class="stat st-hidden">24 官方不展列</span>
+      </div>
+      <div class="xp-note">
+        清单只决定「客户端看见什么」；两种写法在任何模式下都能调用：
+        裸名由「路由」队列选账号（可跨家转移），provider/id 锁定这一家。
+      </div>
+    </div>
+  </div>
+
+  <ul class="issue">
+    <li><b>保留</b>「N 个模型会出现在客户端列表里」主读数与说明文案（原有语义不动）</li>
+    <li><b>新增</b>两枚统计：官方可见 / 官方不展列 —— 回答「我下发的清单里有多少是官方认的」</li>
+    <li>拿不到 picker 名单的家（企业账号等）只显示总数，不显示这两枚（<b>没依据就不下判断</b>）</li>
+  </ul>
+
+  <h2>② 按模型聚合（跨家看同一个模型）</h2>
+  <p class="note">同一个模型 id 在多家都有时合成一张卡，按倍率从优到劣列出各家 —— 这正是「谁最便宜」的答案。</p>
+
+  <div class="phone">
+    <div class="seg">
+      <span class="on">按模型聚合</span>
+      <span>按提供商分组</span>
+    </div>
+    <div class="tools">
+      <span class="search">搜索模型 / 提供商…</span>
+      <span class="fbtn">可见性</span>
+    </div>
+
+    <div class="agg">
+      <div class="agg-h">
+        <div class="agg-n">
+          <div class="agg-id">claude-sonnet-4-6</div>
+          <div class="agg-meta">3 家可用 · 最优 WorkBuddy</div>
+        </div>
+        <div class="agg-r">
+          <div class="rate">×0.03</div>
+          <div class="rate-best">最低</div>
+        </div>
+      </div>
+      <div class="provs">
+        <span class="pv pv-a"><span class="pv-dot"></span>WorkBuddy<span class="pv-order">×0.03</span></span>
+        <span class="pv pv-b"><span class="pv-dot"></span>ZCode<span class="pv-order">×0.05</span></span>
+        <span class="pv pv-b"><span class="pv-dot"></span>Trae<span class="pv-order">×0.08</span></span>
+      </div>
+      <div class="caps">
+        <span class="cap on">工具</span><span class="cap on">图片</span>
+        <span class="cap off">视频</span><span class="cap on">思考</span>
+      </div>
+      <div class="meta">
+        <span class="kv"><span>上下文</span><span class="num">200K</span></span>
+        <span class="kv"><span>输出</span><span class="num">64K</span></span>
+      </div>
+      <div class="alias">
+        <span class="al">sonnet → claude-sonnet-4-6</span>
+        <span class="al-add">+ 别名</span>
+      </div>
+      <div class="acts">
+        <span class="act p">能力</span><span class="act">测试</span>
+      </div>
+    </div>
+
+    <div class="agg">
+      <div class="agg-h">
+        <div class="agg-n">
+          <div class="agg-id">glm-5.3</div>
+          <div class="agg-meta">1 家可用 · ZCode 独有</div>
+        </div>
+        <div class="agg-r"><div class="rate">×0.5</div></div>
+      </div>
+      <div class="provs">
+        <span class="pv pv-a"><span class="pv-dot"></span>ZCode<span class="pv-order">×0.5</span></span>
+      </div>
+      <div class="caps">
+        <span class="cap on">工具</span><span class="cap und">图片</span>
+        <span class="cap und">视频</span><span class="cap on">思考</span>
+      </div>
+      <div class="meta">
+        <span class="kv"><span>上下文</span><span class="num from-md">128K</span></span>
+        <span class="kv"><span>输出</span><span class="num" style="color:#7C8BA1">—</span></span>
+      </div>
+      <div class="acts"><span class="act p">能力</span><span class="act">测试</span></div>
+    </div>
+
+    <div class="agg" style="opacity:.6">
+      <div class="agg-h">
+        <div class="agg-n">
+          <div class="agg-id">gpt-5.1-mini</div>
+          <div class="agg-meta">1 家可用 · 官方不展列</div>
+        </div>
+        <div class="agg-r"><div class="rate">×1</div></div>
+      </div>
+      <div class="provs">
+        <span class="pv pv-b"><span class="pv-dot"></span>WorkBuddy<span class="pv-order">×1</span></span>
+      </div>
+      <div class="caps">
+        <span class="cap on">工具</span><span class="cap und">图片</span>
+        <span class="cap und">视频</span><span class="cap off">思考</span>
+      </div>
+    </div>
+
+    <div class="legend">
+      <span>🟢 支持</span><span>⚪ 明确不支持</span><span>◌ 虚线 = 未声明</span>
+      <span>┈ 虚线底 = 社区库补的</span><span>• 小点 = 你覆盖过</span>
+    </div>
+  </div>
+
+  <ul class="issue">
+    <li><b>聚合是核心</b>：一张卡回答「这个模型哪家最便宜」—— 各家按倍率升序，最优那家绿色高亮</li>
+    <li><b>副行说清可用性</b>：「3 家可用 · 最优 WorkBuddy」/「1 家可用 · ZCode 独有」</li>
+    <li><b>官方不展列</b>的整卡降透明 + 副行写明</li>
+    <li><b>别名 chip</b> 就地管理，不再跳独立页</li>
+  </ul>
+
+  <h2>③ 按提供商分组（看某一家的目录）</h2>
+  <p class="note">原有分组视图保留，补上每行可见性标记与倍率，便于核对「这家给了我什么」。</p>
+
+  <div class="phone">
+    <div class="seg">
+      <span>按模型聚合</span>
+      <span class="on">按提供商分组</span>
+    </div>
+
+    <div class="grp">
+      <div class="grp-h">
+        <div class="av">WB</div>
+        <span class="grp-t">WorkBuddy 国内版</span>
+        <span class="grp-n">6 个 · 18 可见</span>
+        <span style="color:#7C8BA1;font-size:12px">⌄</span>
+      </div>
+      <div class="grp-body">
+        <div class="row">
+          <span class="row-id">claude-sonnet-4-6</span>
+          <span class="row-rate">×0.03</span>
+        </div>
+        <div class="row">
+          <span class="row-id">deepseek-v4-flash</span>
+          <span class="row-rate">×0.02</span>
+        </div>
+        <div class="row">
+          <span class="row-id">claude-opus-4-6</span>
+          <span class="row-rate">×0.15</span>
+        </div>
+        <div class="row">
+          <span class="row-id hid">gpt-5.1-mini</span>
+          <span class="row-tag t-hid">不展列</span>
+          <span class="row-rate">×1</span>
+        </div>
+        <div class="row">
+          <span class="row-id hid">text-embedding-3</span>
+          <span class="row-tag t-hid">不展列</span>
+          <span class="row-rate">×0.01</span>
+        </div>
+        <div class="row">
+          <span class="row-id hid">internal-rewrite-7b</span>
+          <span class="row-tag t-und">未声明</span>
+          <span class="row-rate">×0</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="grp">
+      <div class="grp-h">
+        <div class="av">ZC</div>
+        <span class="grp-t">ZCode 国内版</span>
+        <span class="grp-n">3 个</span>
+        <span style="color:#7C8BA1;font-size:12px">⌄</span>
+      </div>
+    </div>
+  </div>
+
+  <ul class="issue">
+    <li><b>分组头</b>：「6 个 · 18 可见」总数与官方可见数并列（该家没有 picker 名单时只写总数）</li>
+    <li><b>每行</b>：模型 id + 可见性标记 + 倍率；不展列的降透明度并标「不展列」</li>
+    <li><b>三态保留</b>：<span style="color:#94A3B8">不展列</span>（明确 hidden）与
+      <span style="color:#7C8BA1">未声明</span>（没有判据）视觉不同</li>
+    <li>点行展开该模型详情（能力 / 别名 / 测速），与聚合视图共用同一套</li>
+  </ul>
+
+  <h2>信息归属对照</h2>
+  <div class="tbl">
+    <table>
+      <thead><tr><th>信息</th><th>聚合视图</th><th>分组视图</th><th>状态</th></tr></thead>
+      <tbody>
+        <tr><td>客户端所见清单</td><td class="s">页首卡</td><td class="s">页首卡</td><td><span class="keep">保留</span></td></tr>
+        <tr><td>官方可见 / 不展列 统计</td><td class="s">页首卡两枚</td><td class="s">分组头</td><td><span class="new">新增</span></td></tr>
+        <tr><td>倍率（含最优）</td><td class="s">右上 + 各家 chip</td><td class="s">每行</td><td><span class="keep">已有</span></td></tr>
+        <tr><td>可见性三态</td><td class="s">副行 + 降透明</td><td class="s">每行标记</td><td><span class="new">新增</span></td></tr>
+        <tr><td>来源（上游/社区库/用户改）</td><td class="s">上下文数字的虚线底 / 小点</td><td class="d">—</td><td><span class="new">新增</span></td></tr>
+        <tr><td>能力徽章</td><td class="s">四枚</td><td class="d">展开后</td><td><span class="new">新增</span></td></tr>
+        <tr><td>上下文 / 输出</td><td class="s">能力下方</td><td class="d">展开后</td><td><span class="new">新增</span></td></tr>
+        <tr><td>别名 chip</td><td class="s">卡内</td><td class="d">展开后</td><td><span class="new">移入</span></td></tr>
+        <tr><td>测速 / 能力编辑</td><td class="s">卡内按钮</td><td class="s">行内展开</td><td><span class="keep">已有</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h2>内核改动（本次一并完成）</h2>
+  <div class="tbl">
+    <table>
+      <thead><tr><th>改动</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td class="s">picker_model_ids()</td><td class="s">从 data.agents[cli].models 取官方名单；兼容数组与对象两种形态；取不到返回 None</td></tr>
+        <tr><td class="s">apply_remote(+picker)</td><td class="s">逐个模型比对写 visibility: shown / hidden；None 时不写该键</td></tr>
+        <tr><td class="s">企业分支传 None</td><td class="s">上游不下发 agents → 不标可见性（界面显示「—」）</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p class="note" style="margin-top:22px">确认后我按这版改。若要调整，说哪一项即可。</p>
+
+</div>
+</body>
+</html>

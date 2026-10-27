@@ -220,13 +220,27 @@ fn apply_filters(models: Vec<Value>) -> Vec<Value> {
 /// 渲染期再跑一次 `apply` 时，那些其实是 models.dev 补的键会被误记成
 /// `upstream` —— 那正好毁掉管理页「这个值是谁说的」这套标注。
 /// 所以：**副本只用于判定，入库的仍是上游原文**，来源标注留给渲染期那一遍。
-fn filter_with_meta(models: Vec<Value>) -> Vec<Value> {
+fn filter_with_meta(models: Vec<Value>, picker: Option<&[String]>) -> Vec<Value> {
     let mut probe = models.clone();
     for item in probe.iter_mut() {
         crate::server::core::model_meta::apply(item);
     }
-    // 逐位对齐：probe 补过元数据，决定留不留；留下的取 models 里的原文
-    let keeps: Vec<bool> = probe.iter().map(is_chat_model).collect();
+    // ── picker 名单是**比 maxOutputTokens 更准**的判据 ─────────────
+    // `is_chat_model` 靠「maxOutputTokens ≥ 16000」推断「这是对话模型」，
+    // 那是拿元数据的**副产品**猜身份。对上游私有命名的模型（WorkBuddy 的
+    // `hy3` / `hy4-preview` 这类）这条推断会失效：
+    //   ① 它们不在 models.dev 里，补不到 maxOutputTokens；
+    //   ② 上游若没声明该字段，就整批被判成「非对话模型」——这正是
+    //      「登录后只显示两个模型」的真正原因（能留下的只是恰好带了该字段的）。
+    // 而 `data.agents[cli].models` 是**官方客户端下拉里真正展示的那批**，
+    // 本身就是「哪些是对话模型」的权威答案。所以名单内的直接放行。
+    let in_picker = |id: &str| {
+        picker.is_some_and(|list| list.iter().any(|x| x.eq_ignore_ascii_case(id)))
+    };
+    let keeps: Vec<bool> = probe
+        .iter()
+        .map(|item| in_picker(&model_id(item)) || is_chat_model(item))
+        .collect();
     models
         .into_iter()
         .zip(keeps)
@@ -540,9 +554,9 @@ impl ModelCatalog {
                             .and_then(Value::as_array)
                             .cloned()
                             .unwrap_or_default();
-                        let allowed = filter_with_meta(raw.clone());
                         // 官方 picker 名单与 models 来自同一个响应的另一处
                         let picker = picker_model_ids(&payload);
+                        let allowed = filter_with_meta(raw.clone(), picker.as_deref());
                         if !allowed.is_empty() {
                             self.apply_remote(allowed, "auto", false, picker.as_deref());
                             return RefreshOutcome::refreshed(
@@ -587,7 +601,7 @@ impl ModelCatalog {
                             .and_then(Value::as_array)
                             .cloned()
                             .unwrap_or_default();
-                        let allowed = filter_with_meta(raw);
+                        let allowed = filter_with_meta(raw, None);
                         if allowed.is_empty() {
                             RefreshOutcome::not_refreshed("企业模型列表为空")
                         } else {

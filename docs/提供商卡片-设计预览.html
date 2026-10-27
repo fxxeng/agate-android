@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>提供商卡片 · 布局设计预览</title>
+<style>
+  :root{
+    --bg:#0F172A; --card:#1E293B; --border:#334155;
+    --accent:#38BDF8; --textMain:#F8FAFC; --textSub:#A3B1C6; --textDim:#7C8BA1;
+    --green:#22C55E;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0;padding:20px 12px 56px;background:#080F1C;color:var(--textMain);
+    font:14px/1.6 -apple-system,"PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+  }
+  .wrap{max-width:760px;margin:0 auto}
+  h1{font-size:18px;font-weight:600;margin:0 0 6px}
+  .lead{color:var(--textSub);font-size:13px;margin:0 0 8px}
+  .rules{color:var(--textDim);font-size:12px;margin:0 0 22px}
+  h2{font-size:15px;font-weight:600;margin:30px 0 4px}
+  .note{color:var(--textDim);font-size:12px;margin:0 0 12px}
+
+  .phone{
+    width:100%;max-width:380px;margin:0 auto;
+    background:var(--bg);border:1px solid #1c2a3f;border-radius:16px;padding:12px;
+  }
+  .cap{font-size:12px;color:var(--textDim);margin:0 auto 8px;font-weight:500;max-width:380px}
+
+  .card{background:var(--card);border:1px solid var(--border);border-radius:20px;padding:13px;margin-bottom:10px}
+  .card.warn{border-color:rgba(217,119,6,.45)}
+
+  /* 第 1 行：头像 + 名称 + 就绪徽章 + 管理 + 箭头 */
+  .hdr{display:flex;align-items:center;gap:8px}
+  .avatar{
+    width:38px;height:38px;border-radius:11px;background:#0B1220;flex:0 0 38px;
+    display:flex;align-items:center;justify-content:center;
+    font-size:12px;font-weight:600;color:var(--textSub);position:relative;
+  }
+  .dot{position:absolute;right:-2px;bottom:-2px;width:11px;height:11px;border-radius:50%;
+       background:var(--green);border:2px solid var(--card)}
+  .dot.warn{background:#D97706}
+  .grow{flex:1 1 auto;min-width:0}
+  .name{font-size:16px;font-weight:600;line-height:1.3;
+        white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .badge{font-size:11px;padding:2px 7px;border-radius:8px;flex:0 0 auto;white-space:nowrap}
+  .b-green{background:rgba(34,197,94,.15);color:#4ADE80;border:1px solid rgba(34,197,94,.3)}
+  .b-amber{background:rgba(217,119,6,.15);color:#FBBF24;border:1px solid rgba(217,119,6,.3)}
+  .b-red{background:rgba(225,29,72,.15);color:#FB7185;border:1px solid rgba(225,29,72,.3)}
+  .b-gray{background:rgba(148,163,184,.13);color:var(--textSub);border:1px solid var(--border)}
+  .btn{font-size:12px;font-weight:600;color:var(--accent);background:rgba(56,189,248,.12);
+       border-radius:9px;padding:5px 10px;flex:0 0 auto;white-space:nowrap}
+  .chev{color:var(--textDim);font-size:15px;flex:0 0 auto;width:16px;text-align:center}
+
+  /* 缩进到与名称左对齐 */
+  .body{padding-left:46px;margin-top:3px}
+  .sub{font-size:12px;color:var(--textSub);line-height:1.45;
+       white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .sub.warnline{color:#FBBF24}
+  /* 关键：nowrap —— 额度与到期必须在同一行 */
+  .amtline{font-size:12px;line-height:1.5;margin-top:2px;
+           white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .big{font-size:15px;font-weight:600;color:var(--textMain)}
+  .unit{font-size:11px;color:var(--textDim);margin-left:2px;margin-right:7px}
+  .exp{font-size:12px;color:var(--textDim)}
+  .exp.warm{color:#FBBF24}
+  .exp.hot{color:#FB7185}
+  .bar{height:4px;border-radius:2px;background:#0B1220;margin-top:8px;overflow:hidden}
+  .bar > i{display:block;height:4px;border-radius:2px}
+
+  .acct{background:#0B1220;border-radius:12px;padding:10px 12px;margin-top:8px}
+  .acct-h{display:flex;align-items:center;gap:8px}
+  .rank{font-size:12px;color:var(--textDim);flex:0 0 auto}
+  .aname{font-size:13px;font-weight:600;flex:1 1 auto;min-width:0;
+         white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .kv{display:flex;justify-content:space-between;align-items:baseline;gap:10px;font-size:12px;
+      color:var(--textSub);padding:6px 0;border-top:1px solid rgba(51,65,85,.55);margin-top:6px}
+  .kv:first-of-type{border-top:none}
+  .kv > span:first-child{flex:0 0 auto}
+  .kv > span:last-child{text-align:right;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .kv b{color:var(--textMain);font-weight:600}
+  .lnk{color:var(--accent);font-weight:400}
+  .dim{color:var(--textDim);font-weight:400}
+  .hot{color:#FB7185;font-weight:400}
+  .line{display:flex;align-items:center;gap:8px;margin-top:10px}
+
+  .issue{font-size:12px;color:var(--textSub);margin:10px auto 0;padding-left:18px;max-width:380px}
+  .issue li{margin:3px 0}
+  .issue b{color:#FBBF24;font-weight:600}
+  .issue .fix{color:#4ADE80;font-weight:600}
+  .gone{color:#FB7185}
+
+  table{width:100%;border-collapse:collapse;font-size:12px}
+  th{text-align:left;padding:9px 12px;font-weight:500;background:#0B1220;color:var(--textDim)}
+  td{padding:9px 12px;border-top:1px solid #1c2a3f}
+  td.d{color:var(--textDim)}
+  td.s{color:var(--textSub)}
+  .tbl{background:var(--card);border:1px solid #1c2a3f;border-radius:14px;overflow:hidden}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>提供商卡片 · 布局设计预览</h1>
+  <p class="lead">配色取自 App 实际调色板。宽度自适应（上限 380px）。额度与到期<b style="color:#FBBF24">强制同一行</b>，不再换行。</p>
+  <p class="rules">
+    本版改动：① 主数值 = 全部账号累加余额 ② 无签到徽章 ③ 无账号操作按钮 ④ 到期当天写「今日到期」
+    ⑤ 额度与最近到期<b style="color:#FBBF24">同一行显示</b>（nowrap，不换行）
+    ⑥ 天数带「到期」：「16 天后到期」 ⑦ 日包按普通包处理：给额度＋「今日到期」
+    ⑧ <b style="color:#4ADE80">保留「N 就绪」徽章</b>——它与账号总数不同：就绪只算队列中真正可用的账号（启用 + 有凭证 + 不在冷却/低余额跳过）。
+  </p>
+
+  <h2>折叠态 · 建议版</h2>
+  <p class="note">三行：名称（含就绪徽章）/ 状态副行 / 读数。读数行左侧是累加余额，右侧紧接最近到期，同一行不换行。</p>
+
+  <div class="phone">
+    <div class="card">
+      <div class="hdr">
+        <div class="avatar">WB<span class="dot"></span></div>
+        <div class="grow"><div class="name">WorkBuddy 国内版</div></div>
+        <span class="badge b-green">3 就绪</span>
+        <div class="btn">管理</div>
+        <div class="chev">⌄</div>
+      </div>
+      <div class="body">
+        <div class="sub">3 个账号 · 最低 ×0.03</div>
+        <div class="amtline">
+          <span class="big">12,480</span><span class="unit">积分</span><span class="exp warm">最近 4,000 · 16 天后到期</span>
+        </div>
+      </div>
+      <div class="bar"><i style="width:38%;background:var(--accent)"></i></div>
+    </div>
+
+    <div class="card">
+      <div class="hdr">
+        <div class="avatar">CG<span class="dot"></span></div>
+        <div class="grow"><div class="name">智谱清言</div></div>
+        <span class="badge b-green">1 就绪</span>
+        <div class="btn">管理</div>
+        <div class="chev">⌄</div>
+      </div>
+      <div class="body">
+        <div class="sub">1 个账号</div>
+        <div class="amtline">
+          <span class="big">2,060</span><span class="unit">会员积分</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="hdr">
+        <div class="avatar">LO<span class="dot"></span></div>
+        <div class="grow"><div class="name">Loomy 讯飞</div></div>
+        <span class="badge b-green">2 就绪</span>
+        <div class="btn">管理</div>
+        <div class="chev">⌄</div>
+      </div>
+      <div class="body">
+        <div class="sub">2 个账号 · 最低 ×1</div>
+        <div class="amtline">
+          <span class="big">1,500</span><span class="unit">积分</span><span class="exp hot">最近 100 · 今日到期</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="card warn">
+      <div class="hdr">
+        <div class="avatar">ZC<span class="dot warn"></span></div>
+        <div class="grow"><div class="name">ZCode 国内版</div></div>
+        <span class="badge b-amber">1/2 就绪</span>
+        <div class="btn">管理</div>
+        <div class="chev">⌄</div>
+      </div>
+      <div class="body">
+        <div class="sub warnline">凭证 2 天后过期 · 1 个余额低</div>
+        <div class="amtline">
+          <span class="big">860</span><span class="unit">积分</span><span class="exp hot">最近 120 · 今日到期</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <ul class="issue">
+    <li><b class="fix">「N 就绪」保留</b>：与「N 个账号」不是一回事 —— 账号数含停用/缺凭证的，就绪只算队列中真正能用的（启用 + 有凭证 + 未被低余额规则跳过 + 无查询失败）</li>
+    <li>有账号不可用时写成 <b>1/2 就绪</b>（分子可用 / 分母总数），一眼看出「有账号掉队」</li>
+    <li><b>额度和到期同一行</b>：<code>12,480 积分　最近 4,000 · 16 天后到期</code>，nowrap 不换行，超长略号</li>
+    <li><b>有问题 → 副行换成待办</b>（橙色），没问题就不说话</li>
+    <li><b>日包按普通包处理</b>：给额度就照实显示（Loomy「最近 100 · 今日到期」）并计入累加</li>
+    <li>到期说法：<b>N 天后到期</b> / <b>今日到期</b> / <b>已过期</b>；≤3 天红、≤7 天橙</li>
+    <li><b>水位条只在有真比例时画</b>，无数据整条不画</li>
+  </ul>
+
+  <h2>折叠态 · 现状对照</h2>
+  <div class="phone">
+    <div class="card">
+      <div class="hdr">
+        <div class="avatar">WB<span class="dot"></span></div>
+        <div class="grow">
+          <div class="name">WorkBuddy 国内版</div>
+          <div class="sub">3 个账号 · 网页登录 · 回跳 + 轮询</div>
+          <div class="sub" style="color:var(--textDim);font-size:11px">倍率 ×0.03 · 支持签到</div>
+        </div>
+        <div class="btn">管理</div>
+        <div class="chev">⌄</div>
+      </div>
+      <div class="line">
+        <span class="badge b-green">3 就绪</span>
+        <span style="margin-left:auto;font-size:12px;color:var(--textSub)">共 12,480 · 套餐 0 · 奖励 12,480</span>
+      </div>
+      <div class="bar"><i style="width:33%;background:var(--green)"></i></div>
+    </div>
+
+    <div class="card">
+      <div class="hdr">
+        <div class="avatar">CG<span class="dot"></span></div>
+        <div class="grow">
+          <div class="name">智谱清言</div>
+          <div class="sub">1 个账号 · 粘贴凭证</div>
+          <div class="sub" style="color:var(--textDim);font-size:11px">倍率 ×1 · 不支持签到</div>
+        </div>
+        <div class="btn">管理</div>
+        <div class="chev">⌄</div>
+      </div>
+      <div class="line">
+        <span class="badge b-green">1 就绪</span>
+        <span style="margin-left:auto;font-size:12px;color:var(--textSub)">余额未查询</span>
+      </div>
+      <div class="bar"><i style="width:100%;background:var(--green)"></i></div>
+    </div>
+  </div>
+  <ul class="issue">
+    <li>渠道（登录方式）占副行首位，日常不看</li>
+    <li>「不支持签到」占一行，零信息量</li>
+    <li>进度条无数据仍画满格 → 像「额度充足」</li>
+    <li>余额里「套餐 0 · 奖励 0」那截长文字挤压读数</li>
+  </ul>
+
+  <h2>展开态 · 建议版</h2>
+  <p class="note">这家账号的出战队列。<span class="gone">已去掉操作按钮整排</span>，操作入口统一在「管理」页。</p>
+
+  <div class="phone">
+    <div class="card">
+      <div class="hdr">
+        <div class="avatar">WB<span class="dot"></span></div>
+        <div class="grow"><div class="name">WorkBuddy 国内版</div></div>
+        <span class="badge b-green">3 就绪</span>
+        <div class="btn">管理</div>
+        <div class="chev" style="transform:rotate(180deg)">⌄</div>
+      </div>
+      <div class="body">
+        <div class="sub">3 个账号 · 最低 ×0.03</div>
+        <div class="amtline">
+          <span class="big">12,480</span><span class="unit">积分</span><span class="exp warm">最近 4,000 · 16 天后到期</span>
+        </div>
+      </div>
+
+      <div class="acct">
+        <div class="acct-h">
+          <span class="rank">#1</span>
+          <span class="aname">主账号</span>
+          <span class="badge b-green">出战</span>
+        </div>
+        <div class="kv"><span>余额</span><span><b>8,200 积分</b> <span class="lnk">明细 ›</span></span></div>
+        <div class="kv"><span>凭证</span><span>30 天后到期 · 自动刷新</span></div>
+      </div>
+
+      <div class="acct">
+        <div class="acct-h">
+          <span class="rank">#2</span>
+          <span class="aname">备用账号</span>
+          <span class="badge b-amber">余额低</span>
+        </div>
+        <div class="kv"><span>余额</span><span><b>120 积分</b> <span class="lnk">明细 ›</span></span></div>
+        <div class="kv"><span>凭证</span><span class="hot">今日到期 · 自动刷新</span></div>
+        <div class="kv"><span>额度设限</span><span>低于 100 时跳过 <span class="lnk">改 ›</span></span></div>
+      </div>
+
+      <div class="acct">
+        <div class="acct-h">
+          <span class="rank">#3</span>
+          <span class="aname">测试账号</span>
+          <span class="badge b-gray">停用</span>
+        </div>
+        <div class="kv"><span>余额</span><span><b>4,160 积分</b> <span class="lnk">明细 ›</span></span></div>
+        <div class="kv"><span>凭证</span><span>30 天后到期 · 自动刷新</span></div>
+      </div>
+    </div>
+  </div>
+  <ul class="issue">
+    <li><b>去掉整排操作按钮</b>：操作都在「管理」页，卡片只看状态</li>
+    <li><b>额度设限只在真配了规则时出现</b>（#2 配了→显示；#1/#3 没配→整行不占位）</li>
+    <li><b>停用账号也照样有余额读数</b>（#3 的 4,160），所以它计入累加总额，但不算「就绪」</li>
+    <li><b>凭证与自动刷新合并一行</b>，到期当天写「今日到期」</li>
+  </ul>
+
+  <h2>「就绪」口径</h2>
+  <p class="note">这是它和「N 个账号」的区别，也是保留这个徽章的理由。</p>
+  <div class="tbl">
+    <table>
+      <thead>
+        <tr><th>账号状态</th><th>计入「N 个账号」</th><th>计入「N 就绪」</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>启用 · 有凭证 · 有余额</td><td class="s">是</td><td style="color:#4ADE80">是</td></tr>
+        <tr><td>启用 · 有凭证 · 余额低到触发跳过规则</td><td class="s">是</td><td style="color:#FB7185">否（临时不可用，额度回升自动恢复）</td></tr>
+        <tr><td>启用 · 有凭证 · 余额查询失败</td><td class="s">是</td><td style="color:#FB7185">否（读数不明，不当作可用）</td></tr>
+        <tr><td>启用 · 缺凭证</td><td class="s">是</td><td style="color:#FB7185">否</td></tr>
+        <tr><td>已停用</td><td class="s">是</td><td style="color:#FB7185">否</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <ul class="issue">
+    <li>若该家<b>没有余额能力</b>（不支持查询余额），就绪 = 启用 + 有凭证，不看余额</li>
+    <li>「余额低」只在<b>配了跳过规则</b>时才算不可用；只是徽章提示、不参与选号的，仍算就绪</li>
+  </ul>
+
+  <h2>信息归位表</h2>
+  <div class="tbl">
+    <table>
+      <thead>
+        <tr><th>信息</th><th>折叠态</th><th>展开态</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>账号总数</td><td class="s">副行</td><td class="d">—</td></tr>
+        <tr><td>就绪数</td><td class="s">名称旁徽章（不可用时写 n/N）</td><td class="s">名称旁徽章</td></tr>
+        <tr><td>最低倍率</td><td class="s">副行</td><td class="d">—</td></tr>
+        <tr><td>累加余额（全部账号）</td><td class="s">读数行左侧大字</td><td class="d">逐账号</td></tr>
+        <tr><td>最近到期 + 那份剩余</td><td class="s">读数行同行右侧</td><td class="d">逐账号「凭证」行</td></tr>
+        <tr><td>日包额度</td><td class="s">按普通包计入累加</td><td class="d">额度包明细</td></tr>
+        <tr><td>待办（凭证将过期等）</td><td class="s">副行（有问题时才出现）</td><td class="d">逐账号</td></tr>
+        <tr><td>签到</td><td class="d">不显示</td><td class="d">不显示</td></tr>
+        <tr><td>渠道（登录方式）</td><td class="d">不显示</td><td class="d">管理页「概览」</td></tr>
+        <tr><td>出战顺序调整</td><td class="d">不显示</td><td class="d">管理页「账号」</td></tr>
+        <tr><td>额度设限</td><td class="d">不显示</td><td class="s">已配置才显示</td></tr>
+        <tr><td>账号操作（置顶/编辑/启停/删除）</td><td class="d">不显示</td><td class="d">管理页「账号」</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p class="note" style="margin-top:24px">确认这版后我再改代码。</p>
+
+</div>
+</body>
+</html>
