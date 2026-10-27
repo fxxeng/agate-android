@@ -466,7 +466,10 @@ fun AgateNavHost(
                     // 应用日志：App 自身运行事件流（分类 / 级别 / 关键词 + 导出）
                     AppLogPage(onOpenDrawer = ::openDrawer)
                 }
-                composable(Routes.PROXY) { skeleton(it, navController, "出网代理池", "M4", "代理分组、健康检查、绑定提供商。", ::openDrawer) }
+                composable(Routes.PROXY) {
+                    // 出网代理池：条目列表 / 三种来源 / 测试 / 同步 Clash / 端口范围设置
+                    dev.agate.android.ui.proxy.ProxyPoolPage(onOpenDrawer = ::openDrawer)
+                }
                 composable(Routes.ROUTING) {
                     // 路由预演：三策略 + 候选队列（含跳过原因）+ 自愈规则
                     RoutingPage(onOpenDrawer = ::openDrawer)
