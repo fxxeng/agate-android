@@ -17,6 +17,23 @@ android {
         versionName = "0.4.0-m3"
     }
 
+    // ── 固定签名（debug）──────────────────────────────────────
+    // 为什么必须有：debug 构建默认用 `~/.android/debug.keystore`，那是**机器本地
+    // 自动生成**的 —— CI 每次跑在全新 runner 上，等于每次换一把新证书。Android
+    // 只允许「同签名」覆盖安装，签名一变就只能卸载重装，**账号与配置全丢**，
+    // 调试时无法连续迭代。
+    //
+    // 这里把 keystore 提交进仓库（debug 用，非发布凭证），本地与 CI 因此签出
+    // 同一个证书，`adb install -r` / 直接点安装都能覆盖升级、数据保留。
+    signingConfigs {
+        create("stableDebug") {
+            storeFile = file("agate-debug.jks")
+            storePassword = "agatedebug"
+            keyAlias = "agate"
+            keyPassword = "agatedebug"
+        }
+    }
+
     buildTypes {
         release {
             // 体积控制：R8 裁掉未用代码（material-icons-extended 那类
@@ -31,6 +48,8 @@ android {
         debug {
             // debug 保持不优化：Compose 预览/调试信息齐全，体积不代表发布体积
             isMinifyEnabled = false
+            // 固定签名：覆盖安装不丢数据（见上面 signingConfigs 的说明）
+            signingConfig = signingConfigs.getByName("stableDebug")
         }
     }
 

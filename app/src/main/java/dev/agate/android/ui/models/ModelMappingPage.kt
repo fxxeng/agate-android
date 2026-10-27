@@ -118,7 +118,15 @@ fun ModelMappingPage(
         (0 until arr.length()).map { arr.optString(it) }.filter { it.isNotBlank() }
     }
 
-    val userRows = mappings.filter { !it.isDefault }
+    // ── 用户映射：默认隐藏「失效」的（目标模型已不存在）──────────
+    // `dangling` 由内核按「该家当前清单里有没有这个 target」算出。目标都没了，
+    // 这条映射转发时必然 404 —— 留在首屏除了制造噪音没有别的用。
+    // 但仍要能看见与清理：底部给一行「另有 N 条失效」，点开才铺开。
+    var showDangling by remember { mutableStateOf(false) }
+    val allUserRows = mappings.filter { !it.isDefault }
+    val danglingRows = allUserRows.filter { it.dangling }
+    val userRows = if (showDangling) allUserRows else allUserRows.filterNot { it.dangling }
+
     val allDefaultRows = mappings.filter { it.isDefault }
 
     // ── 内置映射默认只显示「有账号的家」──────────────────────────
@@ -131,14 +139,40 @@ fun ModelMappingPage(
     val activeProviders = remember(snap.providerCounts) {
         snap.providerCounts.filterValues { it > 0 }.keys
     }
-    val defaultRows = if (showAllProviders || activeProviders.isEmpty()) {
+    // ── 默认绑定：只显示「**真配了东西**」的那些 ─────────────────
+    // 每条清单模型都天然带一条 `alias == target` 的默认绑定，而绝大多数是
+    // 「启用 + 没设思考等级 + 没挂别名」—— 那是**没有配置**，不是映射。
+    // 全列出来就是用户说的「全部显示内置默认映射」：40 个模型 × N 家 = 一屏
+    // 全是同名的 alias→target，真正配过的几条反而找不到。
+    //
+    // 所以默认只留「有信息量」的三类：
+    //   · 被关掉的（`enabled == false`）—— 用户显式做的决定；
+    //   · 设了思考等级的（`reasoning != null`）；
+    //   · 挂了用户别名的（同一 target 另有 alias≠target 的映射）。
+    var showPlainDefaults by remember { mutableStateOf(false) }
+    val aliasedTargets = remember(mappings) {
+        mappings.filter { !it.isDefault && it.alias != it.target }
+            .map { (it.provider ?: "") to it.target }
+            .toSet()
+    }
+    val providerFiltered = if (showAllProviders || activeProviders.isEmpty()) {
         allDefaultRows
     } else {
         allDefaultRows.filter { it.provider.isNullOrBlank() || it.provider in activeProviders }
     }
+    val defaultRows = if (showPlainDefaults) {
+        providerFiltered
+    } else {
+        // 「有信息量」与「有账号的家」两个条件同时成立才算要显示
+        providerFiltered.filter { row ->
+            !row.enabled || row.reasoning != null ||
+                aliasedTargets.contains((row.provider ?: "") to row.target)
+        }
+    }
     val hiddenCount = allDefaultRows.size - defaultRows.size
+    val hiddenPlainCount = providerFiltered.size - defaultRows.size
     val rows = if (tab == 0) userRows else defaultRows
-    val danglingCount = userRows.count { it.dangling }
+    val danglingCount = danglingRows.size
 
     Column(modifier = modifier.fillMaxSize().background(C.bg)) {
         AgatePageHeader(title = "模型映射", onOpenDrawer = {}, onBack = onBack)
@@ -174,6 +208,15 @@ fun ModelMappingPage(
                 selected = tab,
                 onSelect = { tab = it },
             )
+            // 用户映射页：有失效条目时给一个开关（默认隐藏，见上面 userRows 的说明）
+            if (tab == 0 && danglingCount > 0) {
+                Spacer(Modifier.height(8.dp))
+                AgateSegmented(
+                    options = listOf("有效映射", "含失效 · $danglingCount"),
+                    selected = if (showDangling) 1 else 0,
+                    onSelect = { showDangling = it == 1 },
+                )
+            }
             // 默认绑定页：只显示有账号的家 / 全部（默认前者，见上面 defaultRows 的说明）
             if (tab == 1 && activeProviders.isNotEmpty()) {
                 Spacer(Modifier.height(8.dp))
@@ -181,6 +224,16 @@ fun ModelMappingPage(
                     options = listOf("仅有账号", "全部"),
                     selected = if (showAllProviders) 1 else 0,
                     onSelect = { showAllProviders = it == 1 },
+                )
+            }
+            // 默认绑定页：默认只看「有配置」的（关掉 / 设了思考等级 / 挂了别名），
+            // 否则一屏全是 alias==target 的同名行，真正配过的反而找不到
+            if (tab == 1 && hiddenPlainCount > 0) {
+                Spacer(Modifier.height(8.dp))
+                AgateSegmented(
+                    options = listOf("仅有配置", "含未配置 · $hiddenPlainCount"),
+                    selected = if (showPlainDefaults) 1 else 0,
+                    onSelect = { showPlainDefaults = it == 1 },
                 )
             }
             Spacer(Modifier.height(10.dp))
@@ -270,6 +323,16 @@ fun ModelMappingPage(
                     scope.launch { applyResult(ModelOps.removeCustomModel(pv, mid), "移除自定义模型") }
                 },
             )
+            // 用户映射页：失效条数说明白（它们被隐藏了，不是被删了）
+            if (tab == 0 && danglingCount > 0) {
+                Spacer(Modifier.height(10.dp))
+                Text(
+                    "另有 $danglingCount 条失效映射（目标模型已不在该家清单里，转发会 404）；" +
+                        "切到「含失效」可查看并删除",
+                    style = AgateType.Caption,
+                    color = C.textDim,
+                )
+            }
             // 被隐藏的条数要说明白：不能让用户以为「我的绑定丢了」
             if (tab == 1 && hiddenCount > 0) {
                 Spacer(Modifier.height(10.dp))

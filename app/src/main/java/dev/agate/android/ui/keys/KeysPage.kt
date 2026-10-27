@@ -74,6 +74,10 @@ fun KeysPage(
     val localKey = remember { GatewayPrefs.apiKey(ctx) }
     val port = remember { GatewayPrefs.port(ctx) }
     val baseUrl = remember { "http://127.0.0.1:$port/v1" }
+    // 本机模式（未开局域网监听）**不需要 Key**：内核只在 LAN 模式注入环境变量 Key，
+    // 本机时 Key 列表为空 → 鉴权走免鉴权分支。文案必须跟着说清楚，否则用户会
+    // 以为「必须填」而卡在这一步（这正是之前的实际反馈）。
+    val lanMode = remember { GatewayPrefs.bindLan(ctx) }
 
     var rows by remember { mutableStateOf<List<KeyOps.KeyRow>>(emptyList()) }
     var loading by remember { mutableStateOf(false) }
@@ -122,12 +126,18 @@ fun KeysPage(
             // ── ① 怎么连（最重要的一条，放最上）──
             CopyCard(
                 title = "客户端连接信息",
-                rows = listOf(
-                    "Base URL" to baseUrl,
-                    "API Key" to localKey,
-                ),
-                hint = "在 Cherry Studio / Cline 等客户端里填这两项。Key 不匹配就会拿到 " +
-                    "「401 Unauthorized: invalid or missing API key」。",
+                rows = if (lanMode) {
+                    listOf("Base URL" to baseUrl, "API Key" to localKey)
+                } else {
+                    // 本机不需要 Key：只给地址，别让用户去填一个用不上的字段
+                    listOf("Base URL" to baseUrl)
+                },
+                hint = if (lanMode) {
+                    "已开局域网监听，客户端必须带 Key（不匹配会拿到 401 invalid or missing API key）"
+                } else {
+                    "本机访问**无需填 Key**：端口只监听 127.0.0.1，客户端只填 Base URL 即可。" +
+                        "开启「局域网监听」后才需要 Key"
+                },
                 onCopy = { text ->
                     clipboard.setText(AnnotatedString(text))
                     toast("已复制")

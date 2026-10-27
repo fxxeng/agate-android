@@ -373,9 +373,22 @@ fn start_gateway(data_dir: &str, port: u16, bind_lan: bool, api_key: Option<&str
     // 登录期可能临时占着该端口（Core 态收回调用，见 core::login_listener）：
     // 必须先释放并等端口归还，否则下面的 bind 会撞自己。
     crate::server::core::login_listener::release();
-    // api_key → env（每次启动按本次参数注入；trigger_task 的内部请求也读它）
-    if let Some(key) = api_key.map(str::trim).filter(|k| !k.is_empty()) {
-        std::env::set_var("AGATE_PROXY_API_KEY", key);
+    // ── 只有**局域网监听**才注入 Key（本次调整）──────────────────
+    // 本机模式（`bind_lan = false`，只绑 127.0.0.1）下不注入：env 里没有 Key
+    // 时 `active_api_keys()` 为空 → 鉴权中间件走「免鉴权」分支 → 本机客户端
+    // **不必填 Key** 就能调 `/v1/*`。
+    //
+    // 这是安全的：本机模式下端口只监听回环地址，门外没有别人；要求填 Key 只是
+    // 给调试和自建客户端凭空加一道墙（用户实际反馈就是这个）。
+    //
+    // 局域网模式必须注入：那时端口对同网段开放，没有 Key 等于把额度对全网公开
+    // （`v1_fail_closed` 只是兜底，真正的凭证就是这把 Key）。
+    //
+    // 反过来也要显式清掉：上一次 LAN 会话设过 env，若这次切回本机却不清，
+    // 进程内的 Key 会残留 → 又变成「必须填 Key」，与本次预期相反。
+    match api_key.map(str::trim).filter(|k| !k.is_empty()) {
+        Some(key) if bind_lan => std::env::set_var("AGATE_PROXY_API_KEY", key),
+        _ => std::env::remove_var("AGATE_PROXY_API_KEY"),
     }
     {
         let Ok(guard) = RUNNING.lock() else {
