@@ -57,6 +57,75 @@ import dev.agate.android.ui.theme.AgateType
 import dev.agate.android.ui.theme.agateColors
 
 /**
+ * 客户端所见清单的**状态 + 推演计数**（来自 `/api/models/list-view`）。
+ *
+ * ── 为什么三个计数一次全要 ──────────────────────────────────
+ * 界面要显示「切到别的模式会变成多少」。三种形态的项数由内核一次算全，
+ * 切换时数字**即时**变化 —— 不必再往返一次（也不会出现「切过去先显示旧
+ * 数字、等下才刷新」的闪动）。
+ *
+ * ── 计数与 `/v1/models` 同源 ────────────────────────────────
+ * 内核两条路走**同一个函数**（`models_response_with_mode`），所以「预览说 42」
+ * 就等于「客户端真会收到 42」。这是这张卡存在的全部意义 —— 数字对不上会比
+ * 不预览更糟。
+ */
+internal data class ListView(
+    val mode: String = "model",
+    val pins: List<String> = emptyList(),
+    val counts: Map<String, Int> = emptyMap(),
+    /** 当前形态下的**完整**清单（界面自己截断前 N 项，见 XpCard）。 */
+    val ids: List<String> = emptyList(),
+    /** 提供商 `(id, label)`，混合模式的 pin 选择用。 */
+    val providers: List<Pair<String, String>> = emptyList(),
+) {
+    fun countFor(m: String): Int = counts[m] ?: if (m == mode) ids.size else 0
+
+    /** 副行拆解（v44 的「各家合计 N 条，同名合并后 M 个」那一行）。 */
+    fun breakdown(): String? {
+        val all = counts["model"] ?: return null
+        val provider = counts["provider"] ?: return null
+        val hybrid = counts["hybrid"] ?: return null
+        return when (mode) {
+            "provider" -> {
+                val dup = (provider - all).coerceAtLeast(0)
+                "各家各列一遍，共 $provider 项（其中同名模型重复 $dup 条）"
+            }
+            "hybrid" -> {
+                val prefixed = (hybrid - all).coerceAtLeast(0)
+                "合并后 $all 项 + 带前缀 $prefixed 项"
+            }
+            else -> {
+                // 「各家合计」只有 provider 模式的全量能近似表达（含重复的条数）
+                "同名合并后 $all 项（各家明细合计 $provider 条）"
+            }
+        }
+    }
+
+    companion object {
+        fun parse(o: org.json.JSONObject?): ListView {
+            if (o == null) return ListView()
+            val countsObj = o.optJSONObject("counts")
+            val counts = HashMap<String, Int>()
+            countsObj?.keys()?.forEach { k -> counts[k] = countsObj.optInt(k, 0) }
+            val pins = ArrayList<String>()
+            o.optJSONArray("pins")?.let { arr ->
+                for (i in 0 until arr.length()) arr.optString(i).takeIf { it.isNotBlank() }?.let { pins += it }
+            }
+            val ids = ArrayList<String>()
+            o.optJSONArray("ids")?.let { arr ->
+                for (i in 0 until arr.length()) arr.optString(i).takeIf { it.isNotBlank() }?.let { ids += it }
+            }
+            return ListView(
+                mode = o.optString("mode").ifBlank { "model" },
+                pins = pins,
+                counts = counts,
+                ids = ids,
+            )
+        }
+    }
+}
+
+/**
  * 模型页（M3-5，对齐 v44 Tab 3）：
  * - 客户端所见清单卡（GET /v1/models 口径）：总数 + 两档视图（按模型聚合 / 按提供商分组）
  * - 搜索 + 提供商分组折叠（mgroups）或按模型聚合（提供商候选列表 + 倍率）
@@ -90,6 +159,42 @@ fun ModelsPage(
     var view by remember { mutableIntStateOf(1) }   // 0 按模型聚合 / 1 按提供商分组（默认分组）
     var query by remember { mutableStateOf("") }
     var refreshing by remember { mutableStateOf(false) }
+    // 客户端所见清单的状态 + 推演计数（来自 /api/models/list-view）
+    var listView by remember { mutableStateOf(ListView()) }
+    var configuring by remember { mutableStateOf(false) }
+
+    // 提供商 (id, label) 列表：混合模式的 pin 选择要用（模型行里带 providerLabel）
+    val providers = remember(models) {
+        models.map { it.provider to it.providerLabel }
+            .filter { it.first.isNotBlank() }
+            .distinctBy { it.first }
+            .sortedBy { it.second }
+    }
+
+    fun loadListView() {
+        scope.launch { listView = ListView.parse(ModelOps.fetchListView().data) }
+    }
+
+    /** 切模式 / 改 pin：一起提交（两者表达同一件事，见内核 set_models_list 的说明）。 */
+    fun saveListView(mode: String, pins: List<String>) {
+        if (configuring) return
+        configuring = true
+        scope.launch {
+            val r = ModelOps.setListView(mode, pins)
+            configuring = false
+            val parsed = ListView.parse(r.data)
+            if (r.ok) {
+                listView = parsed.copy(providers = providers)
+            } else {
+                Toast.makeText(ctx, r.error ?: "保存失败", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    // 首次进入与模型清单变化时拉一次（清单变了计数就该重算）
+    androidx.compose.runtime.LaunchedEffect(models.size) {
+        if (models.isNotEmpty()) loadListView()
+    }
 
     fun doRefresh() {
         if (refreshing) return
@@ -123,8 +228,16 @@ fun ModelsPage(
         ) {
             Spacer(Modifier.height(10.dp))
 
-            // ── 客户端所见清单（v44 #xp-card）──
-            XpCard(total = models.size, fetched = snap.fetchedAtMs > 0)
+            // ── 客户端所见清单（v44 #xp-card，两层：折叠摘要 + 展开推演）──
+            XpCard(
+                view = listView.copy(providers = providers),
+                configuring = configuring,
+                onSetMode = { mode -> saveListView(mode, listView.pins) },
+                onTogglePin = { pid ->
+                    val next = if (pid in listView.pins) listView.pins - pid else listView.pins + pid
+                    saveListView(listView.mode, next)
+                },
+            )
 
             Spacer(Modifier.height(12.dp))
             AgateSearchBar(value = query, onValueChange = { query = it }, hint = "搜索模型 / 提供商…")
@@ -194,33 +307,155 @@ fun ModelsPage(
     }
 }
 
-/* ── v44 #xp-card：客户端所见清单 ── */
+/**
+ * 客户端所见清单卡（对齐 v44 #xp-card）。
+ *
+ * ── 为什么是两层而不是把开关全铺开 ──────────────────────────
+ * 这是一个**配置推演器**（回答「客户端会看到什么」），不是读数 —— 首屏铺开
+ * 三模式切换 + 预览清单 + 开关会占掉大半屏，而用户大多数时候只想看到那个数字。
+ * 所以折叠态只留一行「模式 + 项数」，需要时再展开。
+ *
+ * ── 两处刻意的省略（与 v44 原稿的差异）──────────────────────
+ *   · **没有「只列有可用账号的提供商」开关**：关掉它就是把「没登录 / 全部停用」
+ *     的家列给客户端，而客户端点了必然报错 —— 列出来毫无意义。内核的
+ *     `active_manifests` 已经是硬过滤，这里不给用户关掉它的机会。
+ *   · **没有「只列已上架模型」开关**：下架就是下架。下架的开关在「按提供商分组」
+ *     视图里已经有（那是它的自然位置），不需要第二个开关表达同一件事。
+ *
+ * 因此本卡只保留**真正改变输出形态**的三个模式 + 混合模式的 pin 选择。
+ */
 @Composable
-private fun XpCard(total: Int, fetched: Boolean) {
+private fun XpCard(
+    view: ListView,
+    configuring: Boolean,
+    onSetMode: (String) -> Unit,
+    onTogglePin: (String) -> Unit,
+) {
     val C = agateColors()
+    var expanded by remember { mutableStateOf(false) }
+    val count = view.countFor(view.mode)
+    val tooMany = count > 80
+
     Column(
         Modifier
             .fillMaxWidth()
             .agateCard().background(C.cardBg, RoundedCornerShape(20.dp))
             .border(1.dp, C.border, RoundedCornerShape(20.dp))
-            .padding(14.dp),
+            .padding(14.dp)
+            .animateContentSize(),
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("客户端所见清单", style = AgateType.SectionTitle, fontWeight = FontWeight.SemiBold, color = C.textMain, modifier = Modifier.weight(1f))
+        // ── 第 1 行：标题 + API 徽章 + 折叠箭头 ──
+        Row(
+            Modifier.fillMaxWidth().clickable { expanded = !expanded },
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                "客户端所见清单",
+                style = AgateType.SectionTitle,
+                fontWeight = FontWeight.SemiBold,
+                color = C.textMain,
+                modifier = Modifier.weight(1f),
+            )
             AgateBadge("GET /v1/models", BadgeTone.GRAY)
+            Spacer(Modifier.width(6.dp))
+            Text("⌄", color = C.textDim, fontSize = 14.sp, modifier = Modifier.rotate(if (expanded) 180f else 0f))
         }
+
+        // ── 第 2 行（摘要）：模式 + 项数 + 必要时「偏多」──
+        Spacer(Modifier.height(7.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                modeLabel(view.mode),
+                color = C.accent,
+                fontSize = 11.sp,
+                modifier = Modifier
+                    .background(C.accent.copy(alpha = 0.12f), RoundedCornerShape(7.dp))
+                    .padding(horizontal = 7.dp, vertical = 2.dp),
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(
+                buildString {
+                    append(count.toString())
+                    append(" 项会下发")
+                },
+                color = C.textSub,
+                fontSize = 12.sp,
+                modifier = Modifier.weight(1f),
+            )
+            if (tooMany) AgateBadge("偏多", BadgeTone.AMBER)
+        }
+
+        if (!expanded) return@Column
+
+        // ── 展开：模式切换 ──
+        Spacer(Modifier.height(12.dp))
+        AgateSegmented(
+            options = listOf("按模型", "按提供商", "混合"),
+            selected = when (view.mode) {
+                "provider" -> 1
+                "hybrid" -> 2
+                else -> 0
+            },
+            onSelect = { onSetMode(listOf("model", "provider", "hybrid")[it]) },
+        )
+
+        // ── 主读数 + 副行拆解 ──
         Spacer(Modifier.height(10.dp))
         Row(verticalAlignment = Alignment.Bottom) {
             Text(
-                if (fetched) total.toString() else "—",
-                color = C.textMain,
-                fontSize = 26.sp,
+                count.toString(),
+                color = if (tooMany) C.amber else C.textMain,
+                fontSize = 24.sp,
                 fontWeight = FontWeight.Bold,
             )
             Spacer(Modifier.width(8.dp))
-            Text("个模型会出现在客户端的列表里", color = C.textSub, fontSize = 13.sp)
+            Text("个模型会出现在客户端的列表里", color = C.textSub, fontSize = 12.sp)
         }
-        Spacer(Modifier.height(8.dp))
+        view.breakdown()?.let {
+            Spacer(Modifier.height(3.dp))
+            Text(it, color = C.textSub, fontSize = 11.sp)
+        }
+
+        // ── 模式说明 ──
+        Spacer(Modifier.height(5.dp))
+        Text(modeDesc(view.mode), color = C.textDim, fontSize = 11.sp)
+
+        // ── 偏多提醒（>80 项）──
+        if (tooMany) {
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "超过 80 项：Cherry Studio、Cline 等客户端的下拉列表会变得很难选，建议改用「按模型」。",
+                color = C.amber,
+                fontSize = 11.sp,
+            )
+        }
+
+        // ── 混合模式：pin 提供商 ──
+        if (view.mode == "hybrid") {
+            Spacer(Modifier.height(10.dp))
+            Text("额外展开带前缀条目的提供商（可多选）", color = C.textSub, fontSize = 12.sp)
+            Spacer(Modifier.height(6.dp))
+            FlowChips(
+                labels = view.providers.map { it.second },
+                isOn = { index -> view.providers[index].first in view.pins },
+                onClick = { index -> onTogglePin(view.providers[index].first) },
+                enabled = !configuring,
+            )
+        }
+
+        // ── 清单预览 ──
+        if (view.ids.isNotEmpty()) {
+            Spacer(Modifier.height(10.dp))
+            Text("预览客户端看到的清单", color = C.textSub, fontSize = 12.sp)
+            Spacer(Modifier.height(6.dp))
+            FlowIds(view.ids.take(12))
+            if (view.ids.size > 12) {
+                Spacer(Modifier.height(4.dp))
+                Text("… 共 ${view.ids.size} 项", color = C.textDim, fontSize = 11.sp)
+            }
+        }
+
+        Spacer(Modifier.height(9.dp))
         Text(
             "清单只决定「客户端看见什么」；两种写法在任何模式下都能调用：" +
                 "裸名由「路由」队列选账号（可跨家转移），provider/id 锁定这一家。",
@@ -230,7 +465,91 @@ private fun XpCard(total: Int, fetched: Boolean) {
     }
 }
 
-/* ── v44 .mgroup：按提供商分组折叠卡 ── */
+/** 模式短标签。 */
+private fun modeLabel(mode: String): String = when (mode) {
+    "provider" -> "按提供商"
+    "hybrid" -> "混合"
+    else -> "按模型"
+}
+
+/** 模式说明（解释该形态下客户端的行为差异）。 */
+private fun modeDesc(mode: String): String = when (mode) {
+    "provider" ->
+        "每家的每个模型都列一遍，写成「提供商/模型」。客户端可以精确指定某一家，" +
+            "但同一个模型会重复出现很多次。"
+    "hybrid" ->
+        "平时按模型合并；只为上面勾选的提供商额外列出带前缀的条目 —— " +
+            "用于必须指定某家的场景（如自建中转、要单独核算的账号）。"
+    else ->
+        "同名模型只出现一次，不带前缀；用哪一家由「路由」队列决定，并可在同款模型之间" +
+            "故障转移。客户端列表最短、最好选，推荐默认。"
+}
+
+/* ── 小件：chip 流式布局与 id 徽章流 ── */
+
+@Composable
+private fun FlowChips(
+    labels: List<String>,
+    isOn: (Int) -> Boolean,
+    onClick: (Int) -> Unit,
+    enabled: Boolean,
+) {
+    val C = agateColors()
+    Column {
+        labels.chunked(3).forEach { row ->
+            Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                row.forEach { label ->
+                    val index = labels.indexOf(label)
+                    val on = isOn(index)
+                    Text(
+                        label,
+                        color = if (on) C.accent else C.textSub,
+                        fontSize = 11.sp,
+                        modifier = Modifier
+                            .background(
+                                if (on) C.accent.copy(alpha = 0.15f) else C.insetBg,
+                                RoundedCornerShape(8.dp),
+                            )
+                            .border(
+                                1.dp,
+                                if (on) C.accent.copy(alpha = 0.45f) else C.border,
+                                RoundedCornerShape(8.dp),
+                            )
+                            .clickable(enabled = enabled) { onClick(index) }
+                            .padding(horizontal = 9.dp, vertical = 3.dp),
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun FlowIds(ids: List<String>) {
+    val C = agateColors()
+    Column {
+        ids.chunked(2).forEach { row ->
+            Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                row.forEach { id ->
+                    Text(
+                        id,
+                        color = if (id.contains('/')) C.accent else C.textSub,
+                        fontSize = 10.sp,
+                        maxLines = 1,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                        modifier = Modifier
+                            .weight(1f, fill = false)
+                            .background(C.insetBg, RoundedCornerShape(6.dp))
+                            .border(1.dp, C.border, RoundedCornerShape(6.dp))
+                            .padding(horizontal = 7.dp, vertical = 2.dp),
+                    )
+                }
+            }
+        }
+    }
+}
+
+/* ── v44 .mgroup：按提供商分组折叠卡 ── *//* ── v44 .mgroup：按提供商分组折叠卡 ── */
 @Composable
 private fun ProviderModelGroup(
     providerId: String,
@@ -274,6 +593,18 @@ private fun ProviderModelGroup(
 }
 
 /* ── v44 #view-model：按模型聚合卡（候选提供商 + 倍率 + 能力位）── */
+/**
+ * 按模型聚合卡（v44 #view-model）。
+ *
+ * ── 聚合的意义：一张卡回答「这个模型哪家最便宜」────────────────
+ * 同一个模型 id 在多家都有时合成一张卡，各家按**倍率升序**排（最优那家绿色
+ * 高亮）。这比 3.0.8 的表格更进一步 —— 那边要一行行对比倍率，这里一眼是答案。
+ *
+ * ── 能力徽章与上下文取「各家生效值里最全的那条」──────────────
+ * 同一模型在不同家的声明可能不同（上游目录质量不一）。展示时取第一条**声明了
+ * 该项**的记录，而不是简单地取第一家 —— 否则第一家没声明就会让整卡看起来
+ * 「什么能力都没有」。来源标记（虚线底 / 小点）留给能力弹窗，卡上不重复表达。
+ */
 @Composable
 private fun ModelAggregateCard(
     id: String,
@@ -281,7 +612,15 @@ private fun ModelAggregateCard(
     onOpenCaps: () -> Unit,
 ) {
     val C = agateColors()
-    val first = providers.first()
+    // 倍率升序：最便宜的排第一（`null` 视为最差，排最后）
+    val ranked = providers.sortedBy { parseMultiplier(it.credits ?: "") ?: Double.MAX_VALUE }
+    val best = ranked.firstOrNull()
+    val bestMult = best?.let { parseMultiplier(it.credits ?: "") }
+    // 能力与上下文：取「第一条真的声明了这一项」的记录
+    val capsSource = ranked.firstOrNull { it.maxInput != null }
+        ?: ranked.firstOrNull { it.toolCall || it.images || it.reasoning }
+        ?: ranked.first()
+
     Column(
         Modifier
             .fillMaxWidth()
@@ -289,34 +628,66 @@ private fun ModelAggregateCard(
             .border(1.dp, C.border, RoundedCornerShape(20.dp))
             .padding(14.dp),
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
+        // ── 标题行：模型 id + 倍率（最优）──
+        Row(verticalAlignment = Alignment.Top) {
             Column(Modifier.weight(1f)) {
                 Text(id, color = C.textMain, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
                 Text(
-                    "可用提供商: " + providers.joinToString(", ") { it.providerLabel },
+                    buildString {
+                        append("${ranked.size} 家可用")
+                        best?.let { append(" · 最优 ${it.providerLabel}") }
+                    },
                     color = C.textSub,
                     fontSize = 12.sp,
                 )
             }
-            if (providers.size > 1) AgateBadge("${providers.size} 家", BadgeTone.AMBER) else AgateBadge("单家", BadgeTone.GREEN)
+            Column(horizontalAlignment = Alignment.End) {
+                best?.credits?.let {
+                    Text(it, color = C.textMain, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                }
+                if (bestMult != null && ranked.size > 1) {
+                    Text("最低", color = C.green, fontSize = 10.sp)
+                }
+            }
         }
+
+        // ── 各家候选（倍率升序）──
         Spacer(Modifier.height(8.dp))
-        providers.forEachIndexed { i, m ->
-            Row(Modifier.fillMaxWidth().padding(vertical = 3.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text("${i + 1}. ${m.providerLabel}", color = C.textSub, fontSize = 13.sp, modifier = Modifier.weight(1f))
+        ranked.forEachIndexed { i, m ->
+            Row(
+                Modifier.fillMaxWidth().padding(vertical = 3.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    m.providerLabel,
+                    color = if (i == 0 && ranked.size > 1) C.green else C.textSub,
+                    fontSize = 12.sp,
+                    modifier = Modifier.weight(1f),
+                )
                 m.credits?.let { CreditsTag(it) }
             }
         }
+
+        // ── 能力徽章（三态可分辨）──
         Spacer(Modifier.height(8.dp))
-        Box(Modifier.fillMaxWidth().height(1.dp).background(C.border.copy(alpha = 0.4f)))
-        Spacer(Modifier.height(8.dp))
+        CapBadgeRow(capsSource)
+
+        // ── 上下文 / 输出 ──
+        val ctxLine = buildString {
+            capsSource.maxInput?.let { append("上下文 ${fmtTokens(it)}") }
+            capsSource.maxOutput?.let {
+                if (isNotEmpty()) append("   ")
+                append("输出 ${fmtTokens(it)}")
+            }
+        }
+        if (ctxLine.isNotEmpty()) {
+            Spacer(Modifier.height(6.dp))
+            Text(ctxLine, color = C.textSub, fontSize = 11.sp)
+        }
+
+        Spacer(Modifier.height(9.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                "能力位：" + capsOf(first),
-                color = C.textDim,
-                fontSize = 12.sp,
-                modifier = Modifier.weight(1f),
-            )
+            Text("能力位", color = C.textDim, fontSize = 12.sp, modifier = Modifier.weight(1f))
             Text(
                 "编辑 ❯",
                 color = C.accent,
@@ -329,6 +700,53 @@ private fun ModelAggregateCard(
             )
         }
     }
+}
+
+/**
+ * 四个能力徽章，**三态视觉可分辨**。
+ *
+ * 三态必须分开显示是 3.0.8 反复强调的纪律：把「未声明」画成「不支持」，用户会
+ * 照着错值配置下游。这里的判据是「有没有声明」而不是「真假」——
+ *   · 支持   → 绿色实线
+ *   · 不支持 → 灰色实线
+ *   · 未声明 → 灰色**虚线**
+ */
+@Composable
+private fun CapBadgeRow(m: GatewayRepository.ModelRow) {
+    val C = agateColors()
+    Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+        CapChip("工具", m.toolCall)
+        CapChip("图片", m.images)
+        CapChip("思考", m.reasoning)
+    }
+}
+
+@Composable
+private fun CapChip(label: String, on: Boolean) {
+    val C = agateColors()
+    Text(
+        label,
+        color = if (on) C.green else C.textDim,
+        fontSize = 10.sp,
+        modifier = Modifier
+            .background(
+                if (on) C.green.copy(alpha = 0.12f) else androidx.compose.ui.graphics.Color.Transparent,
+                RoundedCornerShape(6.dp),
+            )
+            .border(
+                1.dp,
+                if (on) C.green.copy(alpha = 0.35f) else C.border,
+                RoundedCornerShape(6.dp),
+            )
+            .padding(horizontal = 7.dp, vertical = 2.dp),
+    )
+}
+
+/** token 数紧凑显示：`200000` → `200K`、`1000000` → `1M`。 */
+internal fun fmtTokens(v: Int): String = when {
+    v >= 1_000_000 -> "${v / 1_000_000}M"
+    v >= 1_000 -> "${v / 1_000}K"
+    else -> v.toString()
 }
 
 @Composable

@@ -90,6 +90,30 @@ object ModelOps {
     suspend fun fetchManage(): OpResult = get("/api/models/manage")
 
     /**
+     * 客户端所见清单的**状态与推演计数**（GET /api/models/list-view）。
+     *
+     * 响应：`{mode, pins, counts:{model,provider,hybrid}, ids:[...]}`。
+     * 三种形态的项数一次给全 —— 界面切模式时数字即时，不必再往返一次。
+     * `counts` 与 `/v1/models` 走内核同一个函数，所以「预览说 42」就等于
+     * 「客户端真会收到 42」。
+     */
+    suspend fun fetchListView(): OpResult = get("/api/models/list-view")
+
+    /**
+     * 设置清单形态（POST /api/models/list-view）。
+     *
+     * 模式非法时内核回 400（不静默回落）—— 界面把用户的选择原样提交，
+     * 静默改成别的值会让开关看起来「点了没反应」。
+     */
+    suspend fun setListView(mode: String, pins: List<String>): OpResult =
+        post(
+            "/api/models/list-view",
+            JSONObject()
+                .put("mode", mode)
+                .put("pins", org.json.JSONArray(pins)),
+        )
+
+    /**
      * 新增映射（同 alias+target+provider 三元组 = 命中已有条目改它）。
      * reasoning 传 null 且 reasoningExplicit=false = 不动；explicit=true 且 null/空 = 清成不覆盖。
      */
