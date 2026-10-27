@@ -375,7 +375,9 @@ private fun WizardCard(onNavigate: (String) -> Unit, onDismiss: () -> Unit) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 listOf(
                     Triple("1", "添加首个提供商", "中转 / 24 张预置卡") to Routes.PROVIDER_ADD,
-                    Triple("2", "复制地址与 Key", ":${GatewayPrefs.port(ctx)} · sk-…（访问密钥）") to Routes.KEYS,
+                    // Key 前缀是 `agate-` 不是 `sk-`（壳层生成，见 GatewayPrefs.apiKey）——
+                    // 文案写错会让人照着填一个不存在的格式，这是「401」的一个来源
+                    Triple("2", "复制地址与 Key", ":${GatewayPrefs.port(ctx)} · agate-…") to Routes.KEYS,
                     Triple("3", "测速验证", "并发跑一轮模型测速") to Routes.MODEL_SPEEDTEST,
                 ).forEach { (step, route) ->
                     Column(

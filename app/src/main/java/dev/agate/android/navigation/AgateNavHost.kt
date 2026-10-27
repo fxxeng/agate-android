@@ -445,7 +445,12 @@ fun AgateNavHost(
                 composable(Routes.ROUTING) { skeleton(it, navController, "路由", "M3", "三策略选号预演、候选队列跨家交错拖拽、自愈演练与倒计时回队、限制器。", ::openDrawer) }
                 composable(Routes.ASSISTANT) { skeleton(it, navController, "AI 运维助手", "M4", "4 大快捷诊断 Chips、工具调用气泡、流式对话。", ::openDrawer) }
                 composable(Routes.SETTINGS) { skeleton(it, navController, "设置", "M4", "手风琴分组：主题三档 / 传输 / 脱敏 / 备份与恢复中心。", ::openDrawer) }
-                composable(Routes.KEYS) { skeleton(it, navController, "访问密钥", "M3", "网关 API Key 管理：创建/吊销，/v1 闸门依据。", ::openDrawer) }
+                composable(Routes.KEYS) {
+                    dev.agate.android.ui.keys.KeysPage(
+                        onOpenDrawer = ::openDrawer,
+                        onBack = { navController.popBackStack() },
+                    )
+                }
             }
         }
     }
