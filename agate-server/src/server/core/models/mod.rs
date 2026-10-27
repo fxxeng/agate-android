@@ -258,6 +258,62 @@ impl Default for ModelCatalog {
     }
 }
 
+/// 从 `/v3/config` 响应里取**官方 picker 名单**（`data.agents[name=="cli"].models`）。
+///
+/// ── 为什么需要它 ──────────────────────────────────────────
+/// 上游同一个响应里有两份清单，条数差很多：
+/// ```text
+///   data.models               → 60 条，带完整元数据（补全 / 改写 / 内部 / 图像 /
+///                               视频 / 旧代条目都在里面）
+///   data.agents[cli].models   → 18 条**裸字符串 id**，这才是官方客户端下拉里
+///                               真正展示的那批
+/// ```
+/// 两份 id 同一套命名，直接比对即可。管理页据此标「可见 / 不可见」，让用户知道
+/// 哪些模型是官方认的、哪些只是上游还在返回。
+///
+/// ── 兼容两种形态 ──────────────────────────────────────────
+/// `agents` 可能是**数组**（`[{name, models}]`）或**对象**（`{name: {models}}`
+/// —— 桌面端缓存写盘时是那个样子）。两种都认，免得上游一改形态就整份判成
+/// 「没有名单」。
+///
+/// 返回 `None` 的情形（调用方据此**不标可见性**）：没有 `agents`、没有 `cli`
+/// 那一组、或 `models` 不是非空字符串数组。
+fn picker_model_ids(payload: &Value) -> Option<Vec<String>> {
+    let agents = payload.get("data")?.get("agents")?;
+    let collect = |name: &str, entry: &Value| -> Option<Vec<String>> {
+        if !name.trim().eq_ignore_ascii_case("cli") {
+            return None;
+        }
+        let models = entry.get("models")?.as_array()?;
+        let ids: Vec<String> = models
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .map(str::to_string)
+            .collect();
+        if ids.is_empty() { None } else { Some(ids) }
+    };
+    if let Some(rows) = agents.as_array() {
+        for row in rows {
+            let name = row.get("name").and_then(Value::as_str).unwrap_or("");
+            if let Some(ids) = collect(name, row) {
+                return Some(ids);
+            }
+        }
+        return None;
+    }
+    if let Some(map) = agents.as_object() {
+        for (name, row) in map {
+            if let Some(ids) = collect(name, row) {
+                return Some(ids);
+            }
+        }
+    }
+    None
+}
+
+
 impl ModelCatalog {
     /// 构造目录（不刷新；刷新由启动流程与 /v1/models 触发）
     pub fn new(region: Region) -> Self {
@@ -512,61 +568,6 @@ impl ModelCatalog {
 
         RefreshOutcome::not_refreshed(REASON_NO_SESSION)
     }
-
-/// 从 `/v3/config` 响应里取**官方 picker 名单**（`data.agents[name=="cli"].models`）。
-///
-/// ── 为什么需要它 ──────────────────────────────────────────
-/// 上游同一个响应里有两份清单，条数差很多：
-/// ```text
-///   data.models               → 60 条，带完整元数据（补全 / 改写 / 内部 / 图像 /
-///                               视频 / 旧代条目都在里面）
-///   data.agents[cli].models   → 18 条**裸字符串 id**，这才是官方客户端下拉里
-///                               真正展示的那批
-/// ```
-/// 两份 id 同一套命名，直接比对即可。管理页据此标「可见 / 不可见」，让用户知道
-/// 哪些模型是官方认的、哪些只是上游还在返回。
-///
-/// ── 兼容两种形态 ──────────────────────────────────────────
-/// `agents` 可能是**数组**（`[{name, models}]`）或**对象**（`{name: {models}}`
-/// —— 桌面端缓存写盘时是那个样子）。两种都认，免得上游一改形态就整份判成
-/// 「没有名单」。
-///
-/// 返回 `None` 的情形（调用方据此**不标可见性**）：没有 `agents`、没有 `cli`
-/// 那一组、或 `models` 不是非空字符串数组。
-fn picker_model_ids(payload: &Value) -> Option<Vec<String>> {
-    let agents = payload.get("data")?.get("agents")?;
-    let collect = |name: &str, entry: &Value| -> Option<Vec<String>> {
-        if !name.trim().eq_ignore_ascii_case("cli") {
-            return None;
-        }
-        let models = entry.get("models")?.as_array()?;
-        let ids: Vec<String> = models
-            .iter()
-            .filter_map(Value::as_str)
-            .map(str::trim)
-            .filter(|id| !id.is_empty())
-            .map(str::to_string)
-            .collect();
-        if ids.is_empty() { None } else { Some(ids) }
-    };
-    if let Some(rows) = agents.as_array() {
-        for row in rows {
-            let name = row.get("name").and_then(Value::as_str).unwrap_or("");
-            if let Some(ids) = collect(name, row) {
-                return Some(ids);
-            }
-        }
-        return None;
-    }
-    if let Some(map) = agents.as_object() {
-        for (name, row) in map {
-            if let Some(ids) = collect(name, row) {
-                return Some(ids);
-            }
-        }
-    }
-    None
-}
 
     /// 落地一份远程清单（锁内只做替换，不做任何 IO；锁外再补一次默认规则
     /// 种子，见函数尾）

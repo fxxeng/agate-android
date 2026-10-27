@@ -189,7 +189,10 @@ pub fn session_models(store: &AccountStore) -> Vec<Value> {
 pub fn models_by_provider(store: &AccountStore) -> Value {
     let mut map = Map::new();
     for (kind, manifest) in active_manifests(store) {
-        let mut names: Vec<_> = public_builtin_items(&[(kind, manifest)]).into_iter()
+        // 这里只取「这家有哪些对外名」，与清单形态无关 —— 传 Model 是刻意的：
+        // 前缀形态只是显示层的写法，模型集合本身不变。
+        let mut names: Vec<_> = public_builtin_items(&[(kind, manifest)], ListMode::Model, &[])
+            .into_iter()
             .map(|(_, item)| model_id(&item)).collect();
         names.sort_by_key(|name| name.to_lowercase());
         map.insert(kind_id(kind).to_string(), json!(names));

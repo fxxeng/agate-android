@@ -61,7 +61,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 
-use serde_json::{Map, Value};
+use serde_json::{json, Map, Value};
 
 use crate::server::db::Db;
 
