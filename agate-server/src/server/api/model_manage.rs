@@ -1,6 +1,8 @@
 //! 模型管理 API（模型管理页）：
 //!
 //! - `GET  /api/models/manage`          → `{models, mappings, reasoningLevels}`（含禁用条目与关闭的映射）
+//! - `GET  /api/models/list-view`       → `{mode, pins, counts}` 客户端所见清单的状态与三项计数
+//! - `POST /api/models/list-view`       `{mode, pins}` 设置清单形态；返回最新状态（含重新推演的计数）
 //! - `POST /api/models/state`           `{id, enabled?}` 启停（`hidden` 已移除，传了报 400）
 //! - `POST /api/models/mappings`        `{alias, target, reasoning?, enabled?}` 新增映射 / 改思考等级 / 切开关
 //! - `POST /api/models/mappings/remove` `{alias, target, provider?}` 删除映射
@@ -25,11 +27,14 @@
 use axum::body::Bytes;
 use axum::extract::State;
 use axum::response::Response;
-use serde_json::Value;
+use serde_json::{json, Value};
 
+use crate::server::config;
+use crate::server::core::account_store::AccountStore;
 use crate::server::core::capability;
 use crate::server::core::model_rules;
 use crate::server::core::providers::catalog;
+use crate::server::core::providers::catalog::ListMode;
 use crate::server::errors;
 use crate::server::http::{ok_json, parse_body};
 use crate::server::logging;
@@ -56,6 +61,102 @@ fn text_field(object: &serde_json::Map<String, Value>, key: &str) -> String {
 /// GET /api/models/manage
 pub async fn get_manage(State(state): State<ServerState>) -> Response {
     ok_json(catalog::manage_view(state.store()))
+}
+
+/// GET /api/models/list-view —— 客户端所见清单的**状态 + 推演计数**。
+///
+/// ── 为什么单独一条（而不是塞进 manage）────────────────────
+/// manage 回答的是「逐模型/逐映射的可编辑状态」，几百行；而本接口回答的是
+/// 「当前形态下客户端会看到多少项」。两个问题、两个刷新频率 —— 用户切一下
+/// 模式就要重算，不该顺带把几百行的 manage 再拉一遍。
+///
+/// ── 三个计数一次给全（界面不必自己算）──────────────────────
+/// 界面要显示「切到别的模式会变成多少」，所以三种形态的项数**一次全给**：
+///   · `model`    → 同名去重后的项数
+///   · `provider` → 各家各列一遍的项数（同名重复都算上）
+///   · `hybrid`   → 当前 pin 下的项数
+/// 这样切换模式时数字是**即时**的，不需要一次往返（也不会出现「切过去先显示
+/// 旧数字、等下才刷新」的闪动）。
+///
+/// 计数与 `/v1/models` 走**同一个函数**（`models_response_with_mode`）——
+/// 界面推演的数字与实际下发的清单必须同源，否则「预览说 42、客户端收到 118」
+/// 会比不预览更糟。
+pub async fn get_list_view(State(state): State<ServerState>) -> Response {
+    let config = config::current();
+    let mode = config.models_list_mode().to_string();
+    let pins: Vec<String> = config.models_list_pins().to_vec();
+    ok_json(list_view(state.store(), &mode, &pins))
+}
+
+/// POST /api/models/list-view —— 设置清单形态（`{mode, pins}`）。
+pub async fn set_list_view(State(state): State<ServerState>, body: Bytes) -> Response {
+    let object = match body_object(&body) {
+        Ok(object) => object,
+        Err(response) => return response,
+    };
+    let mode = text_field(&object, "mode");
+    let pins: Vec<String> = object
+        .get("pins")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    // 模式非法 → 400（不静默回落，理由见 config::set_models_list 的说明）
+    if !config::set_models_list(&mode, &pins) {
+        return errors::management_error(400, "清单形态必须是 model / provider / hybrid 之一");
+    }
+    let saved = config::current();
+    ok_json(list_view(
+        state.store(),
+        saved.models_list_mode(),
+        saved.models_list_pins(),
+    ))
+}
+
+/// 组装「状态 + 三形态计数 + 预览清单」。
+///
+/// 拆成函数是为了让读与写共用一份口径（写入后立刻回最新状态，见 handler）。
+fn list_view(store: &AccountStore, mode: &str, pins: &[String]) -> Value {
+    let counts = |m: &str, p: &[String]| -> usize {
+        catalog::models_response_with_mode(store, None, ListMode::parse(m), p)
+            .get("data")
+            .and_then(Value::as_array)
+            .map(|items| items.len())
+            .unwrap_or(0)
+    };
+    let current_mode = ListMode::parse(mode);
+    let data = catalog::models_response_with_mode(store, None, current_mode, pins)
+        .get("data")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let ids: Vec<Value> = data
+        .iter()
+        .map(|item| item.get("id").cloned().unwrap_or(Value::Null))
+        .collect();
+    json!({
+        "mode": match current_mode {
+            ListMode::Model => "model",
+            ListMode::Provider => "provider",
+            ListMode::Hybrid => "hybrid",
+        },
+        "pins": pins,
+        "counts": {
+            "model": counts("model", &[]),
+            "provider": counts("provider", &[]),
+            // 混合模式的计数跟着**当前 pin**走（换 pin 数字就变，这是它的意义）
+            "hybrid": counts("hybrid", pins),
+        },
+        // 清单预览（界面展开时才显示前 N 项）—— 直接给全量，界面自己截断，
+        // 免得「前 12 项」这个数字写死在后端
+        "ids": ids,
+    })
 }
 
 /// POST /api/models/state

@@ -207,6 +207,17 @@ pub struct RuntimeConfig {
     /// （见 `KEY_MODELS_DEV_ENABLED`）。低频读取（只在模型元数据刷新发起时问
     /// 一次），与 `captcha_enabled` 同一模式解析一次存下来。
     models_dev_enabled: bool,
+    /// `/v1/models` 的输出形态（设置页「模型 → 客户端所见清单」）。
+    ///
+    /// 三档：`model`（默认，同名去重不带前缀）/ `provider`（每家各列一遍，
+    /// 写 `provider/model`）/ `hybrid`（合并 + 只为 pin 的几家额外带前缀）。
+    /// 与 `models_dev_enabled` 同一模式：低频读取（每次生成清单问一次）。
+    models_list_mode: String,
+    /// 混合模式下「额外展开带前缀条目」的提供商 id 列表。
+    ///
+    /// 只在 `models_list_mode == hybrid` 时被读；其它模式留着不影响行为
+    /// （切回去时用户上次勾的还在，比清空更符合预期）。
+    models_list_pins: Vec<String>,
     /// 系统提示词设置（设置页「通用 → 系统提示词」）。
     ///
     /// 与 `sanitize_fingerprints` 同一理由（转发层逐请求取一次，改完下一个请求
@@ -324,6 +335,16 @@ impl RuntimeConfig {
     /// models.dev 模型元数据的**联网刷新**开关（`core::model_meta::refresh` 读）。
     pub fn models_dev_enabled(&self) -> bool {
         self.models_dev_enabled
+    }
+
+    /// `/v1/models` 输出形态（`catalog::models_response` 读）。
+    pub fn models_list_mode(&self) -> &str {
+        &self.models_list_mode
+    }
+
+    /// 混合模式下额外展开前缀的提供商（`catalog::models_response` 读）。
+    pub fn models_list_pins(&self) -> &[String] {
+        &self.models_list_pins
     }
 
     /// 系统提示词设置（界面 / 日志用；转发层要的是下面的借用视图）
@@ -608,6 +629,26 @@ fn build(raw: Map<String, Value>) -> RuntimeConfig {
             .get(KEY_MODELS_DEV_ENABLED)
             .and_then(Value::as_bool)
             .unwrap_or(true),
+        // 清单形态：非法值回落 model（最安全的默认 —— 列表最短、不会让客户端
+        // 下拉被上百项塞满）。缺省同样是 model。
+        models_list_mode: raw
+            .get(KEY_MODELS_LIST_MODE)
+            .and_then(Value::as_str)
+            .map(|value| value.trim().to_ascii_lowercase())
+            .filter(|value| matches!(value.as_str(), "model" | "provider" | "hybrid"))
+            .unwrap_or_else(|| "model".to_string()),
+        models_list_pins: raw
+            .get(KEY_MODELS_LIST_PINS)
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default(),
         // 系统提示词：模式非法/缺失 → passthrough（默认），文件读不到 → 内置默认
         // + 一条原因（见 `prompt_from`）
         prompt: prompt_from(&raw),
@@ -1929,6 +1970,34 @@ pub fn set_models_dev_enabled(enabled: bool) -> bool {
             .raw
             .insert(KEY_MODELS_DEV_ENABLED.to_string(), Value::Bool(enabled));
         config.models_dev_enabled = enabled;
+    })
+}
+
+/// 写入清单形态 + pin 列表（设置页「模型 → 客户端所见清单」）。
+///
+/// 两个值一起写：它们表达的是同一件事（客户端会看到什么），分开保存会出现
+/// 「模式已切、pin 还是上一轮的」这种中间态。非法模式**拒绝**（返回 false）
+/// 而不是静默回落 —— 界面把用户的选择原样提交，静默改成别的值会让开关看起来
+/// 「点了没反应」。
+pub fn set_models_list(mode: &str, pins: &[String]) -> bool {
+    let normalized = mode.trim().to_ascii_lowercase();
+    if !matches!(normalized.as_str(), "model" | "provider" | "hybrid") {
+        return false;
+    }
+    let pins: Vec<String> = pins
+        .iter()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .collect();
+    update(|config| {
+        config
+            .raw
+            .insert(KEY_MODELS_LIST_MODE.to_string(), Value::String(normalized.clone()));
+        config
+            .raw
+            .insert(KEY_MODELS_LIST_PINS.to_string(), json!(pins));
+        config.models_list_mode = normalized.clone();
+        config.models_list_pins = pins.clone();
     })
 }
 

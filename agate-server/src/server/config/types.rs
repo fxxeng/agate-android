@@ -222,6 +222,13 @@ pub const KEY_CAPTCHA_ENABLED: &str = "captchaEnabled";
 /// 「别再联网拉了」，不是「把已有数据扔掉」。
 pub const KEY_MODELS_DEV_ENABLED: &str = "modelsDevEnabled";
 
+/// `/v1/models` 输出形态：`model` / `provider` / `hybrid`（见
+/// `config::models_list_mode`）。与 KEY_MODELS_DEV_ENABLED 同一存放处。
+pub const KEY_MODELS_LIST_MODE: &str = "modelsListMode";
+
+/// 混合模式下额外展开前缀条目的提供商 id 列表（字符串数组）。
+pub const KEY_MODELS_LIST_PINS: &str = "modelsListPins";
+
 /// 系统提示词模式的键（config.json 键，对应 workbuddy2api 的 `prompt.mode`）。
 ///
 /// 取值 `passthrough` / `custom` / `append`（见 `core::prompt::PromptMode`）；

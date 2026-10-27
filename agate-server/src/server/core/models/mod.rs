@@ -447,8 +447,10 @@ impl ModelCatalog {
                             .cloned()
                             .unwrap_or_default();
                         let allowed = apply_filters(raw.clone());
+                        // 官方 picker 名单与 models 来自同一个响应的另一处
+                        let picker = picker_model_ids(&payload);
                         if !allowed.is_empty() {
-                            self.apply_remote(allowed, "auto", false);
+                            self.apply_remote(allowed, "auto", false, picker.as_deref());
                             return RefreshOutcome::refreshed(
                                 self.count(),
                                 "v3/config",
@@ -495,7 +497,9 @@ impl ModelCatalog {
                         if allowed.is_empty() {
                             RefreshOutcome::not_refreshed("企业模型列表为空")
                         } else {
-                            self.apply_remote(allowed, "custom:", true);
+                            // 企业分支的上游不下发 `agents`，拿不到 picker 名单 ——
+                            // 传 None，即「不标可见性」（不写 visibility 键）
+                            self.apply_remote(allowed, "custom:", true, None);
                             RefreshOutcome::refreshed(self.count(), "enterprise")
                         }
                     }
@@ -509,6 +513,61 @@ impl ModelCatalog {
         RefreshOutcome::not_refreshed(REASON_NO_SESSION)
     }
 
+/// 从 `/v3/config` 响应里取**官方 picker 名单**（`data.agents[name=="cli"].models`）。
+///
+/// ── 为什么需要它 ──────────────────────────────────────────
+/// 上游同一个响应里有两份清单，条数差很多：
+/// ```text
+///   data.models               → 60 条，带完整元数据（补全 / 改写 / 内部 / 图像 /
+///                               视频 / 旧代条目都在里面）
+///   data.agents[cli].models   → 18 条**裸字符串 id**，这才是官方客户端下拉里
+///                               真正展示的那批
+/// ```
+/// 两份 id 同一套命名，直接比对即可。管理页据此标「可见 / 不可见」，让用户知道
+/// 哪些模型是官方认的、哪些只是上游还在返回。
+///
+/// ── 兼容两种形态 ──────────────────────────────────────────
+/// `agents` 可能是**数组**（`[{name, models}]`）或**对象**（`{name: {models}}`
+/// —— 桌面端缓存写盘时是那个样子）。两种都认，免得上游一改形态就整份判成
+/// 「没有名单」。
+///
+/// 返回 `None` 的情形（调用方据此**不标可见性**）：没有 `agents`、没有 `cli`
+/// 那一组、或 `models` 不是非空字符串数组。
+fn picker_model_ids(payload: &Value) -> Option<Vec<String>> {
+    let agents = payload.get("data")?.get("agents")?;
+    let collect = |name: &str, entry: &Value| -> Option<Vec<String>> {
+        if !name.trim().eq_ignore_ascii_case("cli") {
+            return None;
+        }
+        let models = entry.get("models")?.as_array()?;
+        let ids: Vec<String> = models
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .map(str::to_string)
+            .collect();
+        if ids.is_empty() { None } else { Some(ids) }
+    };
+    if let Some(rows) = agents.as_array() {
+        for row in rows {
+            let name = row.get("name").and_then(Value::as_str).unwrap_or("");
+            if let Some(ids) = collect(name, row) {
+                return Some(ids);
+            }
+        }
+        return None;
+    }
+    if let Some(map) = agents.as_object() {
+        for (name, row) in map {
+            if let Some(ids) = collect(name, row) {
+                return Some(ids);
+            }
+        }
+    }
+    None
+}
+
     /// 落地一份远程清单（锁内只做替换，不做任何 IO；锁外再补一次默认规则
     /// 种子，见函数尾）
     ///
@@ -516,7 +575,13 @@ impl ModelCatalog {
     /// 与网关默认不一致）。`enterprise` 为 true 时走企业分支：
     /// modelType 按 `custom:` 前缀区分企业定制/内置模型
     /// （判定用**原始 id**，大小写不敏感的处理只用于 isDefault 那一处）。
-    fn apply_remote(&self, models: Vec<Value>, custom_prefix: &str, enterprise: bool) {
+    fn apply_remote(
+        &self,
+        models: Vec<Value>,
+        custom_prefix: &str,
+        enterprise: bool,
+        picker: Option<&[String]>,
+    ) {
         let mapped: Vec<Value> = models
             .into_iter()
             .map(|model| {
@@ -536,6 +601,21 @@ impl ModelCatalog {
                     "built-in"
                 };
                 object.insert("modelType".to_string(), Value::String(model_type.to_string()));
+                // ── 可见性：在不在**官方 picker 名单**里 ──
+                // 上游 `/v3/config` 有两份清单：`data.models`（60 条，带元数据）与
+                // `data.agents[cli].models`（18 条裸 id）—— 后者才是官方客户端
+                // 下拉里真正展示的那批，剩下的是补全 / 改写 / 内部 / 图像 / 视频 /
+                // 旧代条目。两份 id 同一套命名，可直接比对。
+                //
+                // 拿不到名单时（企业分支 / 上游没下发 `agents`）**不写这个键** ——
+                // 「没依据就不下判断」，管理页据此显示「—」而不是谎报「可见」。
+                if let Some(list) = picker {
+                    let visible = list.iter().any(|id| id.eq_ignore_ascii_case(&raw_id));
+                    object.insert(
+                        "visibility".to_string(),
+                        Value::String(if visible { "shown" } else { "hidden" }.to_string()),
+                    );
+                }
                 Value::Object(object)
             })
             .collect();

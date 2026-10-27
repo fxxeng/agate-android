@@ -40,24 +40,45 @@ fn advertised_names(
 
 /// 先在各提供商内判断绑定，再按对外名去重；不能先合并上游 ID 再拼别名，
 /// 否则某家关闭的映射会借另一家的同名上游重新出现在列表中。
-fn public_builtin_items(active: &[(ProviderKind, Vec<Value>)]) -> Vec<(String, Value)> {
+fn public_builtin_items(
+    active: &[(ProviderKind, Vec<Value>)],
+    mode: ListMode,
+    pins: &[String],
+) -> Vec<(String, Value)> {
     let rules = model_rules::current();
     let mut claimed = HashSet::new();
     let mut result = Vec::new();
+    let pinned = |provider: &str| {
+        pins.iter().any(|pin| pin.eq_ignore_ascii_case(provider))
+    };
     for (kind, manifest) in active {
         let provider = kind_id(*kind);
         let names = advertised_names(&rules, provider, manifest);
+        // 这一家要不要额外带前缀：`provider` 模式全带；`hybrid` 只带被 pin 的；
+        // `model` 模式不带（同名只留一条，用哪家由路由队列决定）。
+        let prefixed = match mode {
+            ListMode::Provider => true,
+            ListMode::Hybrid => pinned(provider),
+            ListMode::Model => false,
+        };
         for name in names {
             let Some(wire) = builtin_target(&rules, *kind, manifest, &name) else { continue };
-            if !claimed.insert(name.to_lowercase()) {
+            // 未去重：所有模式都按「对外名」去重 —— 同名模型只该出现一次，
+            // 除非这一家要求带前缀（前缀形态天然不与裸名冲突，所以两种都出）。
+            if !claimed.insert(name.to_lowercase()) && !prefixed {
                 continue;
             }
             let Some(upstream) = manifest.iter().find(|item| model_id(item) == wire.model) else { continue };
             let mut item = list_item(upstream, provider);
+            let wire_name = if prefixed {
+                format!("{provider}/{name}")
+            } else {
+                name.clone()
+            };
             if let Some(object) = item.as_object_mut() {
-                object.insert("id".to_string(), Value::String(name.clone()));
-                if !name.eq_ignore_ascii_case(&wire.model) {
-                    object.insert("name".to_string(), Value::String(name));
+                object.insert("id".to_string(), Value::String(wire_name.clone()));
+                if !wire_name.eq_ignore_ascii_case(&wire.model) {
+                    object.insert("name".to_string(), Value::String(wire_name));
                     object.insert("is_default".to_string(), Value::Bool(false));
                 }
             }
@@ -67,12 +88,59 @@ fn public_builtin_items(active: &[(ProviderKind, Vec<Value>)]) -> Vec<(String, V
     result
 }
 
+/// `/v1/models` 的三种输出形态。
+///
+/// ── 为什么要区分（这是客户端的真实体验差异）──────────────────
+///   · `Model`    —— 同名模型只出现一次、不带前缀。用哪一家由「路由」队列决定，
+///                   并可在同款模型之间故障转移。客户端列表最短、最好选（推荐默认）。
+///   · `Provider` —— 每家的每个模型都列一遍，写成 `provider/model`。客户端能精确
+///                   指定某一家，但同名模型会重复很多次，列表容易上百项。
+///   · `Hybrid`   —— 平时按模型合并；只为**指定的几家**额外列出带前缀的条目 ——
+///                   用于必须指定某家的场景（自建中转、要单独核算的账号）。
+///
+/// ── 前缀里的 provider 必须是**对外可见的 id** ────────────────
+/// 客户端拿这个前缀去发请求，转发层据此锁定那一家，所以两边必须用同一套
+/// id（`kind_id`），大小写也要一致。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum ListMode {
+    #[default]
+    Model,
+    Provider,
+    Hybrid,
+}
+
+impl ListMode {
+    pub fn parse(raw: &str) -> Self {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "provider" => ListMode::Provider,
+            "hybrid" => ListMode::Hybrid,
+            _ => ListMode::Model,
+        }
+    }
+}
+
 pub fn models_response(store: &AccountStore, scope: Option<&KeyScope>) -> Value {
+    // 清单形态从配置读（改完下一个请求生效，与其它低频开关同一模式）。
+    // 只接受 model / provider / hybrid 三个值，非法值由 config 侧回落成 model。
+    let config = crate::server::config::current();
+    let mode = ListMode::parse(config.models_list_mode());
+    let pins: Vec<String> = config.models_list_pins().to_vec();
+    models_response_with_mode(store, scope, mode, &pins)
+}
+
+/// 按指定形态生成清单（`models_response` 的实质；单独拆出来便于测试与
+/// 管理页推演复用 —— 管理页要用「还没保存的草稿模式」预览客户端会看到什么）。
+pub fn models_response_with_mode(
+    store: &AccountStore,
+    scope: Option<&KeyScope>,
+    mode: ListMode,
+    pins: &[String],
+) -> Value {
     let active: Vec<_> = active_manifests(store).into_iter()
         .filter(|(kind, _)| key_scope::allows_provider(scope, kind_id(*kind)))
         .collect();
     let (source, refreshed_at) = aggregate_source(&active);
-    let mut data: Vec<_> = public_builtin_items(&active).into_iter()
+    let mut data: Vec<_> = public_builtin_items(&active, mode, pins).into_iter()
         .map(|(_, item)| item)
         .filter(|item| key_scope::allows_model(scope, &model_id(item)))
         .collect();

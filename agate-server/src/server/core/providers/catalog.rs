@@ -25,8 +25,10 @@ pub use routing::{
 };
 pub use view::{
     advertised_manifest_contains, advertised_model_ids, has_available_providers, manage_view,
-    models_by_provider, models_response, session_models, suggest_advertised,
+    models_by_provider, models_response, models_response_with_mode, session_models,
+    suggest_advertised,
 };
+pub use view::ListMode;
 
 /// 原始能力清单不应用绑定开关；关闭原始 ID 后，别名仍需解析到这条上游记录。
 ///
