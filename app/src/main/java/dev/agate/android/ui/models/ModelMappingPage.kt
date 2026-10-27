@@ -20,6 +20,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -34,6 +35,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import android.widget.Toast
 import dev.agate.core.GatewayPrefs
+import dev.agate.android.data.GatewayRepository
 import dev.agate.android.data.ModelOps
 import dev.agate.android.ui.components.AgateBadge
 import dev.agate.android.ui.components.AgateFormInput
@@ -117,7 +119,24 @@ fun ModelMappingPage(
     }
 
     val userRows = mappings.filter { !it.isDefault }
-    val defaultRows = mappings.filter { it.isDefault }
+    val allDefaultRows = mappings.filter { it.isDefault }
+
+    // ── 内置映射默认只显示「有账号的家」──────────────────────────
+    // 没登录的提供商的默认绑定点了也用不了（`/v1/models` 根本不会广告它，
+    // 内核 `active_manifests` 也是同一口径）。把它们全列出来会让这一页被
+    // 20 多家的空绑定淹没 —— 这正是「太混乱」的来源。
+    // 仍保留「全部」切换：配映射之前想看看某家有哪些模型名是合理需求。
+    val snap by GatewayRepository.snapshot.collectAsState()
+    var showAllProviders by remember { mutableStateOf(false) }
+    val activeProviders = remember(snap.providerCounts) {
+        snap.providerCounts.filterValues { it > 0 }.keys
+    }
+    val defaultRows = if (showAllProviders || activeProviders.isEmpty()) {
+        allDefaultRows
+    } else {
+        allDefaultRows.filter { it.provider.isNullOrBlank() || it.provider in activeProviders }
+    }
+    val hiddenCount = allDefaultRows.size - defaultRows.size
     val rows = if (tab == 0) userRows else defaultRows
     val danglingCount = userRows.count { it.dangling }
 
@@ -155,6 +174,15 @@ fun ModelMappingPage(
                 selected = tab,
                 onSelect = { tab = it },
             )
+            // 默认绑定页：只显示有账号的家 / 全部（默认前者，见上面 defaultRows 的说明）
+            if (tab == 1 && activeProviders.isNotEmpty()) {
+                Spacer(Modifier.height(8.dp))
+                AgateSegmented(
+                    options = listOf("仅有账号", "全部"),
+                    selected = if (showAllProviders) 1 else 0,
+                    onSelect = { showAllProviders = it == 1 },
+                )
+            }
             Spacer(Modifier.height(10.dp))
 
             if (tab == 0) {
@@ -242,6 +270,16 @@ fun ModelMappingPage(
                     scope.launch { applyResult(ModelOps.removeCustomModel(pv, mid), "移除自定义模型") }
                 },
             )
+            // 被隐藏的条数要说明白：不能让用户以为「我的绑定丢了」
+            if (tab == 1 && hiddenCount > 0) {
+                Spacer(Modifier.height(10.dp))
+                Text(
+                    "另有 $hiddenCount 条默认绑定属于未登录的提供商（没账号，客户端也不会看到）；" +
+                        "切到「全部」可查看",
+                    style = AgateType.Caption,
+                    color = C.textDim,
+                )
+            }
             Spacer(Modifier.height(28.dp))
         }
     }

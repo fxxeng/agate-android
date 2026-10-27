@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -69,6 +70,8 @@ internal data class RefreshRow(
     val status: String,
     val count: Int,
     val message: String?,
+    /** 这一家上次拉取成功的时刻（毫秒；0 = 未知）。 */
+    val refreshedAt: Long = 0L,
 ) {
     val failed: Boolean get() = status == "failed"
     val skipped: Boolean get() = status == "skipped"
@@ -87,6 +90,7 @@ internal data class RefreshRow(
                     status = o.optString("status").ifBlank { "refreshed" },
                     count = o.optInt("count", 0),
                     message = o.optString("message").ifBlank { null },
+                    refreshedAt = o.optLong("refreshedAt", 0L),
                 )
             }
             return out
@@ -200,6 +204,7 @@ fun ModelsPage(
     // 最近一次刷新的逐家结果（v44：卡片要能直接看到「哪家失败」，不必进子页）
     var refreshRows by remember { mutableStateOf<List<RefreshRow>>(emptyList()) }
     var refreshAt by remember { mutableStateOf(0L) }
+    var showPull by remember { mutableStateOf(false) }
     // 客户端所见清单的状态 + 推演计数（来自 /api/models/list-view）
     var listView by remember { mutableStateOf(ListView()) }
     var configuring by remember { mutableStateOf(false) }
@@ -271,6 +276,11 @@ fun ModelsPage(
             // 与「测速」同级；放底部会与本页的「清单 + 模型列表」混在一起，
             // 且要滚到最下方才够得着。
             AgateHeaderAction("映射") { onOpenMapping() }
+            // 「拉取模型」按 v44/3.0.8 放在页头（与测速、映射同级）：
+            // 它是对本页数据的动作，不该在列表最底部等用户滚到底
+            AgateHeaderAction(if (refreshing) "拉取中…" else "拉取模型") {
+                if (!refreshing) showPull = true
+            }
         }
 
         Column(
@@ -333,29 +343,6 @@ fun ModelsPage(
             }
 
             Spacer(Modifier.height(4.dp))
-            // ── 模型目录刷新（v44 quota-entry，改状态卡）──
-            RefreshCard(
-                total = models.size,
-                refreshing = refreshing,
-                rows = refreshRows,
-                refreshAt = refreshAt,
-                onRefreshAll = { doRefresh() },
-                onRetryFailed = { failed ->
-                    if (!refreshing) {
-                        refreshing = true
-                        scope.launch {
-                            val r = ModelOps.refresh(providers = failed)
-                            refreshing = false
-                            RefreshRow.parseAll(r.data).takeIf { it.isNotEmpty() }?.let {
-                                refreshRows = it
-                                refreshAt = System.currentTimeMillis()
-                            }
-                            if (r.ok) GatewayRepository.refreshOnce()
-                        }
-                    }
-                },
-            )
-            Spacer(Modifier.height(8.dp))
             Text(
                 "本页聚焦「谁出战」· 账号资产与额度见「提供商」",
                 style = AgateType.Caption,
@@ -365,6 +352,34 @@ fun ModelsPage(
             )
             Spacer(Modifier.height(28.dp))
         }
+    }
+
+    // ── 拉取模型弹层（v44/3.0.8：全量 or 按家）──────────────────
+    if (showPull) {
+        PullModelsDialog(
+            providers = providers,
+            rows = refreshRows,
+            refreshing = refreshing,
+            onDismiss = { if (!refreshing) showPull = false },
+            onPullAll = { doRefresh() },
+            onPullOne = { pid ->
+                if (!refreshing) {
+                    refreshing = true
+                    scope.launch {
+                        val r = ModelOps.refresh(providers = listOf(pid))
+                        refreshing = false
+                        RefreshRow.parseAll(r.data).takeIf { it.isNotEmpty() }?.let { fresh ->
+                            // 单家结果并回既有列表：只替换这一家的行，
+                            // 其余家的结论与时间保持不变（否则一拉一家就把别家的清空）
+                            val merged = refreshRows.filterNot { it.provider == pid } + fresh
+                            refreshRows = merged
+                        }
+                        refreshAt = System.currentTimeMillis()
+                        if (r.ok) GatewayRepository.refreshOnce()
+                    }
+                }
+            },
+        )
     }
 }
 
@@ -611,6 +626,167 @@ private fun FlowIds(ids: List<String>) {
 }
 
 /**
+ * 「拉取模型」弹层（v44 / 3.0.8 的目录刷新交互）。
+ *
+ * ── 为什么先给选择、不直接全量 ────────────────────────────
+ * 各家目录有 15 分钟缓存，全量拉一遍会逐家打上游。用户常常只想补某一家
+ * （比如刚加了账号、或某家刚失败过），所以主路径给「按家」，全量作为快捷项。
+ *
+ * ── 三种行状态各自要有出路 ───────────────────────────────
+ *   · 失败 → 排最上、标红、按钮变「重试」；
+ *   · 固定清单（该家没有远程目录）→ 标「固定清单」、按钮置灰并说明原因，
+ *     而不是点了没反应；
+ *   · 正常 → 给「N 个模型 · 多久之前」，按钮「拉取」。
+ */
+@Composable
+private fun PullModelsDialog(
+    providers: List<Pair<String, String>>,
+    rows: List<RefreshRow>,
+    refreshing: Boolean,
+    onDismiss: () -> Unit,
+    onPullAll: () -> Unit,
+    onPullOne: (String) -> Unit,
+) {
+    val C = agateColors()
+    val byProvider = rows.associateBy { it.provider }
+    val failed = rows.filter { it.failed }
+    // 失败家排最上：它们才是用户打开这个弹层的原因
+    val ordered = providers.sortedBy { (pid, _) ->
+        when {
+            byProvider[pid]?.failed == true -> 0
+            else -> 1
+        }
+    }
+
+    androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .background(C.cardBg, RoundedCornerShape(18.dp))
+                .border(1.dp, C.border, RoundedCornerShape(18.dp))
+                .padding(16.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "拉取模型",
+                    color = C.textMain,
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.weight(1f),
+                )
+                Text(
+                    "✕",
+                    color = C.textDim,
+                    fontSize = 15.sp,
+                    modifier = Modifier
+                        .clickable(enabled = !refreshing) { onDismiss() }
+                        .padding(4.dp),
+                )
+            }
+            Spacer(Modifier.height(3.dp))
+            Text(
+                "各家目录有 15 分钟缓存，短时间内重复拉取会返回缓存",
+                color = C.textDim,
+                fontSize = 11.sp,
+            )
+            Spacer(Modifier.height(11.dp))
+
+            Row(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+                RefreshButton(
+                    if (refreshing) "拉取中…" else "↻ 全部拉取",
+                    C.accent,
+                    Modifier.weight(1f),
+                ) { if (!refreshing) onPullAll() }
+                if (failed.isNotEmpty()) {
+                    RefreshButton("仅重试失败 · ${failed.size}", C.amber, Modifier.weight(1f)) {
+                        if (!refreshing) failed.take(1).forEach { onPullOne(it.provider) }
+                    }
+                }
+            }
+
+            if (rows.isNotEmpty()) {
+                Spacer(Modifier.height(9.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    val ok = rows.count { it.status == "refreshed" }
+                    val skipped = rows.count { it.skipped }
+                    if (ok > 0) AgateBadge("$ok 成功", BadgeTone.GREEN)
+                    if (failed.isNotEmpty()) AgateBadge("${failed.size} 失败", BadgeTone.AMBER)
+                    if (skipped > 0) AgateBadge("$skipped 固定清单", BadgeTone.GRAY)
+                }
+            }
+
+            Spacer(Modifier.height(10.dp))
+            Column(Modifier.heightIn(max = 340.dp).verticalScroll(rememberScrollState())) {
+                ordered.forEach { (pid, label) ->
+                    val row = byProvider[pid]
+                    Row(
+                        Modifier.fillMaxWidth().padding(vertical = 7.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        AgateProviderAvatar(providerId = pid, label = label, size = 28.dp, corner = 9.dp)
+                        Spacer(Modifier.width(9.dp))
+                        Column(Modifier.weight(1f)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    label,
+                                    color = C.textMain,
+                                    fontSize = 13.sp,
+                                    maxLines = 1,
+                                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                )
+                                if (row?.failed == true) {
+                                    Spacer(Modifier.width(5.dp))
+                                    AgateBadge("失败", BadgeTone.RED)
+                                } else if (row?.skipped == true) {
+                                    Spacer(Modifier.width(5.dp))
+                                    AgateBadge("固定清单", BadgeTone.GRAY)
+                                }
+                            }
+                            Text(
+                                when {
+                                    row == null -> "尚未拉取"
+                                    row.skipped -> row.message ?: "该家没有远程目录"
+                                    row.failed -> row.message?.take(30) ?: "拉取失败"
+                                    else -> "${row.count} 个模型 · ${agoLabel(row.refreshedAt.takeIf { it > 0 } ?: refreshAtFallback())}"
+                                },
+                                color = when {
+                                    row?.failed == true -> C.red
+                                    else -> C.textDim
+                                },
+                                fontSize = 10.sp,
+                                maxLines = 1,
+                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                            )
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        val canPull = !refreshing && row?.skipped != true
+                        Text(
+                            when {
+                                row?.failed == true -> "重试"
+                                else -> "拉取"
+                            },
+                            color = if (canPull) C.accent else C.textDim,
+                            fontSize = 11.sp,
+                            modifier = Modifier
+                                .border(
+                                    1.dp,
+                                    if (canPull) C.accent.copy(alpha = 0.4f) else C.border,
+                                    RoundedCornerShape(7.dp),
+                                )
+                                .clickable(enabled = canPull) { onPullOne(pid) }
+                                .padding(horizontal = 9.dp, vertical = 4.dp),
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** 行上没有 refreshedAt 时的兜底（取「现在」会让文案恒为「刚刚」，故返回 0 → 显示「—」）。 */
+private fun refreshAtFallback(): Long = 0L
+
+/**
  * 模型目录刷新卡（v44 quota-entry 改状态卡）。
  *
  * ── 为什么不再是一张「入口卡」──────────────────────────────
@@ -782,6 +958,8 @@ private fun RefreshButton(
 
 /** 「N 分钟前 / N 小时前 / N 天前」——刷新距今多久。 */
 private fun agoLabel(atMs: Long): String {
+    // 0 = 没有时间戳（不是「1970 年至今」）。别把缺数据渲染成「2 万天前」
+    if (atMs <= 0L) return "—"
     val delta = (System.currentTimeMillis() - atMs).coerceAtLeast(0)
     return when {
         delta < 60_000L -> "刚刚"

@@ -83,7 +83,18 @@ const REQUEST_TIMEOUT_MS: u64 = 15_000;
 /// 冒充不了客户端，`app_version` 与 `X-ZCode-App-Version` 都会对不上，症状是
 /// 领取被判 `1004 ineligible`（而这看起来像「账号没资格」，极易误判）。
 /// 上游抬门槛时用户可以用环境变量覆盖，不必等发版。
-const DEFAULT_APP_VERSION: &str = "3.14.0";
+/// 默认客户端版本号。
+///
+/// ── 为什么是 3.16.2 而不是 3.14.0（本次修复的核心）────────────
+/// 这个值不只是「领取 / 余额」的查询参数：它同时进**推理请求**的
+/// `User-Agent: ZCode/{version}` 与 `X-ZCode-App-Version` 头 —— 上游按「客户端
+/// 形态」识别请求，**版本过旧会被拒**。旧值 `3.14.0` 是从 3.0.8 抄来的，
+/// 那个版本现在调不通（上游已抬高门槛），而实测可用的参考实现用的是 `3.16.2`。
+///
+/// 这不是「顺手升级数字」：值与上游的客户端白名单直接相关，写小了就是
+/// 「账号明明有额度、请求却被拒」这类最难查的失败。仍允许
+/// `ZCODE_APP_VERSION` 覆盖（上游再抬高时不必发版）。
+const DEFAULT_APP_VERSION: &str = "3.16.2";
 
 /// 探测与领取的路径（参考实现 `client.ts` 的常量）
 const PREVIEW_PATH: &str = "/api/v1/zcode-plan/billing/preview";
