@@ -71,9 +71,13 @@ import androidx.navigation.navArgument
 import dev.agate.android.ui.components.AgateBottomBar
 import dev.agate.android.ui.components.AgateTabItem
 import dev.agate.android.ui.home.ConsolePage
+import dev.agate.android.ui.logs.AppLogPage
+import dev.agate.android.ui.logs.CallLogPage
+import dev.agate.android.ui.logs.RequestDetailPage
 import dev.agate.android.ui.models.ModelCapsPage
 import dev.agate.android.ui.models.ModelMappingPage
 import dev.agate.android.ui.models.ModelsPage
+import dev.agate.android.ui.routing.RoutingPage
 import dev.agate.android.ui.pages.GatewayControlPage
 import dev.agate.android.ui.pages.ShowcasePage
 import dev.agate.android.ui.provider.AddProviderPage
@@ -438,11 +442,35 @@ fun AgateNavHost(
                         onOpenProvider = { pid -> navController.navigate("provider_detail/$pid") },
                     )
                 }
-                composable(Routes.REPORTS) { skeleton(it, navController, "数据报表", "M4", "6 档时间窗、365 天热力图、24h 双轴、三维构成占比。", ::openDrawer) }
-                composable(Routes.LOGS) { skeleton(it, navController, "调用记录", "M3", "转发请求流水、调用报文、出网取证 Diff、筛选 Sheet。", ::openDrawer) }
-                composable(Routes.APPLOGS) { skeleton(it, navController, "应用日志", "M3", "内核 console_line 转发的应用侧日志流。", ::openDrawer) }
+                composable(Routes.REPORTS) {
+                    // 数据报表：概览 / 趋势 / 24h 双轴 / 365 天热力图 / 用量占比 / 三张排行
+                    dev.agate.android.ui.reports.ReportsPage(onOpenDrawer = ::openDrawer)
+                }
+                composable(Routes.LOGS) {
+                    // 调用记录：模型调用明细（列表 + 筛选 + 终止 + 清理）
+                    CallLogPage(
+                        onOpenDrawer = ::openDrawer,
+                        onOpenDetail = { id -> navController.navigate("request_detail/$id") },
+                    )
+                }
+                composable(
+                    "request_detail/{id}",
+                    arguments = listOf(navArgument("id") { type = NavType.StringType }),
+                ) { entry ->
+                    RequestDetailPage(
+                        requestId = entry.arguments?.getString("id").orEmpty(),
+                        onBack = { navController.popBackStack() },
+                    )
+                }
+                composable(Routes.APPLOGS) {
+                    // 应用日志：App 自身运行事件流（分类 / 级别 / 关键词 + 导出）
+                    AppLogPage(onOpenDrawer = ::openDrawer)
+                }
                 composable(Routes.PROXY) { skeleton(it, navController, "出网代理池", "M4", "代理分组、健康检查、绑定提供商。", ::openDrawer) }
-                composable(Routes.ROUTING) { skeleton(it, navController, "路由", "M3", "三策略选号预演、候选队列跨家交错拖拽、自愈演练与倒计时回队、限制器。", ::openDrawer) }
+                composable(Routes.ROUTING) {
+                    // 路由预演：三策略 + 候选队列（含跳过原因）+ 自愈规则
+                    RoutingPage(onOpenDrawer = ::openDrawer)
+                }
                 composable(Routes.ASSISTANT) { skeleton(it, navController, "AI 运维助手", "M4", "4 大快捷诊断 Chips、工具调用气泡、流式对话。", ::openDrawer) }
                 composable(Routes.SETTINGS) { skeleton(it, navController, "设置", "M4", "手风琴分组：主题三档 / 传输 / 脱敏 / 备份与恢复中心。", ::openDrawer) }
                 composable(Routes.KEYS) {

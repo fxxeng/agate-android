@@ -414,6 +414,10 @@ impl ServerState {
         // 时只读内嵌快照（功能仍在，只是拿不到上次的刷新结果），所以位置不敏感；
         // 放在这里是为了和另外两个 kv 使用者排在一起，便于核对「谁在用这个库」。
         core::model_meta::install(db.clone());
+        // 崩溃痕迹：装 panic hook，panic 时把现场写进 kv，下次启动由「应用日志」
+        // 页读一次。位置必须晚于 `config::init`（它写 kv 时会按保留键清单排除
+        // 本键，清单已登记 `agateCrash`），且早于任何可能 panic 的业务路径。
+        core::crash_marker::install_hook();
         // ── 旧文件一次性迁移：**本切片起不再自动跑** ────────────────
         // 它现在由用户在升级弹窗里点「升级」触发（`POST /api/upgrade/run`）。
         // 为什么改成手动：需求是「弹窗告诉用户换了 SQLite，点升级才开始导」——

@@ -345,11 +345,41 @@ pub fn kv_get(key: &str) -> Option<String> {
     .flatten()
 }
 
+/// 删一个 kv 固定键；不存在或库不可用时静默无操作。
+///
+/// 与 [kv_put] 同一类「零散状态」的写入口，区别只在于这里是**清除**：崩溃痕迹
+/// 读出来展示过一次之后就该消失（理由见 `core::crash_marker` 模块头「为什么是
+/// 读即清」）。删除一个不存在的键不是错误，报错只会让调用方多写一层无意义的
+/// 分支。
+pub fn kv_delete(key: &str) {
+    let Some(db) = db() else { return };
+    let _ = db.with_mut(|conn| {
+        conn.execute("DELETE FROM kv WHERE key = ?1", rusqlite::params![key])
+    });
+}
+
 /// 写一个 kv 固定键（upsert）。调用方只传「RESERVED_KV_KEYS 里登记过的
 /// 固定名」—— 配置写入按那个集合排除，这里写错键会被一次配置改动删掉。
 pub fn kv_put(key: &str, value: &str) {
     let Some(db) = db() else { return };
     let _ = db.with_mut(|conn| {
+        conn.execute(
+            "INSERT INTO kv (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            rusqlite::params![key, value],
+        )
+    });
+}
+
+/// 写一个 kv 固定键（upsert）；**抢不到库锁就放弃**，不排队。
+///
+/// 与 [kv_put] 的差别只在取锁方式，存在的理由也只有一处：调用方运行在 panic
+/// 的 unwind 途中，可能正持有那把锁 —— 排队会永久挂死（完整论证见
+/// `core::crash_marker` 的「为什么落库走抢不到锁就放弃」）。崩溃痕迹是尽力而为
+/// 的诊断信息，「这次没写进去」是可接受的代价。
+pub fn kv_try_put(key: &str, value: &str) {
+    let Some(db) = db() else { return };
+    let _ = db.try_with_mut(|conn| {
         conn.execute(
             "INSERT INTO kv (key, value) VALUES (?1, ?2)
              ON CONFLICT(key) DO UPDATE SET value = excluded.value",

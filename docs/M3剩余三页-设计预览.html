@@ -1,0 +1,640 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>M3 剩余三页 · 设计预览（调用记录 / 应用日志 / 路由预演）</title>
+<style>
+  :root{
+    --bg:#0F172A; --card:#1E293B; --inset:#0B1220; --border:#334155;
+    --accent:#38BDF8; --textMain:#F8FAFC; --textSub:#A3B1C6; --textDim:#7C8BA1;
+    --green:#4ADE80; --red:#FB7185; --amber:#FBBF24;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:22px 14px 60px;background:#080F1C;color:var(--textMain);
+       font:14px/1.6 -apple-system,"PingFang SC","Microsoft YaHei",system-ui,sans-serif}
+  .wrap{max-width:880px;margin:0 auto}
+  h1{font-size:18px;font-weight:600;margin:0 0 6px}
+  .lead{color:var(--textSub);font-size:13px;margin:0 0 6px}
+  .rules{color:var(--textDim);font-size:12px;margin:0 0 22px}
+  h2{font-size:15px;font-weight:600;margin:34px 0 4px}
+  h2:first-of-type{margin-top:20px}
+  h3{font-size:13px;font-weight:600;margin:18px 0 6px;color:var(--textSub)}
+  .note{color:var(--textDim);font-size:12px;margin:0 0 12px}
+  .phone{width:100%;max-width:392px;margin:0 auto;background:var(--bg);
+         border:1px solid #1c2a3f;border-radius:16px;padding:12px}
+
+  .hd{display:flex;align-items:center;gap:8px;margin-bottom:10px}
+  .hd-t{font-size:17px;font-weight:600;flex:1 1 auto;white-space:nowrap}
+  .hd-a{font-size:12px;color:var(--accent);padding:5px 10px;border-radius:8px;
+        background:rgba(56,189,248,.12);white-space:nowrap;flex:0 0 auto}
+  .hd-a.on{background:var(--accent);color:#04222f;font-weight:600}
+  .hd-g{font-size:11px;color:var(--textDim);padding:5px 8px;border-radius:8px;
+        border:1px solid var(--border);white-space:nowrap;flex:0 0 auto}
+
+  .seg{display:flex;background:var(--inset);border:1px solid var(--border);
+       border-radius:10px;padding:3px;margin-bottom:10px}
+  .seg > span{flex:1;text-align:center;font-size:12px;padding:5px;border-radius:8px;
+              color:var(--textSub);white-space:nowrap}
+  .seg > span.on{background:rgba(56,189,248,.16);color:var(--accent);font-weight:600}
+
+  .card{background:var(--card);border:1px solid var(--border);border-radius:16px;
+        padding:12px;margin-bottom:10px}
+  .card-h{display:flex;align-items:center;gap:8px;margin-bottom:6px}
+  .card-t{font-size:13px;font-weight:600;flex:1 1 auto}
+  .card-b{font-size:10px;color:var(--textDim);padding:2px 7px;border-radius:6px;
+         border:1px solid var(--border);white-space:nowrap}
+  .hint{font-size:11px;color:var(--textDim);margin-top:6px;line-height:1.5}
+  .mt{margin-top:8px}
+
+  /* 四联统计 */
+  .kpi4{display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;margin-bottom:10px}
+  .kpi{background:var(--card);border:1px solid var(--border);border-radius:13px;
+       padding:9px 6px;text-align:center}
+  .kpi-v{font-size:17px;font-weight:700;line-height:1.2}
+  .kpi-l{font-size:10px;color:var(--textDim);margin-top:2px}
+
+  /* 筛选 chips */
+  .chips{display:flex;gap:6px;overflow-x:auto;padding-bottom:2px}
+  .chip{font-size:11px;padding:4px 9px;border-radius:8px;border:1px solid var(--border);
+        color:var(--textSub);background:var(--inset);white-space:nowrap;flex:0 0 auto}
+  .chip.on{color:var(--accent);border-color:rgba(56,189,248,.4);background:rgba(56,189,248,.12)}
+  .chip.danger{color:var(--red);border-color:rgba(225,29,72,.35);background:rgba(225,29,72,.1)}
+  .chip.amber{color:var(--amber);border-color:rgba(217,119,6,.4);background:rgba(217,119,6,.12)}
+
+  /* 请求行 */
+  .req{display:flex;align-items:center;gap:9px;padding:9px 0;
+       border-top:1px solid rgba(51,65,85,.5)}
+  .req:first-of-type{border-top:none}
+  .req-m{flex:1 1 auto;min-width:0}
+  .req-t{font-size:13px;font-weight:600;display:flex;align-items:center;gap:6px;
+         white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .req-s{font-size:10px;color:var(--textDim);white-space:nowrap;overflow:hidden;
+         text-overflow:ellipsis;margin-top:1px}
+  .badge{font-size:9px;padding:1px 6px;border-radius:5px;border:1px solid;white-space:nowrap;flex:0 0 auto}
+  .b-ok{color:var(--green);border-color:rgba(34,197,94,.35);background:rgba(34,197,94,.12)}
+  .b-fail{color:var(--red);border-color:rgba(225,29,72,.35);background:rgba(225,29,72,.1)}
+  .b-run{color:var(--amber);border-color:rgba(217,119,6,.4);background:rgba(217,119,6,.12)}
+  .b-blue{color:var(--accent);border-color:rgba(56,189,248,.3);background:rgba(56,189,248,.1)}
+  .b-gray{color:var(--textDim);border-color:var(--border)}
+  .chev{color:var(--textDim);font-size:14px;flex:0 0 auto}
+  .num{font-variant-numeric:tabular-nums}
+
+  /* 日志行 */
+  .log{display:flex;align-items:flex-start;gap:8px;padding:6px 0;font-size:11.5px;
+       border-top:1px solid rgba(51,65,85,.35)}
+  .log:first-of-type{border-top:none}
+  .log-tm{color:var(--textDim);flex:0 0 auto;font-size:10.5px;padding-top:1px}
+  .lc{font-size:9px;padding:1px 5px;border-radius:4px;flex:0 0 auto;
+      background:rgba(148,163,184,.16);color:var(--textSub)}
+  .log-t{flex:1 1 auto;min-width:0;word-break:break-word}
+
+  /* 阶段时间线 */
+  .phase{display:flex;align-items:flex-start;gap:10px;padding:8px 0;
+         border-top:1px solid rgba(51,65,85,.5)}
+  .phase:first-of-type{border-top:none}
+  .ph-n{width:112px;flex:0 0 112px;font-size:12px;font-weight:600;line-height:1.35}
+  .ph-t{flex:0 0 auto;font-size:11px;color:var(--textSub);padding-top:1px}
+  .ph-d{font-size:11px;color:var(--textDim);line-height:1.5}
+
+  /* 候选队列行 */
+  .ch-row{display:flex;align-items:center;gap:9px;margin-top:8px;padding:8px 8px;
+          border-radius:13px;background:var(--inset);border:1px solid var(--border);
+          border-left:3px solid hsl(var(--h) 60% 50%)}
+  .ch-row.dim{opacity:.55}
+  .ch-pos{width:21px;height:21px;border-radius:50%;flex:0 0 21px;display:flex;
+          align-items:center;justify-content:center;font-size:11px;font-weight:700;
+          background:rgba(148,163,184,.2);color:var(--textSub)}
+  .ch-m{flex:1 1 auto;min-width:0}
+  .ch-n{font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .ch-s{font-size:10px;color:var(--textDim);white-space:nowrap;overflow:hidden;
+        text-overflow:ellipsis}
+  .grip{color:var(--textDim);font-size:12px;flex:0 0 auto;letter-spacing:-2px}
+
+  /* 折叠组 */
+  details.sg{background:var(--card);border:1px solid var(--border);border-radius:16px;
+             margin-bottom:10px;overflow:hidden}
+  details.sg > summary{list-style:none;padding:12px;cursor:pointer;display:flex;
+                       align-items:center;gap:10px}
+  details.sg > summary::-webkit-details-marker{display:none}
+  .sg-i{width:30px;height:30px;border-radius:10px;flex:0 0 30px;display:flex;
+        align-items:center;justify-content:center;font-size:15px;
+        background:rgba(56,189,248,.14);color:var(--accent)}
+  .sg-m{flex:1 1 auto;min-width:0}
+  .sg-t{font-size:13.5px;font-weight:600}
+  .sg-s{font-size:11px;color:var(--textDim)}
+  .sg-c{color:var(--textDim);font-size:14px;flex:0 0 auto}
+  .sg-b{padding:0 12px 12px}
+
+  .cfg{display:flex;align-items:center;gap:10px;padding:10px 0;
+       border-top:1px solid rgba(51,65,85,.5)}
+  .cfg:first-child{border-top:none}
+  .cfg-m{flex:1 1 auto;min-width:0}
+  .cfg-n{font-size:13px}
+  .cfg-d{font-size:11px;color:var(--textDim);line-height:1.5}
+
+  .btn-sm{font-size:11px;padding:4px 10px;border-radius:7px;border:1px solid var(--border);
+          color:var(--textSub);white-space:nowrap;flex:0 0 auto}
+  .btn-danger{color:var(--red);border-color:rgba(225,29,72,.35);background:rgba(225,29,72,.1)}
+  .btn-primary{color:#04222f;background:var(--accent);border-color:var(--accent);font-weight:600}
+
+  table{width:100%;border-collapse:collapse;font-size:12px;margin-top:8px}
+  th{text-align:left;padding:7px 8px;color:var(--textSub);font-weight:600;
+     border-bottom:1px solid var(--border);font-size:11px}
+  td{padding:7px 8px;border-bottom:1px solid rgba(51,65,85,.4);color:var(--textSub);
+     vertical-align:top}
+  td b{color:var(--textMain);font-weight:600}
+
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  @media(max-width:720px){.grid2{grid-template-columns:1fr}.kpi4{grid-template-columns:1fr 1fr}}
+
+  .tag-new{display:inline-block;font-size:9px;font-weight:700;padding:1px 5px;
+           border-radius:4px;background:rgba(56,189,248,.16);color:var(--accent);
+           margin-left:5px;vertical-align:1px}
+  .strike{color:var(--textDim);text-decoration:line-through}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>M3 剩余三页 · 设计预览</h1>
+  <p class="lead">调用记录（含请求详情） / 应用日志 / 路由预演 —— 外加「访问密钥 · 可用范围」补全。</p>
+  <p class="rules">
+    取自 <code>docs/Agate-UI设计基线-v44.html</code>（sub-calllog / sub-reqlog / sub-reqdetail / sub-settings）与
+    上游 3.0.8 的 i18n 文案清单。内核接口已逐条核对就绪（见文末表）——本轮是纯客户端工作量。
+  </p>
+
+  <!-- ══════════════ 1. 调用记录 ══════════════ -->
+  <h2>1 · 调用记录（现在：骨架页 → 改造后：双 Tab 日志台）</h2>
+  <p class="note">入口在抽屉「数据与报表 › 调用记录」。上游 <code>requests.json</code> 174 条文案对应的能力全在这里。</p>
+
+  <div class="grid2">
+    <div>
+      <h3>现在（骨架）</h3>
+      <div class="phone">
+        <div class="hd"><span class="hd-t">调用记录</span></div>
+        <div class="card" style="text-align:center;padding:26px 12px;">
+          <div style="font-size:13px;color:var(--textSub);">M3</div>
+          <div class="hint" style="margin-top:6px;">转发请求流水、调用报文、出网取证 Diff、筛选 Sheet。</div>
+        </div>
+      </div>
+    </div>
+
+    <div>
+      <h3>改造后</h3>
+      <div class="phone">
+        <div class="hd">
+          <span class="hd-t">调用记录</span>
+          <span class="hd-g num">共 86 条</span>
+          <span class="hd-a">刷新</span>
+          <span class="hd-a">清理…</span>
+        </div>
+
+        <div class="seg">
+          <span class="on">转发请求</span>
+          <span>调用报文</span>
+        </div>
+
+        <div class="kpi4">
+          <div class="kpi"><div class="kpi-v num">86</div><div class="kpi-l">今日请求</div></div>
+          <div class="kpi"><div class="kpi-v num" style="color:var(--green)">81</div><div class="kpi-l">成功</div></div>
+          <div class="kpi"><div class="kpi-v num" style="color:var(--red)">3</div><div class="kpi-l">失败</div></div>
+          <div class="kpi"><div class="kpi-v num" style="color:var(--amber)">2</div><div class="kpi-l">进行中</div></div>
+        </div>
+
+        <div class="card" style="padding:9px 10px;">
+          <div class="chips">
+            <span class="chip on">提供商：全部 ▾</span>
+            <span class="chip on">模型：全部 ▾</span>
+            <span class="chip on">状态：全部 ▾</span>
+            <span class="chip amber">敏 <span class="num">1</span></span>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-h">
+            <span class="card-t">转发请求</span>
+            <span class="card-b">状态列按阶段显示</span>
+          </div>
+
+          <div class="req">
+            <div class="req-m">
+              <div class="req-t">gpt-4o <span class="badge b-ok num">成功 200</span><span style="font-size:10px;color:var(--amber)">敏</span></div>
+              <div class="req-s num">CatPaw·主力号 01 · 3.42s / 首响 0.84s · ↻ 1 次</div>
+            </div>
+            <span class="chev">›</span>
+          </div>
+
+          <div class="req">
+            <div class="req-m">
+              <div class="req-t">deepseek-reasoner <span class="badge b-run">响应中</span></div>
+              <div class="req-s num">CodeBuddy·共享节点 · 已用时 12.4s · 首帧已到，内容下发中</div>
+            </div>
+            <span class="btn-sm btn-danger">终止</span>
+          </div>
+
+          <div class="req">
+            <div class="req-m">
+              <div class="req-t">glm-5.3 <span class="badge b-run num">重试中 ↻2</span></div>
+              <div class="req-s num">上游繁忙排队 · 5s 后重试 · 策略 顺序优先 · 会话粘性 命中</div>
+            </div>
+            <span class="chev">›</span>
+          </div>
+
+          <div class="req">
+            <div class="req-m">
+              <div class="req-t">kimi-k3 <span class="badge b-fail num">失败 429</span></div>
+              <div class="req-s num">共 3 次尝试，最终由 Loomy·共享节点 承载失败 · 退避 15min</div>
+            </div>
+            <span class="chev">›</span>
+          </div>
+
+          <div class="req">
+            <div class="req-m">
+              <div class="req-t">claude-sonnet-4 <span class="badge b-ok num">成功 200</span></div>
+              <div class="req-s num">CodeArts·企业包 · 4.05s / 首响 1.12s · 生成速度 728 tok/s</div>
+            </div>
+            <span class="chev">›</span>
+          </div>
+        </div>
+
+        <div class="hint" style="text-align:center;">停留本页自动刷新 · 按状态/提供商/模型筛选 · 点行看详情</div>
+      </div>
+    </div>
+  </div>
+
+  <h3>改造点</h3>
+  <table>
+    <tr><th style="width:112px">项</th><th>说明</th></tr>
+    <tr><td><b>四联统计</b></td><td>今日请求 / 成功 / 失败 / 进行中。源 <code>GET /api/stats/summary?range=today</code>，失败沿用上一份（不闪 0）</td></tr>
+    <tr><td><b>三路筛选</b></td><td>提供商 / 模型 / 状态。候选清单来自 <code>/api/stats/requests/filters</code>（只列日志里出现过的），不再让前端枚举</td></tr>
+    <tr><td><b>敏 徽章</b></td><td>命中敏感词的请求打标，可只看敏感</td></tr>
+    <tr><td><b>阶段状态</b></td><td>进行中的请求按「排队中 / 连接中 / 等待响应 / 响应中 / 重试中」显示，用时列走「已用时」</td></tr>
+    <tr><td><b>终止</b></td><td>行内直接终止进行中的转发，断上游连接并记为「请求已被手动终止」</td></tr>
+    <tr><td><b>清理弹层</b></td><td>三选一：抹掉报文原文 / 删除明细 / 压缩数据库（VACUUM）；有筛选时只作用于命中项，弹层里先给出「将删除 N 条 · 其中 M 条带原文 · 库占用 X」</td></tr>
+  </table>
+
+  <h3>「敏感词」从哪里来</h3>
+  <p class="note">
+    上游 <code>requests.json</code> 里有 <code>命中了敏感词</code> / <code>命中的敏感词</code>，说明转发层
+    会对请求正文做一次扫描并留下标记。Agate 内核是否已有这一层，需要在实施时确认；
+    若没有，这一项降级为「暂不显示敏徽章」，不阻塞其余改造。
+  </p>
+
+  <!-- ══════════════ 2. 请求详情 ══════════════ -->
+  <h2>2 · 请求详情（调用记录的下钻页）</h2>
+  <p class="note">V44 <code>sub-reqdetail</code>：五阶段时间线 + 路由回放。数据源 <code>/api/stats/requests/raw</code>。</p>
+
+  <div class="phone">
+    <div class="hd">
+      <span class="hd-t">请求详情</span>
+      <span class="badge b-ok num">成功 200</span>
+    </div>
+
+    <div class="card">
+      <div class="card-h">
+        <span class="card-t num">gpt-4o · 16:04:21</span>
+        <span class="badge b-gray num">↻ 重试 1 次</span>
+      </div>
+      <div class="hint" style="margin:0 0 8px;">
+        下游请求的模型 gpt-4o → 转发到上游的模型 gpt-4o · 来源客户端 RikkaHub · 用时 3.42s
+      </div>
+
+      <div class="phase">
+        <div class="ph-n">排队中</div>
+        <div class="ph-t num">12ms</div>
+        <div class="ph-d">请求已受理，正在选路、取凭证</div>
+      </div>
+      <div class="phase">
+        <div class="ph-n">连接中</div>
+        <div class="ph-t num">45ms</div>
+        <div class="ph-d">建立上游连接</div>
+      </div>
+      <div class="phase">
+        <div class="ph-n">等待响应 · <span class="num">TTFB 0.84s</span></div>
+        <div class="ph-t num">0.84s</div>
+        <div class="ph-d">上游请求已发出，等第一个字节（模型思考时间也在内）</div>
+      </div>
+      <div class="phase">
+        <div class="ph-n">响应中 · <span class="num">728 tok/s</span></div>
+        <div class="ph-t num">2.53s</div>
+        <div class="ph-d">首帧已到，内容下发中 · 生成速度 = 输出 token ÷ 流式段用时</div>
+      </div>
+      <div class="phase">
+        <div class="ph-n" style="color:var(--green)">⟳ 断流自动续写 ×1 轮</div>
+        <div class="ph-t num">+1.1s</div>
+        <div class="ph-d">上游第 41 帧断流 → 回放半截追「请继续输出」再发一次 · 两段已拼接</div>
+      </div>
+      <div class="phase">
+        <div class="ph-n" style="color:var(--green)">完成</div>
+        <div class="ph-t num">共 3.42s</div>
+        <div class="ph-d">用量 1,842 tok · 缓存读取 620 / 命中率 34%</div>
+      </div>
+    </div>
+
+    <details class="sg">
+      <summary>
+        <span class="sg-i">≡</span>
+        <div class="sg-m"><div class="sg-t">尝试明细</div><div class="sg-s">共 3 次尝试，最终由 Loomy·共享节点 承载</div></div>
+        <span class="sg-c">⌄</span>
+      </summary>
+      <div class="sg-b">
+        <div class="cfg">
+          <span class="badge b-gray num">1</span>
+          <div class="cfg-m">
+            <div class="cfg-n">CatPaw·主力号 01</div>
+            <div class="cfg-d">429 无恢复时间 → 垫底 TTL 10min</div>
+          </div>
+        </div>
+        <div class="cfg">
+          <span class="badge b-gray num">2</span>
+          <div class="cfg-m">
+            <div class="cfg-n">CodeBuddy·共享节点</div>
+            <div class="cfg-d">5xx → 退避，换下一位</div>
+          </div>
+        </div>
+        <div class="cfg">
+          <span class="badge b-ok num">3</span>
+          <div class="cfg-m">
+            <div class="cfg-n">Loomy·共享节点</div>
+            <div class="cfg-d">200 · 承担本次转发</div>
+          </div>
+        </div>
+      </div>
+    </details>
+
+    <details class="sg">
+      <summary>
+        <span class="sg-i">↕</span>
+        <div class="sg-m"><div class="sg-t">报文原文</div><div class="sg-s">请求 / 响应 · 凭据已替换为 [redacted]</div></div>
+        <span class="sg-c">⌄</span>
+      </summary>
+      <div class="sg-b">
+        <div class="cfg">
+          <div class="cfg-m">
+            <div class="cfg-n">请求头</div>
+            <div class="cfg-d">authorization: [redacted] · cookie: [redacted]</div>
+          </div>
+        </div>
+        <div class="cfg">
+          <div class="cfg-m">
+            <div class="cfg-n">请求体</div>
+            <div class="cfg-d">stream=true · messages 6 条 · max_tokens 4096</div>
+          </div>
+        </div>
+        <div class="cfg">
+          <div class="cfg-m">
+            <div class="cfg-n">响应原文</div>
+            <div class="cfg-d">200 OK · SSE 42 chunks · finish_reason=stop · usage 已回填</div>
+          </div>
+        </div>
+        <div class="hint">未开启「调试模式」时新请求不存报文；已有原文可在上方清理里抹掉。</div>
+      </div>
+    </details>
+  </div>
+
+  <h3>取舍：为什么详情做成「折叠组」而不是全平铺</h3>
+  <p class="note">
+    V44 的详情是长滚动。手机上「一句话看到结果」比「一次看全」更重要：默认只给
+    时间线，尝试明细与报文收进折叠组。失败请求的「尝试明细」自动展开——失败时
+    用户要的就是原因，不需要再点一下。
+  </p>
+
+  <!-- ══════════════ 3. 应用日志 ══════════════ -->
+  <h2>3 · 应用日志（现在：骨架页 → 改造后：分类 + 级别 + 搜索）</h2>
+  <p class="note">数据源 <code>GET /api/logs</code>（支持 level / category / keyword / start / end / sinceId）+ <code>/stats</code>（分类计数）+ <code>/download</code>（导出 JSONL）+ <code>DELETE</code>（清空）。</p>
+
+  <div class="phone">
+    <div class="hd">
+      <span class="hd-t">应用日志</span>
+      <span class="hd-g num">共 14 条</span>
+      <span class="hd-a">刷新</span>
+      <span class="hd-a">导出</span>
+      <span class="hd-a">清空</span>
+    </div>
+
+    <div class="seg" style="flex-wrap:wrap;">
+      <span class="on">全部 · 14</span>
+      <span>账号 · 3</span>
+      <span>签到 · 3</span>
+      <span>凭证 · 2</span>
+      <span>路由 · 3</span>
+      <span>网关 · 3</span>
+    </div>
+
+    <div class="seg">
+      <span class="on">全部级别</span>
+      <span>警告</span>
+      <span>错误</span>
+      <span>中断</span>
+    </div>
+
+    <div class="card">
+      <div class="log">
+        <span class="log-tm num">16:04:21</span><span class="lc">网关</span>
+        <span class="log-t">200 gpt-4o ← CatPaw·主力号 01 · <span class="num">1.24s · 1,842 tok</span></span>
+      </div>
+      <div class="log">
+        <span class="log-tm num">16:03:58</span><span class="lc">账号</span>
+        <span class="log-t" style="color:var(--amber)">CatPaw·备用 02 429 无恢复时间 → 垫底 TTL 10min</span>
+      </div>
+      <div class="log">
+        <span class="log-tm num">16:03:12</span><span class="lc">路由</span>
+        <span class="log-t">换号：CatPaw·主力号 01 额度尽 → 候选下一位 CodeBuddy</span>
+      </div>
+      <div class="log">
+        <span class="log-tm num">16:02:47</span><span class="lc">账号</span>
+        <span class="log-t" style="color:var(--red)">Loomy·共享节点 5xx → 退避 15min（连续第 3 次）</span>
+      </div>
+      <div class="log">
+        <span class="log-tm num">15:59:30</span><span class="lc">网关</span>
+        <span class="log-t" style="color:var(--textSub)">客户端断开连接 · 请求中断（stream cancelled）</span>
+      </div>
+      <div class="log">
+        <span class="log-tm num">15:58:44</span><span class="lc">路由</span>
+        <span class="log-t">会话粘性命中：gpt-4o → CatPaw·主力号 01 · 剩 <span class="num">03:42</span></span>
+      </div>
+      <div class="log">
+        <span class="log-tm num">12:04:12</span><span class="lc">凭证</span>
+        <span class="log-t" style="color:var(--red)">CodeBuddy·共享节点 凭证刷新失败：Cookie 已失效 → 标记退避</span>
+      </div>
+      <div class="log">
+        <span class="log-tm num">08:00:01</span><span class="lc">签到</span>
+        <span class="log-t">定时签到完成 · 8/9 成功 · 1 需手动</span>
+      </div>
+    </div>
+
+    <div class="hint">记录 App 自身运行事件：账号状态 · 签到 · 凭证刷新 · 换号/熔断 · 网关启停 · 仅保留最近若干条；模型调用明细见「调用记录」</div>
+  </div>
+
+  <div class="card mt" style="background:rgba(245,158,11,.08);border-color:rgba(245,158,11,.35);">
+    <div style="font-size:12px;color:var(--amber);font-weight:600;">检测到上次运行崩溃 · 点开复制给我们</div>
+    <div class="hint">内核需落一个崩溃标记才显示；未就绪时整条隐藏（不是显示占位）</div>
+  </div>
+
+  <!-- ══════════════ 4. 路由预演 ══════════════ -->
+  <h2>4 · 路由预演（现在：骨架页 → 改造后：四段式）</h2>
+  <p class="note">
+    V44 把这块放在设置页下：<code>选号方式</code> / <code>候选队列</code> / <code>自愈演练</code> / <code>并发闸门</code>。
+    内核 <code>GET/PUT /api/routing</code> + <code>GET /api/routing/queue</code> 已就绪，且排序与转发选路共用
+    <code>routing::plan_route</code> —— 界面怎么画，实际就怎么走。
+  </p>
+
+  <div class="phone">
+    <div class="hd"><span class="hd-t">路由预演</span><span class="hd-a">保存</span></div>
+
+    <div class="card">
+      <div class="card-h"><span class="card-t">选号方式</span><span class="card-b">对下一个请求立即生效</span></div>
+      <div class="seg">
+        <span class="on">顺序优先</span>
+        <span>负载均衡</span>
+        <span>同家轮询</span>
+      </div>
+      <div class="hint">顺序优先：严格按队列名次，队首不可用才下探 · 负载均衡：在同层账号间摊平 · 同家轮询：同一家内多账号轮转</div>
+    </div>
+
+    <div class="card">
+      <div class="card-h">
+        <span class="card-t">选号预演</span>
+        <span class="card-b">接下来 6 个并发请求会分给</span>
+      </div>
+      <div class="chips">
+        <span class="chip on">① CatPaw·主力号 01</span>
+        <span class="chip on">② CodeBuddy·共享</span>
+        <span class="chip on">③ Loomy·共享</span>
+        <span class="chip on">④ CatPaw·主力号 01</span>
+        <span class="chip on">⑤ CodeBuddy·共享</span>
+        <span class="chip on">⑥ Qoder·国区</span>
+      </div>
+      <div class="hint">与转发层同一套排序函数，不是另算一遍</div>
+    </div>
+
+    <div class="card">
+      <div class="card-h"><span class="card-t">候选队列</span><span class="card-b">拖动 ⋮⋮ 调整</span></div>
+
+      <div class="ch-row" style="--h:200">
+        <span class="grip">⋮⋮</span><span class="ch-pos num">1</span>
+        <div class="ch-m"><div class="ch-n">CatPaw·主力号 01</div><div class="ch-s">就绪 · 倍率 1.0 · 今日 12/不限</div></div>
+        <span class="badge b-ok">队首</span>
+      </div>
+
+      <div class="ch-row" style="--h:145">
+        <span class="grip">⋮⋮</span><span class="ch-pos num">2</span>
+        <div class="ch-m"><div class="ch-n">CodeBuddy·共享节点</div><div class="ch-s">就绪 · 倍率 1.5</div></div>
+      </div>
+
+      <div class="ch-row dim" style="--h:25">
+        <span class="grip">⋮⋮</span><span class="ch-pos num">3</span>
+        <div class="ch-m"><div class="ch-n">Loomy·共享节点</div><div class="ch-s">冷却中 · 5xx 退避 · 剩 08:12</div></div>
+        <span class="badge b-gray">跳过</span>
+      </div>
+
+      <div class="ch-row dim" style="--h:0">
+        <span class="grip">⋮⋮</span><span class="ch-pos num">4</span>
+        <div class="ch-m"><div class="ch-n">Qoder·备用</div><div class="ch-s">已禁用</div></div>
+        <span class="badge b-gray">跳过</span>
+      </div>
+
+      <div class="hint">被跳过者也在列：禁用 / 冷却 / 并发满 / 限制器 / 无凭证 —— 各有各的原因，不用猜</div>
+    </div>
+
+    <details class="sg">
+      <summary>
+        <span class="sg-i">⚡</span>
+        <div class="sg-m"><div class="sg-t">自愈演练</div><div class="sg-s">模拟上游故障，看它怎样离开队列、预演如何改道、倒计时回队</div></div>
+        <span class="sg-c">⌄</span>
+      </summary>
+      <div class="sg-b">
+        <div class="chips" style="margin-bottom:8px;">
+          <span class="chip danger">429 限流</span>
+          <span class="chip danger">5xx 退避</span>
+          <span class="chip danger">余额不足</span>
+          <span class="chip on">恢复</span>
+        </div>
+        <div class="cfg">
+          <div class="cfg-m">
+            <div class="cfg-n">自愈策略</div>
+            <div class="cfg-d">连续失败 <b class="num">5</b> 次熔断 <b class="num">60s</b> · 到点放行试一次，成功即归队</div>
+          </div>
+        </div>
+        <div class="cfg">
+          <div class="cfg-m">
+            <div class="cfg-n">并发闸门</div>
+            <div class="cfg-d">单账号并发上限 <b class="num">3</b> · 全局在途 <b class="num">12</b></div>
+          </div>
+        </div>
+      </div>
+    </details>
+  </div>
+
+  <!-- ══════════════ 5. Key 可用范围 ══════════════ -->
+  <h2>5 · 访问密钥「可用范围」补全</h2>
+  <p class="note">
+    上游 <code>keys.json</code>：每把 Key 可单独限制可用提供商 + 可用模型，交集生效；被限制的
+    模型对这把 Key 表现为「不存在」（<code>/v1/models</code> 也看不到）。
+    内核已返回 <code>allowedProviders</code> / <code>allowedModels</code> 与两张候选表
+    （<code>providers</code>、<code>modelsByProvider</code>），客户端只需接上。
+  </p>
+
+  <div class="phone">
+    <div class="hd"><span class="hd-t">Key 可用范围 · 公司电脑</span></div>
+
+    <div class="card">
+      <div class="card-h"><span class="card-t">可用提供商</span><span class="card-b">留空 = 不限制</span></div>
+      <div class="chips">
+        <span class="chip on">✓ CatPaw <span class="num">4</span></span>
+        <span class="chip on">✓ CodeArts <span class="num">2</span></span>
+        <span class="chip">Loomy <span class="num">1</span></span>
+        <span class="chip">Qoder <span class="num">1</span></span>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-h"><span class="card-t">可用模型</span><span class="card-b">候选跟着上面勾选走</span></div>
+      <div class="chips">
+        <span class="chip on">✓ gpt-4o</span>
+        <span class="chip on">✓ claude-sonnet-4</span>
+        <span class="chip">glm-5.3</span>
+        <span class="chip">deepseek-reasoner</span>
+      </div>
+      <div class="hint">没勾提供商时此项为空（还没有约束范围）；勾了几家就列这几家能收的全部对外名</div>
+    </div>
+
+    <div class="card" style="background:var(--inset);">
+      <div class="cfg-d">
+        两个都设时<b>按交集生效</b>：被限制的模型对这把 Key 表现为「不存在」，
+        提供它的家不在可用列表里时请求同样被拒。修改后立即生效；本程序自身会自动
+        使用第一把启用的 Key。
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════════ 内核就绪度 ══════════════ -->
+  <h2>内核就绪度核对</h2>
+  <table>
+    <tr><th style="width:216px">接口</th><th style="width:78px">状态</th><th>备注</th></tr>
+    <tr><td><code>GET /api/stats/summary</code></td><td><b>✅</b></td><td>四联统计</td></tr>
+    <tr><td><code>GET /api/stats/requests</code></td><td><b>✅</b></td><td>分页 + 模型/提供商/状态/时间过滤</td></tr>
+    <tr><td><code>GET /api/stats/requests/filters</code></td><td><b>✅</b></td><td>筛选下拉候选（出现过的模型 / 提供商）</td></tr>
+    <tr><td><code>GET /api/stats/requests/raw</code></td><td><b>✅</b></td><td>详情页数据源</td></tr>
+    <tr><td><code>DELETE /api/stats/requests</code></td><td><b>✅</b></td><td>mode=raw 抹原文 / mode=all 删明细</td></tr>
+    <tr><td><code>POST /api/stats/requests/compact</code></td><td><b>✅</b></td><td>checkpoint + VACUUM，后台执行</td></tr>
+    <tr><td><code>GET /api/logs</code> + <code>/stats</code> + <code>/download</code> + <code>DELETE</code></td><td><b>✅</b></td><td>应用日志全套</td></tr>
+    <tr><td><code>GET/PUT /api/routing</code></td><td><b>✅</b></td><td>三策略 + 熔断 + 并发</td></tr>
+    <tr><td><code>GET /api/routing/queue</code></td><td><b>✅</b></td><td>整张清单 + 跳过原因，与转发同函数</td></tr>
+    <tr><td><code>/api/keys</code>（含 scope）</td><td><b>✅</b></td><td>两张候选表由后端拼整</td></tr>
+    <tr><td><code>POST /api/stats/requests/terminate</code></td><td><b>✅</b></td><td>只置取消令牌，收尾交给转发链（明细写者仍唯一）</td></tr>
+    <tr><td>报文凭据脱敏</td><td><b>✅</b></td><td><code>core::debug_traffic::redact_headers</code> → <code>[redacted]</code></td></tr>
+    <tr><td>敏感词命中</td><td><b>✅</b></td><td><code>RequestEntry.sensitiveHits</code></td></tr>
+    <tr><td>崩溃检测</td><td><b>⚠️</b></td><td>需内核落标记；未就绪时整条隐藏（不显示占位）</td></tr>
+  </table>
+
+  <h3>这一轮不做（留到 M4）</h3>
+  <p class="note">
+    数据报表（热力图 / 双轴 / 三维占比）、出网代理池、MCP、AI 运维助手、
+    应用设置 10 组、任务中心六个二级页。先把 M3 收口。
+  </p>
+
+</div>
+</body>
+</html>

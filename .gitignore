@@ -24,3 +24,7 @@ core-gateway/src/main/jniLibs/
 # MCP 工具本地产物，不入库
 .mcp-change-history.json
 *.mcp-backup-*
+
+# 协作代理的本地工作记忆（每日进展 / 约定笔记）。仓库是公开的，
+# 这些是过程记录不是项目产物，不入库。
+.workbuddy/

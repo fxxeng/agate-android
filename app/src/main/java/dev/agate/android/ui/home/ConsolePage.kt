@@ -61,8 +61,10 @@ import dev.agate.android.ui.components.AgateChip
 import dev.agate.android.ui.components.AgateHeaderAction
 import dev.agate.android.ui.components.AgateKpiStrip
 import dev.agate.android.ui.components.AgatePageHeader
+import dev.agate.android.ui.components.AgateStatRow
 import dev.agate.android.ui.components.BadgeTone
 import dev.agate.android.ui.components.KpiCell
+import dev.agate.android.ui.components.StatCell
 import dev.agate.android.ui.theme.agateColors
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -146,24 +148,25 @@ fun ConsolePage(
         Spacer(Modifier.height(12.dp))
 
         // ── KPI 四联（v44 语义：成功率 / 平均时延 / 今日请求 / 活跃账号）──
-        AgateKpiStrip(
+        // 用紧凑统计条而不是四张独立卡：四个读数在首屏占的高度差近三分之一，
+        // 而这台设备上首屏下面还压着健康自检与账号列表，纵向空间要给它们。
+        AgateStatRow(
             cells = listOf(
-                KpiCell(
+                StatCell(
                     label = "成功率",
                     value = if (snap.fetchedAtMs == 0L) "—" else successRateOf(snap),
                     valueColor = if (snap.requestsToday > 0) C.green else null,
                 ),
-                KpiCell(
+                StatCell(
                     label = "平均时延",
                     value = snap.avgLatencyMs?.let { "${it}ms" } ?: "—",
                     valueColor = C.accent,
                 ),
-                KpiCell(
+                StatCell(
                     label = "今日请求",
                     value = if (snap.fetchedAtMs == 0L) "—" else snap.requestsToday.toString(),
-                    valueColor = C.textMain,
                 ),
-                KpiCell(
+                StatCell(
                     label = "活跃账号",
                     value = if (snap.accountsTotal > 0) "${snap.accountsEnabled}/${snap.accountsTotal}" else "—",
                     valueColor = if (snap.accountsEnabled > 0) C.green else null,

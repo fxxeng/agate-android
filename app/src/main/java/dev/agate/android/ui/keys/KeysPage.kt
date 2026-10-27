@@ -7,11 +7,14 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
@@ -29,6 +32,8 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
@@ -80,6 +85,10 @@ fun KeysPage(
     val lanMode = remember { GatewayPrefs.bindLan(ctx) }
 
     var rows by remember { mutableStateOf<List<KeyOps.KeyRow>>(emptyList()) }
+    // 两张候选表由后端拼整（`providers` 含注册表 + 自定义家，`modelsByProvider`
+    // 是各家 → 对外名），前端不烤第二份清单。随主键列表一起读回来即可。
+    var catalog by remember { mutableStateOf(KeyOps.Catalog(emptyList(), emptyMap())) }
+    var scopeTarget by remember { mutableStateOf<KeyOps.KeyRow?>(null) }
     var loading by remember { mutableStateOf(false) }
 
     fun toast(text: String) = Toast.makeText(ctx, text, Toast.LENGTH_SHORT).show()
@@ -91,6 +100,7 @@ fun KeysPage(
             val r = KeyOps.list()
             loading = false
             rows = KeyOps.parseRows(r.data, localKey)
+            catalog = KeyOps.parseCatalog(r.data)
             if (!r.ok) toast(r.error ?: "读取失败")
         }
     }
@@ -180,6 +190,7 @@ fun KeysPage(
                     Spacer(Modifier.height(9.dp))
                     KeyRowView(
                         row = row,
+                        onEditScope = { scopeTarget = row },
                         onToggle = {
                             if (row.fromEnv) {
                                 toast("本机默认 Key 由应用生成，不可停用")
@@ -257,6 +268,26 @@ fun KeysPage(
             Spacer(Modifier.height(28.dp))
         }
     }
+
+    scopeTarget?.let { row ->
+        ScopeSheet(
+            row = row,
+            catalog = catalog,
+            onDismiss = { scopeTarget = null },
+            onSave = { providers, models ->
+                scope.launch {
+                    val r = KeyOps.setScope(row.id, providers, models)
+                    if (r.ok) {
+                        toast("已更新可用范围")
+                        scopeTarget = null
+                        reload()
+                    } else {
+                        toast(r.error ?: "保存失败")
+                    }
+                }
+            },
+        )
+    }
 }
 
 /** 可复制的信息卡（Base URL / Key 各一行，带整块复制）。 */
@@ -329,6 +360,7 @@ private fun CopyCard(
 @Composable
 private fun KeyRowView(
     row: KeyOps.KeyRow,
+    onEditScope: () -> Unit,
     onToggle: () -> Unit,
     onDelete: () -> Unit,
 ) {
@@ -350,17 +382,39 @@ private fun KeyRowView(
             Text(
                 buildString {
                     append(row.keyTail)
+                    append(" · ")
                     if (row.restricted) {
-                        append(" · 限 ${row.allowedProviders.size} 家")
-                        if (row.allowedModels.isNotEmpty()) append(" / ${row.allowedModels.size} 模型")
+                        if (row.allowedProviders.isNotEmpty()) append("限 ${row.allowedProviders.size} 家")
+                        if (row.allowedModels.isNotEmpty()) {
+                            if (row.allowedProviders.isNotEmpty()) append(" / ")
+                            append("${row.allowedModels.size} 模型")
+                        }
+                    } else {
+                        append("不限")
                     }
                 },
                 color = C.textDim,
                 fontSize = 11.sp,
             )
         }
-        if (!row.fromEnv) {
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            // 本机默认那把走环境变量，不在 SQLite 列表里，没法 PATCH —— 索性不显示入口，
+            // 而不是给个点了会 404 的按钮。
+            if (!row.fromEnv) {
+                Text(
+                    "范围",
+                    color = C.textSub,
+                    fontSize = 11.sp,
+                    modifier = Modifier
+                        .border(1.dp, C.border, RoundedCornerShape(7.dp))
+                        .clickable(onClick = onEditScope)
+                        .padding(horizontal = 8.dp, vertical = 3.dp),
+                )
+            }
+            if (!row.fromEnv) {
                 Text(
                     if (row.enabled) "停用" else "启用",
                     color = C.textSub,
@@ -379,6 +433,247 @@ private fun KeyRowView(
                         .clickable(onClick = onDelete)
                         .padding(horizontal = 8.dp, vertical = 3.dp),
                 )
+            }
+        }
+    }
+}
+
+/**
+ * 「可用范围」编辑弹层。
+ *
+ * ── 两个白名单的关系是「各自独立判定」，界面要讲的是交集 ────────────
+ * 内核 `KeyScope::allows_model` / `allows_provider` 各判各的：两者都非空时，
+ * 请求必须**同时**落在两个白名单里才放行。所以 UI 上把它们摆成上下两组、
+ * 中间用文案点明「交集生效」，而不是让用户以为下面一组是上一组的下钻。
+ *
+ * ── 候选模型为什么不实时等于并集 ───────────────────────────
+ * 候选 = **已勾几家的并集 ∪ 这把 Key 当前已勾选的模型**。多出来的后者是有意的：
+ * 内核在读取侧一律宽容（「升级绝不能让已有 Key 失效」，见 `core::api_keys`
+ * 模块头那条硬不变量），如果某个模型已从某家清单里消失但白名单里还留着它，
+ * 界面把它藏起来会让用户「看不见也改不掉」，等于由 UI 静默改了他的配置。
+ * 显式列出来，删不删由他决定。
+ *
+ * ── 取消勾选某家为什么要连带清模型 ─────────────────────────
+ * 反过来不留悬空：那家被取消后，只属于它的模型在候选里已经无处可依，留着会让
+ * 「模型白名单非空」这一事实与「看不见任何候选」自相矛盾。取消勾选 = 收窄范围，
+ * 收窄不该让看不见的约束留在生效状态。
+ */
+@Composable
+private fun ScopeSheet(
+    row: KeyOps.KeyRow,
+    catalog: KeyOps.Catalog,
+    onDismiss: () -> Unit,
+    onSave: (providers: List<String>, models: List<String>) -> Unit,
+) {
+    val C = agateColors()
+
+    // 每次切换到另一把 Key 都重算初值；同一把内用户的勾选是唯一真值。
+    var pickedProviders by remember(row.id) {
+        mutableStateOf(row.allowedProviders.toCollection(LinkedHashSet()))
+    }
+    var pickedModels by remember(row.id) {
+        mutableStateOf(row.allowedModels.toCollection(LinkedHashSet()))
+    }
+
+    fun currentCandidates(): List<String> {
+        val set = LinkedHashSet<String>()
+        pickedProviders.forEach { set.addAll(catalog.modelsFor(it)) }
+        set.addAll(pickedModels)
+        return set.sorted()
+    }
+
+    fun toggleProvider(id: String) {
+        val next = LinkedHashSet(pickedProviders)
+        if (!next.remove(id)) next.add(id)
+        pickedProviders = next
+        val available = HashSet<String>()
+        next.forEach { available.addAll(catalog.modelsFor(it).map { it.lowercase() }) }
+        pickedModels = pickedModels.filterTo(LinkedHashSet()) { it.lowercase() in available }
+    }
+
+    val candidates = currentCandidates()
+
+    Box(
+        Modifier
+            .fillMaxSize()
+            .background(Color(0x99000000))
+            .clickable(onClick = onDismiss),
+        contentAlignment = Alignment.BottomCenter,
+    ) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp))
+                .background(C.cardBg)
+                .clickable(enabled = false, onClick = {})
+                .padding(16.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("可用范围", fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = C.textMain)
+                    Text(row.name, fontSize = 11.sp, color = C.textDim)
+                }
+                Text("✕", fontSize = 14.sp, color = C.textDim, modifier = Modifier.clickable(onClick = onDismiss).padding(6.dp))
+            }
+
+            Spacer(Modifier.height(6.dp))
+            Column(Modifier.heightIn(max = 400.dp).verticalScroll(rememberScrollState())) {
+                ChipSection(
+                    title = "可用提供商",
+                    note = "留空 = 不限制",
+                    emptyHint = "还没有任何家（候选由后端给出，含自定义家）",
+                    items = catalog.providers,
+                    itemKey = { it.id },
+                    itemLabel = { it.label },
+                    itemBadge = { it.count.toString() },
+                    selected = pickedProviders,
+                    onToggle = { toggleProvider(it) },
+                )
+
+                Spacer(Modifier.height(12.dp))
+
+                if (pickedProviders.isEmpty() && pickedModels.isEmpty()) {
+                    ChipSection(
+                        title = "可用模型",
+                        note = "先勾选提供商",
+                        emptyHint = "候选 = 已勾几家的模型并集；一家都没勾时没有候选",
+                        items = emptyList<String>(),
+                        itemKey = { it },
+                        itemLabel = { it },
+                        itemBadge = { null },
+                        selected = pickedModels,
+                        onToggle = {},
+                    )
+                } else {
+                    ChipSection(
+                        title = "可用模型",
+                        note = "候选跟着上面走",
+                        emptyHint = "这几家当前没有对外模型",
+                        items = candidates,
+                        itemKey = { it },
+                        itemLabel = { it },
+                        itemBadge = { null },
+                        selected = pickedModels,
+                        onToggle = { id ->
+                            val next = LinkedHashSet(pickedModels)
+                            if (!next.remove(id)) next.add(id)
+                            pickedModels = next
+                        },
+                    )
+                }
+
+                Spacer(Modifier.height(10.dp))
+                Text(
+                    "两个都设时按交集生效：模型不在白名单、或提供它的家不在上面列表里，请求都会被拒。" +
+                        "被限制掉的模型对这把 Key 表现为「不存在」（/v1/models 也看不到）。保存后立即生效。",
+                    fontSize = 11.sp,
+                    color = C.textDim,
+                    lineHeight = 15.sp,
+                )
+            }
+
+            Spacer(Modifier.height(12.dp))
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "清空",
+                    fontSize = 13.sp,
+                    color = C.textSub,
+                    modifier = Modifier
+                        .border(1.dp, C.border, RoundedCornerShape(8.dp))
+                        .clickable {
+                            pickedProviders = LinkedHashSet()
+                            pickedModels = LinkedHashSet()
+                        }
+                        .padding(horizontal = 14.dp, vertical = 8.dp),
+                )
+                Spacer(Modifier.width(8.dp))
+                Box(Modifier.weight(1f))
+                Text(
+                    "保存",
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = C.accent,
+                    modifier = Modifier
+                        .border(1.dp, C.accent.copy(alpha = 0.4f), RoundedCornerShape(8.dp))
+                        .clickable { onSave(pickedProviders.toList(), pickedModels.toList()) }
+                        .padding(horizontal = 14.dp, vertical = 8.dp),
+                )
+            }
+        }
+    }
+}
+
+/** 一组多选 chip；泛型只是为了让「对象」与「模型名」两种形态共用同一份样式与布局。 */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun <T> ChipSection(
+    title: String,
+    note: String,
+    emptyHint: String,
+    items: List<T>,
+    itemKey: (T) -> String,
+    itemLabel: (T) -> String,
+    itemBadge: (T) -> String?,
+    selected: Set<String>,
+    onToggle: (String) -> Unit,
+) {
+    val C = agateColors()
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(title, fontSize = 13.5.sp, fontWeight = FontWeight.SemiBold, color = C.textMain)
+        Spacer(Modifier.width(6.dp))
+        Text(note, fontSize = 10.5.sp, color = C.textDim)
+    }
+    Spacer(Modifier.height(8.dp))
+    if (items.isEmpty()) {
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .background(C.insetBg, RoundedCornerShape(10.dp))
+                .padding(horizontal = 10.dp, vertical = 12.dp),
+        ) {
+            Text(emptyHint, fontSize = 11.5.sp, color = C.textDim, lineHeight = 15.sp)
+        }
+    } else {
+        FlowRow(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            items.forEach { item ->
+                val key = itemKey(item)
+                val on = key in selected
+                Row(
+                    Modifier
+                        .clip(RoundedCornerShape(9.dp))
+                        .background(if (on) C.accent.copy(alpha = 0.13f) else C.insetBg)
+                        .border(
+                            1.dp,
+                            if (on) C.accent.copy(alpha = 0.38f) else C.border,
+                            RoundedCornerShape(9.dp),
+                        )
+                        .clickable { onToggle(key) }
+                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    if (on) {
+                        Text("✓ ", fontSize = 11.sp, color = C.accent)
+                    }
+                    Text(
+                        itemLabel(item),
+                        fontSize = 11.5.sp,
+                        color = if (on) C.accent else C.textSub,
+                        maxLines = 1,
+                    )
+                    itemBadge(item)?.let { badge ->
+                        Spacer(Modifier.width(5.dp))
+                        Text(
+                            badge,
+                            fontSize = 10.sp,
+                            style = AgateType.Num,
+                            color = if (on) C.accent else C.textDim,
+                        )
+                    }
+                }
             }
         }
     }

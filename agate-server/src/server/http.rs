@@ -216,6 +216,13 @@ pub fn panel_router(state: ServerState) -> Router {
         )
         .route("/api/logs/stats", get(api::logs_api::stats_logs))
         .route("/api/logs/download", get(api::logs_api::download_logs))
+        // 崩溃痕迹：GET 读一次即清（提示条「展示一次」的语义由存储保证），
+        // DELETE 是用户点掉提示条时的丢弃。挂在 logs 组下面（protected），
+        // 因为它读的是 panic 现场文案，与日志同级敏感。
+        .route(
+            "/api/logs/crash",
+            get(api::logs_api::take_crash).delete(api::logs_api::drop_crash),
+        )
         // Node 版对 /api/logs* 的未知子路径（含 `/api/logs/` 上的非 GET/DELETE）
         // 返回管理 API 形状的 404（`{success:false,error:"Not found: <METHOD> <path>"}`），
         // 而不是全局兜底的 OpenAI 形状

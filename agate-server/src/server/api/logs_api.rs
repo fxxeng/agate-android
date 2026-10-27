@@ -211,6 +211,23 @@ pub async fn clear_logs(State(_state): State<ServerState>, Query(params): Query<
     }
 }
 
+/// GET /api/logs/crash —— 读（并清除）上一次运行的崩溃痕迹。
+///
+/// 没有痕迹时给 `{crashed:false}` 而不是 404：前端每进一次日志页都会问一次，
+/// 「没崩过」是常态，用 404 表达常态会让每次刷新都在控制台留一条错误。
+pub async fn take_crash(State(_state): State<ServerState>) -> Response {
+    match crate::server::core::crash_marker::take() {
+        Some(crash) => ok_json(crash.to_json()),
+        None => ok_json(json!({ "crashed": false })),
+    }
+}
+
+/// DELETE /api/logs/crash —— 丢弃痕迹（用户点掉提示条）。
+pub async fn drop_crash(State(_state): State<ServerState>) -> Response {
+    crate::server::core::crash_marker::take();
+    ok_json(json!({ "success": true }))
+}
+
 /// GET /api/logs/download —— 直接回 JSONL 附件
 pub async fn download_logs(State(_state): State<ServerState>) -> Response {
     let store = match store_or_error() {

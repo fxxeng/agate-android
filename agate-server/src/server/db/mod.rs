@@ -208,6 +208,25 @@ impl Db {
         }
     }
 
+    /// 像 [Self::with_mut] 那样取写连接，但**抢不到锁就立刻放弃**，不排队。
+    ///
+    /// ── 为什么要这个变体 ──────────────────────────────────────
+    /// 唯一调用方是崩溃痕迹的 panic hook（见 `core::crash_marker`）。hook 跑在
+    /// unwind 途中，而 panic 有可能恰恰发生在某个 `with_mut` 的闭包里 —— 那把锁
+    /// 此刻正被同一个线程持有。std 的 `Mutex` 不可重入，普通 `lock()` 会自己等
+    /// 自己，**永久**阻塞在崩溃处理中。放弃一次写入只是少一条诊断记录，挂死则是
+    /// ANR，两个后果不是一个量级。
+    ///
+    /// 锁中毒与其它一时抢不到的情形都返回 `None`，语义与 [Self::with_mut] 一致
+    /// （那条路本来就把取不到锁当作「这次写不成」而不是错误）。
+    pub fn try_with_mut<T>(&self, f: impl FnOnce(&mut Connection) -> T) -> Option<T> {
+        match self.inner.conn.try_lock() {
+            Ok(mut conn) => Some(f(&mut conn)),
+            Err(std::sync::TryLockError::WouldBlock) => None,
+            Err(std::sync::TryLockError::Poisoned(_)) => None,
+        }
+    }
+
     /// 库文件路径（排障直读 / 启动日志展示）。
     ///
     /// 返回 `&Path` 而不是 `PathBuf`：路径在打开时定死（**不搬家** ——

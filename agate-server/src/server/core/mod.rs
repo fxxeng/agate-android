@@ -73,6 +73,8 @@ pub mod checkin_records;
 pub mod checkin_schedules;
 pub mod clash;
 pub mod client;
+// 崩溃痕迹（panic hook → kv，下一次启动由日志页读一次）
+pub mod crash_marker;
 pub mod credential_maintenance;
 pub mod crypto;
 pub mod custom_providers;

@@ -2,6 +2,7 @@ package dev.agate.android.data
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
 import org.json.JSONObject
 
 /**
@@ -28,6 +29,7 @@ object KeyOps {
 
     fun configure(key: String) {
         apiKey = key
+        CoreTransport.configure(key)
     }
 
     /** 一条 Key 记录（内核 `api_keys` 的展示面）。 */
@@ -45,9 +47,71 @@ object KeyOps {
             get() = allowedProviders.isNotEmpty() || allowedModels.isNotEmpty()
     }
 
-    suspend fun list(): Result = call("GET", "/api/keys", null)
+    /** 「可用提供商」的一格候选（`providers[]` 一条）。 */
+    data class ProviderOption(val id: String, val label: String, val count: Int = 0)
 
-    suspend fun create(name: String, key: String? = null): Result =
+    /**
+     * 列表响应的候选表。
+     *
+     * ── 为什么必须由后端给，而不是前端自己凑 ─────────────────────
+     * `modelsByProvider` 是「各家清单 + 映射别名」的合并结果，前端拿不到这层；
+     * 而 `/api/session` 的 `models` 是跨家**去重**后的对外视图 —— 按家过滤它
+     * 会漏掉被别家认领的同名模型。项目里也明确禁止维护第二份 provider 清单
+     * （见 `account_store` 模块头）。所以这里只做搬运，不做加工。
+     */
+    class Catalog(
+        val providers: List<ProviderOption>,
+        val modelsByProvider: Map<String, List<String>>,
+    ) {
+        /**
+         * 某家的对外模型清单；认不出这家就给空表。
+         *
+         * 键按小写兜底再查一次：`modelsByProvider` 的键是 provider id 原文，
+         * 而勾选的 id 来自同一张响应所以通常完全一致 —— 兜底只为挡住「同一家
+         * 在两张表里大小写不同」这种畸形数据，命中不了也不用 stats 撑场面。
+         */
+        fun modelsFor(providerId: String): List<String> {
+            modelsByProvider[providerId]?.let { return it }
+            val folded = modelsByProvider.entries.firstOrNull {
+                it.key.equals(providerId, ignoreCase = true)
+            }
+            return folded?.value ?: emptyList()
+        }
+    }
+
+    /** 解出随列表一起回来的两张候选表。 */
+    fun parseCatalog(data: JSONObject?): Catalog {
+        if (data == null) return Catalog(emptyList(), emptyMap())
+        val providers = ArrayList<ProviderOption>()
+        val arr = data.optJSONArray("providers")
+        if (arr != null) {
+            for (i in 0 until arr.length()) {
+                val o = arr.optJSONObject(i) ?: continue
+                val id = o.optString("id")
+                if (id.isBlank()) continue
+                providers += ProviderOption(
+                    id = id,
+                    label = o.optString("label").ifBlank { id },
+                    count = o.optInt("count", 0),
+                )
+            }
+        }
+        val modelsByProvider = LinkedHashMap<String, List<String>>()
+        data.optJSONObject("modelsByProvider")?.let { obj ->
+            val keys = obj.keys()
+            while (keys.hasNext()) {
+                val id = keys.next()
+                val a = obj.optJSONArray(id) ?: continue
+                modelsByProvider[id] =
+                    (0 until a.length()).mapNotNull { a.optString(it).takeIf(String::isNotBlank) }
+            }
+        }
+        return Catalog(providers, modelsByProvider)
+    }
+
+    suspend fun list(): OpResult = call("GET", "/api/keys", null)
+
+    suspend fun create(name: String, key: String? = null): OpResult =
         call(
             "POST",
             "/api/keys",
@@ -56,10 +120,32 @@ object KeyOps {
             }.toString(),
         )
 
-    suspend fun setEnabled(id: String, enabled: Boolean): Result =
+    suspend fun setEnabled(id: String, enabled: Boolean): OpResult =
         call("PATCH", "/api/keys/$id", JSONObject().put("enabled", enabled).toString())
 
-    suspend fun remove(id: String): Result = call("DELETE", "/api/keys/$id", null)
+    /**
+     * 改「可用范围」：可用提供商 + 可用模型。
+     *
+     * ── 为什么总是同时发两个键 ───────────────────────────────
+     * 内核 `parse_allowlist` 的三态语义是「键缺失 = 不动」（是为了不让旧版前端
+     * 顺手抹掉限制而设的），但这里是明确的整块覆盖编辑：用户把某半清空就是**要
+     * 清空**。所以两个键一次都发，空数组表示「清成不限制」，而不是省略。
+     */
+    suspend fun setScope(id: String, providers: List<String>, models: List<String>): OpResult =
+        call(
+            "PATCH",
+            "/api/keys/$id",
+            JSONObject()
+                .put("allowedProviders", jsonArray(providers))
+                .put("allowedModels", jsonArray(models))
+                .toString(),
+        )
+
+    suspend fun remove(id: String): OpResult = call("DELETE", "/api/keys/$id", null)
+
+    /** String 列表转 JSONArray（org.json 没有直接从 List 构造的入口）。 */
+    private fun jsonArray(items: List<String>): JSONArray =
+        JSONArray().apply { items.forEach { put(it) } }
 
     /**
      * 解出列表。
@@ -112,20 +198,20 @@ object KeyOps {
     /** 壳层那把的哨兵 id（不是真的 Key 记录，不能 PATCH / DELETE）。 */
     const val ENV_ID = "__env__"
 
-    private suspend fun call(method: String, path: String, body: String?): Result =
+    private suspend fun call(method: String, path: String, body: String?): OpResult =
         withContext(Dispatchers.IO) {
             val r = CoreTransport.call(method, path, body)
             if (r !is CoreTransport.Reply.Ok) {
-                return@withContext Result(false, null, (r as? CoreTransport.Reply.Down)?.message ?: "链路错误")
+                return@withContext OpResult(false, null, (r as? CoreTransport.Reply.Down)?.message ?: "链路错误")
             }
             val json = runCatching { JSONObject(r.text) }.getOrNull()
             val ok = r.status in 200..299
-            Result(
+            OpResult(
                 ok = ok,
                 data = json?.optJSONObject("data"),
                 error = if (ok) null else json?.optJSONObject("error")?.optString("message"),
             )
         }
 
-    class Result(val ok: Boolean, val data: JSONObject?, val error: String?)
+    class OpResult(val ok: Boolean, val data: JSONObject?, val error: String?)
 }
