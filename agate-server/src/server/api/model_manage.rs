@@ -63,6 +63,38 @@ pub async fn get_manage(State(state): State<ServerState>) -> Response {
     ok_json(catalog::manage_view(state.store()))
 }
 
+/// GET /api/zcode/identity —— ZCode 客户端版本号（界面「本家专有设置」读它）。
+///
+/// 同时给出 `default`：界面据此显示「留空 = 用默认 3.16.2」，而不是让用户
+/// 猜内置值是多少。
+pub async fn get_zcode_identity() -> Response {
+    ok_json(json!({
+        "appVersion": config::zcode_app_version().unwrap_or_default(),
+        "default": crate::server::core::providers::zcode::claim::default_app_version(),
+    }))
+}
+
+/// PUT /api/zcode/identity —— body `{appVersion}`（空串 = 清除覆盖）。
+pub async fn put_zcode_identity(body: Bytes) -> Response {
+    let object = match body_object(&body) {
+        Ok(object) => object,
+        Err(response) => return response,
+    };
+    let version = object
+        .get("appVersion")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if !config::set_zcode_app_version(&version) {
+        return errors::management_error(400, "版本号不能包含控制字符");
+    }
+    ok_json(json!({
+        "appVersion": config::zcode_app_version().unwrap_or_default(),
+        "default": crate::server::core::providers::zcode::claim::default_app_version(),
+    }))
+}
+
 /// GET /api/models/list-view —— 客户端所见清单的**状态 + 推演计数**。
 ///
 /// ── 为什么单独一条（而不是塞进 manage）────────────────────

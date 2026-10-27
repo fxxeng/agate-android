@@ -459,6 +459,8 @@ pub fn panel_router(state: ServerState) -> Router {
         // 模型管理（启停 / 隐藏 / 映射）与网关 Key 列表：都是写配置的管理接口，挂 protected
         .route("/api/models/manage", get(api::model_manage::get_manage))
         // 客户端所见清单的形态（三种输出形态 + 混合模式的 pin）
+        // ZCode 客户端版本号（进推理请求的 UA / X-ZCode-App-Version；上游按形态识别）
+        .route("/api/zcode/identity", get(api::model_manage::get_zcode_identity).put(api::model_manage::put_zcode_identity))
         .route("/api/models/list-view", get(api::model_manage::get_list_view))
         .route("/api/models/list-view", post(api::model_manage::set_list_view))
         .route("/api/models/state", post(api::model_manage::set_state))

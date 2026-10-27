@@ -158,6 +158,13 @@ pub const KEY_DEVELOPER_ROLE_COMPAT: &str = "developerRoleCompat";
 /// 存量安装不迁移、不回种。
 pub const KEY_CLINE_UPSTREAM_HEADERS: &str = "clineUpstreamHeaders";
 
+/// ZCode 客户端版本号覆盖（空 = 用内置默认，见 `zcode::claim::app_version`）。
+///
+/// 这个值进推理请求的 `User-Agent` / `X-ZCode-App-Version`，上游按客户端
+/// 形态识别请求 —— 版本过旧会被拒。做成配置项而不是只认环境变量：桌面/安卓
+/// 形态改不了进程环境，而这是「上游抬高门槛后自救」的唯一入口。
+pub const KEY_ZCODE_APP_VERSION: &str = "zcodeAppVersion";
+
 /// 网关面（`/v1/*`）跨域访问开关的键（config.json 键，设置页「安全 → 网关跨域访问」）。
 ///
 /// **默认关闭**：不开时浏览器里第三方来源的页面调不到网关面 —— 预检请求会落到

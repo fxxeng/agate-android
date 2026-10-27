@@ -303,6 +303,12 @@ pub struct ModelRules {
     /// 能力位覆盖（对下游出口的纠正，见模块头的「能力位覆盖」）
     pub capabilities: Vec<CapabilityOverride>,
     pub seeded: Vec<String>,
+    /// 已执行的一次性迁移标记（`workbuddy-enable-vetted-v1` 这类）。
+    ///
+    /// 与 `seeded` 分开的理由：`seeded` 记「这个模型种过默认规则」，这里记
+    /// 「某次**批量纠偏**跑过」。纠偏只该跑一次 —— 否则每轮刷新都会把用户
+    /// 后来手动关掉的模型又打开。
+    pub migrations: Vec<String>,
 }
 
 /// 从规则数组的 JSON 形态还原条目列表（兼容旧版纯 id 字符串）
@@ -485,6 +491,19 @@ impl ModelRules {
                         .collect()
                 })
                 .unwrap_or_default(),
+            migrations: object
+                .get("migrations")
+                .and_then(Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_default(),
         }
     }
 
@@ -498,6 +517,8 @@ impl ModelRules {
             // `config::update_raw_field`），漏掉哪个键，任何一次写规则
             // （启停 / 加映射 / 删映射 / 四个种子）都会把那个键的数据整份抹掉。
             "custom": self.custom.iter().map(CustomModel::to_value).collect::<Vec<_>>(),
+            // 与 custom 同理：整份替换，漏写就会在下次任意写规则时被抹掉
+            "migrations": self.migrations.clone(),
             // 与 `custom` 同一条硬约束：本函数是整份替换，漏写出哪个键，
             // 任何一次写规则都会把那个键的数据整份抹掉。
             "capabilities": self.capabilities.iter().map(CapabilityOverride::to_value).collect::<Vec<_>>(),
@@ -1321,6 +1342,47 @@ pub fn seed_qoder_defaults(provider: &str, label: &str, ids: &[String]) -> Optio
 /// 禁用 → 本次没有新禁用 → seeded 没落地」这个组合下，下次启动会**重种一遍** ——
 /// 用户在这期间手动启用过它的话，会被这一次重种悄悄改回禁用。种子是
 /// 「只对首次出现生效」的承诺，那承诺必须落盘才算数。
+/// 一次性纠偏：把「因为旧白名单而被自动禁用」的模型重新打开。
+///
+/// ── 为什么需要它（而不是改完种子就完事）─────────────────────
+/// 种子的 `seeded` 是**记账**用的：一个 id 种过就不再碰。所以改掉默认策略后，
+/// 老用户配置里那 38 条「已被自动禁用」的记录不会被重新评估 —— 不加这一步，
+/// 修完种子他们仍然只看到 2 个模型。
+///
+/// ── 怎么保证不覆盖用户的显式选择 ────────────────────────────
+/// 用 `migrations` 里的标记做**一次闸门**：同一条迁移只跑一次。跑过一次之后
+/// 用户再关某个模型，后续刷新不会把它打开（那才是显式意图）。
+///
+/// 判据用「当前清单 id 集合」：这些 id 是本轮**已通过准入过滤**的，说明它们
+/// 确实是可用的对话模型；不在清单里的（用户自己登记的、别家的）一律不动。
+fn migrate_enable_vetted(provider: &str, ids: &[String]) -> Option<String> {
+    const MARK: &str = "migration:enable-vetted-v1";
+    let mut rules = current();
+    if rules.migrations.iter().any(|m| m == MARK) {
+        return None;
+    }
+    let mut re_enabled: Vec<String> = Vec::new();
+    for id in ids {
+        let id = id.trim();
+        if id.is_empty() || !rules.is_disabled(provider, id) {
+            continue;
+        }
+        set_membership(&mut rules.disabled, Some(provider), id, false);
+        re_enabled.push(id.to_string());
+    }
+    rules.migrations.push(MARK.to_string());
+    save(&rules);
+    if re_enabled.is_empty() {
+        // 没有需要纠偏的（新装用户）—— 只落标记，不吵日志
+        return None;
+    }
+    Some(format!(
+        "🔧 迁移: 重新启用 {} 个此前被默认禁用的模型 [{}]",
+        re_enabled.len(),
+        re_enabled.join(", ")
+    ))
+}
+
 fn seed_default_enabled(
     provider: &str,
     label: &str,

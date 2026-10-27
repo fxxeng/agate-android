@@ -229,7 +229,18 @@ pub fn captcha_hint(config: &CaptchaConfig) -> String {
 }
 
 /// 客户端版本号（`ZCODE_APP_VERSION` 可覆盖）
+/// 内置默认版本号（界面展示「留空 = 用这个」）。
+pub fn default_app_version() -> &'static str {
+    DEFAULT_APP_VERSION
+}
+
 pub fn app_version() -> String {
+    // 优先级：配置项（界面可改）> 环境变量 > 内置默认。
+    // 配置项排在最前：桌面/安卓形态改不了进程环境，而「上游抬高版本门槛后
+    // 自救」必须有个能在界面上改的入口。
+    if let Some(value) = crate::server::config::current().zcode_app_version() {
+        return value.to_string();
+    }
     std::env::var("ZCODE_APP_VERSION")
         .ok()
         .map(|value| value.trim().to_string())

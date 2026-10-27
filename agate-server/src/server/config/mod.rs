@@ -1973,6 +1973,39 @@ pub fn set_models_dev_enabled(enabled: bool) -> bool {
     })
 }
 
+/// ZCode 客户端版本号覆盖（空/未配置 → None，调用方回落内置默认）。
+///
+/// 直接读 `raw` 而不进 `RuntimeConfig`：它只在构造上游请求时读一次，
+/// 加个字段等于让整份快照为它多克隆一个 String，不划算。
+pub fn zcode_app_version() -> Option<String> {
+    CONFIG
+        .read()
+        .ok()
+        .and_then(|guard| {
+            guard
+                .as_ref()
+                .and_then(|config| config.raw.get(KEY_ZCODE_APP_VERSION))
+                .and_then(Value::as_str)
+                .map(|value| value.trim().to_string())
+        })
+        .filter(|value| !value.is_empty())
+}
+
+/// 写入 ZCode 客户端版本号（空串 = 清除覆盖，回到内置默认）。
+pub fn set_zcode_app_version(version: &str) -> bool {
+    let trimmed = version.trim();
+    // 只做最基本的字符约束：版本号会进 HTTP 头，换行/控制字符会把头拆坏
+    if trimmed.chars().any(|c| c.is_control()) {
+        return false;
+    }
+    update(|config| {
+        config.raw.insert(
+            KEY_ZCODE_APP_VERSION.to_string(),
+            Value::String(trimmed.to_string()),
+        );
+    })
+}
+
 /// 写入清单形态 + pin 列表（设置页「模型 → 客户端所见清单」）。
 ///
 /// 两个值一起写：它们表达的是同一件事（客户端会看到什么），分开保存会出现

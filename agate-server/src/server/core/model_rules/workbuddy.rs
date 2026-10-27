@@ -27,6 +27,9 @@ use super::{current, save};
 /// **两个地区共用同一份**（`workbuddy` / `workbuddy-intl`）：两家的清单来自
 /// 同一套上游模型表（各自站点下发），白名单里的三个名字两地都有；分开维护
 /// 两份只会让「国际版默认关了一堆、国内版默认开着」这类不一致有机会出现。
+/// 历史白名单（**已不作为默认启用/禁用的依据**，见
+/// [`seed_workbuddy_defaults`] 的说明）。保留常量是为了让读旧代码的人知道
+/// 「以前默认只开这三个」，而不是把它当成当前口径。
 pub const WORKBUDDY_DEFAULT_ENABLED: &[&str] = &["hy3", "hy4-preview-f", "deepseek-v4.1-flash"];
 
 /// WorkBuddy 清单的**默认规则种子**：对 `ids` 里每个还没种过的模型记入
@@ -45,7 +48,27 @@ pub const WORKBUDDY_DEFAULT_ENABLED: &[&str] = &["hy3", "hy4-preview-f", "deepse
 /// 差异只在 provider 键上。展示名从注册表查（`label_of`），别处不要再写名字。
 pub fn seed_workbuddy_defaults(provider: &str, ids: &[String]) -> Option<String> {
     let label = crate::server::core::providers::label_of(provider);
-    super::seed_default_enabled(provider, &label, WORKBUDDY_DEFAULT_ENABLED, ids)
+    // ── 不再「按白名单批量禁用」（本次修复）─────────────────────
+    // 旧行为：不在 [`WORKBUDDY_DEFAULT_ENABLED`] 里的模型**默认禁用**。那份
+    // 白名单只有 3 条，而上游 `/v3/config` 现在给 40 条 —— 于是「拉到 40 个、
+    // 对外只出 2 个」：其余 38 个被种子关掉，`builtin_target` 直接返回 None，
+    // `/v1/models` 与模型页都看不到它们。
+    //
+    // 为什么要整条去掉而不是「把白名单补长」：**是不是对话模型该由准入过滤
+    // 决定**（[`super::super::models::filter_with_meta`]：官方 picker 名单 +
+    // maxOutputTokens 推断），种子再做一次「默认关闭」等于第二道没有依据的
+    // 关卡，而它的依据（一份写死的 3 个名字）早就过期了。
+    //
+    // 现在种子只负责**记账**（写 `seeded`），默认状态一律「启用」；用户想关
+    // 哪个在管理页自己关（那是显式意图，种子永不覆盖）。
+    let _ = WORKBUDDY_DEFAULT_ENABLED;
+    let summary = super::seed_default_enabled(provider, &label, &[], ids);
+    // 一次性纠偏：把旧白名单**自动关掉**的那些模型重新打开
+    let migration = super::migrate_enable_vetted(provider, ids);
+    match (summary, migration) {
+        (None, None) => None,
+        (a, b) => Some([a, b].into_iter().flatten().collect::<Vec<_>>().join(" · ")),
+    }
 }
 
 /// 拆家前后的 provider id（迁移专用；别处一律走 `workbuddy::Region`）
