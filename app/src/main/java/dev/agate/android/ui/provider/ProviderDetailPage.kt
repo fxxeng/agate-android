@@ -48,6 +48,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.agate.android.data.AccountOps
+import dev.agate.android.data.ProviderIdentityOps
 import dev.agate.android.data.GatewayRepository
 import dev.agate.android.data.ScheduledTaskOps
 import dev.agate.android.data.PresetRegistry
@@ -934,6 +935,183 @@ private fun zcodePoolHint(): String {
     }
 }
 
+/**
+ * ZCode「客户端版本号」设置卡。
+ *
+ * ── 这个值为什么值得单独做一个输入框 ─────────────────────────
+ * 它进推理请求的 `User-Agent: ZCode/{version}` 与 `X-ZCode-App-Version`，上游
+ * 按客户端形态识别请求、**版本过旧会被拒**（这正是「账号有额度却调不通」的
+ * 一类原因）。内置默认值会随版本更新，但上游抬门槛比发版快 —— 所以在界面上
+ * 留一个能自己改的口子。
+ */
+@Composable
+private fun ZcodeVersionCard() {
+    val C = agateColors()
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var identity by remember { mutableStateOf<ProviderIdentityOps.ZcodeIdentity?>(null) }
+    var editing by remember { mutableStateOf<String?>(null) }
+    var busy by remember { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) { identity = ProviderIdentityOps.getZcode() }
+
+    Card {
+        Text("客户端版本号", color = C.textMain, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "随请求头发给上游（UA 与 X-ZCode-App-Version）。上游按客户端形态识别请求，版本过旧会被拒；" +
+                "调不通时可先试填与官方客户端一致的版本。",
+            color = C.textSub, fontSize = 12.sp,
+        )
+        Spacer(Modifier.height(10.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            val current = identity
+            Text(
+                when {
+                    current == null -> "读取中…"
+                    current.overridden.isBlank() -> "当前生效 ${current.default}（默认）"
+                    else -> "当前生效 ${current.overridden}（已覆盖，默认 ${current.default}）"
+                },
+                color = C.textSub,
+                fontSize = 12.sp,
+                modifier = Modifier.weight(1f),
+            )
+            SmallAction(
+                if (editing == null) "修改" else "取消",
+                primary = false,
+                enabled = !busy && identity != null,
+                onClick = { editing = if (editing == null) identity?.overridden.orEmpty() else null },
+            )
+        }
+        editing?.let { draft ->
+            Spacer(Modifier.height(8.dp))
+            OutlinedTextField(
+                value = draft,
+                onValueChange = { editing = it },
+                singleLine = true,
+                textStyle = androidx.compose.ui.text.TextStyle(fontSize = 13.sp),
+                placeholder = { Text(identity?.default ?: "3.16.2", fontSize = 12.sp) },
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "留空 = 回到内置默认（${identity?.default ?: "—"}）",
+                color = C.textDim, fontSize = 11.sp,
+            )
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                SmallAction("保存", primary = true, enabled = !busy, onClick = {
+                    busy = true
+                    scope.launch {
+                        val r = ProviderIdentityOps.setZcode(draft.trim())
+                        busy = false
+                        Toast.makeText(
+                            ctx,
+                            if (r.ok) "已保存，下一个请求生效" else (r.error ?: "保存失败"),
+                            Toast.LENGTH_SHORT,
+                        ).show()
+                        if (r.ok) {
+                            identity = ProviderIdentityOps.getZcode()
+                            editing = null
+                        }
+                    }
+                })
+            }
+        }
+    }
+}
+
+/**
+ * Cline「伪装头」设置卡。
+ *
+ * ── 只列「默认清单里那几个」+ 允许改值，不做整表编辑器 ──────────
+ * 用户的实际需求是「上游收紧了，把版本号/平台改一下」，而不是从零设计一套头。
+ * 所以按默认清单逐项给输入框，**留空 = 发默认值**；这比自由增删行更不容易
+ * 配坏（少一个硬门槛头 `X-CLIENT-TYPE`，整家就 403）。
+ */
+@Composable
+private fun ClineHeadersCard() {
+    val C = agateColors()
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var headers by remember { mutableStateOf<ProviderIdentityOps.ClineHeaders?>(null) }
+    var draft by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
+    var expanded by remember { mutableStateOf(false) }
+    var busy by remember { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) {
+        headers = ProviderIdentityOps.getCline()
+        draft = headers?.overrides ?: emptyMap()
+    }
+
+    Card {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("伪装头", color = C.textMain, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "上游按请求头判定「是不是 Cline 自家客户端」。X-CLIENT-TYPE 是免费池的硬门槛，" +
+                        "其余头让请求更贴近官方 CLI；上游收紧时改这里",
+                    color = C.textSub, fontSize = 12.sp,
+                )
+            }
+            SmallAction(
+                if (expanded) "收起" else "编辑",
+                primary = false,
+                enabled = headers != null,
+                onClick = { expanded = !expanded },
+            )
+        }
+
+        if (expanded) {
+            val defaults = headers?.defaults ?: emptyMap()
+            Spacer(Modifier.height(10.dp))
+            defaults.keys.sorted().forEach { name ->
+                val isFixed = name.equals("X-CLIENT-TYPE", ignoreCase = true)
+                Spacer(Modifier.height(7.dp))
+                Text(
+                    if (isFixed) "$name（硬门槛，不可改）" else name,
+                    color = if (isFixed) C.textDim else C.textSub,
+                    fontSize = 11.sp,
+                )
+                Spacer(Modifier.height(3.dp))
+                OutlinedTextField(
+                    value = if (isFixed) (defaults[name] ?: "") else (draft[name] ?: ""),
+                    onValueChange = { if (!isFixed) draft = draft + (name to it) },
+                    enabled = !isFixed && !busy,
+                    singleLine = true,
+                    textStyle = androidx.compose.ui.text.TextStyle(fontSize = 12.sp),
+                    placeholder = { Text(defaults[name] ?: "", fontSize = 11.sp) },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+            Spacer(Modifier.height(8.dp))
+            Text("留空 = 发内置默认值；输入框里的灰字就是当前默认", color = C.textDim, fontSize = 11.sp)
+            Spacer(Modifier.height(8.dp))
+            SmallAction("保存", primary = true, enabled = !busy, onClick = {
+                busy = true
+                scope.launch {
+                    // 只提交非空的覆盖（空串在内核语义里是「不发这个头」，
+                    // 而用户在这里清空输入框的意思是「用默认」——两者不同，
+                    // 所以此处把空值直接从表里去掉）
+                    val cleaned = draft.filterValues { it.isNotBlank() }
+                    val r = ProviderIdentityOps.setCline(cleaned)
+                    busy = false
+                    Toast.makeText(
+                        ctx,
+                        if (r.ok) "已保存，下一个请求生效" else (r.error ?: "保存失败"),
+                        Toast.LENGTH_SHORT,
+                    ).show()
+                    if (r.ok) {
+                        headers = ProviderIdentityOps.getCline()
+                        draft = headers?.overrides ?: emptyMap()
+                    }
+                }
+            })
+        }
+    }
+}
+
 /* ───────────── 设置 ───────────── */
 @Composable
 private fun SettingsTab(
@@ -986,6 +1164,20 @@ private fun SettingsTab(
                         )
                     }
                 }
+                Spacer(Modifier.height(12.dp))
+            }
+        }
+
+        // ── 本家专有设置：出站身份（ZCode 版本号 / Cline 伪装头）──────
+        // 两者都进上游请求头，上游按「像不像官方客户端」决定放不放行。
+        // 放在「设置」tab 是因为它们是**这一家的接入形态**，不是某个账号的属性。
+        when (providerId) {
+            "zcode", "zcode-intl" -> {
+                ZcodeVersionCard()
+                Spacer(Modifier.height(12.dp))
+            }
+            "cline-free", "cline-pass" -> {
+                ClineHeadersCard()
                 Spacer(Modifier.height(12.dp))
             }
         }
