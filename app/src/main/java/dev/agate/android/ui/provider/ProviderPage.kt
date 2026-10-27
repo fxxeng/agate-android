@@ -775,9 +775,14 @@ internal fun credentialExpiryMs(acc: AccountDto): Long? {
     return if (value < 100_000_000_000L) value * 1000 else value
 }
 
-/** 凭证有效期一行：文案收短成「30 天后」，已过期标红。 */
+/**
+ * 凭证有效期一行：文案收短成「30 天后」，已过期标红。
+ *
+ * `internal` 而非 private：列表页与**详情页**两处账号卡都要用它 —— 同一个事实
+ * 在两处必须长得一样，复制一份迟早会漂。
+ */
 @Composable
-private fun ExpiryLine(expiresAtMs: Long) {
+internal fun ExpiryLine(expiresAtMs: Long) {
     val C = agateColors()
     val left = expiresAtMs - System.currentTimeMillis()
     val text = when {

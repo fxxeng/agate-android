@@ -61,6 +61,7 @@ import dev.agate.android.ui.components.BadgeTone
 import dev.agate.android.ui.theme.AgateType
 import dev.agate.android.ui.theme.agateColors
 import kotlinx.coroutines.launch
+import org.json.JSONArray
 import org.json.JSONObject
 
 /**
@@ -93,6 +94,8 @@ fun ProviderDetailPage(providerId: String, onBack: () -> Unit, onAddAccount: () 
     var editConc by remember { mutableStateOf("") }
     var confirmRemove by remember { mutableStateOf<AccountDto?>(null) }
     var confirmRemoveAll by remember { mutableStateOf(false) }
+    // 「额度设限」的编辑目标（null = 弹窗关闭）
+    var limiterTarget by remember { mutableStateOf<AccountDto?>(null) }
     // 「删除提供商」与「删除全部账号」是两件事（前者连配置一起没），
     // 共用一个状态会让文案互相冒充 —— 分开。
     var confirmDeleteProvider by remember { mutableStateOf(false) }
@@ -102,6 +105,11 @@ fun ProviderDetailPage(providerId: String, onBack: () -> Unit, onAddAccount: () 
     var disabledProviders by remember { mutableStateOf<Set<String>?>(null) }
     var editingInterval by remember { mutableStateOf(false) }
     var intervalText by remember { mutableStateOf("") }
+
+    // 这一家有没有余额能力（决定账号卡上要不要显示「额度设限」入口）——
+    // 判据与列表页同源：内核 `ProviderAdapter::supports_usage` 经
+    // /api/session 的 `providers[].usage` 带下来。
+    val usageCapable = snap.providerUsage[providerId] ?: false
 
     DisposableEffect(Unit) {
         AccountOps.configure(GatewayPrefs.apiKey(ctx))
@@ -257,6 +265,8 @@ fun ProviderDetailPage(providerId: String, onBack: () -> Unit, onAddAccount: () 
                 accounts = accounts,
                 usageLabel = usageLabel,
                 busy = busy,
+                usageCapable = usageCapable,
+                onOpenLimiter = { acc -> limiterTarget = acc },
                 onQueryUsage = { loadUsage(force = true) },
                 onEdit = { acc ->
                     editing = acc
@@ -482,6 +492,26 @@ fun ProviderDetailPage(providerId: String, onBack: () -> Unit, onAddAccount: () 
             dismissButton = { TextButton(onClick = { confirmDeleteProvider = false }) { Text("取消") } },
         )
     }
+    // ── 额度设限弹窗（与列表页同款）──
+    limiterTarget?.let { acc ->
+        AccountLimiterDialog(
+            accountName = acc.displayName,
+            current = limiterRulesOf(acc.raw),
+            onDismiss = { limiterTarget = null },
+            onSave = { result ->
+                limiterTarget = null
+                busy = true
+                scope.launch {
+                    val body = JSONObject()
+                    body.put("limiters", JSONArray().apply { result.forEach { put(it.toJson()) } })
+                    val r = AccountOps.update(acc.id, body)
+                    busy = false
+                    toast(if (r.ok) (if (result.isEmpty()) "已取消额度限制" else "已设置额度限制") else (r.error ?: "保存失败"))
+                    if (r.ok) GatewayRepository.refreshOnce()
+                }
+            },
+        )
+    }
 }
 
 /* ───────────── 概览 ───────────── */
@@ -634,6 +664,9 @@ private fun AccountsTab(
     accounts: List<AccountDto>,
     usageLabel: Map<String, String>,
     busy: Boolean,
+    /** 该家是否支持余额查询（透传到账号卡，决定「额度设限」入口是否渲染）。 */
+    usageCapable: Boolean,
+    onOpenLimiter: (AccountDto) -> Unit,
     onQueryUsage: () -> Unit,
     onPin: (AccountDto) -> Unit,
     onEdit: (AccountDto) -> Unit,
@@ -665,6 +698,8 @@ private fun AccountsTab(
                         acc = acc,
                         rank = i + 1,
                         usage = usageLabel[acc.id],
+                        usageCapable = usageCapable,
+                        onOpenLimiter = onOpenLimiter,
                         busy = busy,
                         onPin = { onPin(acc) },
                         onEdit = { onEdit(acc) },
@@ -698,10 +733,13 @@ private fun AccountBlock(
     rank: Int,
     usage: String?,
     busy: Boolean,
+    /** 该家是否支持余额查询（决定要不要显示「额度设限」入口）。 */
+    usageCapable: Boolean,
     onPin: () -> Unit,
     onEdit: () -> Unit,
     onToggle: () -> Unit,
     onDelete: () -> Unit,
+    onOpenLimiter: (AccountDto) -> Unit,
 ) {
     val C = agateColors()
     Column(
@@ -727,6 +765,17 @@ private fun AccountBlock(
             color = if (usage?.startsWith("查询失败") == true) C.red else C.textSub,
             fontSize = 12.sp,
         )
+        // 凭证有效期（与列表页同口径：双字段 + 秒毫秒归一；没有该字段的家不渲染）
+        credentialExpiryMs(acc)?.let { at ->
+            ExpiryLine(at)
+        }
+        // 额度设限：只对支持余额查询的家显示（该家没接余额时填了阈值也看不到效果）
+        if (usageCapable) {
+            LimiterEntryRow(
+                summary = limiterRulesOf(acc.raw).firstOrNull()?.summary() ?: "未设限",
+                onOpen = { onOpenLimiter(acc) },
+            )
+        }
         Spacer(Modifier.height(8.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             SmallAction("置顶", enabled = !busy, onClick = onPin)
@@ -735,6 +784,7 @@ private fun AccountBlock(
             SmallAction("删除", false, !busy, onClick = onDelete, danger = true)
         }
     }
+
 }
 
 /* ───────────── 设置 ───────────── */
