@@ -57,6 +57,44 @@ import dev.agate.android.ui.theme.AgateType
 import dev.agate.android.ui.theme.agateColors
 
 /**
+ * 一次目录刷新里**某一家的结论**（`/api/models/refresh` 的 `results[]`）。
+ *
+ * 状态取值是前后端契约（见内核 `catalog_refresh`）：`refreshed` / `skipped` /
+ * `failed`。卡片据此分三档显示 —— 失败的要能一眼看到并重试，跳过的要说明
+ * 「这家用固定清单（重试也没用）」，成功的只是在汇总里计数。
+ */
+internal data class RefreshRow(
+    val provider: String,
+    val label: String,
+    val status: String,
+    val count: Int,
+    val message: String?,
+) {
+    val failed: Boolean get() = status == "failed"
+    val skipped: Boolean get() = status == "skipped"
+
+    companion object {
+        fun parseAll(data: org.json.JSONObject?): List<RefreshRow> {
+            val arr = data?.optJSONArray("results") ?: return emptyList()
+            val out = ArrayList<RefreshRow>(arr.length())
+            for (i in 0 until arr.length()) {
+                val o = arr.optJSONObject(i) ?: continue
+                val pid = o.optString("provider")
+                if (pid.isBlank()) continue
+                out += RefreshRow(
+                    provider = pid,
+                    label = o.optString("providerLabel").ifBlank { pid },
+                    status = o.optString("status").ifBlank { "refreshed" },
+                    count = o.optInt("count", 0),
+                    message = o.optString("message").ifBlank { null },
+                )
+            }
+            return out
+        }
+    }
+}
+
+/**
  * 客户端所见清单的**状态 + 推演计数**（来自 `/api/models/list-view`）。
  *
  * ── 为什么三个计数一次全要 ──────────────────────────────────
@@ -159,6 +197,9 @@ fun ModelsPage(
     var view by remember { mutableIntStateOf(1) }   // 0 按模型聚合 / 1 按提供商分组（默认分组）
     var query by remember { mutableStateOf("") }
     var refreshing by remember { mutableStateOf(false) }
+    // 最近一次刷新的逐家结果（v44：卡片要能直接看到「哪家失败」，不必进子页）
+    var refreshRows by remember { mutableStateOf<List<RefreshRow>>(emptyList()) }
+    var refreshAt by remember { mutableStateOf(0L) }
     // 客户端所见清单的状态 + 推演计数（来自 /api/models/list-view）
     var listView by remember { mutableStateOf(ListView()) }
     var configuring by remember { mutableStateOf(false) }
@@ -202,6 +243,14 @@ fun ModelsPage(
         scope.launch {
             val r = ModelOps.refresh()
             refreshing = false
+            // 逐家结论落到状态（卡上直接显示失败的家，见 RefreshCard）——
+            // toast 只给一句话，细节必须留在界面上，否则用户错过就没了
+            RefreshRow.parseAll(r.data).let { rows ->
+                if (rows.isNotEmpty()) {
+                    refreshRows = rows
+                    refreshAt = System.currentTimeMillis()
+                }
+            }
             Toast.makeText(
                 ctx,
                 if (r.ok) "已刷新模型清单" else "刷新失败：${r.error ?: "未知"}",
@@ -218,6 +267,10 @@ fun ModelsPage(
     Column(modifier = modifier.fillMaxSize().background(C.bg)) {
         AgatePageHeader(title = "模型", onOpenDrawer = onOpenDrawer) {
             AgateHeaderAction("测速") { onOpenSpeedtest() }
+            // 「映射」按 v44 放在**页头**而不是页面底部 —— 它是配置入口，
+            // 与「测速」同级；放底部会与本页的「清单 + 模型列表」混在一起，
+            // 且要滚到最下方才够得着。
+            AgateHeaderAction("映射") { onOpenMapping() }
         }
 
         Column(
@@ -280,19 +333,27 @@ fun ModelsPage(
             }
 
             Spacer(Modifier.height(4.dp))
-            EntryCard(
-                icon = "⇄",
-                title = "模型映射",
-                sub = "alias → target 多家主备 · 思考等级 · 自定义模型",
-                onClick = { onOpenMapping() },
-            )
-            Spacer(Modifier.height(8.dp))
-            // ── 模型目录刷新入口（v44 quota-entry）──
-            EntryCard(
-                icon = "↻",
-                title = "模型目录刷新",
-                sub = if (refreshing) "正在刷新…" else if (models.isEmpty()) "点按拉取各家清单（每 6 小时自动）" else "已加载 ${models.size} 条 · 点按强制刷新",
-                onClick = { doRefresh() },
+            // ── 模型目录刷新（v44 quota-entry，改状态卡）──
+            RefreshCard(
+                total = models.size,
+                refreshing = refreshing,
+                rows = refreshRows,
+                refreshAt = refreshAt,
+                onRefreshAll = { doRefresh() },
+                onRetryFailed = { failed ->
+                    if (!refreshing) {
+                        refreshing = true
+                        scope.launch {
+                            val r = ModelOps.refresh(providers = failed)
+                            refreshing = false
+                            RefreshRow.parseAll(r.data).takeIf { it.isNotEmpty() }?.let {
+                                refreshRows = it
+                                refreshAt = System.currentTimeMillis()
+                            }
+                            if (r.ok) GatewayRepository.refreshOnce()
+                        }
+                    }
+                },
             )
             Spacer(Modifier.height(8.dp))
             Text(
@@ -546,6 +607,187 @@ private fun FlowIds(ids: List<String>) {
                 }
             }
         }
+    }
+}
+
+/**
+ * 模型目录刷新卡（v44 quota-entry 改状态卡）。
+ *
+ * ── 为什么不再是一张「入口卡」──────────────────────────────
+ * 旧版只有「标题 + 一句话 + ❯」，用户点完只能靠一处几秒即逝的 toast 知道结果，
+ * 错过就得进子页或翻日志。而「哪家拉失败」恰恰是必须看见的信息 —— 它直接
+ * 影响这台网关能用哪些模型。
+ *
+ * ── 常态与异常的区别只体现在「要不要多几行」──────────────────
+ *   · 全部成功：两行（模型数 · 时间 · 汇总徽章），点整卡即刷新；
+ *   · 有失败：边框转琥珀 + 逐条列出失败/有变更的家 + 卡上给重试按钮。
+ * 失败家最多列 3 条，其余聚合成「其余 N 家」—— 卡片不因家多而变长。
+ */
+@Composable
+private fun RefreshCard(
+    total: Int,
+    refreshing: Boolean,
+    rows: List<RefreshRow>,
+    refreshAt: Long,
+    onRefreshAll: () -> Unit,
+    onRetryFailed: (List<String>) -> Unit,
+) {
+    val C = agateColors()
+    val failed = rows.filter { it.failed }
+    val hasTrouble = failed.isNotEmpty()
+    val refreshed = rows.count { it.status == "refreshed" }
+    val skipped = rows.count { it.skipped }
+
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .agateCard().background(C.cardBg, RoundedCornerShape(20.dp))
+            .border(
+                1.dp,
+                if (hasTrouble) C.amber.copy(alpha = 0.45f) else C.border,
+                RoundedCornerShape(20.dp),
+            )
+            .clickable(enabled = !refreshing, onClick = onRefreshAll)
+            .padding(14.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            // 图标块：颜色本身就是状态（正常绿 / 有失败琥珀）
+            Box(
+                Modifier
+                    .size(34.dp)
+                    .background(
+                        if (hasTrouble) C.amber.copy(alpha = 0.16f) else C.green.copy(alpha = 0.15f),
+                        RoundedCornerShape(11.dp),
+                    ),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    if (refreshing) "…" else "↻",
+                    color = if (hasTrouble) C.amber else C.green,
+                    fontSize = 17.sp,
+                )
+            }
+            Spacer(Modifier.width(11.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "模型目录刷新",
+                    color = C.textMain,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    buildString {
+                        if (refreshing) {
+                            append("正在刷新…")
+                        } else {
+                            append("$total 个模型")
+                            if (refreshAt > 0) {
+                                append(" · ")
+                                append(agoLabel(refreshAt))
+                            }
+                            when {
+                                rows.isEmpty() -> append(" · 每 6 小时自动")
+                                hasTrouble -> {}
+                                else -> append(" · $refreshed 家正常")
+                            }
+                        }
+                    },
+                    color = C.textSub,
+                    fontSize = 12.sp,
+                    maxLines = 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                )
+            }
+            when {
+                refreshing -> {}
+                hasTrouble -> AgateBadge("${failed.size} 家失败", BadgeTone.AMBER)
+                else -> Text("❯", color = C.textDim, fontSize = 13.sp)
+            }
+        }
+
+        // ── 异常时才铺开：只列失败的家（+ 汇总其余）──
+        if (!refreshing && hasTrouble) {
+            Spacer(Modifier.height(9.dp))
+            Box(Modifier.fillMaxWidth().height(1.dp).background(C.border.copy(alpha = 0.5f)))
+            Spacer(Modifier.height(8.dp))
+            failed.take(3).forEach { row ->
+                Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        row.label,
+                        color = C.textSub,
+                        fontSize = 12.sp,
+                        maxLines = 1,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        row.message?.take(28) ?: "失败",
+                        color = C.red,
+                        fontSize = 11.sp,
+                        maxLines = 1,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                    )
+                }
+            }
+            if (failed.size > 3) {
+                Text("… 还有 ${failed.size - 3} 家失败", color = C.textDim, fontSize = 11.sp)
+            }
+            // 其余家聚合成一句，避免卡片被家数拉长
+            val rest = rows.size - failed.take(3).size
+            if (rest > 0) {
+                Text(
+                    buildString {
+                        append("其余 $rest 家")
+                        if (refreshed > 0) append(" · $refreshed 成功")
+                        if (skipped > 0) append(" · $skipped 停用")
+                    },
+                    color = C.textDim,
+                    fontSize = 11.sp,
+                    modifier = Modifier.padding(top = 2.dp),
+                )
+            }
+            Spacer(Modifier.height(9.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+                RefreshButton("↻ 全量刷新", C.accent, Modifier.weight(1f), onRefreshAll)
+                RefreshButton("仅重试失败 · ${failed.size}", C.amber, Modifier.weight(1f)) {
+                    onRetryFailed(failed.map { it.provider })
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RefreshButton(
+    text: String,
+    color: androidx.compose.ui.graphics.Color,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
+    Text(
+        text,
+        color = color,
+        fontSize = 12.sp,
+        fontWeight = FontWeight.SemiBold,
+        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+        maxLines = 1,
+        modifier = modifier
+            .background(color.copy(alpha = 0.10f), RoundedCornerShape(9.dp))
+            .border(1.dp, color.copy(alpha = 0.38f), RoundedCornerShape(9.dp))
+            .clickable(onClick = onClick)
+            .padding(vertical = 7.dp),
+    )
+}
+
+/** 「N 分钟前 / N 小时前 / N 天前」——刷新距今多久。 */
+private fun agoLabel(atMs: Long): String {
+    val delta = (System.currentTimeMillis() - atMs).coerceAtLeast(0)
+    return when {
+        delta < 60_000L -> "刚刚"
+        delta < 3_600_000L -> "${delta / 60_000L} 分钟前"
+        delta < 86_400_000L -> "${delta / 3_600_000L} 小时前"
+        else -> "${delta / 86_400_000L} 天前"
     }
 }
 

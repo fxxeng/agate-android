@@ -205,6 +205,44 @@ fn apply_filters(models: Vec<Value>) -> Vec<Value> {
         .collect()
 }
 
+/// 过滤前先补能力位，**但只补判定用的副本**。
+///
+/// ── 为什么必须先补（这是「登录后只显示两个模型」的根因）────────
+/// [`is_chat_model`] 要求 `maxOutputTokens` 是数字且 ≥16000。原实现在刷新时
+/// 直接对**上游原文**跑过滤，而 models.dev 的补齐（`model_meta::apply`）只在
+/// 渲染期的 `manifest_for` 里做 —— 于是「上游没声明、但社区库知道」的模型在
+/// 刷新这一步就被整批踢掉。表现：远程 60 条过滤后只剩 2 条，且内置目录
+/// 也不回落（`allowed` 非空就不会走 `initial_state` 的兜底）。
+///
+/// ── 为什么补的是副本、入库的仍是原文 ────────────────────────
+/// `model_meta::apply` 会把「上游声明过」的键记成 `capSources: upstream`，
+/// 而它判断依据是「这个键已经有非空值」。若把补齐结果截回清单，下一轮
+/// 渲染期再跑一次 `apply` 时，那些其实是 models.dev 补的键会被误记成
+/// `upstream` —— 那正好毁掉管理页「这个值是谁说的」这套标注。
+/// 所以：**副本只用于判定，入库的仍是上游原文**，来源标注留给渲染期那一遍。
+fn filter_with_meta(models: Vec<Value>) -> Vec<Value> {
+    let mut probe = models.clone();
+    for item in probe.iter_mut() {
+        crate::server::core::model_meta::apply(item);
+    }
+    // 逐位对齐：probe 补过元数据，决定留不留；留下的取 models 里的原文
+    let keeps: Vec<bool> = probe.iter().map(is_chat_model).collect();
+    models
+        .into_iter()
+        .zip(keeps)
+        .filter(|(model, keep)| {
+            if !*keep {
+                return false;
+            }
+            if MODEL_ALLOWLIST.is_empty() {
+                return true;
+            }
+            MODEL_ALLOWLIST.contains(&model_id(model).as_str())
+        })
+        .map(|(model, _)| model)
+        .collect()
+}
+
 /// 白名单模型必须有可用定义：远程/传入清单缺失时回退内置定义
 fn allowlist_fallback() -> Vec<Value> {
     builtin_models()
@@ -502,7 +540,7 @@ impl ModelCatalog {
                             .and_then(Value::as_array)
                             .cloned()
                             .unwrap_or_default();
-                        let allowed = apply_filters(raw.clone());
+                        let allowed = filter_with_meta(raw.clone());
                         // 官方 picker 名单与 models 来自同一个响应的另一处
                         let picker = picker_model_ids(&payload);
                         if !allowed.is_empty() {
@@ -549,7 +587,7 @@ impl ModelCatalog {
                             .and_then(Value::as_array)
                             .cloned()
                             .unwrap_or_default();
-                        let allowed = apply_filters(raw);
+                        let allowed = filter_with_meta(raw);
                         if allowed.is_empty() {
                             RefreshOutcome::not_refreshed("企业模型列表为空")
                         } else {
