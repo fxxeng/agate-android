@@ -358,17 +358,19 @@ fun ProviderPage(
     limiterTarget?.let { acc ->
         AccountLimiterDialog(
             accountName = acc.displayName,
-            current = balanceLimiterOf(acc.raw),
+            current = limiterRulesOf(acc.raw),
             onDismiss = { limiterTarget = null },
             onSave = { result ->
                 limiterTarget = null
                 scope.launch {
+                    // 整块替换：内核 `apply_patch` 归一化校验后同步旧 lowBalance；
+                    // 空数组 = 不限制（与 3.0.8「没有生效的规则就是不限制」一致）
                     val body = JSONObject()
-                    body.put("limiters", JSONArray().apply { result?.let { put(it.toJson()) } })
+                    body.put("limiters", JSONArray().apply { result.forEach { put(it.toJson()) } })
                     val r = AccountOps.update(acc.id, body)
                     Toast.makeText(
                         ctx,
-                        if (r.ok) (result?.let { "已设置额度限制" } ?: "已取消额度限制")
+                        if (r.ok) (if (result.isEmpty()) "已取消额度限制" else "已设置额度限制")
                         else (r.error ?: "保存失败"),
                         Toast.LENGTH_SHORT,
                     ).show()
@@ -401,9 +403,20 @@ private fun ProviderCard(
     val readyCount = g.accounts.count { it.enabled && it.hasCredentials }
     val downCount = g.accounts.size - readyCount
 
-    // 剩余额度占比（各家账号 pct 的均值；无数据显示 —）
+    // 剩余额度占比（各家账号 pct 的均值）。
+    // ⚠️ 不能把它当「有没有查过」的判据：WorkBuddy 的既有形状
+    // `{totalLeft, planLeft, bonusLeft}` 里**没有总量**，算不出比例（`pct` 恒 null），
+    // 但读数其实已经查到了 —— 拿 pct 判据会让摘要行永久显示「余额未查询」。
+    // 所以另外取一份「已查到的读数文案」，比例与文案两者有其一就算已查询。
     val pcts = g.accounts.mapNotNull { metrics[it.id]?.pct }
     val avgPct = if (pcts.isEmpty()) null else pcts.average().toInt()
+    val readouts = g.accounts.mapNotNull { metrics[it.id]?.text }.filter { it.isNotBlank() }
+    val summaryText = when {
+        avgPct != null -> "剩余 $avgPct%"
+        readouts.isNotEmpty() -> readouts.first()
+        g.accounts.any { metrics[it.id]?.failed == true } -> "查询失败"
+        else -> "余额未查询"
+    }
 
     Column(
         Modifier
@@ -479,8 +492,8 @@ private fun ProviderCard(
                     AgateBadge("$downCount 停用", BadgeTone.AMBER)
                 }
                 Text(
-                    avgPct?.let { "剩余 $it%" } ?: "余额未查询",
-                    color = C.textSub,
+                    summaryText,
+                    color = if (g.accounts.any { metrics[it.id]?.failed == true } && avgPct == null && readouts.isEmpty()) C.red else C.textSub,
                     fontSize = 12.sp,
                     modifier = Modifier.weight(1f),
                     textAlign = androidx.compose.ui.text.style.TextAlign.End,
@@ -558,15 +571,23 @@ private fun AcctBlock(
             }
         }
 
+        // 凭证有效期：按 3.0.8 的「有效期」列口径。
+        // 字段名按家不同（workbuddy / officeace / trae … 用 `expiresAt`，
+        // raccoon / autoclaw / cline … 用 `tokenExpiresAt`），两个都认即可 ——
+        // 不必抄一份 25 家的映射表，取值口径一致。
+        // 没有这个字段的家（kuku 的 BDUSS 不过期、antigravity 的 refresh token
+        // 自动续期、chatglm 的 JWT 由网关续期）**不渲染这一行**，而不是显示「—」。
+        credentialExpiryMs(acc)?.let { at ->
+            ExpiryLine(at)
+        }
+
         // 额度设限：**只对支持余额查询的家显示**（判据来自内核
         // `ProviderAdapter::supports_usage`，经 /api/session 的 providers[].usage 带下来）。
         // commandcode / monkeycode 这类没接余额的家显示阈值输入框，用户填完永远
         // 看不到效果，会以为功能坏了 —— 不如不显示。
         if (usageCapable) {
             LimiterEntryRow(
-                summary = balanceLimiterOf(acc.raw)?.let {
-                    "低于 ${it.threshold.toInt()} 时${if (it.action == "disable") "禁用" else "跳过"}"
-                } ?: "未设限",
+                summary = limiterRulesOf(acc.raw).firstOrNull()?.summary() ?: "未设限",
                 onOpen = { onOpenLimiter(acc) },
             )
         }
@@ -731,6 +752,53 @@ internal fun parseUsageMetric(o: JSONObject?): AcctMetric {
 internal fun fmtMult(v: Double): String =
     if (v % 1.0 == 0.0) String.format("%.0f", v)
     else String.format("%.2f", v).trimEnd('0').trimEnd('.')
+
+/**
+ * 凭证到期时刻（毫秒）。两个字段名都认：内置家里 `expiresAt`（workbuddy /
+ * officeace / trae / zcode / qoder / accio / cline …）与 `tokenExpiresAt`
+ * （raccoon / autoclaw / catpaw …）各占一半，取值口径一致。
+ *
+ * **秒与毫秒要归一**（照 3.0.8 的 `expiryMillis`）：落盘的到期值在两者之间漂过
+ * —— Trae 的凭据从 CPA auth 文件或手工粘贴进来的是 10 位秒，不归一时
+ * `1791009732` 当毫秒读就是 1970-01-21，账号一进面板就红着报「已过期」。
+ *
+ * 没有该字段（或值不可解析）→ null，界面不渲染这一行。
+ */
+internal fun credentialExpiryMs(acc: AccountDto): Long? {
+    val raw = acc.raw.opt("expiresAt") ?: acc.raw.opt("tokenExpiresAt") ?: return null
+    val value = when (raw) {
+        is Number -> raw.toLong()
+        is String -> raw.trim().toLongOrNull()
+        else -> null
+    } ?: return null
+    if (value <= 0) return null
+    return if (value < 100_000_000_000L) value * 1000 else value
+}
+
+/** 凭证有效期一行：文案收短成「30 天后」，已过期标红。 */
+@Composable
+private fun ExpiryLine(expiresAtMs: Long) {
+    val C = agateColors()
+    val left = expiresAtMs - System.currentTimeMillis()
+    val text = when {
+        left <= 0 -> "已过期"
+        left < 3600_000L -> "${(left / 60_000L).coerceAtLeast(1)} 分钟后"
+        left < 48 * 3_600_000L -> String.format("%.1f", left / 3_600_000.0) + " 小时后"
+        else -> "${left / 86_400_000L} 天后"
+    }
+    Row(
+        Modifier.fillMaxWidth().padding(vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text("凭证有效期", color = C.textSub, fontSize = 12.sp, modifier = Modifier.weight(1f))
+        Text(
+            text,
+            color = if (left <= 0) C.red else if (left < 3_600_000L) C.amber else C.textSub,
+            fontSize = 12.sp,
+        )
+    }
+    Box(Modifier.fillMaxWidth().height(1.dp).background(C.border))
+}
 
 private fun fmtNum(v: Double): String =
     if (v >= 1000) String.format("%,.0f", v)
