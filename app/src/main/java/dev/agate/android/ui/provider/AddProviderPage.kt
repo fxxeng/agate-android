@@ -688,7 +688,7 @@ private fun ProviderPickerSheet(
     }
 }
 
-/* ══════════ 预置 API（对齐上游 3.0.8 的 preset 段）══════════ */
+/* ══════════ 预置 API（与 Agent 段同构：选择器卡片 + 弹层清单）══════════ */
 
 /** 余额方案 → 需要用户补的一个凭证字段（对齐上游 `balance-query.tsx` 的 fields）。 */
 private data class BalanceField(
@@ -703,7 +703,7 @@ private data class BalanceField(
  *
  * 只有三条方案要额外凭证（NewAPI 的个人令牌、商汤控制台的账号密码、智谱的
  * 控制台令牌）；其余四条（sub2api / deepseek / opencode / zhipu_zai）只用
- * **账号自己的 API Key**，因此返回空表 —— 界面只显示一句方案说明，不渲染输入框。
+ * **账号自己的 API Key**，因此返回空表 —— 界面只显示一句方案说明、不渲染输入框。
  * 与上游「`fields: []` 的家不要多问」同一口径。
  */
 private fun balanceFieldsOf(scheme: String): List<BalanceField> = when (scheme) {
@@ -733,19 +733,19 @@ private fun balanceNoteOf(scheme: String): String = when (scheme) {
     else -> ""
 }
 
+
 /**
- * 预置 API 段：一张名片式的模板卡网格。
+ * 预置 API 段 —— 结构与 Agent 段**逐字同构**：一张「选择提供商」卡（选中行 +
+ * 更换 ❯ + 最近 chips），点行打开底部选择器；选中之后在卡片下方渲染接入表单。
  *
- * ── 为什么不叫「中转」──────────────────────────────────────
- * 上游 3.0.8 的四类账号是 **Agent / 预置 API / 自定义 / 导入**（见
- * `add-provider-pick.tsx` 的 `AccountType`）。「预置 API」不是中转的别名，
- * 而是**模板卡**：点一张卡把这一家的名称 / 协议 / Base URL / 余额方案 / 上游
- * 特判预填进新建表单，建出来的仍是一条普通 `custom-` 记录。
+ * ── 为什么从卡片网格改成这个形态（2026-10-29）──────────────
+ * 上一版把 24 张模板铺成两列网格，与 Agent 段的「先选一家、再填信息」完全不
+ * 同构：用户在两个页签里要学两套交互，而且网格一屏只看得到 8 家、还得滚动找。
+ * Agent 段的形态已经验证过（一屏 4 个最近 + 选一次就够），预置段照抄即可。
  *
- * ── 卡片为什么建过了也不消失 ──────────────────────────────
- * 上游注释写得很清楚：模板从列表里消失会让用户以为「这张只能用一次」。
- * 所以卡片常驻，只是第二行变成「已建 · N 个账号」，再点它就是**给那家加账号**
- * （而不是重复建一家同名的）。
+ * 模板本身仍是 24 张卡，只是搬进了选择器弹层（与 Agent 的选择器同一套 .sheet）。
+ * 「建过没」的判据仍是**名称相等**（上游 `matchesPresetName`）：建过则这张卡的
+ * 落点是「给那家再加账号」，没建过则按模板预填新建。
  */
 @Composable
 private fun PresetApiTab(
@@ -753,104 +753,206 @@ private fun PresetApiTab(
     onDone: (Boolean, String) -> Unit,
 ) {
     val C = agateColors()
+    val ctx = LocalContext.current
     var selected by remember { mutableStateOf<PresetApiRegistry.Preset?>(null) }
+    var showPicker by remember { mutableStateOf(false) }
 
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .background(C.cardBg, RoundedCornerShape(16.dp))
+            .border(1.dp, C.border, RoundedCornerShape(16.dp))
+            .padding(14.dp),
+    ) {
+        Text("选择提供商", color = C.textMain, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+        Spacer(Modifier.height(10.dp))
+
+        val shown = selected
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .background(C.insetBg, RoundedCornerShape(14.dp))
+                .border(1.dp, C.accent.copy(alpha = 0.45f), RoundedCornerShape(14.dp))
+                .clickable { showPicker = true }
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (shown == null) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        "选择要添加的预置 API",
+                        color = C.textMain, fontSize = 14.sp, fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        "${PresetApiRegistry.ALL.size} 家预置 · 点此打开选择器",
+                        color = C.textSub, fontSize = 12.sp,
+                    )
+                }
+            } else {
+                Image(
+                    painter = painterResource(shown.iconRes),
+                    contentDescription = shown.name,
+                    modifier = Modifier.size(40.dp).clip(RoundedCornerShape(12.dp)),
+                )
+                Spacer(Modifier.width(12.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        shown.name,
+                        color = C.textMain, fontSize = 14.sp, fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        "${shown.protocol.label} · ${domainOf(shown)}",
+                        color = C.textSub, fontSize = 12.sp, maxLines = 1,
+                    )
+                }
+            }
+            Text("更换 ❯", color = C.accent, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+        }
+
+        // 「最近」：与 Agent 段同一形态（有记录才显示）。数据在**另一个键**里
+        // （`recent_presets`），预置模板 key 不是 provider id，混在一起会让 Agent
+        // 段的 chips 出现查不到家的死条目。
+        val recents = GatewayPrefs.recentPresets(ctx)
+            .mapNotNull { PresetApiRegistry.byKey(it) }
+            .take(4)
+        if (recents.isNotEmpty()) {
+            Spacer(Modifier.height(10.dp))
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+            ) {
+                Text("最近", color = C.textDim, fontSize = 12.sp)
+                recents.forEach { p ->
+                    AgateChip(
+                        text = p.name,
+                        selected = selected?.key == p.key,
+                        onClick = { selected = p },
+                    )
+                }
+            }
+        }
+    }
+
+    Spacer(Modifier.height(12.dp))
     val picked = selected
     if (picked != null) {
+        // 建过的模板 → 直接落到「给那家再加账号」（不重复建同名家）
         val built = custom.firstOrNull { it.name == picked.name }
         CustomProviderForm(
             preset = picked,
             existing = built,
             onBack = { selected = null },
-            onDone = onDone,
+            onDone = { ok, msg ->
+                if (ok) GatewayPrefs.pushRecentPreset(ctx, picked.key)
+                onDone(ok, msg)
+            },
         )
-        return
+    } else {
+        Text(
+            "选中一家后在此填写接入信息 · 预置会预填名称 / 协议 / 地址 / 余额方案，" +
+                "都可再改；这一家已经建过时，选中它就是给它再加一个账号",
+            color = C.textSub, fontSize = 12.sp,
+        )
     }
 
-    Text(
-        "点一张卡 = 用它的名称 / 协议 / 地址 / 余额方案预填新建；" +
-            "这家已经建过时，同一张卡改成「给它再加一个账号」",
-        color = C.textSub,
-        fontSize = 12.sp,
-    )
-    Spacer(Modifier.height(10.dp))
-
-    PresetApiRegistry.ALL.chunked(2).forEach { row ->
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            row.forEach { preset ->
-                Box(Modifier.weight(1f)) {
-                    PresetApiCard(
-                        preset = preset,
-                        builtAccounts = custom.firstOrNull { it.name == preset.name },
-                        onClick = { selected = preset },
-                    )
-                }
-            }
-            // 单数行补一格，避免最后一张卡被拉成整行宽
-            if (row.size == 1) Spacer(Modifier.weight(1f))
-        }
-        Spacer(Modifier.height(8.dp))
+    if (showPicker) {
+        PresetPickerSheet(
+            currentKey = selected?.key,
+            onPick = { picked2 -> selected = picked2; showPicker = false },
+            onDismiss = { showPicker = false },
+        )
     }
 }
 
-/** 一张预置模板卡：图标 + 名称 + 协议/域名 + 「已建」状态。 */
+/** 卡片副标用的域名（自建面板没有固定地址）。 */
+private fun domainOf(p: PresetApiRegistry.Preset): String =
+    if (p.selfHosted) "自建 · 地址自己填"
+    else p.baseUrl.removePrefix("https://").removePrefix("http://").substringBefore('/')
+
+/**
+ * 预置 API 选择器（v44 `.sheet`）：与 Agent 选择器同一套形态 ——
+ * 78% 屏高、顶部标题、搜索框、列表行（图标 + 名称 + 域名 + 选中勾）。
+ */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun PresetApiCard(
-    preset: PresetApiRegistry.Preset,
-    builtAccounts: CustomProviderOps.Record?,
-    onClick: () -> Unit,
+private fun PresetPickerSheet(
+    currentKey: String?,
+    onPick: (PresetApiRegistry.Preset) -> Unit,
+    onDismiss: () -> Unit,
 ) {
     val C = agateColors()
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .background(C.cardBg, RoundedCornerShape(14.dp))
-            .border(
-                1.dp,
-                if (builtAccounts != null) C.accent.copy(alpha = 0.35f) else C.border,
-                RoundedCornerShape(14.dp),
-            )
-            .clickable(onClick = onClick)
-            .padding(10.dp),
+    val sheetH = (LocalConfiguration.current.screenHeightDp * 0.78f).dp
+    var q by remember { mutableStateOf("") }
+
+    val filtered = PresetApiRegistry.ALL.filter { p ->
+        q.isBlank() ||
+            p.name.contains(q, ignoreCase = true) ||
+            p.baseUrl.contains(q, ignoreCase = true)
+    }
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        containerColor = C.cardBg,
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Image(
-                painter = painterResource(preset.iconRes),
-                contentDescription = preset.name,
-                modifier = Modifier.size(26.dp).clip(RoundedCornerShape(8.dp)),
-            )
-            Spacer(Modifier.width(8.dp))
-            Text(
-                preset.name,
-                color = C.textMain,
-                fontSize = 13.sp,
-                fontWeight = FontWeight.SemiBold,
-                maxLines = 2,
-                modifier = Modifier.weight(1f),
-            )
+        Column(Modifier.fillMaxWidth().height(sheetH)) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    "预置 API · ${PresetApiRegistry.ALL.size} 家",
+                    color = C.textMain, fontSize = 15.sp, fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.weight(1f),
+                )
+                Text("关闭", color = C.textSub, fontSize = 13.sp, modifier = Modifier.clickable { onDismiss() })
+            }
+            Spacer(Modifier.height(8.dp))
+            Column(Modifier.padding(horizontal = 16.dp)) {
+                AgateSearchBar(value = q, onValueChange = { q = it }, hint = "搜索预置 / 域名…")
+            }
+            Spacer(Modifier.height(8.dp))
+            Column(Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp)) {
+                filtered.forEach { p ->
+                    val active = p.key == currentKey
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable { onPick(p) }
+                            .padding(vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Image(
+                            painter = painterResource(p.iconRes),
+                            contentDescription = p.name,
+                            modifier = Modifier.size(34.dp).clip(RoundedCornerShape(10.dp)),
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                p.name,
+                                color = C.textMain, fontSize = 14.sp, fontWeight = FontWeight.SemiBold,
+                            )
+                            Text(
+                                domainOf(p) + " · " + p.protocol.label,
+                                color = C.textSub, fontSize = 11.sp, maxLines = 1,
+                            )
+                        }
+                        if (active) {
+                            Text("✓", color = C.accent, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .height(1.dp)
+                            .background(C.border.copy(alpha = 0.45f)),
+                    )
+                }
+                Spacer(Modifier.height(16.dp))
+            }
         }
-        Spacer(Modifier.height(6.dp))
-        Text(
-            if (preset.selfHosted) "自建 · 地址自己填"
-            else preset.baseUrl.removePrefix("https://").removePrefix("http://").substringBefore('/'),
-            color = C.textDim,
-            fontSize = 10.sp,
-            maxLines = 1,
-        )
-        Spacer(Modifier.height(2.dp))
-        Text(
-            when {
-                builtAccounts != null -> "已建 · 点此再加账号"
-                preset.balanceScheme.isNotBlank() -> "可查余额 · 点此新建"
-                else -> "点此新建"
-            },
-            color = if (builtAccounts != null) C.accent else C.textSub,
-            fontSize = 10.sp,
-            maxLines = 1,
-        )
     }
 }
 
@@ -863,6 +965,20 @@ private fun PresetApiCard(
  * 入口就是预置段那张常驻模板卡，再出现一份只会让人以为建了两个家。
  * 用户给那家改名后名字不再匹配任何模板，它就自动回到这一段。
  */
+/* ══════════ 自定义（对齐上游 custom 段）══════════ */
+
+/**
+ * 自定义段：**进页即表单**（不再先点一张「新建」卡）。
+ *
+ * ── 为什么去掉那道点击（2026-10-29）────────────────────────
+ * 上一版进来只有一张「新建自定义提供商」大卡，要先点它才出现输入框 —— 用户
+ * 点的这一下不传递任何信息（这个页签里除了新建就是给已有家加账号），
+ * 纯属多一跳。上游 3.0.8 也是选完「自定义」直接就是字段表。
+ *
+ * 已建的自定义家列在表单**下方**：它们的「加账号」是次要动作，但要够得着。
+ * 预置模板同名建出来的家不进这一段 —— 它的加账号入口就是预置段那张常驻卡，
+ * 再列一次只会让人以为建了两个家（改名后名字不再匹配模板，就自动回到这里）。
+ */
 @Composable
 private fun CustomProviderTab(
     custom: List<CustomProviderOps.Record>,
@@ -870,10 +986,8 @@ private fun CustomProviderTab(
     onDone: (Boolean, String) -> Unit,
 ) {
     val C = agateColors()
-    var creating by remember { mutableStateOf(false) }
     var pendingExisting by remember { mutableStateOf<CustomProviderOps.Record?>(null) }
 
-    // 两种表单态优先：加账号（目标已知）→ 新建（空白表单）
     val target = pendingExisting
     if (target != null) {
         CustomProviderForm(
@@ -884,35 +998,18 @@ private fun CustomProviderTab(
         )
         return
     }
-    if (creating) {
-        CustomProviderForm(
-            preset = null,
-            existing = null,
-            onBack = { creating = false },
-            onDone = onDone,
-        )
-        return
-    }
 
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .background(C.cardBg, RoundedCornerShape(14.dp))
-            .border(1.dp, C.accent.copy(alpha = 0.4f), RoundedCornerShape(14.dp))
-            .clickable { creating = true }
-            .padding(14.dp),
-    ) {
-        Text("新建自定义提供商", color = C.textMain, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-        Spacer(Modifier.height(2.dp))
-        Text(
-            "自己填名称 / 协议 / Base URL / Key，创建时同时建立第一家账号",
-            color = C.textSub, fontSize = 11.sp,
-        )
-    }
+    CustomProviderForm(
+        preset = null,
+        existing = null,
+        onBack = {},
+        showBack = false,
+        onDone = onDone,
+    )
 
     val manual = custom.filter { !PresetApiRegistry.matchesPresetName(it.name) }
+    Spacer(Modifier.height(14.dp))
     if (manual.isNotEmpty()) {
-        Spacer(Modifier.height(14.dp))
         Text("已建的自定义提供商", color = C.textSub, fontSize = 12.sp)
         Spacer(Modifier.height(8.dp))
         manual.forEach { record ->
@@ -937,7 +1034,6 @@ private fun CustomProviderTab(
             Spacer(Modifier.height(8.dp))
         }
     } else if (!loaded) {
-        Spacer(Modifier.height(12.dp))
         Text("读取中…", color = C.textDim, fontSize = 12.sp)
     }
 }
@@ -971,6 +1067,11 @@ private fun CustomProviderForm(
     existing: CustomProviderOps.Record?,
     onBack: () -> Unit,
     onDone: (Boolean, String) -> Unit,
+    /**
+     * 是否显示「返回」。自定义段进页就是表单、上方没有可退的状态位，
+     * 给一颗按了没反应的按钮比不给更糟。
+     */
+    showBack: Boolean = true,
 ) {
     val C = agateColors()
     val scope = rememberCoroutineScope()
@@ -1004,7 +1105,7 @@ private fun CustomProviderForm(
             color = C.textMain, fontSize = 14.sp, fontWeight = FontWeight.SemiBold,
             modifier = Modifier.weight(1f),
         )
-        SmallAction("返回") { onBack() }
+        if (showBack) SmallAction("返回") { onBack() }
     }
     Spacer(Modifier.height(10.dp))
 

@@ -21,6 +21,14 @@ object GatewayPrefs {
 
     private const val KEY_PROVIDER_ORDER = "provider_order"
     private const val KEY_RECENT_PROVIDERS = "recent_providers"
+    /**
+     * 最近用过的**预置 API 模板**（`PresetApiRegistry` 的 key）。
+     *
+     * 与 [KEY_RECENT_PROVIDERS] 分成两个键是刻意的：预置模板不是 provider id
+     * （卡片上那串 `preset:openai` 只是卡片标记），混进同一份列表会让 Agent 段的
+     * 「最近」出现查不到对应家的死条目。
+     */
+    private const val KEY_RECENT_PRESETS = "recent_presets"
     private const val KEY_WIZARD_DISMISSED = "wizard_dismissed"
     private const val KEY_THEME_MODE = "theme_mode"
     private const val KEY_PORT = "port"
@@ -103,6 +111,17 @@ object GatewayPrefs {
         cur.remove(id)
         cur.add(0, id)
         prefs(ctx).edit().putString(KEY_RECENT_PROVIDERS, cur.take(4).joinToString(",")).apply()
+    }
+
+    /** 最近用过的预置 API 模板 key（预置段「最近」chips 用），最新在前，至多 4 个。 */
+    fun recentPresets(ctx: Context): List<String> =
+        prefs(ctx).getString(KEY_RECENT_PRESETS, null)?.split(',')?.filter { it.isNotBlank() } ?: emptyList()
+
+    fun pushRecentPreset(ctx: Context, key: String) {
+        val cur = recentPresets(ctx).toMutableList()
+        cur.remove(key)
+        cur.add(0, key)
+        prefs(ctx).edit().putString(KEY_RECENT_PRESETS, cur.take(4).joinToString(",")).apply()
     }
 
     /** 开机自启（BOOT_COMPLETED → 拉起前台服务）。默认关，尊重用户。 */
