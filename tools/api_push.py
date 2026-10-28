@@ -93,10 +93,29 @@ def main():
         print("远端已经指向该提交，无需推送。")
         return 0
     if remote_head != parent:
-        raise SystemExit(
-            f"基点不一致：远端在 {remote_head}，本地提交的父是 {parent}。\n"
-            "说明远端有本地没有的提交，请先 fetch 并处理，不要强行覆盖。"
-        )
+        # 用 API 推送时，服务端会重新算出一个新 SHA（作者/时间一致也不保证
+        # 逐字节相同，比如 message 的换行归一）。于是「本地父提交」与
+        # 「远端当前 head」是两个不同 SHA、但内容完全一样的两棵树。
+        #
+        # 判据只能是**树相等**：树的 sha 是内容寻址的，两边 tree 相同就
+        # 意味着这中间没有任何一方多改过文件，接续是安全的。此时把
+        # parent 换成远端 head 即可 —— 不能让远端回退到本地那个 SHA，
+        # 那会让已经跑过的 CI 记录失去对应关系。
+        parent_tree = git("rev-parse", parent + "^{tree}")
+        st, rh = call(token, "GET", f"/repos/{repo}/git/commits/{remote_head}")
+        if st != 200:
+            raise SystemExit(f"读远端 commit 失败 [{st}]: {rh}")
+        if rh["tree"]["sha"] == parent_tree:
+            print(f"基点等价：远端 head 与本地父提交树相同（{parent_tree[:10]}），按远端 head 接续")
+            base = remote_head
+        else:
+            raise SystemExit(
+                f"基点不一致且内容不同：远端在 {remote_head}（tree {rh['tree']['sha'][:10]}），"
+                f"本地父是 {parent}（tree {parent_tree[:10]}）。\n"
+                "说明远端有本地没有的改动，请先 fetch 并处理，不要强行覆盖。"
+            )
+    else:
+        base = remote_head
 
     changes = parse_raw(git("diff", "--raw", "-z", parent, commit, binary=True).decode("utf-8"))
     print(f"changes       : {len(changes)} 个路径")
@@ -125,6 +144,11 @@ def main():
         token,
         "POST",
         f"/repos/{repo}/git/trees",
+        # base_tree 用 parent 的树 sha，**不是** base 的：base 可能是远端
+        # 独有的提交（走「基点等价」分支时就是），本地根本没这个对象，
+        # `git rev-parse <远端sha>^{tree}` 会直接报 unknown revision。
+        # 两边的树 sha 本来就是同一个值（这正是能接续的前提），所以用
+        # 本地那边算出来的这个 sha 服务端同样认。
         {"base_tree": git("rev-parse", parent + "^{tree}"), "tree": tree},
     )
     if st != 201:
@@ -143,7 +167,7 @@ def main():
         {
             "message": message,
             "tree": new_tree["sha"],
-            "parents": [remote_head],
+            "parents": [base],
             "author": {"name": an, "email": ae, "date": ai},
             "committer": {"name": cn, "email": ce, "date": ci},
         },
