@@ -479,8 +479,11 @@ fun AgateNavHost(
                     dev.agate.android.ui.assistant.AssistantPage(onOpenDrawer = ::openDrawer)
                 }
                 composable(Routes.SETTINGS) {
-                    // 设置：脱敏分组（内置规则集开关 + 零宽空格词表），见该页模块头
-                    dev.agate.android.ui.settings.SanitizeSettingsPage(
+                    // 设置：十组手风琴（服务接入 / 外观 / 流式 / 超时 / 重试 /
+                    // 脱敏与安全 / 提示词 / 数据 / 备份 / 关于），见该页模块头
+                    dev.agate.android.ui.settings.SettingsPage(
+                        themeMode = themeMode,
+                        onThemeModeChange = onThemeModeChange,
                         onOpenDrawer = ::openDrawer,
                         onBack = { navController.popBackStack() },
                     )

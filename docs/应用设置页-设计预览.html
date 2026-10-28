@@ -1021,8 +1021,78 @@ use the available tools before answering…
       用可空参数表达不了内核的三种语义（<code>键缺失</code> / <code>null</code> / <code>有值</code>）</li>
   </ul>
 
+  <h2 style="margin-top:38px">⑪ 实现记录（本轮已落地）</h2>
+  <p class="note">
+    十组已全部接上真实端点，文件是 <code>ui/settings/SettingsPage.kt</code>（约 2080 行），
+    路由挂 <code>Routes.SETTINGS</code>。下面只记实现时<b>与设计稿不同</b>的地方，
+    以及为什么不同 —— 相同的地方不重复。
+  </p>
+
+  <h3 style="margin-top:22px">改动一：开发者角色兼容只留一处</h3>
+  <p class="note">
+    设计稿把它同时画进了「流式与输出」和「安全防护」两组。实现时删掉了流式那一份：
+    它是<b>同一个配置键</b>（<code>developerRoleCompat</code>），两处各持一份本地状态，
+    一处改完另一处还显示旧值，看起来像保存失败。留在了「脱敏与安全」组里，
+    并在描述里注明它与流式组那一项是同一个开关 —— 用户在两处都找得到它，
+    但只有一个真相。
+  </p>
+
+  <h3 style="margin-top:22px">改动二：<code>Opt.Clear</code> 必须发空串，不是 <code>null</code></h3>
+  <p class="note">
+    这是实现时挖出来的一个真 bug。<code>put_prompt</code> 把「键缺失」与「值为
+    <code>null</code>」<b>都当成「这一项不改」</b>，真正的清除是<b>空串</b>。
+    而数据层原先按文件头的三态约定发 <code>JSONObject.NULL</code>，
+    后果是点了「清除提示词文件」什么都不会发生。更糟的是 <code>null</code>
+    是内核留给桥接层「只解除降级」用的 —— 若把 null 当清除，
+    点一下「立即解除降级」就会把用户配好的路径悄悄抹掉。
+    <code>SettingsOps.savePrompt</code> 已改为发 <code>""</code>，并补了
+    <code>clearDegrade</code> 参数（设计稿里的「立即解除」需要它）。
+  </p>
+
+  <h3 style="margin-top:22px">改动三：开关保存成功后要回填快照</h3>
+  <p class="note">
+    这几条开关端点<b>不回全量状态</b>（响应就是被改的那一个键）。所以保存成功后
+    界面必须自己把快照改对，否则「开关保存成功 → 收起再展开 → 又变回旧值」，
+    与保存失败的观感一模一样。<code>SettingsOps.Stream</code> 与
+    <code>SettingsOps.Guards</code> 因此改成了 <code>data class</code>，用
+    <code>copy(...)</code> 回填。设计稿第⑧节说的「开关停在错误位置比报错严重得多」，
+    这里还有第三种形态：<b>开关弹回正确位置、但它其实是保存成功了</b> —— 同样是错的。
+  </p>
+
+  <h3 style="margin-top:22px">改动四：千分位用标准规则（千位起加）</h3>
+  <p class="note">
+    最初写成「4 位以内不加」，结果同一页里 <code>3214 条</code> 与
+    <code>10,000 条</code> 并存 —— 用户没法从数字形态判断量级。改成千位起加，
+    单测钉住了 999 / 3,214 / 10,000 / 1,234,567 几个档。
+  </p>
+
+  <h3 style="margin-top:22px">改动五：数字弹层显式传字段，不按 label 反查</h3>
+  <p class="note">
+    初版靠 <code>label</code> 在四张字段表里反查范围，这是隐患：两组里出现同名的行
+    就会静默取到另一组的区间。改成 <code>NumberRow(field = …)</code> 必填，
+    范围只有一个来源。
+  </p>
+
+  <h3 style="margin-top:22px">顺带修掉的一处内核过时注释</h3>
+  <p class="note">
+    <code>api/stats_api.rs</code> 的 <code>parse_days</code> 文档写着「必须是
+    <code>1–3650</code> 的整数」，而 <code>config::RETENTION_MAX_DAYS</code>
+    早已是 <code>99999</code>。代码本身是对的（引用常量），错的只是注释 ——
+    但照着一处过时注释去改客户端校验，就会造出「界面放行、内核 400」的组合。
+    已改为引用常量名并注明这段历史。
+  </p>
+
+  <h3 style="margin-top:22px">验证状态</h3>
+  <ul class="kv">
+    <li><code>./gradlew :app:compileDebugKotlin</code> 通过（只剩既有图标的弃用告警，不是本轮引入）</li>
+    <li><code>./gradlew :app:testDebugUnitTest</code> 通过，<b>31 个</b>单测全绿：
+      13（AI 轨迹解析）+ 6（零宽空格词表）+ <b>12（设置页格式化 / 摘要）</b></li>
+    <li>内核改动只有一处注释，<code>tools/rust_balance.py</code> 全库 0 问题，真实编译仍走 CI</li>
+    <li>首屏十组<b>并发读全</b>，任一失败只让该组显示「读取失败 + 重试」，不整页报错</li>
+  </ul>
+
   <div class="hint" style="margin-top:22px;text-align:center;padding-bottom:10px">
-    确认这一版后开始写 <code>ui/settings/SettingsPage.kt</code> 并接到 <code>Routes.SETTINGS</code>
+    十组已全部落地。下一步按任务清单走：MCP 页 → 任务中心六个二级页
   </div>
 
 </div>

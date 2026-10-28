@@ -192,8 +192,13 @@ object SettingsOps {
      * 三条端点形状一致（GET 读 / PUT 写 / 响应就是新状态），但**默认值方向不同**：
      * `stripKeepalive` 与 `developerRoleCompat` 默认开，`autoContinue` 与 `debug`
      * 默认关 —— 后两个都会多消耗配额或落盘大量报文，默认关是刻意的。
+     *
+     * 是 `data class` 而不是普通 class：这三个 PUT **不回全量状态**（响应就是
+     * 被改的那一个键），所以保存成功后界面只能自己用 `copy(...)` 把这份快照
+     * 改对。不 copy 的后果是「开关保存成功、收起再展开又变回旧值」——
+     * 用户看到的是开关自己弹回去，与保存失败的观感一模一样。
      */
-    class Stream(
+    data class Stream(
         val stripKeepalive: Boolean,
         val autoContinue: Boolean,
         val autoContinueRounds: Int,
@@ -353,7 +358,7 @@ object SettingsOps {
      * - `cors` **默认关** —— 关着时浏览器第三方页面调不到网关（预检会被 401）。
      * - `developerRoleCompat` **默认开** —— 部分上游不认 `developer` 角色会直接 400。
      */
-    class Guards(
+    data class Guards(
         val sanitize: Boolean,
         val cors: Boolean,
         val developerRoleCompat: Boolean,
@@ -508,6 +513,10 @@ object SettingsOps {
         val degradeActive: Boolean = o.optBoolean("degradeActive", false)
         val degradeUntilText: String = o.optString("degradeUntilText")
 
+        /** 按提供商的覆盖条数（稀疏表：没配过的家不出现）。 */
+        val providerOverrides: Int =
+            o.optJSONObject("promptProviders")?.length() ?: 0
+
         val modeLabel: String
             get() = when (mode) {
                 "custom" -> "替换 system"
@@ -535,14 +544,28 @@ object SettingsOps {
     /**
      * 保存提示词。
      *
-     * @param mode 三种之一；传 `Opt.Set("custom")` 这样的值
+     * ── 清除为什么用空串而不是 `null` ──────────────────────────
+     * 这条端点的 `null` 语义与文件头的 [Opt] 假设**相反**：
+     * `put_prompt` 把「键缺失」与「值为 null」都当成**这一项不改**
+     * （见其 `None | Some(Value::Null) => settings.file.clone()`）；
+     * 真正的「清除」是**空串**（`Some(Value::String(t)) if t.trim().is_empty()`）。
+     * 所以这里 `Opt.Clear` 必须发 `""`。
+     *
+     * 早先这处发的是 `JSONObject.NULL`，后果是点了「清除提示词文件」什么都不会
+     * 发生 —— 而 `null` 恰恰是内核留给桥接层「只解除降级」用的（`bridge.rs`
+     * 会带 `promptFile: null`，若把 null 当清除，点一下「立即解除」就把用户
+     * 配好的路径抹了）。
+     *
+     * @param mode 三种之一；`Opt.Clear` 无意义（模式不能为 null）
      * @param file 路径，`Opt.Clear` = 清掉路径（回到内置默认）
      * @param text 界面正文，`Opt.Clear` = 清空（回到「文件 > 内置默认」）
+     * @param clearDegrade `true` = 立即解除降级期（改好提示词后的出口）
      */
     suspend fun savePrompt(
         mode: Opt<String> = Opt.Skip,
         file: Opt<String> = Opt.Skip,
         text: Opt<String> = Opt.Skip,
+        clearDegrade: Boolean = false,
     ): OpResult<Prompt> {
         val body = JSONObject()
         when (mode) {
@@ -557,14 +580,16 @@ object SettingsOps {
         }
         when (file) {
             is Opt.Skip -> Unit
-            is Opt.Clear -> body.put("promptFile", JSONObject.NULL)
+            is Opt.Clear -> body.put("promptFile", "")
             is Opt.Set -> body.put("promptFile", file.value)
         }
         when (text) {
             is Opt.Skip -> Unit
-            is Opt.Clear -> body.put("promptText", JSONObject.NULL)
+            // 正文同理：空串 = 「这份不要了」，null = 不改
+            is Opt.Clear -> body.put("promptText", "")
             is Opt.Set -> body.put("promptText", text.value)
         }
+        if (clearDegrade) body.put("clearDegrade", true)
         if (body.length() == 0) return OpResult(false, null, "没有要保存的改动")
         return writeTyped("/api/prompt", body, ::Prompt)
     }
