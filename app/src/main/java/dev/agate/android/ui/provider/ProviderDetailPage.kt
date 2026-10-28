@@ -35,6 +35,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -48,6 +49,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.agate.android.data.AccountOps
+import dev.agate.android.data.CustomProviderOps
 import dev.agate.android.data.ProviderIdentityOps
 import dev.agate.android.data.GatewayRepository
 import dev.agate.android.data.ScheduledTaskOps
@@ -101,6 +103,20 @@ fun ProviderDetailPage(
 
     // 两个 tab：0 = 账号（默认）、1 = 设置。进这页十次有九次是加账号或看余额。
     var tab by remember { mutableStateOf(TAB_ACCOUNTS) }
+    // ── 自定义提供商记录（名称 / 协议 / BaseURL / 余额方案）──
+    // 内置 24 家没有这份记录，它们的配置在 PresetRegistry 里；自定义家的配置
+    // 只在内核 `/api/custom-providers` 里，不拉就什么都改不了（上一版就是这样：
+    // 详情页对 custom- 家没有任何可编辑项）。
+    val isCustom = CustomProviderOps.isCustomProviderId(providerId)
+    var customRecord by remember { mutableStateOf<CustomProviderOps.Record?>(null) }
+    var customReload by remember { mutableIntStateOf(0) }
+    LaunchedEffect(providerId, customReload) {
+        if (isCustom) {
+            customRecord = CustomProviderOps.Record
+                .listOf(CustomProviderOps.list())
+                .firstOrNull { it.id == providerId }
+        }
+    }
     // 批量工具条是否展开（页头「批量」按钮切换），切 tab 时自动收起
     var bulkOpen by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
@@ -206,10 +222,13 @@ fun ProviderDetailPage(
                 Modifier.size(36.dp).clickable(onClick = onBack),
                 contentAlignment = Alignment.Center,
             ) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回", tint = C.textMain) }
-            AgateProviderAvatar(providerId = providerId, label = preset?.label ?: providerId, size = 32.dp, corner = 10.dp)
+            // 自定义家的名字在 `customRecord` 里（注册表没有它）：不接这一层的话
+            // 标题会显示 `custom-7a3f9c21`，与列表页的名称对不上。
+            val displayLabel = customRecord?.name ?: preset?.label ?: providerId
+            AgateProviderAvatar(providerId = providerId, label = displayLabel, size = 32.dp, corner = 10.dp)
             Spacer(Modifier.width(10.dp))
             Text(
-                preset?.label ?: providerId,
+                displayLabel,
                 color = C.textMain, fontSize = 18.sp, fontWeight = FontWeight.Bold,
                 modifier = Modifier.weight(1f),
             )
@@ -308,6 +327,8 @@ fun ProviderDetailPage(
             else -> SettingsTab(
                 accounts = accounts,
                 providerId = providerId,
+                custom = customRecord,
+                onCustomSaved = { customReload++ },
                 busy = busy,
                 onPatchAccount = patchAccount,
                 allEnabled = accounts.isNotEmpty() && accounts.all { it.enabled },
@@ -550,23 +571,54 @@ fun ProviderDetailPage(
     if (confirmDeleteProvider) {
         AlertDialog(
             onDismissRequest = { confirmDeleteProvider = false },
-            title = { Text("删除提供商") },
+            title = { Text(if (isCustom) "删除自定义提供商" else "删除提供商") },
             text = {
                 Text(
-                    "将移除「${preset?.label ?: providerId}」这一家：连同其 ${accounts.size} 个账号、凭证与设置一并删除，不可恢复。",
+                    if (isCustom) {
+                        // 自定义家的删除是**级联**的：内核一次删掉提供商记录 +
+                        // 名下账号 + 各 Key 白名单里的这一家。文案必须把「连带
+                        // 删几个账号」写在问句里，那是可逆与不可逆的分界。
+                        "将删除自定义提供商「${customRecord?.name ?: providerId}」：连同其 " +
+                            "${accounts.size} 个账号与凭证一并删除，并从各 Key 的可用提供商里移除这家，不可恢复。"
+                    } else {
+                        "将移除「${preset?.label ?: providerId}」这一家：连同其 ${accounts.size} 个账号、凭证与设置一并删除，不可恢复。"
+                    },
                     fontSize = 13.sp,
                 )
             },
             confirmButton = {
                 TextButton(onClick = {
                     confirmDeleteProvider = false
-                    if (accounts.isEmpty()) { onBack(); return@TextButton }
                     busy = true
                     scope.launch {
-                        val ok = AccountOps.batch(accounts.map { it.id }, "remove")
-                        busy = false
-                        toast(if (ok) "已删除该提供商" else "删除失败")
-                        if (ok) { GatewayRepository.refreshOnce(); onBack() }
+                        if (isCustom) {
+                            // 走内核级联接口。**不能**只批量删账号 —— 那样会留下
+                            // 一条没有账号的提供商记录：它从列表里消失（列表只列
+                            // 有账号的家），却再也没入口改或删，成为孤儿。
+                            // 上游 3.0.8 把这个坑写成了「已知可达性缺口」，这里修掉。
+                            val r = CustomProviderOps.remove(providerId)
+                            busy = false
+                            val removed = r.data?.optInt("accountsRemoved", 0) ?: 0
+                            val keys = r.data?.optInt("keysUpdated", 0) ?: 0
+                            val free = r.data?.optInt("keysUnrestricted", 0) ?: 0
+                            toast(
+                                if (r.ok) buildString {
+                                    append("已删除提供商")
+                                    if (removed > 0) append("及 $removed 个账号")
+                                    if (keys > 0) append("，并从 $keys 把 Key 的可用范围里移除")
+                                    if (free > 0) append("（其中 $free 把恢复为不限制）")
+                                } else {
+                                    r.error ?: "删除失败"
+                                }
+                            )
+                            if (r.ok) { GatewayRepository.refreshOnce(); onBack() }
+                        } else {
+                            if (accounts.isEmpty()) { busy = false; onBack(); return@launch }
+                            val ok = AccountOps.batch(accounts.map { it.id }, "remove")
+                            busy = false
+                            toast(if (ok) "已删除该提供商" else "删除失败")
+                            if (ok) { GatewayRepository.refreshOnce(); onBack() }
+                        }
                     }
                 }) { Text("删除", color = C.red) }
             },
@@ -1098,10 +1150,171 @@ private fun ClineHeadersCard() {
 }
 
 /* ───────────── 设置 ───────────── */
+/**
+ * 自定义提供商的「提供商设置」卡（只有 `custom-` 家有）。
+ *
+ * ── 为什么放在账号详情页而不是单开一个管理页 ────────────────
+ * 上游 3.0.8 的 `custom-provider-ui.js` 头注释解释了同一件事：改 Base URL 的
+ * 动机通常正是「这个账号连不上了」，就地改比先退出去找一个管理入口近一步。
+ * 提供商级可改的只有三件事：**名称 / 协议 / Base URL**（外加伪装开关），
+ * 与上游 `update()` 提交的字段集一致。
+ *
+ * ── 协议改动会立刻影响转发 ──────────────────────────────────
+ * 内核按协议拼出站路径（`chat_completions` → `{base}/chat/completions`，
+ * `anthropic` → `{base}/v1/messages`），所以两边的地址语义不同：Anthropic 要
+ * 根地址，OpenAI 兼容要带 `/v1`。提示文案随所选协议换，别让人两头都填错。
+ */
+@Composable
+private fun CustomProviderCard(custom: CustomProviderOps.Record, onSaved: () -> Unit) {
+    val C = agateColors()
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var name by remember(custom.id) { mutableStateOf(custom.name) }
+    var baseUrl by remember(custom.id) { mutableStateOf(custom.baseUrl) }
+    var protocol by remember(custom.id) { mutableStateOf(custom.protocol) }
+    var busy by remember { mutableStateOf(false) }
+
+    val dirty = name != custom.name || baseUrl != custom.baseUrl || protocol != custom.protocol
+
+    Card {
+        Text("自定义提供商", color = C.textMain, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "这一家的名称 / 协议 / Base URL · 改完立即生效，不用重建账号",
+            color = C.textSub, fontSize = 11.sp,
+        )
+        Spacer(Modifier.height(10.dp))
+
+        Text("名称", color = C.textSub, fontSize = 11.sp)
+        Spacer(Modifier.height(3.dp))
+        OutlinedTextField(
+            value = name,
+            onValueChange = { name = it.take(64) },
+            enabled = !busy,
+            singleLine = true,
+            textStyle = androidx.compose.ui.text.TextStyle(fontSize = 12.sp),
+            modifier = Modifier.fillMaxWidth(),
+        )
+
+        Spacer(Modifier.height(10.dp))
+        Text("协议", color = C.textSub, fontSize = 11.sp)
+        Spacer(Modifier.height(5.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            CustomProviderOps.Protocol.entries.forEach { p ->
+                val active = p == protocol
+                Text(
+                    p.label,
+                    color = if (active) C.onAccent else C.textSub,
+                    fontSize = 11.sp,
+                    modifier = Modifier
+                        .background(
+                            if (active) C.accent else C.insetBg,
+                            RoundedCornerShape(999.dp),
+                        )
+                        .border(
+                            1.dp,
+                            if (active) Color.Transparent else C.border,
+                            RoundedCornerShape(999.dp),
+                        )
+                        .clickable(enabled = !busy) { protocol = p }
+                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                )
+            }
+        }
+
+        Spacer(Modifier.height(10.dp))
+        Text("Base URL", color = C.textSub, fontSize = 11.sp)
+        Spacer(Modifier.height(3.dp))
+        OutlinedTextField(
+            value = baseUrl,
+            onValueChange = { baseUrl = it.trim() },
+            enabled = !busy,
+            singleLine = true,
+            textStyle = androidx.compose.ui.text.TextStyle(fontSize = 12.sp),
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Spacer(Modifier.height(4.dp))
+        Text(
+            if (protocol == CustomProviderOps.Protocol.ANTHROPIC)
+                "Anthropic 填根地址，不要带 /v1（内核按协议拼 /v1/messages）"
+            else "OpenAI 兼容 / Responses 填到 /v1（内核按协议拼 /chat/completions 或 /responses）",
+            color = C.textDim, fontSize = 10.sp,
+        )
+
+        // 余额方案与上游特判是「这一家是谁」的派生事实，不在界面改（上游同样
+        // 只读），但要看得到 —— 否则用户不知道「为什么它有余额读数」。
+        if (custom.balanceScheme.isNotBlank() || custom.clientEmulation.isNotBlank() ||
+            custom.urlSuffix.isNotBlank() || custom.headerCount > 0
+        ) {
+            Spacer(Modifier.height(10.dp))
+            Text(
+                buildString {
+                    if (custom.balanceScheme.isNotBlank()) {
+                        append("余额方案 ")
+                        append(CustomProviderOps.balanceSchemes.firstOrNull { it.first == custom.balanceScheme }?.second ?: custom.balanceScheme)
+                    }
+                    if (custom.urlSuffix.isNotBlank()) {
+                        if (isNotEmpty()) append(" · ")
+                        append("地址后缀 ").append(custom.urlSuffix)
+                    }
+                    if (custom.headerCount > 0) {
+                        if (isNotEmpty()) append(" · ")
+                        append("额外头 ").append(custom.headerCount).append(" 条")
+                    }
+                    if (custom.clientEmulation.isNotBlank()) {
+                        if (isNotEmpty()) append(" · ")
+                        append("客户端伪装 ").append(custom.clientEmulation)
+                    }
+                },
+                color = C.textDim, fontSize = 10.sp,
+            )
+        }
+
+        Spacer(Modifier.height(10.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            SmallAction(
+                text = "保存",
+                primary = true,
+                enabled = dirty && !busy && name.isNotBlank(),
+                onClick = {
+                    if (!busy) {
+                        busy = true
+                        scope.launch {
+                            val r = CustomProviderOps.update(
+                                id = custom.id,
+                                name = name.trim(),
+                                baseUrl = baseUrl.trim(),
+                                protocol = protocol,
+                            )
+                            busy = false
+                            Toast.makeText(
+                                ctx,
+                                if (r.ok) "已保存" else (r.error ?: "保存失败"),
+                                Toast.LENGTH_SHORT,
+                            ).show()
+                            if (r.ok) {
+                                GatewayRepository.refreshOnce()
+                                onSaved()
+                            }
+                        }
+                    }
+                },
+            )
+            Spacer(Modifier.width(10.dp))
+            if (!dirty) {
+                Text("没有改动", color = C.textDim, fontSize = 10.sp)
+            }
+        }
+    }
+}
+
 @Composable
 private fun SettingsTab(
     accounts: List<AccountDto>,
     providerId: String,
+    /** 自定义提供商的记录（内置家为 null）。非空时本页顶部多一段「提供商设置」。 */
+    custom: CustomProviderOps.Record?,
+    onCustomSaved: () -> Unit,
     busy: Boolean,
     onPatchAccount: (AccountDto, JSONObject) -> Unit,
     onTest: () -> Unit,
@@ -1121,6 +1334,15 @@ private fun SettingsTab(
     val C = agateColors()
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp)) {
         Spacer(Modifier.height(10.dp))
+
+        // ── 自定义提供商设置（只有 custom- 家有这一段）──────────────
+        // 对齐上游 3.0.8 的口径：自定义家的「改名称 / 改协议 / 改 Base URL」
+        // 落在账号自己的设置里就地编辑，而不是另开一个管理页 —— 改 Base URL 的
+        // 动机通常正是「这个账号连不上了」，就地改比退出去找入口近一步。
+        if (custom != null) {
+            CustomProviderCard(custom = custom, onSaved = onCustomSaved)
+            Spacer(Modifier.height(12.dp))
+        }
 
         // ── 启用与选号 ──────────────────────────────────────────
         // 这两段原本在「概览」tab 里。删掉概览后它们必须有个去处，而「启用 /

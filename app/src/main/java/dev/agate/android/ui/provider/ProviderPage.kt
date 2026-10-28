@@ -43,6 +43,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.agate.android.data.AccountOps
+import dev.agate.android.data.CustomProviderOps
 import dev.agate.android.data.GatewayRepository
 import dev.agate.android.data.ProviderPreset
 import dev.agate.android.data.PresetRegistry
@@ -135,6 +136,7 @@ fun ProviderPage(
         GatewayRepository.configure(GatewayPrefs.apiKey(ctx))
         AccountOps.configure(GatewayPrefs.apiKey(ctx))
         CheckinCenter.configure(GatewayPrefs.apiKey(ctx))
+        CustomProviderOps.configure(GatewayPrefs.apiKey(ctx))
         // 进本页立刻补拉一次：轮询已提到导航宿主，但它的第一个 5 秒刻度可能
         // 还没到；本页的主内容就是账号清单，等那 5 秒会是空白屏。refreshOnce
         // 自带在途去重，与轮询撞车也不会打两次。
@@ -201,16 +203,29 @@ fun ProviderPage(
     val checkinProviders = remember(checkinSnap.providerOptions) {
         checkinSnap.providerOptions.map { it.first }.toSet()
     }
+    // ── 自定义提供商的展示名 ──────────────────────────────────
+    // `custom-xxxx` 这种 id 在内置注册表里查不到，`labelOf` 会**原样回显 id** ——
+    // 于是列表里出现「custom-7a3f9c21」这种名字（用户建的「NewAPI 中转」根本
+    // 看不见）。上游 3.0.8 的做法是把 id→name 并进 `wbProviders.labelOf` 的
+    // 查找链，一处合并、账号表/筛选器/日志处处生效；这里照同一口径。
+    var customNames by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
+    LaunchedEffect(Unit) {
+        customNames = CustomProviderOps.Record.listOf(CustomProviderOps.list())
+            .associate { it.id to it.name }
+    }
+    val labelOf = remember(customNames) {
+        { pid: String -> customNames[pid] ?: PresetRegistry.labelOf(pid) }
+    }
     // ── 分组：有账号的家按「偏好顺序 → PresetRegistry 顺序」；无账号家不出现 ──
     val savedOrder = remember { GatewayPrefs.providerOrder(ctx) }
-    val groups = remember(snap.accountList) {
+    val groups = remember(snap.accountList, customNames) {
         val byProvider = snap.accountList?.groupBy { it.provider } ?: emptyMap()
         val seq = ArrayList<ProviderGroupView>(byProvider.size)
         val seen = HashSet<String>()
         savedOrder.forEach { pid ->
             byProvider[pid]?.let { list ->
                 val preset = PresetRegistry.ALL.find { it.id == pid }
-                seq += ProviderGroupView(pid, preset?.label ?: PresetRegistry.labelOf(pid), preset, list)
+                seq += ProviderGroupView(pid, preset?.label ?: labelOf(pid), preset, list)
                 seen += pid
             }
         }
@@ -223,7 +238,7 @@ fun ProviderPage(
             }
         }
         byProvider.forEach { (pid, list) ->
-            if (pid !in seen) seq += ProviderGroupView(pid, PresetRegistry.labelOf(pid), null, list)
+            if (pid !in seen) seq += ProviderGroupView(pid, labelOf(pid), null, list)
         }
         seq
     }
@@ -508,6 +523,12 @@ private fun ProviderCard(
                 overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f, fill = false),
             )
+            // 自定义家（含预置 API 建出来的）挂一枚角标：它们在注册表里没有位置，
+            // 不标的话「NewAPI 中转」这种名字与内置的 24 家混在一起分不出来。
+            if (CustomProviderOps.isCustomProviderId(g.providerId)) {
+                Spacer(Modifier.width(6.dp))
+                AgateBadge("自定义", BadgeTone.BLUE)
+            }
             Spacer(Modifier.width(8.dp))
             // 就绪徽章：有账号掉队时写 n/N（分子可用 / 分母总数）
             if (g.accounts.isNotEmpty()) {

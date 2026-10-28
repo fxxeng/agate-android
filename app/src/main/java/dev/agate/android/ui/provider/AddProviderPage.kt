@@ -2,9 +2,11 @@ package dev.agate.android.ui.provider
 
 import android.widget.Toast
 import androidx.compose.foundation.background
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -37,6 +39,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -45,6 +48,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.platform.LocalConfiguration
@@ -65,6 +69,7 @@ import dev.agate.android.data.KernelOps
 import dev.agate.android.data.LoginClient
 import dev.agate.android.data.LoginKind
 import dev.agate.android.data.ProviderPreset
+import dev.agate.android.data.PresetApiRegistry
 import dev.agate.android.data.PresetRegistry
 import dev.agate.core.AgateForegroundService
 import dev.agate.core.GatewayPrefs
@@ -101,6 +106,21 @@ fun AddProviderPage(onBack: () -> Unit, initialProviderId: String? = null) {
     // 内核探活：登录/落账号都由网关执行，没起来时先给「启动网关」入口
     var kernelUp by remember { mutableStateOf<Boolean?>(null) }
     var loginSession by remember { mutableStateOf<LoginSession?>(null) }
+    /**
+     * 已建的自定义提供商（含预置卡建出来的）。预置/自定义两段都读它：
+     *   · 预置卡「这张建过了吗」= 有同名的记录（上游 `matchesPresetName` 口径）
+     *   · 自定义段列出「非预置同名」的那些，作为「给这家再加账号」的入口
+     */
+    var customProviders by remember { mutableStateOf<List<CustomProviderOps.Record>>(emptyList()) }
+    var customLoaded by remember { mutableStateOf(false) }
+
+    /** 拉一次自定义提供商目录（建/删/改之后都要重拉，界面据此重判「建过没」）。 */
+    fun reloadCustom() {
+        scope.launch {
+            customProviders = CustomProviderOps.Record.listOf(CustomProviderOps.list())
+            customLoaded = true
+        }
+    }
 
     LaunchedEffect(Unit) {
         while (isActive) {
@@ -117,6 +137,8 @@ fun AddProviderPage(onBack: () -> Unit, initialProviderId: String? = null) {
         CustomProviderOps.configure(GatewayPrefs.apiKey(ctx))
         onDispose { }
     }
+    // 自定义提供商目录：进页面拉一次（预置/自定义两段都要用它判「建过没」）
+    LaunchedEffect(Unit) { reloadCustom() }
 
     Column(Modifier.fillMaxSize().background(C.bg).statusBarsPadding().navigationBarsPadding()) {
         // 顶栏（v44 .header-bar）：返回 + 标题
@@ -153,7 +175,11 @@ fun AddProviderPage(onBack: () -> Unit, initialProviderId: String? = null) {
                 // CatPaw / Cline / KukuAI）时，通道 chips 里就有「导入凭证文件」，
                 // 走 ImportFileForm；需要粘贴的家有「粘贴凭证」。再开一个页签
                 // 只会让人多选一次提供商，做的是同一件事。
-                listOf("AGENT · ${PresetRegistry.ALL.size}", "中转 API", "自定义").forEachIndexed { i, label ->
+                listOf(
+                    "Agent · ${PresetRegistry.ALL.size}",
+                    "预置 API · ${PresetApiRegistry.ALL.size}",
+                    "自定义",
+                ).forEachIndexed { i, label ->
                     val active = tab == i
                     Text(
                         label,
@@ -324,19 +350,29 @@ fun AddProviderPage(onBack: () -> Unit, initialProviderId: String? = null) {
                 }
             } else {
                 Spacer(Modifier.height(12.dp))
+                // 建完/加完账号后的收尾：刷新内置快照（账号列表）+ 重拉自定义目录
+                // （预置卡要靠它判「这张建过没」），成功才退回上一页。
                 val done: (Boolean, String) -> Unit = { ok, msg ->
                     Toast.makeText(ctx, msg, Toast.LENGTH_LONG).show()
                     if (ok) {
                         GatewayRepository.refreshOnce()
+                        reloadCustom()
                         onBack()
                     }
                 }
-                // tab 0 是 AGENT（上面那一支），这里只剩 1 / 2。
+                // tab 0 是 Agent（上面那一支），这里只剩 1（预置 API）/ 2（自定义）。
                 // 用 else 兜底而不是穷举：tab 来自上面的 forEachIndexed，
                 // 万一以后加页签却忘了这里，宁可不渲染也不要崩溃。
                 when (tab) {
-                    1 -> RelayForm(onDone = done)
-                    2 -> CustomForm(onDone = done)
+                    1 -> PresetApiTab(
+                        custom = customProviders,
+                        onDone = done,
+                    )
+                    2 -> CustomProviderTab(
+                        custom = customProviders,
+                        loaded = customLoaded,
+                        onDone = done,
+                    )
                     else -> Unit
                 }
             }
@@ -652,143 +688,391 @@ private fun ProviderPickerSheet(
     }
 }
 
-/* ══════════ 中转 API（对齐 v44 data-for="relay"）══════════ */
-@Composable
-private fun RelayForm(onDone: (Boolean, String) -> Unit) {
-    val C = agateColors()
-    val scope = rememberCoroutineScope()
-    var relayType by remember { mutableStateOf(0) }   // OpenAI 兼容 / NewAPI / 聚合面板（展示口径）
-    var name by remember { mutableStateOf("") }
-    var baseUrl by remember { mutableStateOf("") }
-    var key by remember { mutableStateOf("") }
-    var noAuth by remember { mutableStateOf(false) }
-    var protocol by remember { mutableStateOf(CustomProviderOps.Protocol.OPENAI) }
-    var scheme by remember { mutableStateOf<String?>(null) }
-    var busy by remember { mutableStateOf(false) }
-    var hint by remember { mutableStateOf<String?>(null) }
+/* ══════════ 预置 API（对齐上游 3.0.8 的 preset 段）══════════ */
 
-    val valid = name.isNotBlank() && baseUrl.startsWith("http") && (noAuth || key.isNotBlank())
+/** 余额方案 → 需要用户补的一个凭证字段（对齐上游 `balance-query.tsx` 的 fields）。 */
+private data class BalanceField(
+    val key: String,
+    val label: String,
+    val secret: Boolean,
+    val hint: String,
+)
 
-    FormCard("接入信息") {
-        AgateFormInput(value = name, onValueChange = { name = it }, hint = "名称，如 NewAPI 中转")
-        Spacer(Modifier.height(8.dp))
-        AgateFormInput(value = baseUrl, onValueChange = { baseUrl = it.trim() }, hint = "Base URL，如 https://api.example.com/v1")
-        Spacer(Modifier.height(8.dp))
-        AgateFormInput(
-            value = if (noAuth) "" else key,
-            onValueChange = { key = it.trim() },
-            hint = if (noAuth) "已勾选无需鉴权" else "API Key（可带 Bearer 前缀）",
-        )
-        Spacer(Modifier.height(10.dp))
-        ToggleRow(
-            title = "该上游无需鉴权",
-            desc = "本地 Ollama / 免费档勾上 · 鉴权头一个都不发，填 Key 自动取消",
-            checked = noAuth,
-            onChange = { on -> noAuth = on; if (on) key = "" },
-        )
-        Spacer(Modifier.height(12.dp))
-        Text("类型", color = C.textSub, fontSize = 12.sp)
-        Spacer(Modifier.height(8.dp))
-        ChipRow(listOf("OpenAI 兼容", "NewAPI", "聚合面板"), relayType) { i ->
-            relayType = i
-            // 类型决定余额直查的默认方案（可再手改）
-            scheme = when (i) {
-                1 -> "newapi"
-                2 -> "sub2api"
-                else -> null
-            }
-        }
-        Spacer(Modifier.height(12.dp))
-        Text("协议", color = C.textSub, fontSize = 12.sp)
-        Spacer(Modifier.height(8.dp))
-        ProtocolChips(protocol) { protocol = it }
-        Spacer(Modifier.height(10.dp))
-        Text(
-            "同一地址可换协议（如 DeepSeek 的 Anthropic 兼容端点）· 无需登录，Key 失效自动退避并通知",
-            color = C.textDim, fontSize = 11.sp,
-        )
-    }
-
-    Spacer(Modifier.height(12.dp))
-    FormCard("余额直查（可选）") {
-        Text(
-            "按方案从上游读余额；选「不设置」则不做余额查询。",
-            color = C.textSub, fontSize = 12.sp,
-        )
-        Spacer(Modifier.height(8.dp))
-        WrapChips(
-            options = listOf("不设置" to "") + CustomProviderOps.balanceSchemes,
-            selected = scheme ?: "",
-            onSelect = { scheme = it.ifBlank { null } },
-        )
-    }
-
-    hint?.let {
-        Spacer(Modifier.height(8.dp))
-        Text(it, color = C.red, fontSize = 12.sp)
-    }
-    Spacer(Modifier.height(12.dp))
-    SubmitButton(if (busy) "创建中…" else "创建并接入", valid && !busy) {
-        busy = true; hint = null
-        scope.launch {
-            val r = CustomProviderOps.create(name, baseUrl, key, protocol, noAuth = noAuth, balanceScheme = scheme)
-            busy = false
-            if (r.ok) onDone(true, "已添加 " + name) else hint = r.error ?: "创建失败"
-        }
-    }
-    Spacer(Modifier.height(6.dp))
-    Text("保存后立即参与选号 · 额度信息在首次请求后回填", color = C.textDim, fontSize = 11.sp)
+/**
+ * 方案 → 凭证字段表。
+ *
+ * 只有三条方案要额外凭证（NewAPI 的个人令牌、商汤控制台的账号密码、智谱的
+ * 控制台令牌）；其余四条（sub2api / deepseek / opencode / zhipu_zai）只用
+ * **账号自己的 API Key**，因此返回空表 —— 界面只显示一句方案说明，不渲染输入框。
+ * 与上游「`fields: []` 的家不要多问」同一口径。
+ */
+private fun balanceFieldsOf(scheme: String): List<BalanceField> = when (scheme) {
+    "new_api" -> listOf(
+        BalanceField("accessToken", "NewAPI 个人访问令牌", true, "站点「个人设置」里生成；与账号的 API Key 不是同一个"),
+        BalanceField("userId", "NewAPI 用户 ID", false, "旧版 / 定制站点才需要，新版可留空"),
+    )
+    "sensenova" -> listOf(
+        BalanceField("username", "商汤控制台账号", false, "必填"),
+        BalanceField("password", "商汤控制台密码", true, "与推理用的 API Key 不是同一套"),
+    )
+    "zhipu" -> listOf(
+        BalanceField("token", "bigmodel 访问令牌", true, "登录后 Cookie bigmodel_token_production 的值"),
+    )
+    else -> emptyList()
 }
 
-/* ══════════ 自定义（对齐 v44 #ap-custom）══════════ */
+/** 方案 → 一句说明（要填什么 / 去哪拿）。空串 = 不显示这一段。 */
+private fun balanceNoteOf(scheme: String): String = when (scheme) {
+    "sub2api" -> "余额查询用这条账号的 API Key 打 {base}/v1/usage，不需要额外配置"
+    "new_api" -> "用站点的个人访问令牌查询账户余额（不是这条账号的上游 API Key）"
+    "deepseek" -> "余额查询用这条账号的 API Key，不需要额外配置"
+    "opencode" -> "读订阅用量（5 小时 / 每周 / 每月三个窗口），不需要额外配置"
+    "sensenova" -> "用商汤控制台账号密码查询（与推理用的 API Key 不是同一套）"
+    "zhipu" -> "用 bigmodel.cn 控制台的访问令牌查询（人民币元）"
+    "zhipu_zai" -> "用这条账号的 API Key 铸签名后查询（美元），不需要额外配置"
+    else -> ""
+}
+
+/**
+ * 预置 API 段：一张名片式的模板卡网格。
+ *
+ * ── 为什么不叫「中转」──────────────────────────────────────
+ * 上游 3.0.8 的四类账号是 **Agent / 预置 API / 自定义 / 导入**（见
+ * `add-provider-pick.tsx` 的 `AccountType`）。「预置 API」不是中转的别名，
+ * 而是**模板卡**：点一张卡把这一家的名称 / 协议 / Base URL / 余额方案 / 上游
+ * 特判预填进新建表单，建出来的仍是一条普通 `custom-` 记录。
+ *
+ * ── 卡片为什么建过了也不消失 ──────────────────────────────
+ * 上游注释写得很清楚：模板从列表里消失会让用户以为「这张只能用一次」。
+ * 所以卡片常驻，只是第二行变成「已建 · N 个账号」，再点它就是**给那家加账号**
+ * （而不是重复建一家同名的）。
+ */
 @Composable
-private fun CustomForm(onDone: (Boolean, String) -> Unit) {
+private fun PresetApiTab(
+    custom: List<CustomProviderOps.Record>,
+    onDone: (Boolean, String) -> Unit,
+) {
+    val C = agateColors()
+    var selected by remember { mutableStateOf<PresetApiRegistry.Preset?>(null) }
+
+    val picked = selected
+    if (picked != null) {
+        val built = custom.firstOrNull { it.name == picked.name }
+        CustomProviderForm(
+            preset = picked,
+            existing = built,
+            onBack = { selected = null },
+            onDone = onDone,
+        )
+        return
+    }
+
+    Text(
+        "点一张卡 = 用它的名称 / 协议 / 地址 / 余额方案预填新建；" +
+            "这家已经建过时，同一张卡改成「给它再加一个账号」",
+        color = C.textSub,
+        fontSize = 12.sp,
+    )
+    Spacer(Modifier.height(10.dp))
+
+    PresetApiRegistry.ALL.chunked(2).forEach { row ->
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            row.forEach { preset ->
+                Box(Modifier.weight(1f)) {
+                    PresetApiCard(
+                        preset = preset,
+                        builtAccounts = custom.firstOrNull { it.name == preset.name },
+                        onClick = { selected = preset },
+                    )
+                }
+            }
+            // 单数行补一格，避免最后一张卡被拉成整行宽
+            if (row.size == 1) Spacer(Modifier.weight(1f))
+        }
+        Spacer(Modifier.height(8.dp))
+    }
+}
+
+/** 一张预置模板卡：图标 + 名称 + 协议/域名 + 「已建」状态。 */
+@Composable
+private fun PresetApiCard(
+    preset: PresetApiRegistry.Preset,
+    builtAccounts: CustomProviderOps.Record?,
+    onClick: () -> Unit,
+) {
+    val C = agateColors()
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .background(C.cardBg, RoundedCornerShape(14.dp))
+            .border(
+                1.dp,
+                if (builtAccounts != null) C.accent.copy(alpha = 0.35f) else C.border,
+                RoundedCornerShape(14.dp),
+            )
+            .clickable(onClick = onClick)
+            .padding(10.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Image(
+                painter = painterResource(preset.iconRes),
+                contentDescription = preset.name,
+                modifier = Modifier.size(26.dp).clip(RoundedCornerShape(8.dp)),
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(
+                preset.name,
+                color = C.textMain,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 2,
+                modifier = Modifier.weight(1f),
+            )
+        }
+        Spacer(Modifier.height(6.dp))
+        Text(
+            if (preset.selfHosted) "自建 · 地址自己填"
+            else preset.baseUrl.removePrefix("https://").removePrefix("http://").substringBefore('/'),
+            color = C.textDim,
+            fontSize = 10.sp,
+            maxLines = 1,
+        )
+        Spacer(Modifier.height(2.dp))
+        Text(
+            when {
+                builtAccounts != null -> "已建 · 点此再加账号"
+                preset.balanceScheme.isNotBlank() -> "可查余额 · 点此新建"
+                else -> "点此新建"
+            },
+            color = if (builtAccounts != null) C.accent else C.textSub,
+            fontSize = 10.sp,
+            maxLines = 1,
+        )
+    }
+}
+
+/* ══════════ 自定义（对齐上游 custom 段）══════════ */
+
+/**
+ * 自定义段：「新建」入口 + 已建的自定义家（点它 = 给这家再加账号）。
+ *
+ * 预置模板同名建出来的家**不进这一段** —— 那是上游的刻意口径：它的「加账号」
+ * 入口就是预置段那张常驻模板卡，再出现一份只会让人以为建了两个家。
+ * 用户给那家改名后名字不再匹配任何模板，它就自动回到这一段。
+ */
+@Composable
+private fun CustomProviderTab(
+    custom: List<CustomProviderOps.Record>,
+    loaded: Boolean,
+    onDone: (Boolean, String) -> Unit,
+) {
+    val C = agateColors()
+    var creating by remember { mutableStateOf(false) }
+    var pendingExisting by remember { mutableStateOf<CustomProviderOps.Record?>(null) }
+
+    // 两种表单态优先：加账号（目标已知）→ 新建（空白表单）
+    val target = pendingExisting
+    if (target != null) {
+        CustomProviderForm(
+            preset = null,
+            existing = target,
+            onBack = { pendingExisting = null },
+            onDone = onDone,
+        )
+        return
+    }
+    if (creating) {
+        CustomProviderForm(
+            preset = null,
+            existing = null,
+            onBack = { creating = false },
+            onDone = onDone,
+        )
+        return
+    }
+
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .background(C.cardBg, RoundedCornerShape(14.dp))
+            .border(1.dp, C.accent.copy(alpha = 0.4f), RoundedCornerShape(14.dp))
+            .clickable { creating = true }
+            .padding(14.dp),
+    ) {
+        Text("新建自定义提供商", color = C.textMain, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+        Spacer(Modifier.height(2.dp))
+        Text(
+            "自己填名称 / 协议 / Base URL / Key，创建时同时建立第一家账号",
+            color = C.textSub, fontSize = 11.sp,
+        )
+    }
+
+    val manual = custom.filter { !PresetApiRegistry.matchesPresetName(it.name) }
+    if (manual.isNotEmpty()) {
+        Spacer(Modifier.height(14.dp))
+        Text("已建的自定义提供商", color = C.textSub, fontSize = 12.sp)
+        Spacer(Modifier.height(8.dp))
+        manual.forEach { record ->
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .background(C.cardBg, RoundedCornerShape(14.dp))
+                    .border(1.dp, C.border, RoundedCornerShape(14.dp))
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(record.name, color = C.textMain, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        "${record.protocol.label} · ${record.baseUrl.ifBlank { "未填地址" }}",
+                        color = C.textDim, fontSize = 10.sp, maxLines = 1,
+                    )
+                }
+                Spacer(Modifier.width(8.dp))
+                SmallAction("加账号") { pendingExisting = record }
+            }
+            Spacer(Modifier.height(8.dp))
+        }
+    } else if (!loaded) {
+        Spacer(Modifier.height(12.dp))
+        Text("读取中…", color = C.textDim, fontSize = 12.sp)
+    }
+}
+
+/** 行内小动作按钮（本页自用；组件库里没有这种胶囊小按钮）。 */
+@Composable
+private fun SmallAction(text: String, onClick: () -> Unit) {
+    val C = agateColors()
+    Text(
+        text,
+        color = C.accent,
+        fontSize = 11.sp,
+        fontWeight = FontWeight.SemiBold,
+        modifier = Modifier
+            .background(C.accent.copy(alpha = 0.10f), RoundedCornerShape(8.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 9.dp, vertical = 4.dp),
+    )
+}
+
+/**
+ * 新建 / 加账号共用的表单。
+ *
+ * `existing` 非空 = **往已有家加账号**（不新建记录，只 `POST /api/accounts`）；
+ * 否则按 `preset` 预填（可为 null = 完全手工）。两者字段集的差异只有
+ * 「名称 / 协议 / Base URL 不可改」（它们属于提供商记录，不属于账号）。
+ */
+@Composable
+private fun CustomProviderForm(
+    preset: PresetApiRegistry.Preset?,
+    existing: CustomProviderOps.Record?,
+    onBack: () -> Unit,
+    onDone: (Boolean, String) -> Unit,
+) {
     val C = agateColors()
     val scope = rememberCoroutineScope()
-    var name by remember { mutableStateOf("") }
-    var baseUrl by remember { mutableStateOf("") }
+    val adding = existing != null
+
+    var name by remember { mutableStateOf(preset?.name ?: "") }
+    var baseUrl by remember { mutableStateOf(preset?.baseUrl ?: "") }
     var key by remember { mutableStateOf("") }
-    var noAuth by remember { mutableStateOf(false) }
-    var autoFetch by remember { mutableStateOf(true) }
-    var protocol by remember { mutableStateOf(CustomProviderOps.Protocol.OPENAI) }
+    var noAuth by remember { mutableStateOf(preset?.noAuth ?: false) }
+    var protocol by remember {
+        mutableStateOf(existing?.protocol ?: preset?.protocol ?: CustomProviderOps.Protocol.OPENAI)
+    }
+    // 余额查询要补的凭证：键 → 输入值
+    val balanceScheme = existing?.balanceScheme ?: preset?.balanceScheme ?: ""
+    val balanceFields = balanceFieldsOf(balanceScheme)
+    val balanceValues = remember(balanceScheme) { mutableStateMapOf<String, String>() }
     var busy by remember { mutableStateOf(false) }
     var hint by remember { mutableStateOf<String?>(null) }
 
-    val valid = name.isNotBlank() && baseUrl.startsWith("http") && (noAuth || key.isNotBlank())
+    // 加账号时只校验 Key：名称/协议/Base URL 属于**提供商记录**，不在这张表单上
+    // （从「自定义 → 加账号」进来时 baseUrl 状态是空的，按新建那套判会永远不可提交）
+    val valid = (adding || baseUrl.startsWith("http")) && (noAuth || key.isNotBlank())
 
-    FormCard("自定义提供商") {
-        AgateFormInput(value = name, onValueChange = { name = it }, hint = "名称，如 我的上游")
-        Spacer(Modifier.height(8.dp))
-        AgateFormInput(value = baseUrl, onValueChange = { baseUrl = it.trim() }, hint = "Base URL · https://api.example.com/v1")
-        Spacer(Modifier.height(8.dp))
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            when {
+                adding -> "给「${existing?.name}」加账号"
+                preset != null -> "使用预置：${preset.name}"
+                else -> "新建自定义提供商"
+            },
+            color = C.textMain, fontSize = 14.sp, fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.weight(1f),
+        )
+        SmallAction("返回") { onBack() }
+    }
+    Spacer(Modifier.height(10.dp))
+
+    FormCard(if (adding) "账号信息" else "提供商信息") {
+        if (!adding) {
+            AgateFormInput(value = name, onValueChange = { name = it }, hint = "名称 · 1~64 字符，账号列表按它分组")
+            Spacer(Modifier.height(8.dp))
+            AgateFormInput(
+                value = baseUrl,
+                onValueChange = { baseUrl = it.trim() },
+                hint = preset?.placeholder?.ifBlank { null } ?: "Base URL · 如 https://api.example.com/v1",
+            )
+            preset?.hint?.takeIf { it.isNotBlank() }?.let {
+                Spacer(Modifier.height(4.dp))
+                Text(it, color = C.textDim, fontSize = 10.sp)
+            }
+            Spacer(Modifier.height(12.dp))
+            Text("协议", color = C.textSub, fontSize = 12.sp)
+            Spacer(Modifier.height(8.dp))
+            ProtocolChips(protocol) { protocol = it }
+            Spacer(Modifier.height(4.dp))
+            Text(
+                if (protocol == CustomProviderOps.Protocol.ANTHROPIC)
+                    "Anthropic 填根地址，不要带 /v1（内核按协议拼 /v1/messages）"
+                else "OpenAI 兼容填到 /v1（内核按协议拼 /chat/completions）",
+                color = C.textDim, fontSize = 10.sp,
+            )
+            Spacer(Modifier.height(12.dp))
+        } else {
+            Text(
+                existing?.baseUrl?.ifBlank { "（未填地址）" } ?: "",
+                color = C.textDim, fontSize = 11.sp,
+            )
+            Spacer(Modifier.height(10.dp))
+        }
+
         AgateFormInput(
             value = if (noAuth) "" else key,
             onValueChange = { key = it.trim() },
-            hint = if (noAuth) "已勾选无需鉴权" else "API Key · sk-...",
+            hint = if (noAuth) "已勾选无需鉴权" else "API Key · sk-…",
         )
         Spacer(Modifier.height(10.dp))
         ToggleRow(
             title = "该上游无需鉴权",
-            desc = "本地 Ollama / 免费档",
+            desc = "本地 Ollama / 免费档：转发与拉取模型都不发鉴权头",
             checked = noAuth,
             onChange = { on -> noAuth = on; if (on) key = "" },
         )
-        ToggleRow(
-            title = "模型发现",
-            desc = "创建后自动拉取 /v1/models",
-            checked = autoFetch,
-            onChange = { autoFetch = it },
-        )
-        Spacer(Modifier.height(12.dp))
-        Text("协议", color = C.textSub, fontSize = 12.sp)
-        Spacer(Modifier.height(8.dp))
-        ProtocolChips(protocol) { protocol = it }
-        Spacer(Modifier.height(10.dp))
-        Text(
-            "余额查询：内核仅支持预置方案（NewAPI / Sub2API / DeepSeek 等），自定义端点与 JSON 路径暂不支持。" +
-                "能力位编辑在「模型 → 能力位」页。",
-            color = C.textDim, fontSize = 11.sp,
-        )
+
+        // ── 余额查询：只有带方案的家才出现 ──
+        if (balanceScheme.isNotBlank()) {
+            Spacer(Modifier.height(12.dp))
+            Text("余额查询", color = C.textSub, fontSize = 12.sp)
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "方案：" + (CustomProviderOps.balanceSchemes.firstOrNull { it.first == balanceScheme }?.second
+                    ?: balanceScheme) + " · " + balanceNoteOf(balanceScheme),
+                color = C.textDim, fontSize = 10.sp,
+            )
+            balanceFields.forEach { field ->
+                Spacer(Modifier.height(8.dp))
+                AgateFormInput(
+                    value = balanceValues[field.key].orEmpty(),
+                    onValueChange = { balanceValues[field.key] = it.trim() },
+                    hint = field.label + " · " + field.hint,
+                )
+            }
+        }
     }
 
     hint?.let {
@@ -796,27 +1080,56 @@ private fun CustomForm(onDone: (Boolean, String) -> Unit) {
         Text(it, color = C.red, fontSize = 12.sp)
     }
     Spacer(Modifier.height(12.dp))
-    SubmitButton(if (busy) "创建中…" else "创建并接入", valid && !busy) {
+    SubmitButton(
+        when {
+            busy -> "保存中…"
+            adding -> "添加账号"
+            else -> "创建并接入"
+        },
+        valid && !busy,
+    ) {
         busy = true; hint = null
         scope.launch {
-            val r = CustomProviderOps.create(name, baseUrl, key, protocol, noAuth = noAuth)
-            if (!r.ok) {
-                busy = false
-                hint = r.error ?: "创建失败"
-                return@launch
-            }
-            // 模型发现：创建成功后按开关自动拉取
-            if (autoFetch) {
-                val pid = r.data?.optJSONObject("provider")?.optString("id").orEmpty()
-                if (pid.isNotBlank()) runCatching { CustomProviderOps.fetchModels(pid) }
+            val query = balanceFields
+                .mapNotNull { f -> balanceValues[f.key]?.takeIf { it.isNotBlank() }?.let { f.key to it } }
+                .toMap()
+            val r = if (adding && existing != null) {
+                CustomProviderOps.addAccount(
+                    providerId = existing.id,
+                    apiKeyValue = key,
+                    noAuth = noAuth,
+                    balanceQuery = query.takeIf { it.isNotEmpty() },
+                )
+            } else {
+                CustomProviderOps.create(
+                    name = name.trim(),
+                    baseUrl = baseUrl.trim(),
+                    apiKeyValue = key,
+                    protocol = protocol,
+                    noAuth = noAuth,
+                    balanceScheme = balanceScheme.takeIf { it.isNotBlank() },
+                    urlSuffix = preset?.urlSuffix,
+                    headers = preset?.headers?.takeIf { it.isNotEmpty() },
+                    anthropicToolType = preset?.anthropicToolType?.takeIf { it.isNotBlank() },
+                    clientEmulation = preset?.clientEmulation?.takeIf { it.isNotBlank() },
+                    balanceQuery = query.takeIf { it.isNotEmpty() },
+                )
             }
             busy = false
-            onDone(true, "已添加 " + name)
+            if (r.ok) {
+                onDone(
+                    true,
+                    if (adding) "已给「${existing?.name}」添加账号"
+                    else "已创建「${name.trim()}」并添加账号",
+                )
+            } else {
+                hint = r.error ?: "保存失败"
+            }
         }
     }
     Spacer(Modifier.height(6.dp))
     Text(
-        "上游定位：仅 LLM 请求 + 模型列表 · 签到 / 续期 / 余额查询均不做 · 兼容 OpenAI /v1/chat/completions 即可接入",
+        "保存后立即参与选号 · 额度信息在首次请求后回填",
         color = C.textDim, fontSize = 11.sp,
     )
 }
