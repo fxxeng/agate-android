@@ -101,4 +101,11 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     // M3 SSE 事件流（/api/events，方案 §3.2）
     implementation("com.squareup.okhttp3:okhttp-sse:4.12.0")
+
+    // 纯数据层解析（SSE 报文 → 思维链 / 工具调用）用 JVM 单测覆盖：
+    // 这类解析的输入是「可能被截断的历史报文」，边界比界面多得多。
+    // 必须补一份**真实**的 org.json：android.jar 里的 JSONObject 在单元测试中
+    // 只是一组抛 "not mocked" 的桩，不补的话所有解析断言都跑不起来。
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
 }
