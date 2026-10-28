@@ -1,3 +1,5 @@
+import java.util.zip.ZipFile
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -108,4 +110,55 @@ dependencies {
     // 只是一组抛 "not mocked" 的桩，不补的话所有解析断言都跑不起来。
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20240303")
+}
+
+// ── 打包后校验：内核 .so 在不在包里 ──────────────────────────────
+//
+// 为什么需要这道检查：`core-gateway/src/main/jniLibs/` 被 .gitignore 排除
+// （.so 由 scripts/build-android-so.sh 现场产出），所以**没先编内核就直接
+// assembleDebug，Gradle 会一声不响地打出一个不含 libagate_server.so 的 APK**。
+// 那种包体积正常、能安装、能打开，直到用户点「启动网关」才崩 ——
+// `Gateway.ensureLoaded` 的 System.loadLibrary 外面没有兜底。
+// 本地已经真的踩过一次（19.3MB 无 so vs CI 的 32.9MB）。
+//
+// **只警告不失败**：日常改 Kotlin 的人不该被「你还没编内核」挡住，那是 CI 的
+// 职责（CI 一定先跑 build-android-so.sh）。但如果谁要把包发给别人，这条警告
+// 是他唯一会看到的提示，所以措辞必须说清后果。
+val verifyKernelSo by tasks.registering {
+    description = "检查 APK 内是否含 libagate_server.so（缺了就是起不了网关的假包）"
+    group = "verification"
+
+    val apkDir = layout.buildDirectory.dir("outputs/apk/debug")
+    dependsOn("assembleDebug")
+
+    doLast {
+        val dir = apkDir.get().asFile
+        val apks = dir.listFiles { f -> f.extension == "apk" }.orEmpty()
+        if (apks.isEmpty()) return@doLast
+        apks.forEach { apk ->
+            // 注意：脚本里 `java` 被 Gradle 的 java 扩展遮蔽，
+            // 写全限定名 `java.util.zip.ZipFile` 会报 Unresolved reference，
+            // 必须走文件顶部的 import
+            val hasKernel = ZipFile(apk).use { zip ->
+                zip.entries().asSequence().any {
+                    it.name.endsWith("libagate_server.so")
+                }
+            }
+            if (!hasKernel) {
+                logger.warn(
+                    "\n[!] ${apk.name} 里没有 libagate_server.so。\n" +
+                        "    这个包能装能开，但点「启动网关」会崩。\n" +
+                        "    要可用的包，先跑：bash scripts/build-android-so.sh\n" +
+                        "    （它会把 .so 放进 core-gateway/src/main/jniLibs/arm64-v8a/）\n" +
+                        "    然后重新 assembleDebug。CI 产物不受影响。\n"
+                )
+            } else {
+                logger.lifecycle("[ok] ${apk.name} 含内核 so（${apk.length() / 1024 / 1024} MB）")
+            }
+        }
+    }
+}
+
+tasks.matching { it.name == "assembleDebug" }.configureEach {
+    finalizedBy(verifyKernelSo)
 }
