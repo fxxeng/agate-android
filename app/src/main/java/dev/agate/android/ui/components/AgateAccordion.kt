@@ -4,7 +4,6 @@ import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -70,7 +69,12 @@ fun AgateAccordion(
             )
         }
         if (expanded) {
-            Box(Modifier.padding(top = 10.dp)) { content() }
+            // ⚠️ 这里是 `Column` 而不是 `Box`：内容槽**天然是多子项的**。
+            // 十组设置里每组都传了一串平级子元素（ValueRow + 四个徽标 + ItemRow…），
+            // 用 Box 会让它们全部叠在左上角 —— 实测就是设置页「服务接入」里
+            // 「未设置 / messages / models / 自动 / English」互相压字。
+            // Box 曾经看着没问题，只因为组件走查页（ShowcasePage）每组只塞了一个 Text。
+            Column(Modifier.padding(top = 10.dp)) { content() }
         }
     }
 }

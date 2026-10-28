@@ -26,6 +26,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.agate.android.data.BeijingDay
 import dev.agate.android.ui.components.AgateAvatar
+import dev.agate.android.ui.components.AgateProviderAvatar
 import dev.agate.android.ui.components.agateCard
 import dev.agate.android.ui.theme.AgateType
 import dev.agate.android.ui.theme.agateColors
@@ -101,7 +102,13 @@ fun TaskHint(text: String, modifier: Modifier = Modifier, color: Color? = null) 
     Text(text, style = AgateType.Caption, color = color ?: C.textDim, modifier = modifier)
 }
 
-/** 一条行：头像 / 标题 + 副标 / 右侧槽（v44 `.row`）。 */
+/** 一条行：头像 / 标题 + 副标 / 右侧槽（v44 `.row`）。
+ *
+ * `providerId` 非空时走 [AgateProviderAvatar]（官方 logo），否则用字母块。
+ * 传 `providerId` 的调用方要**同时**传 `label`：logo 缺失时兜底头像取的是
+ * 产品名而不是账号名 —— 用账号名兜底会出现「同一个产品每行一个字母」，
+ * 认不出是同一条产品线（国际版 / 国内版尤其明显）。
+ */
 @Composable
 fun TaskRow(
     title: String,
@@ -109,6 +116,8 @@ fun TaskRow(
     subtitle: String? = null,
     letters: String? = null,
     avatarColorKey: String = title,
+    providerId: String? = null,
+    label: String = title,
     onClick: (() -> Unit)? = null,
     trailing: @Composable RowScope.() -> Unit = {},
 ) {
@@ -120,12 +129,16 @@ fun TaskRow(
             .padding(vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        AgateAvatar(
-            name = avatarColorKey,
-            size = 34.dp,
-            corner = 11.dp,
-            letters = letters ?: title.take(2).uppercase(),
-        )
+        if (providerId != null) {
+            AgateProviderAvatar(providerId = providerId, label = label, size = 34.dp, corner = 11.dp)
+        } else {
+            AgateAvatar(
+                name = avatarColorKey,
+                size = 34.dp,
+                corner = 11.dp,
+                letters = letters ?: title.take(2).uppercase(),
+            )
+        }
         Spacer(Modifier.width(10.dp))
         Column(Modifier.weight(1f)) {
             Text(title, color = C.textMain, fontSize = 14.sp, fontWeight = FontWeight.Medium)

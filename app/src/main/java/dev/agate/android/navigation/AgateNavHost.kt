@@ -46,6 +46,8 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.material.icons.filled.Verified
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.SideEffect
@@ -57,6 +59,7 @@ import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -68,6 +71,7 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.NavType
 import androidx.navigation.navArgument
+import dev.agate.android.data.GatewayRepository
 import dev.agate.android.ui.components.AgateBottomBar
 import dev.agate.android.ui.components.AgateTabItem
 import dev.agate.android.ui.home.ConsolePage
@@ -92,6 +96,8 @@ import dev.agate.android.ui.pages.SkeletonPage
 import dev.agate.android.ui.theme.AgateThemeMode
 import dev.agate.android.ui.theme.AgateType
 import dev.agate.android.ui.theme.agateColors
+import dev.agate.core.GatewayPrefs
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /** 路由常量（4 主 Tab + 22 二级页）。 */
@@ -290,6 +296,7 @@ fun AgateNavHost(
     navController: NavHostController = rememberNavController(),
 ) {
     val C = agateColors()
+    val ctx = LocalContext.current
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     val backStack by navController.currentBackStackEntryAsState()
@@ -306,6 +313,27 @@ fun AgateNavHost(
     }
 
     fun openDrawer() = scope.launch { drawerState.open() }
+
+    // ── 全应用一份快照 ───────────────────────────────────────────
+    // `GatewayRepository.snapshot` 是进程级单例，提供商 / 模型 / 额度中心 /
+    // 调用日志 / 控制台五个页面都从它读账号与模型。但轮询此前只由控制台页启动，
+    // 于是**没先进过控制台**就拿不到数据：覆盖安装后直接打开提供商页会看到
+    // 「全部 · 0 / 还没有任何账号」，而同一时刻签到中心（自己的端点）明明有账号。
+    //
+    // 生命周期提到导航宿主：进应用就探活 + 轮询，退到后台（组合销毁）再停。
+    // 这里同时也接管了原先控制台页那份 `Gateway.status()` 循环 —— 两处都探活
+    // 会让 `started` 被反复置位、SSE 连两次。
+    LaunchedEffect(Unit) {
+        GatewayRepository.configure(GatewayPrefs.apiKey(ctx))
+        GatewayRepository.startPolling()
+        while (true) {
+            GatewayRepository.syncGatewayRunning()
+            delay(5_000L)
+        }
+    }
+    DisposableEffect(Unit) {
+        onDispose { GatewayRepository.stopPolling() }
+    }
 
     ModalNavigationDrawer(
         drawerState = drawerState,

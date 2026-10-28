@@ -135,6 +135,10 @@ fun ProviderPage(
         GatewayRepository.configure(GatewayPrefs.apiKey(ctx))
         AccountOps.configure(GatewayPrefs.apiKey(ctx))
         CheckinCenter.configure(GatewayPrefs.apiKey(ctx))
+        // 进本页立刻补拉一次：轮询已提到导航宿主，但它的第一个 5 秒刻度可能
+        // 还没到；本页的主内容就是账号清单，等那 5 秒会是空白屏。refreshOnce
+        // 自带在途去重，与轮询撞车也不会打两次。
+        GatewayRepository.refreshOnce()
         CheckinCenter.refreshOnce()
         onDispose { }
     }

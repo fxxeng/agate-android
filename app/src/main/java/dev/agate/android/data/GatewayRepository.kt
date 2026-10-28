@@ -2,6 +2,7 @@ package dev.agate.android.data
 
 import dev.agate.android.data.dto.AccountDto
 import dev.agate.android.data.dto.AccountDtos
+import dev.agate.core.Gateway
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -207,11 +208,24 @@ object GatewayRepository {
         }
     }
 
-    /** 页面生命周期感知的快照轮询（方案 §3.1：前台 STARTED 刷新、退后台挂起）。 */
+    /** 页面生命周期感知的快照轮询（方案 §3.1：前台 STARTED 刷新、退后台挂起）。
+     *
+     * ⚠️ 这个函数**不再是「谁消费谁启动」**：早先只有控制台页调它，于是
+     * 提供商页 / 模型页 / 额度中心 / 调用日志这些同读 [snapshot] 的页面，
+     * 只要用户没先进过一次控制台，读到的永远是 [ConsoleSnapshot] 的初始值
+     * ——「全部 · 0」「还没有任何账号」。实测现象就是**覆盖安装后打开提供商页
+     * 一片空**，而同一时刻签到中心（走自己的 `/api/checkin-center`）明明有账号。
+     *
+     * 现在由 `AgateNavHost` 在导航宿主这一层启动一次，全应用共用（见那里的
+     * `DisposableEffect`）；`started` 由 [syncGatewayRunning] 探活维护，
+     * 不再依赖某个页面先被访问过。
+     */
     fun startPolling() {
         if (snapshotJob?.isActive == true) return
         snapshotJob = scope.launch {
             while (isActive) {
+                // 壳层还没探过活时先问一次：`started` 只由探活/网关启停来置位，
+                // 页面自己猜「大概在跑」会让快照对着一个没起来的端口轮询。
                 if (started) refreshOnce()
                 delay(SNAPSHOT_INTERVAL_MS)
             }
@@ -221,6 +235,23 @@ object GatewayRepository {
     fun stopPolling() {
         snapshotJob?.cancel()
         snapshotJob = null
+    }
+
+    /**
+     * 探活并同步 `started`：网关在跑就起 SSE + 拉快照，停了就置错误。
+     *
+     * 幂等、可频繁调用 —— 壳层每几秒调一次即可。原本这段逻辑写在控制台页的
+     * `LaunchedEffect` 里（`Gateway.status()` + [onGatewayRunning]），搬到这里
+     * 是因为**页面不保证被访问**：用户在提供商页时那条循环根本不存在。
+     */
+    fun syncGatewayRunning() {
+        scope.launch {
+            val status = runCatching { Gateway.status() }.getOrNull()
+            onGatewayRunning(status?.running == true)
+            // 探活到「在跑」但快照还是空的（比如进程刚拉起来、或上一次全失败
+            // 留下的空值）：立刻补拉一次，用户不必等下一个 5 秒刻度。
+            if (started && _snapshot.value.fetchedAtMs == 0L) refreshOnce()
+        }
     }
 
     /**

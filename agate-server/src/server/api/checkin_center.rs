@@ -104,6 +104,39 @@ fn out_of_scope_reason(account: &Value) -> &'static str {
     "没有签到链路"
 }
 
+/// 「每日签到」分组行：**只产出真的有账号的组**。
+///
+/// ── 为什么要过滤空 bucket ────────────────────────────────────
+/// 索引与 `CHECKIN_PROVIDERS` 对齐（`buckets[i]` 是第 i 家的账号），早先的实现是
+/// `iter().zip(buckets)`：无论 bucket 空不空都产出一行。于是用户只登录了
+/// WorkBuddy 一家，签到中心却列出 11 家卡片、其中 10 家写着「无账号」——
+/// 那张清单回答不了「我今天要签什么」，只是把注册表抄了一遍。
+///
+/// 空分组**整行丢掉**，不留占位：`totalCount` 恒为 0 的行没有任何动作可做。
+/// 「哪些家支持签到但没登录」这个信息并没丢 —— 前端从 `auto.providerOptions`
+/// （= `CHECKIN_PROVIDERS` ∩ `supports_checkin`）拿，那是**能力清单**，不是账号。
+/// 两个口径刻意分开：**行 = 有账号的事实，选项 = 支持签到的能力**。
+fn provider_rows_of(buckets: Vec<Vec<Value>>) -> Vec<Value> {
+    CHECKIN_PROVIDERS
+        .iter()
+        .zip(buckets)
+        .filter(|(_, rows)| !rows.is_empty())
+        .map(|(id, rows)| {
+            let done = rows
+                .iter()
+                .filter(|row| row.get("checkedInToday").and_then(Value::as_bool) == Some(true))
+                .count();
+            json!({
+                "id": id,
+                "label": auto_checkin::provider_label(id),
+                "accounts": rows,
+                "doneCount": done,
+                "totalCount": rows.len(),
+            })
+        })
+        .collect()
+}
+
 /// 签到中心的聚合快照（不发任何上游请求 —— 资格类状态由前端按需惰性查询）
 pub async fn get_center(State(state): State<ServerState>) -> Response {
     let accounts: Vec<Value> = state
@@ -153,23 +186,10 @@ pub async fn get_center(State(state): State<ServerState>) -> Response {
         }
     }
 
-    let provider_rows: Vec<Value> = CHECKIN_PROVIDERS
-        .iter()
-        .zip(buckets.into_iter())
-        .map(|(id, rows)| {
-            let done = rows
-                .iter()
-                .filter(|row| row.get("checkedInToday").and_then(Value::as_bool) == Some(true))
-                .count();
-            json!({
-                "id": id,
-                "label": auto_checkin::provider_label(id),
-                "accounts": rows,
-                "doneCount": done,
-                "totalCount": rows.len(),
-            })
-        })
-        .collect();
+    // ── 只产出**真的有账号**的分组 ─────────────────────────────
+    // 见 `provider_rows_of` 的函数头：空 bucket 不占一行。
+    // `todayDone` / `todayEligible` 的合计口径不受影响：丢掉的行两者都是 0。
+    let provider_rows = provider_rows_of(buckets);
     let today_done: u64 = provider_rows
         .iter()
         .map(|row| row.get("doneCount").and_then(Value::as_u64).unwrap_or(0))
@@ -282,4 +302,56 @@ pub async fn get_center(State(state): State<ServerState>) -> Response {
         "keepalive": crate::server::core::billing::keepalive::state(),
         "history": checkin_history::list(),
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    //! 分组行的过滤语义（针对「没登录也列出 11 家卡片」那条缺陷）。
+    use super::*;
+
+    fn row(provider: &str, checked_in: bool) -> Value {
+        json!({
+            "id": format!("{provider}-acc"),
+            "name": "acc",
+            "available": true,
+            "checkinAt": Value::Null,
+            "checkedInToday": checked_in,
+        })
+    }
+
+    /// 只有第 0 家有账号：结果必须只有一条，而不是 12 条里 11 条「无账号」。
+    #[test]
+    fn empty_buckets_do_not_produce_rows() {
+        let mut buckets: Vec<Vec<Value>> = vec![Vec::new(); CHECKIN_PROVIDERS.len()];
+        buckets[0].push(row(CHECKIN_PROVIDERS[0], false));
+        let rows = provider_rows_of(buckets);
+        assert_eq!(rows.len(), 1, "空分组不该占一行");
+        assert_eq!(rows[0]["id"].as_str(), Some(CHECKIN_PROVIDERS[0]));
+        assert_eq!(rows[0]["totalCount"].as_u64(), Some(1u64));
+        assert_eq!(rows[0]["doneCount"].as_u64(), Some(0u64));
+    }
+
+    /// 一个账号都没有：整块为空 —— 前端据此显示「没有支持签到的账号」。
+    #[test]
+    fn no_accounts_yields_no_rows() {
+        let buckets: Vec<Vec<Value>> = vec![Vec::new(); CHECKIN_PROVIDERS.len()];
+        assert!(provider_rows_of(buckets).is_empty());
+    }
+
+    /// 过滤不能打乱注册顺序：行序仍按 `CHECKIN_PROVIDERS`，界面位置才稳定。
+    #[test]
+    fn surviving_rows_keep_registry_order() {
+        let mut buckets: Vec<Vec<Value>> = vec![Vec::new(); CHECKIN_PROVIDERS.len()];
+        // 故意只在靠后的两家放账号，验证先出现的是注册顺序靠前的那家
+        let last = CHECKIN_PROVIDERS.len() - 1;
+        buckets[last].push(row(CHECKIN_PROVIDERS[last], true));
+        buckets[1].push(row(CHECKIN_PROVIDERS[1], false));
+        let rows = provider_rows_of(buckets);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0]["id"].as_str(), Some(CHECKIN_PROVIDERS[1]));
+        assert_eq!(rows[1]["id"].as_str(), Some(CHECKIN_PROVIDERS[last]));
+        // 已签的那家计数要对：过滤只影响「哪些组出现」，不影响组内统计
+        assert_eq!(rows[1]["doneCount"].as_u64(), Some(1u64));
+        assert_eq!(rows[0]["doneCount"].as_u64(), Some(0u64));
+    }
 }

@@ -34,7 +34,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -92,15 +91,14 @@ fun ConsolePage(
     val snapError by GatewayRepository.snapshotError.collectAsState()
 
     var gw by remember { mutableStateOf<Gateway.Status?>(null) }
-    DisposableEffect(Unit) {
-        GatewayRepository.configure(GatewayPrefs.apiKey(ctx))
-        GatewayRepository.startPolling()
-        onDispose { GatewayRepository.stopPolling() }
-    }
+    // 快照轮询与网关探活**已移到导航宿主**（`AgateNavHost`）：那里是全应用
+    // 唯一的启动点。这一段曾在这里，于是没进过控制台就直接打开提供商页时，
+    // 快照永远是初始空值 —— 覆盖安装后「账号不见了」的观感就是这么来的。
+    // 本页只读快照，不再自己起轮询（两处都起会让 SSE 连两次、`started` 反复置位）。
+    // `gw` 这颗仍保留：本页要显示内核 uptime / 端口 / 调度器开关这些控件级读数。
     LaunchedEffect(Unit) {
         while (true) {
             gw = withContext(Dispatchers.IO) { runCatching { Gateway.status() }.getOrNull() }
-            GatewayRepository.onGatewayRunning(gw?.running == true)
             delay(5_000L)
         }
     }
