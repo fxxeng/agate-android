@@ -1329,13 +1329,39 @@ pub const QODER_DEFAULT_ENABLED: &[&str] = &["Qwen3.8-Flash"];
 /// `providers::adapter` 的 `seed_current_qoder_defaults` —— 覆盖「有账号但远程
 /// 刷新失败，手里只有静态兜底清单」与升级用户首次打开管理页的情形）。
 pub fn seed_qoder_defaults(provider: &str, label: &str, ids: &[String]) -> Option<String> {
-    seed_default_enabled(provider, label, QODER_DEFAULT_ENABLED, ids)
+    seed_default_enabled(provider, label, Some(QODER_DEFAULT_ENABLED), ids)
 }
 
 /// 「默认启用白名单」种子的公共实现（WorkBuddy 与 Qoder 共用）。
 ///
-/// 对 `ids` 里每个还没种过的模型：不在 `whitelist` 里的默认禁用，并把
-/// `(provider, id)` 记入 `seeded`。`label` 只进日志文案。
+/// 对 `ids` 里每个还没种过的模型，把 `(provider, id)` 记入 `seeded`；
+/// **默认状态由 `whitelist` 决定**，两种取值语义**完全不同**：
+///
+///   · `Some(list)` —— 不在 `list` 里的默认**禁用**。用于「上游目录里混着大量
+///     套餐档位别名 / 需高档套餐才能用的条目」的家（Qoder）：默认全开会让对外
+///     模型列表凭空多出十几个没人点名的名字，还会参与同名认领把别家挤掉。
+///   · `None` —— **一律不禁用**，只记账。用于「准入过滤已经足够可靠」的家
+///     （WorkBuddy）：是不是对话模型该由 `models::filter_with_meta` 判断
+///     （官方 picker 名单 + maxOutputTokens），种子再做一次默认关闭等于第二道
+///     没有依据的关卡。
+///
+/// ── 为什么 `None` 必须是独立的取值，而不是传空数组 `&[]` ──────────
+/// **这里踩过坑，别改回去。** 早先 WorkBuddy 为了「默认一律启用」传的是
+/// `&[]`，而本函数的实现是「`whitelist.iter().any(...)` 为假 → 禁用」——
+/// 空数组让那个 `any` 恒假，于是 `&[]` 的实际语义是**全部默认禁用**，与调用方
+/// 想要的正相反。表现是一份「拉到 39 个、界面只出 15 个」的清单：
+///
+///   冷启动 → 内置清单过准入 23 条 → 种子全禁用 + 记账 23 条
+///          → `migrate_enable_vetted` 紧接着跑 → 23 条全恢复、烧掉一次性标记
+///   远程刷新 → 39 条 → 其中 14 条已在 seeded（= 内置 ∩ 远程）→ 仍然启用
+///            → 另外 25 条是全新 id，从未种过 → **又被禁用**，
+///              而一次性标记已烧，没人纠偏
+///   结果 → 14 + `auto`（只在内置清单里）= **15 个**
+///
+/// 也就是说 `migrate_enable_vetted` 那次纠偏修好了「冷启动那批」，却让标记
+/// 提前失效，反而给「远程新增那批」留下了一个永久缺口。用 `Option` 把两种
+/// 语义分开之后，「默认不禁用」是一条**没有分支**的路径：不写 `disabled`，
+/// 自然也不会有需要纠偏的存量。
 ///
 /// ── 为什么 seeded 单独变化也要落盘（而不是只看「有没有新禁用」）──────
 /// 旧实现只在「这次真禁用了某个模型」时才 save，于是「模型已被别处的规则
@@ -1355,10 +1381,60 @@ pub fn seed_qoder_defaults(provider: &str, label: &str, ids: &[String]) -> Optio
 ///
 /// 判据用「当前清单 id 集合」：这些 id 是本轮**已通过准入过滤**的，说明它们
 /// 确实是可用的对话模型；不在清单里的（用户自己登记的、别家的）一律不动。
-fn migrate_enable_vetted(provider: &str, ids: &[String]) -> Option<String> {
-    const MARK: &str = "migration:enable-vetted-v1";
+///
+/// ── v2：标记按 provider 分，并再纠偏一次存量 ────────────────────
+/// 两个都是 v1 的缺陷，一起修：
+///
+///   ① **v1 的标记是全局的**（`migration:enable-vetted-v1`，不带 provider）。
+///      WorkBuddy 拆家后是两个 provider，先跑的那家把标记烧掉，后跑的那家
+///      永远得不到纠偏。现在标记拼上 provider id，两家各记各的。
+///
+///   ② **v1 那次纠偏反而留下了一个永久缺口**。它的执行时机在「冷启动手里
+///      只有内置清单」那一刻：内置那 23 条被恢复、标记随即烧掉；等远程刷新
+///      把 39 条拉回来，其中 25 条是**从未种过的新 id**，被当时的空数组
+///      白名单又禁用了一遍 —— 而这时标记已经烧了，没有人再来纠偏。
+///      这就是「39 个只出 15 个」的实际成因（详见 `seed_default_enabled`）。
+///      种子本身的语义已经修好（不再自动禁用），但**存量配置里那 25 条记录
+///      还在**，不额外纠偏一次，老用户升级后看到的仍是 15 个。
+///
+///   ③ **标记只能在「手里是远程权威清单」时烧**（`authoritative` 参数）。
+///      这是 ② 的补救：v1 之所以留下缺口，根子是它在**冷启动那一刻**就
+///      认定「纠偏完了」。冷启动手里的 `ids` 往往只是内置清单（23 条），
+///      跟上游真实目录（39 条）不是一回事 —— 拿它当判据烧掉标记，等于用
+///      一份残缺清单宣布「所有该纠的都纠了」。
+///      现在的规则：**非权威清单直接跳过纠偏**（不烧标记，也不动手）。不烧
+///      标记意味着这条路径每次启动都会跑，如果同时纠偏，用户在管理页显式
+///      关掉的模型就会被反复打开 —— 那是比「一次性误开」更糟的伤害。等远程
+///      清单真正落地之后，一次纠完、烧掉标记。这样即使某次冷启动手里正好
+///      没有缓存，也不会重演 25 条缺口。
+///
+/// ── 一次性的代价，如实记在这里 ──────────────────────────────
+/// v2 会把「当前清单里仍被禁用」的条目全部恢复。理论上用户可能在管理页
+/// （那里的视图含禁用项）显式关过某个模型，这一次会被一并打开。接受的理由：
+///    · 这批 id 绝大多数从未在模型页出现过（被种子关掉的模型不渲染），
+///      用户对它做显式操作的机会极小；
+///    · 就算被误开，管理页关回去是一次点击，而「少 25 个模型」是升级后
+///      持续可见的功能缺失；
+///    · 只跑一次（per-provider 标记），之后用户的任何显式关闭都不再受影响。
+///
+/// `authoritative` = 传进来的 `ids` 是不是**远程下发的完整清单**（见 ③）。
+/// 调用方从 `CatalogState::remote_refreshed()` 取，别自己猜。
+fn migrate_enable_vetted(provider: &str, ids: &[String], authoritative: bool) -> Option<String> {
+    // ── 见上文 ③：标记只能在远程权威清单上烧 ────────────────────
+    // 而**非权威清单也不该顺手纠偏**：不烧标记意味着这条路径每次启动都会跑，
+    // 纠偏又是「解除这批 id 的全部禁用」，于是用户在管理页显式关掉的模型会
+    // 在下一次启动被悄悄打开 —— 反复覆盖明确意图，比一次性误开严重得多。
+    //
+    // 所以非权威时**完全不动**：连 `current()` 都不读，一个字节不落盘，
+    // 直接返回等远程清单落地。（判断必须在读规则**之前**，否则「不动」是假的。）
+    if !authoritative {
+        return None;
+    }
+    // 标记带 provider：见上文 ①。v1 的老标记不再被检查 —— 它表达的那次纠偏
+    // 已经被 v2 覆盖，两者不是「跑过就不跑」的关系。
+    let mark = format!("migration:enable-vetted-v2:{provider}");
     let mut rules = current();
-    if rules.migrations.iter().any(|m| m == MARK) {
+    if rules.migrations.iter().any(|m| m == &mark) {
         return None;
     }
     let mut re_enabled: Vec<String> = Vec::new();
@@ -1370,14 +1446,14 @@ fn migrate_enable_vetted(provider: &str, ids: &[String]) -> Option<String> {
         set_membership(&mut rules.disabled, Some(provider), id, false);
         re_enabled.push(id.to_string());
     }
-    rules.migrations.push(MARK.to_string());
+    rules.migrations.push(mark);
     save(&rules);
     if re_enabled.is_empty() {
         // 没有需要纠偏的（新装用户）—— 只落标记，不吵日志
         return None;
     }
     Some(format!(
-        "🔧 迁移: 重新启用 {} 个此前被默认禁用的模型 [{}]",
+        "🔧 迁移[{provider}]: 恢复 {} 个此前被默认禁用、但本轮清单里确实存在的模型 [{}]",
         re_enabled.len(),
         re_enabled.join(", ")
     ))
@@ -1386,7 +1462,7 @@ fn migrate_enable_vetted(provider: &str, ids: &[String]) -> Option<String> {
 fn seed_default_enabled(
     provider: &str,
     label: &str,
-    whitelist: &[&str],
+    whitelist: Option<&[&str]>,
     ids: &[String],
 ) -> Option<String> {
     let mut rules = current();
@@ -1398,6 +1474,8 @@ fn seed_default_enabled(
             continue;
         }
         rules.seeded.push(format!("{provider}:{id}"));
+        // `None` = 这个家不按白名单判默认状态（只记账）。见函数头。
+        let Some(whitelist) = whitelist else { continue };
         let default_enabled = whitelist.iter().any(|name| name.eq_ignore_ascii_case(id));
         if !default_enabled && !rules.is_disabled(provider, id) {
             set_membership(&mut rules.disabled, Some(provider), id, true);
@@ -1415,7 +1493,7 @@ fn seed_default_enabled(
     }
     Some(format!(
         "🧩 {label}模型默认规则: 默认只启用 [{}]；默认禁用 {} 个 [{}]",
-        whitelist.join(", "),
+        whitelist.map(|list| list.join(", ")).unwrap_or_default(),
         disabled_added.len(),
         disabled_added.join(", ")
     ))

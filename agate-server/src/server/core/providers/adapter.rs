@@ -1320,8 +1320,8 @@ fn seed_current_raccoon_defaults() {
     }
 }
 
-/// 对**当前缓存清单**里的 WorkBuddy 模型补一次默认规则种子（默认只启用白名单
-/// 内的模型，见 `model_rules::seed_workbuddy_defaults`）。
+/// 对**当前缓存清单**里的 WorkBuddy 模型补一次默认规则种子（默认启用，见
+/// `model_rules::seed_workbuddy_defaults`）。
 ///
 /// 与 `seed_current_raccoon_defaults` 同理：刷新可能因失败 / 无登录态而不落地
 /// 新清单 —— 那条路径上没有种子可挂，启动后手里的这份清单（内置或旧缓存）
@@ -1330,9 +1330,23 @@ fn seed_current_raccoon_defaults() {
 /// **两个地区各跑一遍**（拆家后各有各的清单与 provider 键）：种子按
 /// `(provider, id)` 记账，只种国内版会让国际版的新模型停在全开状态，
 /// 而两家的模型名很可能同名。
+///
+/// `authoritative` 取目录自己的 `remote_refreshed()`，**不要写死**：这里是
+/// 「手里有什么就种什么」，而手里可能是内置清单（23 条）也可能是缓存里的
+/// 远程清单（39 条）。这个标志只决定一次性纠偏跑不跑 —— 用内置清单当判据，
+/// 正是「39 个只出 15 个」的成因（见 `migrate_enable_vetted` ③）。
+///
+/// ── 缓存也算权威，这是刻意的（别误以为它在说「刚拉的」）────────
+/// `initial_state` 把缓存恢复的清单置为 `remote_refreshed = true`（见那里的
+/// 模块说明）：它确实是上游下发的，只是可能旧一些。对纠偏而言这就够了 ——
+/// 判据要的是「这份 id 集合来自远程目录」，而不是「这一秒刚拉」。相对地，
+/// 内置 23 条**不能**当判据：它是本地写死的子集，永远比远程少，拿它宣布
+/// 「都纠完了」必然漏。旧缓存少的那几个模型不在 `disabled` 里（从没种过），
+/// 本来就不在纠偏范围内，不会因为这个判据「太宽」而出错。
 fn seed_current_workbuddy_defaults() {
     for region in super::workbuddy::Region::ALL {
-        let ids: Vec<String> = crate::server::core::models::global_catalog(region)
+        let catalog = crate::server::core::models::global_catalog(region);
+        let ids: Vec<String> = catalog
             .list()
             .iter()
             .filter_map(|item| item.get("id").and_then(Value::as_str).map(str::to_string))
@@ -1340,6 +1354,7 @@ fn seed_current_workbuddy_defaults() {
         if let Some(summary) = crate::server::core::model_rules::seed_workbuddy_defaults(
             region.provider_id(),
             &ids,
+            catalog.remote_refreshed(),
         ) {
             crate::server::logging::log("[Models]", &summary);
         }

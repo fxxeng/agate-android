@@ -691,15 +691,18 @@ impl ModelCatalog {
             &state.models,
             state.last_refreshed_at,
         );
-        // 远程清单首次落地时补一次 WorkBuddy 默认规则种子（默认只启用白名单内的
-        // 模型，见 `model_rules::seed_workbuddy_defaults`）。必须放在写锁之外：种子
+        // 远程清单首次落地时补一次 WorkBuddy 默认规则种子（默认启用，见
+        // `model_rules::seed_workbuddy_defaults`）。必须放在写锁之外：种子
         // 要写 config.json，而「持锁期间不做任何 IO」是本目录的硬约束。
         // provider 键取本实例的地区：种子按 `(provider, id)` 记账，国际版的
         // 模型名与国内版可能同名，记错家会让两家的开关互相污染。
+        // `authoritative = true`：这就是远程权威清单，一次性纠偏可以在这里
+        // 烧掉闸门标记（冷启动那条路径传 false，见 `adapter` 的补种）。
         if let Some(summary) =
             crate::server::core::model_rules::seed_workbuddy_defaults(
                 self.region.provider_id(),
                 &ids,
+                true,
             )
         {
             logging::log("[Models]", &summary);

@@ -46,7 +46,22 @@ pub const WORKBUDDY_DEFAULT_ENABLED: &[&str] = &["hy3", "hy4-preview-f", "deepse
 /// 国际版的新模型停在全开状态（而两家的模型名很可能同名，用户看到的是
 /// 「同一个名字在两个分组里默认状态不一样」）。白名单两地共用一份，
 /// 差异只在 provider 键上。展示名从注册表查（`label_of`），别处不要再写名字。
-pub fn seed_workbuddy_defaults(provider: &str, ids: &[String]) -> Option<String> {
+///
+/// ── `authoritative` 是什么（2026-10-28）──────────────────────
+/// 表示 `ids` 是**远程下发的完整清单**，还是「冷启动手里的内置目录 / 旧缓存」。
+/// 它只决定一次性纠偏（`migrate_enable_vetted`）跑不跑：用一份 23 条的内置
+/// 清单宣布「该纠的都纠了」，正是「39 个只出 15 个」那次缺口的成因（详见
+/// `migrate_enable_vetted` 的 ③）。传 `false` 时**整段纠偏跳过**，不烧标记
+/// 也不动手 —— 不烧标记的路径每次启动都会跑，若同时纠偏就会反复打开用户
+/// 显式关掉的模型。
+///
+/// 别在这里自己猜：远程路径传 `true`，缓存补种路径传
+/// `ModelCatalog::remote_refreshed()` 的实际值。
+pub fn seed_workbuddy_defaults(
+    provider: &str,
+    ids: &[String],
+    authoritative: bool,
+) -> Option<String> {
     let label = crate::server::core::providers::label_of(provider);
     // ── 不再「按白名单批量禁用」（本次修复）─────────────────────
     // 旧行为：不在 [`WORKBUDDY_DEFAULT_ENABLED`] 里的模型**默认禁用**。那份
@@ -61,10 +76,16 @@ pub fn seed_workbuddy_defaults(provider: &str, ids: &[String]) -> Option<String>
     //
     // 现在种子只负责**记账**（写 `seeded`），默认状态一律「启用」；用户想关
     // 哪个在管理页自己关（那是显式意图，种子永不覆盖）。
+    //
+    // ⚠️ 传 `None`（而不是空数组 `&[]`）：`seed_default_enabled` 的语义是
+    // 「不在白名单里 → 禁用」，空数组会让那个判定恒假 —— 也就是**全部禁用**，
+    // 与这里要的正好相反。这个坑真的踩过（一份 39 个的清单只出 15 个），
+    // 详见 `seed_default_enabled` 的函数头。
     let _ = WORKBUDDY_DEFAULT_ENABLED;
-    let summary = super::seed_default_enabled(provider, &label, &[], ids);
-    // 一次性纠偏：把旧白名单**自动关掉**的那些模型重新打开
-    let migration = super::migrate_enable_vetted(provider, ids);
+    let summary = super::seed_default_enabled(provider, &label, None, ids);
+    // 一次性纠偏：把旧白名单**自动关掉**的那些模型重新打开。
+    // `authoritative` 透传：非权威清单整段跳过（不烧标记，也不动手），见函数头。
+    let migration = super::migrate_enable_vetted(provider, ids, authoritative);
     match (summary, migration) {
         (None, None) => None,
         (a, b) => Some([a, b].into_iter().flatten().collect::<Vec<_>>().join(" · ")),
