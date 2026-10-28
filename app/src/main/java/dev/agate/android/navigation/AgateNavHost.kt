@@ -474,7 +474,10 @@ fun AgateNavHost(
                     // 路由预演：三策略 + 候选队列（含跳过原因）+ 自愈规则
                     RoutingPage(onOpenDrawer = ::openDrawer)
                 }
-                composable(Routes.ASSISTANT) { skeleton(it, navController, "AI 运维助手", "M4", "4 大快捷诊断 Chips、工具调用气泡、流式对话。", ::openDrawer) }
+                composable(Routes.ASSISTANT) {
+                    // AI 运维助手：端口 SSE 流式对话 + 8 只工具（改动类先弹确认卡）
+                    dev.agate.android.ui.assistant.AssistantPage(onOpenDrawer = ::openDrawer)
+                }
                 composable(Routes.SETTINGS) { skeleton(it, navController, "设置", "M4", "手风琴分组：主题三档 / 传输 / 脱敏 / 备份与恢复中心。", ::openDrawer) }
                 composable(Routes.KEYS) {
                     dev.agate.android.ui.keys.KeysPage(
