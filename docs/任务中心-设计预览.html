@@ -1,0 +1,1084 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>任务中心 · 设计预览（四页）</title>
+<style>
+  :root{
+    --bg:#0F172A; --card:#1E293B; --inset:#0B1220; --border:#334155;
+    --accent:#38BDF8; --textMain:#F8FAFC; --textSub:#A3B1C6; --textDim:#7C8BA1;
+    --green:#4ADE80; --red:#FB7185; --amber:#FBBF24;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:22px 14px 70px;background:#080F1C;color:var(--textMain);
+       font:14px/1.6 -apple-system,"PingFang SC","Microsoft YaHei",system-ui,sans-serif}
+  .wrap{max-width:900px;margin:0 auto}
+  h1{font-size:18px;font-weight:600;margin:0 0 6px}
+  .lead{color:var(--textSub);font-size:13px;margin:0 0 6px}
+  .rules{color:var(--textDim);font-size:12px;margin:0 0 26px;line-height:1.7}
+  .rules code{background:rgba(56,189,248,.12);color:var(--accent);padding:1px 5px;border-radius:4px;font-size:11px}
+  h2{font-size:15px;font-weight:600;margin:36px 0 4px}
+  h2:first-of-type{margin-top:20px}
+  .note{color:var(--textDim);font-size:12px;margin:0 0 12px;line-height:1.7}
+  .note b{color:var(--textSub);font-weight:600}
+  .phone{width:100%;max-width:396px;margin:0 auto;background:var(--bg);
+         border:1px solid #1c2a3f;border-radius:16px;padding:12px}
+  .phone + .phone{margin-top:14px}
+
+  /* 页头 */
+  .hd{display:flex;align-items:center;gap:8px;margin-bottom:10px}
+  .hd-back{width:24px;height:24px;display:flex;align-items:center;justify-content:center;
+           color:var(--textSub);flex:0 0 auto}
+  .hd-t{font-size:17px;font-weight:600;flex:1 1 auto;white-space:nowrap}
+  .hd-g{font-size:10px;color:var(--textDim);padding:3px 7px;border-radius:6px;
+        border:1px solid var(--border);white-space:nowrap;flex:0 0 auto;
+        font-family:ui-monospace,Menlo,monospace}
+  .hd-a{font-size:11.5px;color:var(--accent);font-weight:600;white-space:nowrap;flex:0 0 auto}
+
+  /* 卡 */
+  .card{background:var(--card);border:1px solid var(--border);border-radius:18px;
+        padding:13px;margin-bottom:10px}
+  .card-h{display:flex;align-items:center;gap:9px;margin-bottom:10px}
+  .card-t{font-size:14px;font-weight:600;flex:1 1 auto;min-width:0}
+  .card-s{font-size:10.5px;color:var(--textDim);margin:-6px 0 10px;line-height:1.6}
+
+  /* 总览四格 */
+  .stats{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px}
+  .st{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:10px 11px;min-width:0}
+  .st-link{cursor:pointer}
+  .st-l{font-size:10.5px;color:var(--textDim)}
+  .st-v{font-size:21px;font-weight:700;margin-top:3px;line-height:1.2;
+        font-variant-numeric:tabular-nums;display:flex;align-items:baseline;gap:3px}
+  .st-v small{font-size:11.5px;font-weight:500;color:var(--textDim)}
+  .st-f{font-size:10px;color:var(--textDim);margin-top:3px;line-height:1.5;
+        overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .bar{height:4px;border-radius:2px;background:var(--inset);margin-top:6px;overflow:hidden}
+  .bar>i{display:block;height:100%;background:var(--accent);border-radius:2px}
+
+  /* 分组行 */
+  .row{display:flex;align-items:center;gap:10px;padding:9px 0;
+       border-bottom:1px solid rgba(51,65,85,.45)}
+  .row:last-child{border-bottom:none}
+  .row-m{flex:1 1 auto;min-width:0}
+  .row-n{font-size:13px;font-weight:600;line-height:1.35;display:flex;align-items:center;
+         gap:5px;flex-wrap:wrap}
+  .row-d{font-size:10.5px;color:var(--textDim);line-height:1.5;margin-top:1px;
+         overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .row-r{flex:0 0 auto;display:flex;align-items:center;gap:6px}
+  .row-cnt{font-size:11px;color:var(--textSub);font-variant-numeric:tabular-nums;white-space:nowrap}
+  .chev{color:var(--textDim);font-size:12px;flex:0 0 auto}
+
+  /* 头像 */
+  .av{width:30px;height:30px;border-radius:10px;flex:0 0 auto;display:flex;
+      align-items:center;justify-content:center;font-size:11px;font-weight:700;
+      background:var(--inset);color:var(--textSub);border:1px solid var(--border)}
+  .av.blue{background:rgba(56,189,248,.14);color:var(--accent);border-color:rgba(56,189,248,.3)}
+  .av.green{background:rgba(34,197,94,.12);color:var(--green);border-color:rgba(34,197,94,.3)}
+  .av.amber{background:rgba(217,119,6,.14);color:var(--amber);border-color:rgba(217,119,6,.32)}
+  .av.violet{background:rgba(129,140,248,.14);color:#A5B4FC;border-color:rgba(129,140,248,.32)}
+
+  /* 标签 */
+  .tag{font-size:9.5px;padding:2px 6px;border-radius:5px;border:1px solid var(--border);
+       color:var(--textDim);white-space:nowrap}
+  .tag.g{color:var(--green);border-color:rgba(34,197,94,.35);background:rgba(34,197,94,.1)}
+  .tag.r{color:var(--red);border-color:rgba(225,29,72,.35);background:rgba(225,29,72,.1)}
+  .tag.a{color:var(--amber);border-color:rgba(217,119,6,.4);background:rgba(217,119,6,.12)}
+  .tag.b{color:var(--accent);border-color:rgba(56,189,248,.35);background:rgba(56,189,248,.1)}
+
+  /* 按钮 */
+  .btn{font-size:11px;padding:4px 9px;border-radius:8px;border:1px solid var(--border);
+       color:var(--textSub);white-space:nowrap;background:var(--inset);display:inline-block}
+  .btn.pri{color:#04121F;border-color:transparent;background:var(--accent);font-weight:600}
+  .btn.out{color:var(--accent);border-color:rgba(56,189,248,.45);background:rgba(56,189,248,.1)}
+  .btn.ghost{background:transparent;border-color:transparent;color:var(--textSub)}
+  .btn.dan{color:var(--red);border-color:rgba(225,29,72,.4);background:rgba(225,29,72,.1)}
+  .btn.sm{font-size:10px;padding:3px 7px}
+
+  /* 展开的账号明细 */
+  .sub{background:var(--inset);border:1px solid rgba(51,65,85,.7);border-radius:11px;
+       padding:2px 9px;margin:6px 0 8px 40px}
+  .sub-r{display:flex;align-items:center;gap:7px;padding:7px 0;
+         border-bottom:1px solid rgba(51,65,85,.5)}
+  .sub-r:last-child{border-bottom:none}
+  .sub-n{font-size:11.5px;flex:1 1 auto;min-width:0;overflow:hidden;
+         text-overflow:ellipsis;white-space:nowrap}
+  .sub-t{font-size:10px;color:var(--textDim);font-variant-numeric:tabular-nums;flex:0 0 auto}
+
+  /* 折叠说明 */
+  .fold{background:var(--inset);border:1px solid rgba(51,65,85,.6);border-radius:10px;
+        padding:7px 9px;font-size:10px;color:var(--textDim);line-height:1.65;margin-top:8px}
+  .fold b{color:var(--textSub);font-weight:600}
+
+  /* 开关 */
+  .sw{width:36px;height:21px;border-radius:11px;background:#334155;position:relative;flex:0 0 auto}
+  .sw::after{content:"";position:absolute;top:2px;left:2px;width:17px;height:17px;
+             border-radius:50%;background:#94A3B8;transition:.2s}
+  .sw.on{background:rgba(56,189,248,.5)}
+  .sw.on::after{left:17px;background:var(--accent)}
+
+  /* 分段 */
+  .seg{display:flex;background:var(--inset);border:1px solid var(--border);
+       border-radius:10px;padding:3px;gap:3px;margin-bottom:10px}
+  .seg>span{flex:1;text-align:center;font-size:11px;padding:5px 2px;border-radius:8px;
+            color:var(--textSub);white-space:nowrap}
+  .seg>span.on{background:rgba(56,189,248,.18);color:var(--accent);font-weight:600}
+
+  /* 输入 / 值胶囊 */
+  .val{font-size:11px;padding:4px 8px;border-radius:7px;border:1px solid var(--border);
+       color:var(--textSub);white-space:nowrap;background:var(--inset);
+       font-family:ui-monospace,Menlo,monospace;font-variant-numeric:tabular-nums}
+  .val.on{color:var(--accent);border-color:rgba(56,189,248,.45);background:rgba(56,189,248,.12)}
+  .val.ro{color:var(--textDim);background:transparent;border-style:dashed}
+  .fld{background:var(--inset);border:1px solid var(--border);border-radius:9px;
+       padding:6px 9px;font-size:11.5px;color:var(--textMain);
+       font-family:ui-monospace,Menlo,monospace;display:inline-block}
+  .fld.ph{color:var(--textDim)}
+
+  /* 条目行（定时签到） */
+  .ent{border-bottom:1px solid rgba(51,65,85,.45);padding:9px 0}
+  .ent:last-child{border-bottom:none}
+  .ent-h{display:flex;align-items:center;gap:9px}
+  .ent-t{font-size:13px;font-weight:600;flex:1 1 auto;min-width:0;
+         display:flex;align-items:center;gap:5px}
+  .ent-d{font-size:10.5px;color:var(--textDim);margin-top:2px;line-height:1.55}
+  .ent-d.num{font-variant-numeric:tabular-nums}
+  .ent-a{display:flex;align-items:center;gap:5px;margin-top:6px;justify-content:flex-end}
+
+  /* 编辑表单 */
+  .editor{background:var(--inset);border:1px solid rgba(56,189,248,.3);
+          border-radius:11px;padding:9px 10px;margin-top:8px}
+  .fl{display:flex;align-items:flex-start;gap:8px;padding:5px 0}
+  .fl-k{font-size:10.5px;color:var(--textDim);flex:0 0 48px;padding-top:5px}
+  .fl-v{flex:1 1 auto;min-width:0}
+  .box{display:grid;grid-template-columns:1fr 1fr;gap:3px 8px;margin-top:5px}
+  .box>label{font-size:10.5px;color:var(--textSub);display:flex;align-items:center;
+             gap:5px;min-width:0}
+  .cb{width:12px;height:12px;border-radius:3px;border:1px solid var(--border);
+      background:var(--card);flex:0 0 auto;display:flex;align-items:center;
+      justify-content:center;font-size:8px;color:transparent}
+  .cb.on{background:rgba(56,189,248,.6);border-color:var(--accent);color:#04121F}
+  .mini{font-size:10px;color:var(--textDim);font-variant-numeric:tabular-nums}
+  .mini a{color:var(--accent);text-decoration:none}
+
+  /* 保活链 */
+  .chain{display:flex;flex-direction:column;gap:4px;margin-top:6px}
+  .ch{display:flex;align-items:center;gap:7px;padding:5px 8px;border-radius:8px;
+      border:1px solid var(--border);background:var(--inset);font-size:11.5px}
+  .ch-g{color:var(--textDim);font-size:10px;flex:0 0 auto;letter-spacing:-1px}
+  .ch-n{flex:1 1 auto;font-family:ui-monospace,Menlo,monospace;font-size:11px;
+        overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .ch-i{font-size:10px;color:var(--textDim);font-variant-numeric:tabular-nums}
+  .ch-x{color:var(--textDim);font-size:13px;line-height:1;flex:0 0 auto}
+
+  /* 表格（签到记录） */
+  .tbl{width:100%;border-collapse:collapse;font-size:11px}
+  .tbl th{font-size:9.5px;color:var(--textDim);font-weight:500;text-align:left;
+          padding:5px 6px;border-bottom:1px solid var(--border);white-space:nowrap}
+  .tbl td{padding:6px;border-bottom:1px solid rgba(51,65,85,.4);
+          color:var(--textSub);vertical-align:top}
+  .tbl tr:last-child td{border-bottom:none}
+  .tbl .w{color:var(--textMain);font-variant-numeric:tabular-nums;white-space:nowrap}
+  .tbl .d{font-size:9.5px;color:var(--textDim);display:block;margin-top:1px}
+  .tbl .err{color:var(--red)}
+  .filters{display:flex;gap:5px;flex-wrap:wrap;align-items:center;margin-bottom:9px}
+  .pg{display:flex;align-items:center;gap:6px;margin-top:9px;padding-top:8px;
+      border-top:1px solid rgba(51,65,85,.5);font-size:10px;color:var(--textDim)}
+  .pg .btn{font-size:10px;padding:3px 7px}
+
+  /* 周期任务 */
+  .tk{border-bottom:1px solid rgba(51,65,85,.45);padding:9px 0}
+  .tk:last-child{border-bottom:none}
+  .tk-h{display:flex;align-items:center;gap:8px}
+  .tk-t{font-size:12.5px;font-weight:600;flex:1 1 auto}
+  .tk-d{font-size:10px;color:var(--textDim);margin-top:2px;line-height:1.55}
+
+  /* 提示块 */
+  .warnbox{font-size:10px;color:var(--amber);line-height:1.6;margin-top:8px;
+           background:rgba(217,119,6,.08);border:1px solid rgba(217,119,6,.28);
+           border-radius:9px;padding:7px 9px}
+  .okbox{font-size:10px;color:var(--green);line-height:1.6;margin-top:8px;
+         background:rgba(34,197,94,.08);border:1px solid rgba(34,197,94,.26);
+         border-radius:9px;padding:7px 9px}
+
+  /* 注释列表 */
+  .kv{margin:10px 0 0;padding:0;list-style:none;font-size:12px;line-height:1.8}
+  .kv li{padding-left:14px;position:relative;color:var(--textSub)}
+  .kv li::before{content:"·";position:absolute;left:2px;color:var(--accent)}
+  .kv code{background:rgba(56,189,248,.1);color:var(--accent);padding:1px 4px;
+           border-radius:4px;font-size:11px}
+  table.cmp{width:100%;border-collapse:collapse;font-size:12px;margin-top:10px}
+  table.cmp th,table.cmp td{text-align:left;padding:7px 9px;
+      border-bottom:1px solid rgba(51,65,85,.5);vertical-align:top}
+  table.cmp th{color:var(--textDim);font-weight:500;font-size:11px}
+  table.cmp td{color:var(--textSub)}
+  table.cmp td:first-child{color:var(--textMain);white-space:nowrap}
+  table.cmp code{background:rgba(56,189,248,.1);color:var(--accent);padding:1px 4px;
+                 border-radius:4px;font-size:10.5px}
+  .bad{color:var(--red)}
+  .good{color:var(--green)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>任务中心 · 设计预览</h1>
+  <p class="lead">按上游 3.0.8 的<b>真实页面结构</b>重排：一个签到中心（三 tab）+ 一个定时任务页，摊成 Agate 的四页</p>
+  <p class="rules">
+    这一版先按<b>真实上游</b>做，不是按 v44 稿的六页。理由：上游 3.0.8 的签到中心是
+    <b>一页三 tab</b>（签到中心 / 定时签到 / 签到记录），而「周期任务」是<b>另一个一级页</b>，
+    「验证码池」在上游<b>零 UI</b>（是后台守卫脚本）。照六页铺会造出三个
+    「进去只有一个开关」的空页面。逐条依据见
+    <code>docs/任务中心-上游3.0.8签到中心深挖.md</code>。
+  </p>
+
+  <!-- ═══════════════ 0. 结构对照 ═══════════════ -->
+  <h2>⓿ 为什么是四页而不是六页</h2>
+  <p class="note">
+    左边是上一版计划的六个二级页，右边是它们在<b>上游源码</b>里的实际位置。
+    <span class="bad">红</span> = 上游没有对应页面。
+  </p>
+  <table class="cmp">
+    <tr><th>原计划的六页</th><th>上游的真实位置</th><th>结论</th></tr>
+    <tr>
+      <td>福利中心</td>
+      <td>「签到中心」tab 里的三块面板（每日签到 / 新手福利 / 活动福利）</td>
+      <td class="bad">不是页面，是 tab 内分区</td>
+    </tr>
+    <tr>
+      <td>定时签到</td>
+      <td>「签到中心」的第二个 tab</td>
+      <td class="good">✅ 真的是独立页</td>
+    </tr>
+    <tr>
+      <td>签到台账</td>
+      <td>第三个 tab，但形态<b>已换</b>：轮次台账 → 每账号明细</td>
+      <td class="bad">名字要改，内容要换</td>
+    </tr>
+    <tr>
+      <td>保活链</td>
+      <td>「定时签到」tab 里的一块半幅卡</td>
+      <td class="bad">不是页面，是页内一块</td>
+    </tr>
+    <tr>
+      <td>周期任务</td>
+      <td><b>另一个一级页</b> <code>data-page="tasks"</code></td>
+      <td class="bad">不是签到中心的子页</td>
+    </tr>
+    <tr>
+      <td>验证码池</td>
+      <td><b>零 UI</b>：<code>zcode-captcha-pool.js</code> 是后台守卫，无挂载点</td>
+      <td class="bad">上游没有这个页面</td>
+    </tr>
+  </table>
+
+  <h2>⓪-2 四页落位</h2>
+  <ul class="kv">
+    <li><b>①签到中心</b> → 总览四格 + 每日签到 + 新手福利 + 活动福利 + 成长任务（原「福利中心」并入）</li>
+    <li><b>②定时签到</b> → 总开关 + 条目 CRUD + 保活模型链（原「保活链」并入）</li>
+    <li><b>③签到记录</b> → 每账号明细台账（原「签到台账」改形态改名）</li>
+    <li><b>④周期任务</b> → 六条间隔任务（独立成页，与签到无关）</li>
+    <li><b>验证码池</b> → 不独立成页，在任务中心首页放一张<b>读数卡</b>（水位 + 节奏三项）</li>
+  </ul>
+
+  <!-- ═══════════════ 1. 任务中心首页 ═══════════════ -->
+  <h2>① 任务中心（首页）：分组导航 + 验证码池读数</h2>
+  <p class="note">
+    首页不再塞三档 seg（原来「今日 / 福利 / 定时」的分法，是把上游的三个 tab
+    和另一个一级页混在一起切）。现在它只做一件事：<b>告诉你现在什么状态、往哪进</b>。
+    四个入口的副标都是<b>真实读数</b>，不是名词解释。
+  </p>
+
+  <div class="phone">
+    <div class="hd">
+      <span class="hd-back"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h18M3 6h18M3 18h18"/></svg></span>
+      <span class="hd-t">任务中心</span>
+      <span class="hd-a">立即全签</span>
+    </div>
+
+    <!-- 今日进度条 -->
+    <div class="card" style="border-color:rgba(56,189,248,.35);background:linear-gradient(180deg,rgba(56,189,248,.1),rgba(30,41,59,1))">
+      <div class="st-l">今日签到进度</div>
+      <div class="st-v" style="font-size:26px">
+        6<small>/ 9</small>
+        <span style="margin-left:auto"><span class="tag a">2 个不参与</span></span>
+      </div>
+      <div class="bar" style="margin-top:7px"><i style="width:66.7%"></i></div>
+      <div class="st-f" style="margin-top:5px">下次 20:00（约 3h42m 后）· 总开关开</div>
+    </div>
+
+    <!-- 四个入口 -->
+    <div class="card" style="padding-bottom:6px">
+      <div class="card-t" style="margin-bottom:4px">分区</div>
+
+      <div class="row">
+        <span class="av blue">签</span>
+        <div class="row-m">
+          <div class="row-n">签到中心</div>
+          <div class="row-d">每日签到 6/9 · 待领新手福利 3 项 · 活动福利 1 份</div>
+        </div>
+        <div class="row-r"><span class="tag a">3 项</span><span class="chev">›</span></div>
+      </div>
+
+      <div class="row">
+        <span class="av violet">时</span>
+        <div class="row-m">
+          <div class="row-n">定时签到</div>
+          <div class="row-d">2 / 3 条启用 · 保活链 3 个模型</div>
+        </div>
+        <div class="row-r"><span class="tag g">开</span><span class="chev">›</span></div>
+      </div>
+
+      <div class="row">
+        <span class="av green">记</span>
+        <div class="row-m">
+          <div class="row-n">签到记录</div>
+          <div class="row-d">共 1,284 条 · 今日 6 成功 / 1 失败</div>
+        </div>
+        <div class="row-r"><span class="tag b">今日</span><span class="chev">›</span></div>
+      </div>
+
+      <div class="row">
+        <span class="av">周</span>
+        <div class="row-m">
+          <div class="row-n">周期任务</div>
+          <div class="row-d">6 条 · 4 条启用 · 凭证维护下次约 42m</div>
+        </div>
+        <div class="row-r"><span class="tag g">4/6</span><span class="chev">›</span></div>
+      </div>
+    </div>
+
+    <!-- 验证码池读数卡 -->
+    <div class="card">
+      <div class="card-h">
+        <div class="card-t">验证码池 · ZCode 活动套餐</div>
+        <span class="tag g">2 / 3 就绪</span>
+      </div>
+      <div class="row" style="border-bottom:none;padding-top:0">
+        <span class="av amber">码</span>
+        <div class="row-m">
+          <div class="row-d" style="white-space:normal;line-height:1.6">
+            库存 <b style="color:var(--textSub)">2</b> / 目标 3 ·
+            今日已铸 <b style="color:var(--textSub)">12</b> ·
+            已消耗 <b style="color:var(--textSub)">11</b> ·
+            被拒 <b style="color:var(--red)">0</b>
+          </div>
+        </div>
+        <div class="row-r"><span class="btn out sm">节奏</span></div>
+      </div>
+      <div class="fold">
+        令牌一次性、<b>120 秒过期</b>。铸造是<b>后台守卫</b>在做（库存 &lt; 目标且有活动套餐账号时才补，
+        避免白烧阿里云风控配额）—— 手机上不铸，所以这里只给读数与节奏设置。
+        缺令牌时活动套餐请求会报 <b>400 · code 3007</b>。
+      </div>
+    </div>
+  </div>
+
+  <p class="note" style="margin-top:10px">
+    <b>为什么首页不直接铺签到分组</b>：上游「签到中心」是一个 tab 的位置，
+    摊平到首页会让首页变成 12 家 × N 个账号的长列表。首页给判断，详情页给操作。
+  </p>
+
+  <!-- ═══════════════ 2. 签到中心 ═══════════════ -->
+  <h2>② 签到中心：总览四格 + 三块面板</h2>
+  <p class="note">
+    对齐上游 <code>CenterTab</code>。四格总览是<b>入口 + 读数</b>：进度与待领福利给数，
+    定时与记录可点（切到对应页）。三块面板的每一行都可展开 —— 一行一个账号在手机上
+    太占地方，折叠态给「这家有几个账号、签了几个」。
+  </p>
+
+  <div class="phone">
+    <div class="hd">
+      <span class="hd-back"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg></span>
+      <span class="hd-t">签到中心</span>
+      <span class="hd-a">全部签到</span>
+    </div>
+
+    <!-- 四格 -->
+    <div class="stats">
+      <div class="st">
+        <div class="st-l">今日签到</div>
+        <div class="st-v">6<small>/9</small></div>
+        <div class="bar"><i style="width:66.7%"></i></div>
+        <div class="st-f">9 个可签 · 2 个不参与</div>
+      </div>
+      <div class="st st-link">
+        <div class="st-l">定时签到</div>
+        <div class="st-v">2<small>/3 条</small></div>
+        <div class="st-f" style="white-space:normal;line-height:1.4">下次 20:00 ›</div>
+      </div>
+      <div class="st">
+        <div class="st-l">待领新手福利</div>
+        <div class="st-v" style="color:var(--amber)">3<small>项</small></div>
+        <div class="st-f">已查 2 / 共 4 个账号</div>
+      </div>
+      <div class="st st-link">
+        <div class="st-l">累计记录</div>
+        <div class="st-v">1,284</div>
+        <div class="st-f">每账号一条明细 ›</div>
+      </div>
+    </div>
+
+    <!-- 每日签到 -->
+    <div class="card">
+      <div class="card-h">
+        <div class="card-t">每日签到</div>
+        <span class="btn pri sm">立即全部签到</span>
+      </div>
+      <div class="card-s">点行展开账号明细 · 单账号签到不受范围限制</div>
+
+      <!-- 展开的组 -->
+      <div class="row" style="align-items:flex-start">
+        <span class="av blue">WB</span>
+        <div class="row-m">
+          <div class="row-n">WorkBuddy <span class="tag a">部分</span></div>
+          <div class="row-d">腾讯每日签到接口 · 仅国内版</div>
+        </div>
+        <div class="row-r"><span class="row-cnt">3 账号 · 1 已签</span><span class="chev">⌄</span></div>
+      </div>
+      <div class="sub">
+        <div class="sub-r">
+          <span class="sub-n">主号</span>
+          <span class="tag g">已签</span>
+          <span class="sub-t">09:12</span>
+          <span class="btn ghost sm">重签</span>
+        </div>
+        <div class="sub-r">
+          <span class="sub-n">备号 A</span>
+          <span class="tag b">待签</span>
+          <span class="sub-t">—</span>
+          <span class="btn ghost sm">签到</span>
+        </div>
+        <div class="sub-r">
+          <span class="sub-n">备号 B</span>
+          <span class="tag b">待签</span>
+          <span class="sub-t">昨天 09:04</span>
+          <span class="btn ghost sm">签到</span>
+        </div>
+      </div>
+
+      <!-- 国际版：三颗按钮 -->
+      <div class="row" style="align-items:flex-start">
+        <span class="av violet">WI</span>
+        <div class="row-m">
+          <div class="row-n">WorkBuddy 国际版 <span class="tag g">已签</span></div>
+          <div class="row-d">每日活跃任务 · 网页会话保活点亮日活，领取才加积分</div>
+        </div>
+        <div class="row-r"><span class="row-cnt">1 账号 · 1 已签</span><span class="chev">⌄</span></div>
+      </div>
+      <div class="sub">
+        <div class="sub-r">
+          <span class="sub-n">intl-main</span>
+          <span class="tag g">已签</span>
+          <span class="sub-t">08:31</span>
+        </div>
+        <div class="sub-r" style="justify-content:flex-end;gap:5px">
+          <span class="btn ghost sm">保活</span>
+          <span class="btn ghost sm">领取</span>
+          <span class="btn out sm">保活+领取</span>
+        </div>
+      </div>
+      <div class="fold">
+        国际版这一组是三颗按钮，不是一颗：<b>保活</b>只维持活跃不领取、<b>领取</b>只探测活动并领奖励、
+        <b>保活+领取</b>是完整组合。一颗按钮混做两件事，用户看不出积分为什么没涨。
+      </div>
+
+      <!-- 折叠的组 -->
+      <div class="row">
+        <span class="av">小</span>
+        <div class="row-m">
+          <div class="row-n">小浣熊 <span class="tag g">已签</span></div>
+          <div class="row-d">桌面端每日积分链路</div>
+        </div>
+        <div class="row-r"><span class="row-cnt">1 账号 · 1 已签</span><span class="chev">›</span></div>
+      </div>
+
+      <div class="row">
+        <span class="av">CA</span>
+        <div class="row-m">
+          <div class="row-n">CodeArts <span class="tag b">待签</span></div>
+          <div class="row-d">每日福利 · 领取 → 确认 → 回读核实 · 按北京时间重置</div>
+        </div>
+        <div class="row-r"><span class="row-cnt">1 账号 · 0 已签</span><span class="chev">›</span></div>
+      </div>
+
+      <div class="row">
+        <span class="av">QO</span>
+        <div class="row-m">
+          <div class="row-n">Qoder <span class="tag b">待签</span></div>
+          <div class="row-d">活动（campaign）领取 · 每天 10:00 刷新</div>
+        </div>
+        <div class="row-r"><span class="row-cnt">1 账号 · 0 已签</span><span class="chev">›</span></div>
+      </div>
+
+      <div class="fold">
+        不参与每日签到：<b>ZCode ×2（没有签到链路）、Accio ×1（未接入签到链路）</b>。
+        CodeArts 的一次性奖励在下方「新手福利」，它的每日福利就在上面这一组里；
+        ZCode 的套餐领取见「活动福利」。
+      </div>
+    </div>
+
+    <!-- 新手福利 -->
+    <div class="card">
+      <div class="card-h">
+        <div class="card-t">新手福利</div>
+        <span class="btn out sm">全部查询</span>
+      </div>
+      <div class="card-s">一次性福利 · 签到后自动查询并领取，领完记在本机不再查上游</div>
+
+      <div class="row" style="align-items:flex-start">
+        <span class="av violet">LO</span>
+        <div class="row-m">
+          <div class="row-n">Loomy-main <span class="tag a">2 项待领</span></div>
+          <div class="row-d">已领 1/3 · 累计 120 积分 · 查询于 14:22</div>
+        </div>
+        <div class="row-r">
+          <span class="btn out sm">查询</span>
+          <span class="chev">⌄</span>
+        </div>
+      </div>
+      <div class="sub">
+        <div class="sub-r">
+          <span class="cb on">✓</span>
+          <span class="sub-n">首次登录积分</span>
+          <span class="sub-t">+50</span>
+          <span class="tag g">已领取</span>
+        </div>
+        <div class="sub-r">
+          <span class="cb"></span>
+          <span class="sub-n">完成一次对话</span>
+          <span class="sub-t">+40</span>
+          <span class="tag b">可领取</span>
+        </div>
+        <div class="sub-r">
+          <span class="cb"></span>
+          <span class="sub-n">邀请一位好友</span>
+          <span class="sub-t">+30</span>
+          <span class="tag">暂不可领</span>
+        </div>
+        <div class="sub-r" style="justify-content:flex-end">
+          <span class="btn pri sm">一键领取（2）</span>
+        </div>
+      </div>
+
+      <div class="row">
+        <span class="av">小</span>
+        <div class="row-m">
+          <div class="row-n">小浣熊-C <span class="tag g">全部领取</span></div>
+          <div class="row-d">已领 2/2 · 累计 200 积分 · 结算于 10-27 09:03</div>
+        </div>
+        <div class="row-r"><span class="btn out sm">查询</span><span class="chev">›</span></div>
+      </div>
+
+      <div class="row">
+        <span class="av">CA</span>
+        <div class="row-m">
+          <div class="row-n">CodeArts-main <span class="tag">尚未查询</span></div>
+          <div class="row-d">尚未查询任务状态</div>
+        </div>
+        <div class="row-r"><span class="btn out sm">查询</span></div>
+      </div>
+      <div class="fold">
+        领完的账号显示「<b>结算于</b>」（后端落盘的结算记忆），没领完的显示「<b>查询于</b>」（这次实查的时刻）。
+        两者不能混成一个「更新时间」—— 记忆是结论，查询是动作。
+      </div>
+    </div>
+
+    <!-- 活动福利 -->
+    <div class="card">
+      <div class="card-h"><div class="card-t">活动福利</div></div>
+      <div class="card-s">限时体验套餐 · 领取需滑块验证码 · 逐份查看与领取</div>
+
+      <div class="row">
+        <span class="av blue">ZC</span>
+        <div class="row-m">
+          <div class="row-n">ZCode-intl <span class="tag g">今天已领 1 份</span></div>
+          <div class="row-d">点「套餐明细」看领到了哪几份、什么时候生效</div>
+        </div>
+        <div class="row-r"><span class="btn out sm">套餐明细</span></div>
+      </div>
+      <div class="row">
+        <span class="av blue">ZC</span>
+        <div class="row-m">
+          <div class="row-n">ZCode-cn <span class="tag">今天未领</span></div>
+          <div class="row-d">限时体验套餐（start-plan），活动期内每天一份</div>
+        </div>
+        <div class="row-r"><span class="btn out sm">去领取</span></div>
+      </div>
+      <div class="fold">
+        按钮<b>始终可点</b>，不按「今天领过没」堵死入口 —— 上游是按<b>套餐</b>判已领取的
+        （领了 A 之后 B 照样能领）。行上的徽章只说今天领了几份，由本地台账按北京时间判。
+      </div>
+    </div>
+
+    <!-- 成长任务 -->
+    <div class="card">
+      <div class="card-h"><div class="card-t">成长任务</div><span class="tag">WorkBuddy 国内版</span></div>
+      <div class="card-s">查询任务树后一键点亮 / 领奖 · 含开学季与猫猫旅行</div>
+
+      <div class="row" style="align-items:flex-start">
+        <span class="av blue">WB</span>
+        <div class="row-m">
+          <div class="row-n">主号 <span class="tag a">3 项可完成</span></div>
+          <div class="row-d">5 项任务 · 3 项可完成 · 查询于 14:25</div>
+        </div>
+        <div class="row-r"><span class="btn out sm">查询</span><span class="chev">⌄</span></div>
+      </div>
+      <div class="sub">
+        <div class="sub-r" style="justify-content:space-between">
+          <span class="mini">能量 <b style="color:var(--textSub)">240</b> · 连登 <b style="color:var(--textSub)">7</b> 天</span>
+          <span style="display:flex;gap:5px">
+            <span class="btn pri sm">一键完成</span>
+            <span class="btn ghost sm">领取</span>
+          </span>
+        </div>
+        <div class="sub-r">
+          <span class="cb on">✓</span>
+          <span class="sub-n">创建一个画布</span>
+          <span class="tag g">已领取</span>
+        </div>
+        <div class="sub-r">
+          <span class="cb"></span>
+          <span class="sub-n">使用一次专家</span>
+          <span class="tag b">可完成</span>
+        </div>
+        <div class="sub-r">
+          <span class="cb"></span>
+          <span class="sub-n">发 3 个对话 (2/3)</span>
+          <span class="tag a">可完成</span>
+        </div>
+        <div class="sub-r">
+          <span class="cb"></span>
+          <span class="sub-n">邀请好友注册</span>
+          <span class="tag">需真实操作</span>
+        </div>
+        <div class="sub-r">
+          <span class="sub-n">🐾 猫猫旅行</span>
+          <span class="sub-t" style="flex:1;text-align:left">已领养 · 在途</span>
+          <span class="btn ghost sm">巡检一次</span>
+        </div>
+        <div class="sub-r">
+          <span class="sub-n">🎓 开学季</span>
+          <span class="sub-t" style="flex:1;text-align:left">进行中 · 抽奖 2 次</span>
+          <span class="btn ghost sm">执行并抽奖</span>
+        </div>
+      </div>
+      <div class="fold">
+        展开后是四块：读数（能量 / 连登）、任务清单、猫猫旅行、开学季。
+        「需真实操作」那类<b>不给执行按钮</b> —— 上游能查到但从脚本伪造不了，标出来比假装能点诚实。
+      </div>
+    </div>
+  </div>
+
+  <p class="note" style="margin-top:10px">
+    <b>这一页零上游请求</b>：进页面只打 <code>GET /api/checkin-center</code> 一条聚合端点。
+    新手福利、活动福利、成长任务的具体状态都是展开或点「查询」时才去查
+    —— 一次打开页面不替用户问十几个上游接口。
+  </p>
+
+  <!-- ═══════════════ 3. 定时签到 ═══════════════ -->
+  <h2>③ 定时签到：总开关 + 条目 CRUD + 保活链</h2>
+  <p class="note">
+    对齐上游 <code>ScheduleTab</code>。三个要点：<b>总开关说清管到哪一层</b>
+    （关了所有条目都不跑）、<b>范围摘要全选时只说「全部 N 家」</b>
+    （铺 12 个名字会把「几点」和「上次执行」淹掉）、<b>保活链在同一个页面</b>
+    （它和「几点签」是同一次配置动作）。
+  </p>
+
+  <div class="phone">
+    <div class="hd">
+      <span class="hd-back"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg></span>
+      <span class="hd-t">定时签到</span>
+      <span class="hd-a">＋ 添加条目</span>
+    </div>
+
+    <!-- 总开关 -->
+    <div class="card">
+      <div class="row" style="border-bottom:none;padding:2px 0">
+        <div class="row-m">
+          <div class="row-n">总开关</div>
+          <div class="row-d" style="white-space:normal">开着：启用的条目按各自时刻执行</div>
+        </div>
+        <div class="row-r"><span class="sw on"></span></div>
+      </div>
+      <div class="fold">
+        错过时点开机后会自动补签，不会因为当时没开机而漏掉。
+        各家签到接口都是幂等的，重复执行不会重复领取。
+      </div>
+    </div>
+
+    <!-- 条目列表 -->
+    <div class="card">
+      <div class="card-t" style="margin-bottom:2px">条目 <span style="font-size:11px;color:var(--textDim);font-weight:400">2 / 3 启用 · 上限 10 条</span></div>
+      <div class="card-s" style="margin-bottom:4px">每条各有时刻与范围 · 各自当天去重</div>
+
+      <!-- 条目 1 -->
+      <div class="ent">
+        <div class="ent-h">
+          <span class="sw on"></span>
+          <div class="ent-t">早班</div>
+          <span class="val">下次 明天 08:00</span>
+        </div>
+        <div class="ent-d">每天 08:00 · <b style="color:var(--textSub)">全部 12 家</b></div>
+        <div class="ent-d num">上次执行：09-28 08:00 · 到点 —— 成功 8 · 保活 1 · 失败 1</div>
+        <div class="ent-a">
+          <span class="btn ghost sm">立即执行</span>
+          <span class="btn ghost sm">编辑</span>
+          <span class="btn ghost sm" style="color:var(--red)">删除</span>
+        </div>
+      </div>
+
+      <!-- 条目 2（编辑态） -->
+      <div class="ent" style="background:rgba(56,189,248,.04);border-radius:10px;padding:9px 8px">
+        <div class="ent-h">
+          <span class="sw on"></span>
+          <div class="ent-t">晚班</div>
+          <span class="val">下次 今天 20:00</span>
+        </div>
+        <div class="ent-d">每天 20:00 · <b style="color:var(--textSub)">Loomy、小浣熊、CodeArts</b></div>
+        <div class="ent-d num">上次执行：09-28 20:00 · 到点 —— 成功 3</div>
+
+        <div class="editor">
+          <div class="fl">
+            <span class="fl-k">名称</span>
+            <span class="fl-v"><span class="fld">晚班</span></span>
+          </div>
+          <div class="fl">
+            <span class="fl-k">每天时刻</span>
+            <span class="fl-v">
+              <span class="fld">20:00</span>
+              <div class="mini" style="margin-top:3px">北京时间 · 错过时点开机后自动补签</div>
+            </span>
+          </div>
+          <div class="fl">
+            <span class="fl-k">签到范围</span>
+            <span class="fl-v">
+              <div class="mini" style="margin-bottom:4px">
+                到点时逐个签到，已勾 <b style="color:var(--accent)">3</b> / 12 家
+                <a href="#" style="margin-left:6px">全选</a>
+                <a href="#" style="margin-left:6px">清空</a>
+              </div>
+              <div class="box">
+                <label><span class="cb"></span>WorkBuddy</label>
+                <label><span class="cb"></span>WorkBuddy 国际</label>
+                <label><span class="cb"></span>小浣熊</label>
+                <label><span class="cb"></span>AutoClaw</label>
+                <label><span class="cb"></span>AutoClaw 国际</label>
+                <label><span class="cb"></span>Qoder</label>
+                <label><span class="cb"></span>Qoder 国际</label>
+                <label><span class="cb"></span>Trae</label>
+                <label><span class="cb on">✓</span>Loomy</label>
+                <label><span class="cb"></span>KukuAI</label>
+                <label><span class="cb"></span>OfficeAce</label>
+                <label><span class="cb on">✓</span>CodeArts</label>
+              </div>
+            </span>
+          </div>
+          <div style="display:flex;justify-content:flex-end;gap:6px;margin-top:7px">
+            <span class="btn sm">取消</span>
+            <span class="btn pri sm">保存</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 条目 3（停用） -->
+      <div class="ent" style="opacity:.62">
+        <div class="ent-h">
+          <span class="sw"></span>
+          <div class="ent-t">午间补签 <span class="tag">已停用</span></div>
+          <span class="val ro">—</span>
+        </div>
+        <div class="ent-d">每天 12:30 · Qoder</div>
+        <div class="ent-d num">上次执行：09-25 12:30 · 到点 —— 成功 1</div>
+        <div class="ent-a">
+          <span class="btn ghost sm">立即执行</span>
+          <span class="btn ghost sm">编辑</span>
+          <span class="btn ghost sm" style="color:var(--red)">删除</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 保活链 -->
+    <div class="card">
+      <div class="card-h">
+        <div class="card-t">保活模型链</div>
+        <span class="btn pri sm">保存</span>
+      </div>
+      <div class="card-s">WorkBuddy 国际版日活任务的免费模型 · 全局一份，与条目无关</div>
+
+      <div class="mini" style="margin-bottom:6px">
+        按序逐个尝试、第一个成功即止，共 <b style="color:var(--textSub)">3</b> 个
+        <a href="#" style="margin-left:6px">填入缺省链</a>
+      </div>
+
+      <div class="chain">
+        <div class="ch"><span class="ch-g">⠿</span><span class="ch-n">glm-4-flash</span><span class="ch-i">#1</span><span class="ch-x">×</span></div>
+        <div class="ch"><span class="ch-g">⠿</span><span class="ch-n">deepseek-chat</span><span class="ch-i">#2</span><span class="ch-x">×</span></div>
+        <div class="ch"><span class="ch-g">⠿</span><span class="ch-n">qwen-turbo</span><span class="ch-i">#3</span><span class="ch-x">×</span></div>
+      </div>
+
+      <div style="display:flex;gap:6px;align-items:center;margin-top:7px">
+        <span class="fld ph" style="flex:1">模型名，如 glm-4-flash</span>
+        <span class="btn out sm">添加模型</span>
+      </div>
+      <div class="fold">
+        这条链的语义<b>就是顺序</b>，所以是一行一个模型、按住⠿拖动排序，不是一个逗号分隔的输入框
+        （加一个要挪光标、删一个要精确选中、换顺序得手动剪贴）。清空后保存 = 恢复缺省链。
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════ 4. 签到记录 ═══════════════ -->
+  <h2>④ 签到记录：每账号一行的明细台账</h2>
+  <p class="note">
+    这一页对应上游「签到记录」tab —— 注意它与旧的<b>「签到台账」不是一回事</b>。
+    上游已主动淘汰了「一条一轮 + 失败明细前 5 条」的轮次台账，换成「每账号一行」的明细：
+    轮次台账回答不了「浣熊-C 上周三到底失败在哪」，明细能。
+  </p>
+
+  <div class="phone">
+    <div class="hd">
+      <span class="hd-back"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg></span>
+      <span class="hd-t">签到记录</span>
+      <span class="hd-a" style="color:var(--red)">清空</span>
+    </div>
+
+    <!-- 时间档位 -->
+    <div class="seg">
+      <span>今天</span><span>7 天</span><span>30 天</span><span class="on">全部</span>
+    </div>
+
+    <!-- 筛选 -->
+    <div class="filters">
+      <span class="val">全部结果 ▾</span>
+      <span class="val">全部提供商 ▾</span>
+      <span class="fld ph" style="flex:1;min-width:80px">搜账号 / 收益 / 错误</span>
+    </div>
+    <div class="mini" style="margin:-4px 0 8px">1,284 条 · 结构：时间 · 账号 · 提供商 · 来源 · 结果 · 说明</div>
+
+    <!-- 表格 -->
+    <div class="card" style="padding:6px 9px">
+      <table class="tbl">
+        <tr>
+          <th style="width:44px">时间</th>
+          <th>账号</th>
+          <th style="width:56px">结果</th>
+          <th>说明</th>
+        </tr>
+        <tr>
+          <td class="w">09:12<span class="d">09-28</span></td>
+          <td>主号<span class="d">WorkBuddy · 定时</span></td>
+          <td><span class="tag g">成功领取</span></td>
+          <td>今日积分 +100</td>
+        </tr>
+        <tr>
+          <td class="w">09:12<span class="d">09-28</span></td>
+          <td>intl-main<span class="d">WB 国际 · 定时</span></td>
+          <td>
+            <span class="tag b">今日已领</span>
+            <span class="tag">保活</span>
+          </td>
+          <td>活跃保活完成，但活动未开启</td>
+        </tr>
+        <tr>
+          <td class="w">09:12<span class="d">09-28</span></td>
+          <td>备号 A<span class="d">WorkBuddy · 定时</span></td>
+          <td><span class="tag r">失败</span></td>
+          <td class="err">401 凭证已过期，请重新授权</td>
+        </tr>
+        <tr>
+          <td class="w">09:12<span class="d">09-28</span></td>
+          <td>编码-C<span class="d">CodeArts · 定时</span></td>
+          <td><span class="tag a">等待窗口</span></td>
+          <td>活动未开始，10:00 后重试</td>
+        </tr>
+        <tr>
+          <td class="w">08:31<span class="d">09-28</span></td>
+          <td>ZC-intl<span class="d">ZCode · 活动</span></td>
+          <td><span class="tag g">成功领取</span></td>
+          <td>限时体验套餐 1 亿 token</td>
+        </tr>
+      </table>
+
+      <div class="pg">
+        <span>1–5 / 1,284</span>
+        <span style="margin-left:auto;display:flex;gap:5px;align-items:center">
+          <span class="val" style="font-size:10px;padding:3px 6px">50 条/页 ▾</span>
+          <span class="btn sm">‹</span>
+          <span class="btn sm">›</span>
+        </span>
+      </div>
+    </div>
+
+    <div class="fold">
+      <b>时区</b>：日期是北京时间（上游自然日口径）。跟手机时区走会让海外部署下
+      「今日已签」错位。<br>
+      <b>结果判据只在内核一处</b>：`success / already / pending / failed` 由后端落账时判，
+      界面只按 outcome 上色，不自己再判一遍。<br>
+      <b>清空护栏</b>：带筛选 = 只删命中的；不带筛选必须显式 <code>all=1</code>（后端拦 400），
+      且前端先弹确认、两条提示语分开说。
+    </div>
+  </div>
+
+  <!-- ═══════════════ 5. 周期任务 ═══════════════ -->
+  <h2>⑤ 周期任务：六条间隔型</h2>
+  <p class="note">
+    这一页和签到<b>没有语义关系</b>（上游也是另一个一级页）。六条分两类：
+    <code>backend</code> 由网关循环执行（可立即执行），
+    <code>frontend</code> 由页面自己的定时器执行（<b>不给执行按钮</b> —— 点了没有东西可跑）。
+  </p>
+
+  <div class="phone">
+    <div class="hd">
+      <span class="hd-back"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg></span>
+      <span class="hd-t">周期任务</span>
+      <span class="hd-g">4 / 6 启用</span>
+    </div>
+
+    <div class="card" style="padding:6px 11px">
+      <div class="mini" style="padding:5px 0 2px;color:var(--textDim)">网关执行 · backend</div>
+
+      <div class="tk">
+        <div class="tk-h">
+          <div class="tk-t">凭证自动维护</div>
+          <span class="sw on"></span>
+        </div>
+        <div class="tk-d">定期遍历账号，只刷新已过期或临期的凭证。重启后沿用上次排期，失败账号在冷却后重试。</div>
+        <div style="display:flex;align-items:center;gap:6px;margin-top:6px">
+          <span class="val">60 分钟</span>
+          <span class="mini" style="flex:1">上次 12:04 · 下次约 42m 后 · 刷新 3 个，失败 1 个</span>
+          <span class="btn ghost sm">立即执行</span>
+        </div>
+      </div>
+
+      <div class="tk">
+        <div class="tk-h">
+          <div class="tk-t">模型目录刷新</div>
+          <span class="sw on"></span>
+        </div>
+        <div class="tk-d">定期拉取最新模型清单，重启沿用排期与缓存。同一轮顺带刷新 models.dev 元数据。</div>
+        <div style="display:flex;align-items:center;gap:6px;margin-top:6px">
+          <span class="val">360 分钟</span>
+          <span class="mini" style="flex:1">上次 13:16 · 下次约 5h18m 后</span>
+          <span class="btn ghost sm">立即执行</span>
+        </div>
+      </div>
+
+      <div class="tk">
+        <div class="tk-h">
+          <div class="tk-t">软件版本检查</div>
+          <span class="tag">已隐藏</span>
+        </div>
+        <div class="tk-d">配置入口在「设置 → 更新设置」弹窗里 · 本页不渲染</div>
+      </div>
+
+      <div class="mini" style="padding:9px 0 2px;color:var(--textDim);border-top:1px solid rgba(51,65,85,.45);margin-top:6px">
+        页面执行 · frontend（停留在对应页时才刷新）
+      </div>
+
+      <div class="tk">
+        <div class="tk-h">
+          <div class="tk-t">日志页自动刷新</div>
+          <span class="sw on"></span>
+        </div>
+        <div style="display:flex;align-items:center;gap:6px;margin-top:5px">
+          <span class="val">30 秒</span>
+          <span class="mini" style="flex:1">停留在「应用日志」页时重新拉取；页面不可见时不请求</span>
+        </div>
+      </div>
+
+      <div class="tk">
+        <div class="tk-h">
+          <div class="tk-t">请求日志页自动刷新</div>
+          <span class="sw on"></span>
+        </div>
+        <div style="display:flex;align-items:center;gap:6px;margin-top:5px">
+          <span class="val">30 秒</span>
+          <span class="mini" style="flex:1">同上，作用于「调用记录」页</span>
+        </div>
+      </div>
+
+      <div class="tk">
+        <div class="tk-h">
+          <div class="tk-t">报表自动刷新</div>
+          <span class="sw"></span>
+        </div>
+        <div style="display:flex;align-items:center;gap:6px;margin-top:5px">
+          <span class="val ro">60 秒</span>
+          <span class="mini" style="flex:1">同上，作用于「数据报表」页</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="fold">
+      <b>frontend 那三条为什么没有「立即执行」</b>：执行者是页面自己的定时器。
+      按钮点了也没有任何东西可跑，所以宁可不给 —— 一个点了没反应的按钮比没有按钮更糟。<br>
+      <b>「软件版本检查」为什么隐藏</b>：它的配置入口收在「更新设置」弹窗里，
+      同一件事两个入口会让人以为是两件事。后端定时执行不受影响。<br>
+      <b>间隔输入的坑</b>：编辑期间由本地草稿接管 value，外部轮询回来的值只在草稿为空时写入
+      —— 否则用户敲到一半的数字会被冲掉。
+    </div>
+  </div>
+
+  <!-- ═══════════════ 6. 未做 / 取舍 ═══════════════ -->
+  <h2>⑥ 取舍：三处不做 / 改做法</h2>
+  <table class="cmp">
+    <tr><th>项</th><th>上游 / v44 稿</th><th>本版做法</th></tr>
+    <tr>
+      <td>验证码池「手动过码」</td>
+      <td>v44 画了「过码」按钮，弹出内嵌 WebView 滑块，通过即铸一张令牌</td>
+      <td class="bad">
+        不做。上游本身<b>没有这个 UI</b>（令牌由 WebView 里的后台守卫铸）；
+        Android 端要做需要内嵌 WebView + 阿里云 SDK，与本轮范围差得远。
+        只做读数 + 节奏三项，并在卡里说明令牌从哪来。
+      </td>
+    </tr>
+    <tr>
+      <td>「签到台账」（轮次）</td>
+      <td>v44 稿的一页：「最近 50 轮 · 每轮一条 · 失败明细前 5 条」</td>
+      <td class="bad">
+        不单独成页。上游已淘汰这个形态；内核里两套数据都还在，
+        轮次只作总览卡的一个读数，明细走「签到记录」。
+      </td>
+    </tr>
+    <tr>
+      <td>「福利中心」「保活链」两个独立页</td>
+      <td>v44 稿的两个二级页</td>
+      <td class="bad">
+        合并。福利中心 → 签到中心的三块面板；保活链 → 定时签到的一块卡。
+        各自独立成页会让页面只剩一个开关或一个 5 行清单。
+      </td>
+    </tr>
+  </table>
+
+  <h2>⑦ 内核就绪度</h2>
+  <p class="note">
+    这一轮<b>不需要改内核</b>。全部端点已有，客户端骨架里那些「内核未暴露」的注释
+    是过时的（写于端点尚未补齐时）。
+  </p>
+  <ul class="kv">
+    <li>聚合快照 <code>GET /api/checkin-center</code> —— 一次拉全，<b>零上游请求</b></li>
+    <li>定时条目 <code>GET/POST /api/checkin-schedules</code>、<code>{id}/delete</code>、<code>{id}/run</code></li>
+    <li>记录明细 <code>GET/DELETE /api/checkin-records</code> —— 真分页 + 四筛选 + <code>all=1</code> 护栏</li>
+    <li>周期任务 <code>GET /api/scheduled-tasks</code>、<code>PATCH {id}</code>、<code>POST {id}/run</code></li>
+    <li>保活链 <code>GET/POST /api/checkin-keepalive</code></li>
+    <li>新手福利 <code>GET /api/accounts/{id}/onboarding?refresh=1</code>、<code>POST …/onboarding/claim</code></li>
+    <li>成长任务 <code>GET …/growth</code>、<code>POST …/growth/task|school|travel</code></li>
+    <li>套餐 <code>POST …/zcode-claim/preview</code>、<code>…/zcode-claim</code></li>
+    <li>验证码池 <code>GET /api/zcode/captcha</code>、<code>GET/PUT /api/zcode/captcha-pool</code></li>
+    <li>单账号签到 <code>POST /api/accounts/checkin</code> body <code>{id}</code>；
+        国际版三档 <code>POST /api/checkin-activity</code> body <code>{id, mode}</code></li>
+  </ul>
+
+  <h2>⑧ 待你拍板</h2>
+  <ul class="kv">
+    <li><b>四页 vs 六页</b> —— 推荐四页（本文档结构）。坚持六页也能做，但福利中心与保活链会明显偏空。</li>
+    <li><b>签到记录 vs 签到台账</b> —— 推荐跟随上游：明细为主、轮次降为读数。
+        若更想保留轮次视角，可以在记录页加一档 seg 切换（工作量约 +1 页）。</li>
+    <li><b>验证码池</b> —— 推荐只做读数 + 节奏设置，「手动过码」留空位并标注原因。
+        若一定要过码，那是另一个量级的活（WebView + 阿里云 SDK）。</li>
+  </ul>
+
+</div>
+</body>
+</html>

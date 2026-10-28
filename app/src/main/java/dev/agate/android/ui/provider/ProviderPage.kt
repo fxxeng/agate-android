@@ -46,7 +46,7 @@ import dev.agate.android.data.AccountOps
 import dev.agate.android.data.GatewayRepository
 import dev.agate.android.data.ProviderPreset
 import dev.agate.android.data.PresetRegistry
-import dev.agate.android.data.TaskCenter
+import dev.agate.android.data.CheckinCenter
 import dev.agate.android.data.dto.AccountDto
 import dev.agate.android.ui.models.parseMultiplier
 import dev.agate.core.GatewayPrefs
@@ -120,7 +120,9 @@ fun ProviderPage(
     val ctx = LocalContext.current
 
     val snap by GatewayRepository.snapshot.collectAsState()
-    val taskSnap by TaskCenter.snapshot.collectAsState()
+    // 签到能力标读聚合快照里的 providerOptions（= CHECKIN_PROVIDERS ∩ supports_checkin）
+    // —— 那是「哪家能签到」的唯一权威答案，本页不另维护一份清单
+    val checkinSnap by CheckinCenter.snapshot.collectAsState()
     val scope = rememberCoroutineScope()
 
     var metrics by remember { mutableStateOf<Map<String, AcctMetric>>(emptyMap()) }
@@ -132,8 +134,8 @@ fun ProviderPage(
     DisposableEffect(Unit) {
         GatewayRepository.configure(GatewayPrefs.apiKey(ctx))
         AccountOps.configure(GatewayPrefs.apiKey(ctx))
-        TaskCenter.configure(GatewayPrefs.apiKey(ctx))
-        TaskCenter.refreshOnce()
+        CheckinCenter.configure(GatewayPrefs.apiKey(ctx))
+        CheckinCenter.refreshOnce()
         onDispose { }
     }
 
@@ -192,10 +194,9 @@ fun ProviderPage(
             if (nums.isEmpty()) null else nums.min() to nums.max()
         }
     }
-    val checkinProviders = remember(taskSnap.providerOptions) {
-        taskSnap.providerOptions.map { it.first }.toSet()
+    val checkinProviders = remember(checkinSnap.providerOptions) {
+        checkinSnap.providerOptions.map { it.first }.toSet()
     }
-
     // ── 分组：有账号的家按「偏好顺序 → PresetRegistry 顺序」；无账号家不出现 ──
     val savedOrder = remember { GatewayPrefs.providerOrder(ctx) }
     val groups = remember(snap.accountList) {

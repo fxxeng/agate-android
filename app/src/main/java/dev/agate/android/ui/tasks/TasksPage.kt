@@ -3,9 +3,7 @@ package dev.agate.android.ui.tasks
 import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -13,20 +11,16 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -37,69 +31,79 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import dev.agate.android.data.GatewayRepository
+import dev.agate.android.data.CheckinCenter
+import dev.agate.android.data.CheckinOps
 import dev.agate.android.data.PresetRegistry
-import dev.agate.android.data.TaskCenter
-import dev.agate.android.data.TaskOps
 import dev.agate.core.GatewayPrefs
-import dev.agate.android.ui.components.agateCard
-import dev.agate.android.ui.components.AgateAvatar
 import dev.agate.android.ui.components.AgateBadge
-import dev.agate.android.ui.components.AgateChip
 import dev.agate.android.ui.components.AgatePageHeader
 import dev.agate.android.ui.components.AgatePrimaryAction
-import dev.agate.android.ui.components.AgateSegmented
+import dev.agate.android.ui.components.AgateProgress
 import dev.agate.android.ui.components.BadgeTone
 import dev.agate.android.ui.theme.AgateType
 import dev.agate.android.ui.theme.agateColors
 import kotlinx.coroutines.launch
+import org.json.JSONObject
 
 /**
- * 任务中心（M4，对齐 v44 Tab 4）：
- * - 三档 seg：今日 / 福利 / 定时
- * - 今日：一键签到 + 签到进度（按提供商）+ 待处理（v44 聚合项，内核无对应端点→诚实占位）
- * - 福利：福利中心 / 验证码池（内核无对应端点 → 诚实占位）
- * - 定时：日活保活链（真数据，可保存）+ 定时签到计划（真数据，可立即执行）+ 周期任务入口
+ * 任务中心（一级 Tab）—— 对齐上游 3.0.8 的「签到中心 + 周期任务」两个一级入口。
+ *
+ * ── 这一页只做一件事：告诉你现在什么状态、往哪进 ─────────────
+ * 原来这里是「今日 / 福利 / 定时」三档 seg，把上游的**三个 tab** 和
+ * **另一个一级页**混在一起切。现在换成四个入口，副标全是真实读数。
+ *
+ * ── 为什么首页不直接铺签到分组 ──────────────────────────────
+ * 上游「签到中心」是一个 tab 的位置，摊平到首页会让首页变成 12 家 × N 个
+ * 账号的长列表。首页给判断，详情页给操作。
+ *
+ * ── 验证码池为什么只是一张读数卡 ────────────────────────────
+ * 上游**没有这个 UI**：`ui/zcode-captcha-pool.js` 是后台守卫脚本（每 2.5s
+ * 轮询，`needsTokens` 才补货），页面里没有挂载点。手机上不铸令牌，
+ * 所以这里只给读数与节奏设置（见 [CaptchaSheet]）。
  */
 @Composable
 fun TasksPage(
     onOpenDrawer: () -> Unit = {},
-    onOpenWelfare: () -> Unit = {},
-    onOpenCaptcha: () -> Unit = {},
     onOpenCheckin: () -> Unit = {},
-    onOpenKeepalive: () -> Unit = {},
-    onOpenSchedules: () -> Unit = {},
-    onOpenHistory: () -> Unit = {},
+    onOpenSchedule: () -> Unit = {},
+    onOpenRecords: () -> Unit = {},
+    onOpenPeriodic: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val C = agateColors()
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
-    val snap by GatewayRepository.snapshot.collectAsState()
-    val task by TaskCenter.snapshot.collectAsState()
+    val snap by CheckinCenter.snapshot.collectAsState()
+    val error by CheckinCenter.error.collectAsState()
+
+    var busy by remember { mutableStateOf(false) }
+    var captcha by remember { mutableStateOf<JSONObject?>(null) }
+    var showCaptchaSheet by remember { mutableStateOf(false) }
+
+    fun toast(text: String) = Toast.makeText(ctx, text, Toast.LENGTH_SHORT).show()
 
     DisposableEffect(Unit) {
-        GatewayRepository.configure(GatewayPrefs.apiKey(ctx))
-        TaskCenter.configure(GatewayPrefs.apiKey(ctx))
-        TaskOps.configure(GatewayPrefs.apiKey(ctx))
-        TaskCenter.startPolling()
-        onDispose { TaskCenter.stopPolling() }
+        val key = GatewayPrefs.apiKey(ctx)
+        CheckinCenter.configure(key)
+        CheckinOps.configure(key)
+        CheckinCenter.startPolling()
+        onDispose { CheckinCenter.stopPolling() }
     }
 
-    var tab by remember { mutableIntStateOf(0) }
-    var busy by remember { mutableStateOf(false) }
+    // 验证码池读数：与签到中心不同一条端点，单独拉（页面上只有一张卡要看它）
+    LaunchedEffect(Unit) {
+        captcha = CheckinOps.captchaStats()
+    }
 
-    fun toast(msg: String) = Toast.makeText(ctx, msg, Toast.LENGTH_SHORT).show()
-
-    fun runNow() {
+    fun signAll() {
         if (busy) return
         busy = true
         scope.launch {
-            toast("已加入签到队列…")
-            val r = TaskOps.runNow()
+            toast("已下发全量签到…")
+            val r = CheckinOps.signAll()
             busy = false
             toast(if (r.ok) "签到指令已下发" else "签到失败：${r.error ?: "未知"}")
-            TaskCenter.refreshOnce()
+            CheckinCenter.refreshOnce()
         }
     }
 
@@ -108,7 +112,7 @@ fun TasksPage(
             if (busy) {
                 AgateBadge("执行中…", BadgeTone.AMBER)
             } else {
-                AgatePrimaryAction("一键签到") { runNow() }
+                AgatePrimaryAction("立即全签") { signAll() }
             }
         }
 
@@ -118,359 +122,244 @@ fun TasksPage(
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = 16.dp),
         ) {
-            Spacer(Modifier.height(10.dp))
-            AgateSegmented(
-                options = listOf("今日", "福利", "定时"),
-                selected = tab,
-                onSelect = { tab = it },
-            )
             Spacer(Modifier.height(12.dp))
 
-            when (tab) {
-                0 -> TodayView(snap = snap, task = task, onOpenCheckin = onOpenCheckin, onOpenHistory = onOpenHistory, onRunNow = { runNow() })
-                1 -> WelfareView(onOpenWelfare = onOpenWelfare, onOpenCaptcha = onOpenCaptcha)
-                else -> ScheduleView(
-                    task = task,
-                    onToggleMaster = { on ->
-                        scope.launch {
-                            val r = TaskOps.setEnabled(on)
-                            toast(if (r.ok) "定时签到已${if (on) "开启" else "关闭"}" else "操作失败：${r.error}")
-                            TaskCenter.refreshOnce()
-                        }
-                    },
-                    onRunSchedule = { id ->
-                        scope.launch {
-                            val r = TaskOps.runSchedule(id)
-                            toast(if (r.ok) "已下发该计划" else "执行失败：${r.error}")
-                            TaskCenter.refreshOnce()
-                        }
-                    },
-                    onSaveKeepalive = { models ->
-                        scope.launch {
-                            val r = TaskOps.saveKeepalive(models)
-                            toast(if (r.ok) "保活链已保存" else "保存失败：${r.error}")
-                            TaskCenter.refreshOnce()
-                        }
-                    },
-                    onOpenSchedules = onOpenSchedules,
-                    onOpenKeepalive = onOpenKeepalive,
-                )
+            if (error != null && snap.fetchedAtMs == 0L) {
+                TaskCard {
+                    Text(error!!, color = C.red, fontSize = 13.sp)
+                }
+                TaskGap()
             }
-            Spacer(Modifier.height(28.dp))
+
+            TodayProgressCard(snap = snap, onOpenCheckin = onOpenCheckin)
+            TaskGap()
+
+            EntryCard(
+                snap = snap,
+                onOpenCheckin = onOpenCheckin,
+                onOpenSchedule = onOpenSchedule,
+                onOpenRecords = onOpenRecords,
+                onOpenPeriodic = onOpenPeriodic,
+            )
+            TaskGap()
+
+            CaptchaCard(
+                stats = captcha,
+                onOpenSettings = { showCaptchaSheet = true },
+            )
+
+            TaskGap(24)
         }
+    }
+
+    if (showCaptchaSheet) {
+        CaptchaSheet(
+            onDismiss = { showCaptchaSheet = false },
+            onSaved = {
+                showCaptchaSheet = false
+                scope.launch { captcha = CheckinOps.captchaStats() }
+            },
+        )
     }
 }
 
-/* ── 今日 ── */
-@Composable
-private fun TodayView(
-    snap: GatewayRepository.ConsoleSnapshot,
-    task: TaskCenter.TaskSnapshot,
-    onOpenCheckin: () -> Unit,
-    onOpenHistory: () -> Unit,
-    onRunNow: () -> Unit,
-) {
-    val C = agateColors()
-    val okCount = task.schedules.count { it.lastFiredToday && it.enabled }
-    val totalEnabled = task.schedules.count { it.enabled }
+/* ── 今日进度 ── */
 
-    // ── 签到进度（v44 「今日福利收益」卡的位置，这里接真实签到态）──
+@Composable
+private fun TodayProgressCard(snap: CheckinCenter.Snap, onOpenCheckin: () -> Unit) {
+    val C = agateColors()
     Column(
         Modifier
             .fillMaxWidth()
-            .background(C.accent.copy(alpha = 0.08f), RoundedCornerShape(20.dp))
+            .background(
+                C.accent.copy(alpha = 0.08f),
+                RoundedCornerShape(20.dp),
+            )
             .border(1.dp, C.accent.copy(alpha = 0.35f), RoundedCornerShape(20.dp))
             .padding(16.dp),
     ) {
-        Text("定时签到进度", color = C.textSub, fontSize = 12.sp)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("今日签到进度", color = C.textSub, fontSize = 12.sp, modifier = Modifier.weight(1f))
+            val outCount = snap.outOfScope.sumOf { it.count }
+            if (outCount > 0) {
+                TaskTag("$outCount 个不参与", C.amber)
+            }
+        }
         Spacer(Modifier.height(6.dp))
         Row(verticalAlignment = Alignment.Bottom) {
             Text(
-                if (task.fetchedAtMs == 0L) "—" else "$okCount / $totalEnabled",
+                if (snap.fetchedAtMs == 0L) "—" else "${snap.todayDone}",
                 color = C.textMain,
-                fontSize = 26.sp,
+                fontSize = 28.sp,
                 fontWeight = FontWeight.Bold,
             )
-            Spacer(Modifier.width(6.dp))
-            Text("条计划今日已跑", color = C.textSub, fontSize = 13.sp)
+            Text(
+                " / ${snap.todayEligible}",
+                color = C.textSub,
+                fontSize = 15.sp,
+                fontWeight = FontWeight.Medium,
+                modifier = Modifier.padding(bottom = 3.dp),
+            )
         }
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(7.dp))
+        AgateProgress(fraction = snap.progress, thick = true)
+        Spacer(Modifier.height(7.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
-            AgateBadge(if (task.enabled) "总开关开" else "总开关关", if (task.enabled) BadgeTone.GREEN else BadgeTone.GRAY)
-            if (task.running) {
-                Spacer(Modifier.width(6.dp))
-                AgateBadge("正在执行", BadgeTone.AMBER)
-            }
-            Spacer(Modifier.weight(1f))
-            nextRunText(task.nextRunAt)?.let {
-                Text(it, color = C.accent, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-            }
-        }
-        Spacer(Modifier.height(12.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            SmallButton("立即全量签到", primary = true, onClick = onRunNow)
-            SmallButton("签到台账", primary = false, onClick = onOpenHistory)
-        }
-    }
-
-    Spacer(Modifier.height(12.dp))
-
-    // ── 待处理（v44 聚合项；内核无对应端点，列账号池真实状态供人工判断）──
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .agateCard().background(C.cardBg, RoundedCornerShape(20.dp))
-            .border(1.dp, C.border, RoundedCornerShape(20.dp))
-            .padding(16.dp),
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("待处理", style = AgateType.SectionTitle, fontWeight = FontWeight.SemiBold, color = C.textMain, modifier = Modifier.weight(1f))
-            AgateBadge("${snap.accountsTotal - snap.accountsEnabled} 项停用", if (snap.accountsTotal > snap.accountsEnabled) BadgeTone.AMBER else BadgeTone.GRAY)
-        }
-        Spacer(Modifier.height(10.dp))
-        val pending = snap.accountList.filter { !it.enabled || !it.hasCredentials }
-        if (pending.isEmpty()) {
-            Text("账号池无停用 / 缺凭证账号", color = C.textSub, fontSize = 13.sp)
-        } else {
-            pending.take(6).forEach { acc ->
-                Row(Modifier.fillMaxWidth().padding(vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) {
-                    AgateAvatar(name = acc.displayName, size = 34.dp, corner = 11.dp, letters = acc.displayName.take(2).uppercase())
-                    Spacer(Modifier.width(10.dp))
-                    Column(Modifier.weight(1f)) {
-                        Text(acc.displayName, color = C.textMain, fontSize = 14.sp, fontWeight = FontWeight.Medium)
-                        Text(PresetRegistry.labelOf(acc.provider) + (if (!acc.hasCredentials) " · 缺凭证" else " · 已停用"), color = C.textSub, fontSize = 12.sp)
+            Text(
+                buildString {
+                    append(
+                        when {
+                            !snap.autoEnabled -> "总开关关：定时条目不会自动跑"
+                            snap.nextRunAt != null -> relTime(snap.nextRunAt, prefix = "下次 ").replace("约 ", "")
+                            else -> "总开关开"
+                        }
+                    )
+                    if (snap.schedulesTotal > 0) {
+                        append(" · 条目 ${snap.schedulesEnabled}/${snap.schedulesTotal} 启用")
                     }
-                    AgateBadge(if (!acc.hasCredentials) "缺凭证" else "停用", if (!acc.hasCredentials) BadgeTone.RED else BadgeTone.GRAY)
-                }
-            }
+                },
+                style = AgateType.Caption,
+                color = C.textSub,
+                modifier = Modifier.weight(1f),
+            )
+            Text(
+                "看签到中心 ›",
+                color = C.accent,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier
+                    .background(C.accent.copy(alpha = 0.12f), RoundedCornerShape(8.dp))
+                    .padding(horizontal = 9.dp, vertical = 5.dp)
+                    .then(Modifier),
+            )
         }
         Spacer(Modifier.height(6.dp))
-        Text(
-            "福利领取类聚合项（每日签到/新手/活动）需任务领取端点，当前内核未暴露，先以账号状态呈现。",
-            style = AgateType.Caption,
-            color = C.textDim,
-        )
-    }
-
-    Spacer(Modifier.height(12.dp))
-
-    // ── 签到进度 · 按提供商（真数据：各计划覆盖的提供商）──
-    if (task.schedules.isNotEmpty()) {
-        Column(
-            Modifier
-                .fillMaxWidth()
-                .agateCard().background(C.cardBg, RoundedCornerShape(20.dp))
-                .border(1.dp, C.border, RoundedCornerShape(20.dp))
-                .padding(16.dp),
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("签到计划 · 按条目", style = AgateType.SectionTitle, fontWeight = FontWeight.SemiBold, color = C.textMain, modifier = Modifier.weight(1f))
-                AgateBadge("${task.schedules.size} 条", BadgeTone.GRAY)
-            }
-            Spacer(Modifier.height(8.dp))
-            task.schedules.forEach { s ->
-                Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text(s.time, color = C.textMain, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-                    Spacer(Modifier.width(10.dp))
-                    Text(
-                        if (s.providers.isEmpty()) "全部提供商" else s.providers.joinToString("·") { PresetRegistry.labelOf(it) },
-                        color = C.textSub,
-                        fontSize = 12.sp,
-                        modifier = Modifier.weight(1f),
-                    )
-                    AgateBadge(
-                        if (!s.enabled) "停用" else if (s.lastFiredToday) "今日已跑" else "待执行",
-                        when {
-                            !s.enabled -> BadgeTone.GRAY
-                            s.lastFiredToday -> BadgeTone.GREEN
-                            else -> BadgeTone.AMBER
-                        },
-                    )
-                }
-            }
-        }
-        Spacer(Modifier.height(12.dp))
-    }
-
-    val keep = task.keepalive
-    if (keep.isNotEmpty()) {
-        Column(
-            Modifier
-                .fillMaxWidth()
-                .agateCard().background(C.cardBg, RoundedCornerShape(20.dp))
-                .border(1.dp, C.border, RoundedCornerShape(20.dp))
-                .padding(16.dp),
-        ) {
-            Text("日活保活链", style = AgateType.SectionTitle, fontWeight = FontWeight.SemiBold, color = C.textMain)
-            Spacer(Modifier.height(8.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                keep.take(6).forEach { AgateChip(it, selected = true) }
-            }
-            Spacer(Modifier.height(6.dp))
-            Text("在「定时」页可编辑保活模型链", style = AgateType.Caption, color = C.textDim)
+        Row(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+            TaskBtn("进入签到中心", primary = true) { onOpenCheckin() }
         }
     }
 }
 
-/* ── 福利（诚实占位：内核无对应端点）── */
-@Composable
-private fun WelfareView(onOpenWelfare: () -> Unit, onOpenCaptcha: () -> Unit) {
-    val C = agateColors()
-    InfoCard(
-        title = "福利中心",
-        badge = "待接入",
-        badgeTone = BadgeTone.AMBER,
-        body = "v44 的三类福利（每日签到 / 新手福利 / 活动福利）需要任务领取聚合端点，" +
-            "当前内核未暴露。已就绪的是「定时签到」与「日活保活链」，见「定时」页。",
-        action = "查看占位页 ❯",
-        onAction = onOpenWelfare,
-    )
-    Spacer(Modifier.height(12.dp))
-    InfoCard(
-        title = "验证码池 · ZCode 活动套餐",
-        badge = "待接入",
-        badgeTone = BadgeTone.AMBER,
-        body = "票据池水位 / 自动铸造 / 手动过码（阿里 V3 滑块）需 captcha 铸造与水位端点，" +
-            "当前内核未暴露；接口就绪后在本卡接入。",
-        action = "查看占位页 ❯",
-        onAction = onOpenCaptcha,
-    )
-}
+/* ── 四个入口 ── */
 
-/* ── 定时（真数据）── */
 @Composable
-private fun ScheduleView(
-    task: TaskCenter.TaskSnapshot,
-    onToggleMaster: (Boolean) -> Unit,
-    onRunSchedule: (String) -> Unit,
-    onSaveKeepalive: (List<String>) -> Unit,
-    onOpenSchedules: () -> Unit,
-    onOpenKeepalive: () -> Unit,
+private fun EntryCard(
+    snap: CheckinCenter.Snap,
+    onOpenCheckin: () -> Unit,
+    onOpenSchedule: () -> Unit,
+    onOpenRecords: () -> Unit,
+    onOpenPeriodic: () -> Unit,
 ) {
     val C = agateColors()
+    val unsettled = snap.unsettledOnboarding
+    val planCount = snap.plans.size
+    val growthCount = snap.growth.size
 
-    // ── 日活保活链（可编辑）──
-    var keepText by remember(task.keepalive) { mutableStateOf(task.keepalive.joinToString(", ")) }
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .agateCard().background(C.cardBg, RoundedCornerShape(20.dp))
-            .border(1.dp, C.border, RoundedCornerShape(20.dp))
-            .padding(16.dp),
-    ) {
-        Text("日活保活链", style = AgateType.SectionTitle, fontWeight = FontWeight.SemiBold, color = C.textMain)
-        Spacer(Modifier.height(6.dp))
-        Text("按序点名免费模型，逗号 / 顿号分隔", style = AgateType.Caption, color = C.textDim)
-        Spacer(Modifier.height(8.dp))
-        androidx.compose.foundation.text.BasicTextField(
-            value = keepText,
-            onValueChange = { keepText = it },
-            textStyle = androidx.compose.ui.text.TextStyle(color = C.textMain, fontSize = 13.sp),
-            cursorBrush = androidx.compose.ui.graphics.SolidColor(C.accent),
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(C.insetBg, RoundedCornerShape(12.dp))
-                .border(1.dp, C.border, RoundedCornerShape(12.dp))
-                .padding(12.dp),
-        )
-        Spacer(Modifier.height(10.dp))
-        SmallButton("保存保活链", primary = true) {
-            onSaveKeepalive(keepText.split(',', '，', '、').map { it.trim() }.filter { it.isNotBlank() })
+    TaskCard {
+        TaskCardHeader(title = "分区")
+        TaskDivider()
+
+        TaskRow(
+            title = "签到中心",
+            avatarColorKey = "签到中心",
+            letters = "签",
+            subtitle = buildString {
+                append("每日 ${snap.todayDone}/${snap.todayEligible}")
+                if (unsettled > 0) append(" · 待查新手福利 $unsettled")
+                if (planCount > 0) append(" · 套餐账号 $planCount")
+                if (growthCount > 0) append(" · 成长任务 $growthCount")
+            },
+            onClick = onOpenCheckin,
+        ) {
+            if (unsettled > 0) TaskTag("$unsettled 项", C.amber)
+            else if (snap.todayEligible > 0 && snap.todayDone >= snap.todayEligible) TaskTag("已签完", C.green)
+            Text("›", color = C.textDim, fontSize = 16.sp)
+        }
+
+        TaskRow(
+            title = "定时签到",
+            avatarColorKey = "定时签到",
+            letters = "时",
+            subtitle = "${snap.schedulesEnabled}/${snap.schedulesTotal} 条启用 · 保活链 ${snap.keepalive.size} 个模型",
+            onClick = onOpenSchedule,
+        ) {
+            TaskTag(if (snap.autoEnabled) "开" else "关", if (snap.autoEnabled) C.green else C.textDim)
+            Text("›", color = C.textDim, fontSize = 16.sp)
+        }
+
+        TaskRow(
+            title = "签到记录",
+            avatarColorKey = "签到记录",
+            letters = "记",
+            subtitle = "每账号一条明细 · 服务端分页",
+            onClick = onOpenRecords,
+        ) {
+            Text("›", color = C.textDim, fontSize = 16.sp)
+        }
+
+        TaskRow(
+            title = "周期任务",
+            avatarColorKey = "周期任务",
+            letters = "周",
+            subtitle = "凭证维护 / 模型刷新 / 三条页面刷新",
+            onClick = onOpenPeriodic,
+        ) {
+            Text("›", color = C.textDim, fontSize = 16.sp)
         }
     }
+}
 
-    Spacer(Modifier.height(12.dp))
+/* ── 验证码池读数卡 ── */
 
-    // ── 定时签到（真数据）──
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .agateCard().background(C.cardBg, RoundedCornerShape(20.dp))
-            .border(1.dp, C.border, RoundedCornerShape(20.dp))
-            .padding(16.dp),
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("定时签到", style = AgateType.SectionTitle, fontWeight = FontWeight.SemiBold, color = C.textMain, modifier = Modifier.weight(1f))
-            Switch(checked = task.enabled, onCheckedChange = onToggleMaster)
+@Composable
+private fun CaptchaCard(stats: JSONObject?, onOpenSettings: () -> Unit) {
+    val C = agateColors()
+    val ready = stats?.optInt("ready") ?: -1
+    val target = stats?.optInt("target") ?: 0
+    val needs = stats?.optBoolean("needsTokens") ?: false
+    val startPlan = stats?.optInt("startPlanAccounts") ?: 0
+
+    TaskCard {
+        TaskCardHeader(title = "验证码池 · ZCode 活动套餐") {
+            when {
+                stats == null -> AgateBadge("读取中", BadgeTone.GRAY)
+                needs -> AgateBadge("待补货", BadgeTone.AMBER)
+                else -> AgateBadge("$ready / $target 就绪",
+                    if (target > 0 && ready >= target) BadgeTone.GREEN else BadgeTone.GRAY)
+            }
         }
-        Spacer(Modifier.height(8.dp))
-        if (task.schedules.isEmpty()) {
-            Text("暂无签到计划 · 可在「定时签到」页新增", color = C.textSub, fontSize = 13.sp)
+        Spacer(Modifier.height(6.dp))
+        if (stats == null) {
+            Text("尚未读到池子概况", style = AgateType.Caption, color = C.textDim)
         } else {
-            task.schedules.forEach { s ->
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 4.dp)
-                        .background(C.insetBg, RoundedCornerShape(12.dp))
-                        .clickable { onRunSchedule(s.id) }
-                        .padding(horizontal = 12.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text("⏱ ${s.time}", color = C.textMain, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-                    Spacer(Modifier.width(10.dp))
-                    Text(
-                        s.displayLabel,
-                        color = C.textSub,
-                        fontSize = 12.sp,
-                        modifier = Modifier.weight(1f),
-                    )
-                    AgateBadge(if (s.enabled) "启用" else "停用", if (s.enabled) BadgeTone.GREEN else BadgeTone.GRAY)
-                }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    buildString {
+                        append("库存 ${stats.optInt("ready")} / 目标 $target")
+                        append(" · 今日已铸 ${stats.optInt("minted")}")
+                        append(" · 已消耗 ${stats.optInt("consumed")}")
+                        append(" · 被拒 ${stats.optInt("rejected")}")
+                    },
+                    style = AgateType.BodyS,
+                    color = C.textSub,
+                    lineHeight = 18.sp,
+                    modifier = Modifier.weight(1f),
+                )
+                TaskBtn("节奏", outlined = true) { onOpenSettings() }
+            }
+            if (startPlan == 0) {
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "没有走活动套餐那条路的账号，池子空着也不会补 —— 这不代表坏了。",
+                    style = AgateType.Caption,
+                    color = C.textDim,
+                )
             }
         }
         Spacer(Modifier.height(8.dp))
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("下次闹钟（北京时间）", color = C.textSub, fontSize = 12.sp, modifier = Modifier.weight(1f))
-            Text(nextRunText(task.nextRunAt) ?: "—", color = C.accent, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-        }
-        Spacer(Modifier.height(8.dp))
-        Text("点条目立即执行 · 计划 CRUD 在「定时签到」页", style = AgateType.Caption, color = C.textDim)
+        TaskFold(
+            "令牌一次性、120 秒过期。铸造是后台守卫在做（库存 < 目标且有活动套餐账号时才补，" +
+                "避免白烧阿里云风控配额）—— 手机上不铸，所以这里只给读数与节奏。"
+        )
     }
-}
-
-@Composable
-private fun InfoCard(title: String, badge: String, badgeTone: BadgeTone, body: String, action: String, onAction: () -> Unit) {
-    val C = agateColors()
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .agateCard().background(C.cardBg, RoundedCornerShape(20.dp))
-            .border(1.dp, C.border, RoundedCornerShape(20.dp))
-            .padding(16.dp),
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(title, style = AgateType.SectionTitle, fontWeight = FontWeight.SemiBold, color = C.textMain, modifier = Modifier.weight(1f))
-            AgateBadge(badge, badgeTone)
-        }
-        Spacer(Modifier.height(8.dp))
-        Text(body, style = AgateType.BodyS, color = C.textSub)
-        Spacer(Modifier.height(10.dp))
-        Text(action, color = C.accent, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.clickable(onClick = onAction))
-    }
-}
-
-@Composable
-private fun SmallButton(text: String, primary: Boolean, onClick: () -> Unit) {
-    val C = agateColors()
-    Text(
-        text,
-        color = if (primary) C.onAccent else C.textMain,
-        fontSize = 13.sp,
-        fontWeight = FontWeight.SemiBold,
-        modifier = Modifier
-            .background(if (primary) C.accent else C.btnBg, RoundedCornerShape(9.dp))
-            .clickable(onClick = onClick)
-            .padding(horizontal = 14.dp, vertical = 8.dp),
-    )
-}
-
-private fun nextRunText(nextRunAt: Long?): String? {
-    if (nextRunAt == null || nextRunAt <= 0) return null
-    val diff = nextRunAt - System.currentTimeMillis()
-    if (diff <= 0) return "即将执行"
-    val mins = diff / 60000
-    val h = mins / 60
-    val m = mins % 60
-    return if (h > 0) "下次约 ${h}h${m}m 后" else "下次约 ${m}m 后"
 }

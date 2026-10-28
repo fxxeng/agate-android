@@ -73,10 +73,8 @@ import dev.agate.android.auth.LoginSession
 import dev.agate.android.ui.components.AgateSearchBar
 import dev.agate.android.ui.components.AgateProviderAvatar
 import dev.agate.android.ui.components.AgateAvatar
-import dev.agate.android.ui.components.AgateBadge
 import dev.agate.android.ui.components.AgateChip
 import dev.agate.android.ui.components.AgateFormInput
-import dev.agate.android.ui.components.BadgeTone
 import dev.agate.android.ui.theme.agateColors
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -145,7 +143,17 @@ fun AddProviderPage(onBack: () -> Unit, initialProviderId: String? = null) {
                 modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                listOf("AGENT · ${PresetRegistry.ALL.size}", "中转 API", "自定义", "导入 · 更多").forEachIndexed { i, label ->
+                // 三个页签：官方 AGENT / 中转 API / 自定义。
+                //
+                // 为什么没有上游那个「导入 · 更多」：
+                // 上游的 `data-for` 只有 official / relay / custom 三个值，
+                // 那个页签点进去**是空的**（见 docs/Agate-UI设计基线-v44.html
+                // 的 apGroup 分组标记）。而在本仓，跨端导入能力已经在
+                // AGENT 页签里按家渲染 —— 选中支持文件导入的家（小浣熊 /
+                // CatPaw / Cline / KukuAI）时，通道 chips 里就有「导入凭证文件」，
+                // 走 ImportFileForm；需要粘贴的家有「粘贴凭证」。再开一个页签
+                // 只会让人多选一次提供商，做的是同一件事。
+                listOf("AGENT · ${PresetRegistry.ALL.size}", "中转 API", "自定义").forEachIndexed { i, label ->
                     val active = tab == i
                     Text(
                         label,
@@ -323,10 +331,13 @@ fun AddProviderPage(onBack: () -> Unit, initialProviderId: String? = null) {
                         onBack()
                     }
                 }
+                // tab 0 是 AGENT（上面那一支），这里只剩 1 / 2。
+                // 用 else 兜底而不是穷举：tab 来自上面的 forEachIndexed，
+                // 万一以后加页签却忘了这里，宁可不渲染也不要崩溃。
                 when (tab) {
                     1 -> RelayForm(onDone = done)
                     2 -> CustomForm(onDone = done)
-                    else -> ImportPlaceholder()
+                    else -> Unit
                 }
             }
         }
@@ -808,34 +819,6 @@ private fun CustomForm(onDone: (Boolean, String) -> Unit) {
         "上游定位：仅 LLM 请求 + 模型列表 · 签到 / 续期 / 余额查询均不做 · 兼容 OpenAI /v1/chat/completions 即可接入",
         color = C.textDim, fontSize = 11.sp,
     )
-}
-
-/* ══════════ 导入 · 更多（占位，说明 Android 语义）══════════ */
-@Composable
-private fun ImportPlaceholder() {
-    val C = agateColors()
-    FormCard("跨端凭证导入") {
-        Text(
-            "手机上扫不到 PC 的本机目录 · 在 PC 端导出后，经下面任一通道进手机：",
-            color = C.textSub, fontSize = 12.sp,
-        )
-        Spacer(Modifier.height(10.dp))
-        listOf(
-            "① 上传凭证文件" to "cc-switch 备份 / auth.json / providers.json · 系统文件选择器",
-            "② 局域网扫码 / 剪贴板粘贴" to "PC 导出 JSON 直接粘贴 · enc: 前缀自动解密",
-            "③ 导入 SQLite Cookies" to "桌面浏览器导出的 Cookie 库 · 解析后按域名预填",
-        ).forEach { (title, desc) ->
-            Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text(title, color = C.textMain, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                    Text(desc, color = C.textSub, fontSize = 12.sp)
-                }
-                AgateBadge("待接入", BadgeTone.AMBER)
-            }
-        }
-        Spacer(Modifier.height(8.dp))
-        Text("导入通道依赖 Android SAF / 剪贴板能力，后续版本接入。", color = C.textDim, fontSize = 11.sp)
-    }
 }
 
 /* ══════════ 公用小件 ══════════ */

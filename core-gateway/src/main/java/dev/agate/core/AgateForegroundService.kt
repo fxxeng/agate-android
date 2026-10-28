@@ -12,6 +12,7 @@ import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import org.json.JSONObject
 
 /**
  * 网关前台服务（M1 保活壳层，方案 §6.2 三级保活）：
@@ -129,6 +130,12 @@ class AgateForegroundService : Service() {
             else -> {
                 val reason = result?.let { "${it.stage ?: ""}: ${it.error}" } ?: "异常"
                 updateNotification("启动失败：$reason")
+                // 告警只在「用户以为网关起来了、其实没起」时发。这里是启动
+                // 路径的失败分支，正是那种情况：常驻通知会一直挂着「启动失败」，
+                // 但用户在别的页面时看不到，需要一条会响的通知。
+                if (GatewayPrefs.alertNotify(this)) {
+                    AgateNotify.serviceAlert(this, "网关启动失败", reason)
+                }
             }
         }
     }
@@ -171,6 +178,9 @@ class AgateForegroundService : Service() {
                     "done=${reply?.optBoolean("done") ?: false}" +
                     (reply?.optString("error")?.takeIf { it.isNotEmpty() }?.let { " ($it)" } ?: ""),
             )
+            // 签到结果通知：读设置页那颗开关（GatewayPrefs 同一个键）。
+            // 放在收尾处而不是执行前 —— 通知要报的是结果，不是「开始了」。
+            notifyCheckinResult(reply)
             // 签到收尾：网关没在跑就收掉这个短命前台（跑着则保留网关通知）
             val running = try {
                 Gateway.status().running
@@ -183,6 +193,80 @@ class AgateForegroundService : Service() {
             }
         } finally {
             if (tickLock.isHeld) tickLock.release()
+        }
+    }
+
+    // ── 签到结果通知 ─────────────────────────────────────────────
+
+    /**
+     * 把 `checkinRunNow` 的返回翻成一条通知。
+     *
+     * 返回形状（见 `jni_bridge::checkin_run_now` 与 `auto_checkin::record_success`）：
+     * ```text
+     * { ok, done, error?, result? }
+     * result = { succeeded, active, skipped, total, failedCount, failed[] }
+     * ```
+     *
+     * ── 两颗开关各管一半（这条分界别改错） ──────────────────────
+     * 「签到结果通知」管**例行播报**：跑成功了、跳过了、还在跑 —— 关掉它是
+     * 用户不想每天被念一遍，合理。
+     * 「服务异常告警」管**出事了**：整条签到链抛错、或本轮有账号失败 ——
+     * 关掉「结果通知」不该让失败也一起消失。所以：
+     *   · 成功/跳过/进行中 → 看 `checkinNotify`；
+     *   · 失败（含部分账号失败）→ 看 `alertNotify`。
+     * 两者都关才是「彻底静音」，这是用户显式关两次的结果，尊重它。
+     */
+    private fun notifyCheckinResult(reply: JSONObject?) {
+        val resultNotify = GatewayPrefs.checkinNotify(this)
+        val alertNotify = GatewayPrefs.alertNotify(this)
+        if (reply == null) {
+            if (alertNotify) {
+                AgateNotify.serviceAlert(this, "签到失败", "闹钟拉起签到过程出错，详情见应用日志")
+            }
+            return
+        }
+        val error = reply.optString("error").takeIf { it.isNotEmpty() }
+        val result = reply.optJSONObject("result")
+        when {
+            error == "busy" -> if (resultNotify) AgateNotify.checkinResult(
+                this, "签到跳过", "上一轮签到还在执行，本次未启动",
+            )
+
+            // timeout：内核后台仍在跑，只是本次不等它了 —— 不是失败
+            error == "timeout" -> if (resultNotify) AgateNotify.checkinResult(
+                this, "签到进行中", "本轮耗时长，已转为后台继续，稍后可在签到记录查看",
+            )
+
+            result == null -> if (alertNotify) AgateNotify.serviceAlert(
+                this, "签到失败", error?.let { "原因：$it" } ?: "内核未返回结果，详情见应用日志",
+            )
+
+            else -> {
+                val succeeded = result.optInt("succeeded")
+                val total = result.optInt("total")
+                val skipped = result.optInt("skipped")
+                val failedCount = result.optInt("failedCount")
+                val parts = buildList {
+                    if (succeeded > 0) add("$succeeded 成功")
+                    if (skipped > 0) add("$skipped 已签")
+                    if (failedCount > 0) add("$failedCount 失败")
+                }
+                val body = if (parts.isEmpty()) {
+                    "共 $total 个账号，无变化"
+                } else {
+                    parts.joinToString(" · ")
+                }
+                // 有失败归告警管（响起），全成功归结果管（轻提示）
+                if (failedCount > 0) {
+                    if (alertNotify) {
+                        AgateNotify.checkinResult(this, "定时签到有失败", body, failed = true)
+                    }
+                } else {
+                    if (resultNotify) {
+                        AgateNotify.checkinResult(this, "定时签到完成", body)
+                    }
+                }
+            }
         }
     }
 

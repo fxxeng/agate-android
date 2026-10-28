@@ -84,6 +84,10 @@ import dev.agate.android.ui.provider.AddProviderPage
 import dev.agate.android.ui.provider.ProviderDetailPage
 import dev.agate.android.ui.provider.ProviderPage
 import dev.agate.android.ui.tasks.TasksPage
+import dev.agate.android.ui.tasks.CheckinCenterPage
+import dev.agate.android.ui.tasks.CheckinSchedulePage
+import dev.agate.android.ui.tasks.CheckinRecordsPage
+import dev.agate.android.ui.tasks.PeriodicTasksPage
 import dev.agate.android.ui.pages.SkeletonPage
 import dev.agate.android.ui.theme.AgateThemeMode
 import dev.agate.android.ui.theme.AgateType
@@ -103,12 +107,10 @@ object Routes {
     const val MODEL_SPEEDTEST = "model_speedtest"
     const val MODEL_MAPPING = "model_mapping"
     const val MODEL_CAPS = "model_caps"
-    const val TASK_WELFARE = "task_welfare"
-    const val TASK_CAPTCHA = "task_captcha"
     const val TASK_CHECKIN = "task_checkin"
-    const val TASK_KEEPALIVE = "task_keepalive"
-    const val TASK_SCHEDULES = "task_schedules"
-    const val TASK_HISTORY = "task_history"
+    const val TASK_SCHEDULE = "task_schedule"
+    const val TASK_RECORDS = "task_records"
+    const val TASK_PERIODIC = "task_periodic"
     const val QUOTA = "quota"
     const val REPORTS = "reports"
     const val LOGS = "logs"
@@ -387,12 +389,10 @@ fun AgateNavHost(
                 composable(Routes.TASKS) {
                     TasksPage(
                         onOpenDrawer = { openDrawer() },
-                        onOpenWelfare = { navController.navigate(Routes.TASK_WELFARE) },
-                        onOpenCaptcha = { navController.navigate(Routes.TASK_CAPTCHA) },
                         onOpenCheckin = { navController.navigate(Routes.TASK_CHECKIN) },
-                        onOpenKeepalive = { navController.navigate(Routes.TASK_KEEPALIVE) },
-                        onOpenSchedules = { navController.navigate(Routes.TASK_SCHEDULES) },
-                        onOpenHistory = { navController.navigate(Routes.TASK_HISTORY) },
+                        onOpenSchedule = { navController.navigate(Routes.TASK_SCHEDULE) },
+                        onOpenRecords = { navController.navigate(Routes.TASK_RECORDS) },
+                        onOpenPeriodic = { navController.navigate(Routes.TASK_PERIODIC) },
                     )
                 }
 
@@ -410,6 +410,8 @@ fun AgateNavHost(
                             val pid = entry.arguments?.getString("id").orEmpty()
                             navController.navigate("provider_add?providerId=$pid")
                         },
+                        // 账号 tab 底部的「队列位置在路由页调整」指路行
+                        onOpenRouting = { navController.navigate(Routes.ROUTING) },
                     )
                 }
                 composable(
@@ -430,12 +432,27 @@ fun AgateNavHost(
                 composable(Routes.MODEL_SPEEDTEST) { skeleton(it, navController, "模型测速", "M3", "并发测速（SSE 流式）、思考等级、多账号同测。", ::openDrawer) }
                 composable(Routes.MODEL_MAPPING) { ModelMappingPage(onBack = { navController.popBackStack() }) }
                 composable(Routes.MODEL_CAPS) { ModelCapsPage(onBack = { navController.popBackStack() }) }
-                composable(Routes.TASK_WELFARE) { skeleton(it, navController, "福利中心", "M4", "一次性项：新手任务 + 平台福利。", ::openDrawer) }
-                composable(Routes.TASK_CAPTCHA) { skeleton(it, navController, "验证码池", "M4", "ZCode 活动套餐票据池、水位补货、阿里 V3 滑块铸造。", ::openDrawer) }
-                composable(Routes.TASK_CHECKIN) { skeleton(it, navController, "定时签到", "M4", "北京时间签到计划（08:00/20:00）、Qoder 国际版 10:00 窗口、分组视图。", ::openDrawer) }
-                composable(Routes.TASK_KEEPALIVE) { skeleton(it, navController, "保活链", "M4", "日活任务链编辑：WorkBuddy intl 活跃任务等。", ::openDrawer) }
-                composable(Routes.TASK_SCHEDULES) { skeleton(it, navController, "周期任务", "M4", "后台周期任务总览与下次执行时间。", ::openDrawer) }
-                composable(Routes.TASK_HISTORY) { skeleton(it, navController, "签到台账", "M4", "批量轮次记录、失败明细前 5 条、checkinAt 落账。", ::openDrawer) }
+                composable(Routes.TASK_CHECKIN) {
+                    // 签到中心：总览四格 + 每日签到（分组/单账号/国际版三档）
+                    // + 新手福利 + 活动福利 + 成长任务 —— 进页面零上游请求
+                    CheckinCenterPage(
+                        onBack = { navController.popBackStack() },
+                        onOpenSchedule = { navController.navigate(Routes.TASK_SCHEDULE) },
+                        onOpenRecords = { navController.navigate(Routes.TASK_RECORDS) },
+                    )
+                }
+                composable(Routes.TASK_SCHEDULE) {
+                    // 定时签到：总开关 + 条目 CRUD（行内表单）+ 保活链拖动排序
+                    CheckinSchedulePage(onBack = { navController.popBackStack() })
+                }
+                composable(Routes.TASK_RECORDS) {
+                    // 签到记录：每账号一行的明细（服务端分页 + 四筛选 + all=1 护栏）
+                    CheckinRecordsPage(onBack = { navController.popBackStack() })
+                }
+                composable(Routes.TASK_PERIODIC) {
+                    // 周期任务：backend 三条（可立即执行）+ frontend 三条（不给按钮）
+                    PeriodicTasksPage(onBack = { navController.popBackStack() })
+                }
                 composable(Routes.QUOTA) {
                     dev.agate.android.ui.quota.QuotaCenterPage(
                         onOpenDrawer = { openDrawer() },

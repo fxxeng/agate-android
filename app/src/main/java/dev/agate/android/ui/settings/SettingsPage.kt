@@ -42,6 +42,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import dev.agate.android.data.KeepalivePrefs
 import dev.agate.android.data.LogOps
 import dev.agate.android.data.SettingsOps
 import dev.agate.android.ui.components.AgateAccordion
@@ -214,7 +215,7 @@ fun SettingsPage(
         ) {
             SectionHeader(
                 title = "应用设置",
-                subtitle = "十组 · 读数来自内核，改完即生效（无需重启）",
+                subtitle = "十一组 · 读数来自内核，改完即生效（无需重启）",
                 trailing = versionName(ctx),
             )
 
@@ -1130,7 +1131,15 @@ fun SettingsPage(
                 }
             }
 
-            // ══ 10. 关于 ════════════════════════════════════
+            // ══ 10. 保活与通知 ══════════════════════════════
+            //
+            // 这一组混了两种东西，界面上必须能分出来：
+            //   · 两颗开关 —— 真的能改（偏好落 SharedPreferences，服务侧读同一个键）；
+            //   · 三行实况 —— 改不了，由系统授予或由网关自身状态决定，只能看 + 去授权。
+            // 把后者做成开关会误导（点了只会跳出去，或干脆是关掉网关）。
+            KeepaliveGroup(ctx)
+
+            // ══ 11. 关于 ════════════════════════════════════
             AgateAccordion(title = "关于") {
                 ReadRow(
                     label = "当前版本",
@@ -2112,4 +2121,138 @@ private fun copyToClipboard(ctx: android.content.Context, text: String) {
 
 private fun toast(ctx: android.content.Context, message: String) {
     Toast.makeText(ctx, message, Toast.LENGTH_SHORT).show()
+}
+
+/* ══════════ 第 10 组：保活与通知 ══════════ */
+
+/**
+ * 「保活与通知」组（v44 `.sgroup` 保活与通知）。
+ *
+ * ── 为什么两组不同性质的行混在一张卡里 ──────────────────────
+ * 上游把四项平铺成开关，但其中三项在 Android 上根本不能由 App 开关：
+ *   · 前台服务 —— 它是网关的**唯一载体**（`Gateway.start` 在 app 侧零调用，
+ *     三个入口全走 `AgateForegroundService.start`），关掉 = 关掉网关；
+ *   · 忽略电池优化 / 精确闹钟 —— 系统授予的权限，App 只能申请，不能设值。
+ * 所以这里是「两颗真开关 + 三行只读实况」。只读行的右侧是可点的动作
+ * （跳网关控制 / 去授权），不是开关 —— 让人点一下能到达该去的地方。
+ *
+ * ── 读数为什么每次进入才刷新 ───────────────────────────────
+ * `ignoringBatteryOptimization` / `canExactAlarm` 读的是系统状态，
+ * 用户在系统弹窗里授权完返回时值就变了。用 `remember` + 每次组合重读
+ * 会在滚动重组时反复打系统调用；折中做法是拿一个 `refresh` 计数，
+ * 点过授权或从后台回来时 +1 重读。这里只在进出页面时读一次
+ * （本组位于长列表底部，滚动重组频率低），配合「去授权」后自动 +1。
+ */
+@Composable
+private fun KeepaliveGroup(ctx: android.content.Context) {
+    val C = agateColors()
+    var refresh by remember { mutableStateOf(0) }
+
+    // 三行系统实况 + 两颗开关的初值。key = refresh 让它可被手动作废重读。
+    val running = remember(refresh) { KeepalivePrefs.serviceRunning() }
+    val ignoring = remember(refresh) { KeepalivePrefs.ignoringBatteryOptimization(ctx) }
+    val canExact = remember(refresh) { KeepalivePrefs.canExactAlarm(ctx) }
+    var checkinNotify by remember(refresh) { mutableStateOf(KeepalivePrefs.checkinNotify(ctx)) }
+    var alertNotify by remember(refresh) { mutableStateOf(KeepalivePrefs.alertNotify(ctx)) }
+
+    // 徽章：跑起来了且白名单给了才算「健康」，否则标黄让人去处理
+    val tone = when {
+        running && ignoring -> BadgeTone.GREEN
+        running || ignoring -> BadgeTone.AMBER
+        else -> BadgeTone.GRAY
+    }
+    val badgeText = when {
+        running && ignoring -> "运行中 · 已加白"
+        running -> "运行中 · 未加白"
+        ignoring -> "已加白 · 未运行"
+        else -> "未运行"
+    }
+
+    AgateAccordion(
+        title = "保活与通知",
+        badge = { AgateBadge(text = badgeText, tone = tone) },
+    ) {
+        // ── 只读：前台服务 ──
+        ItemRow(
+            label = "前台服务常驻",
+            desc = "网关由前台服务承载，关掉服务等于关掉网关 · 启停请到「网关控制」",
+            ) {
+            MiniButton(
+                text = if (running) "运行中" else "未运行",
+                filled = false,
+                onClick = { refresh++ },
+            )
+        }
+
+        // ── 只读：电池优化 ──
+        ItemRow(
+            label = "忽略电池优化",
+            desc = "加白后深睡期网络照常，定时签到的轮次才打得出去",
+        ) {
+            MiniButton(
+                text = if (ignoring) "已授权" else "去授权",
+                filled = !ignoring,
+                onClick = {
+                    if (ignoring) {
+                        toast(ctx, "已在白名单内")
+                    } else {
+                        // requestIfNeeded 拉起系统弹窗后会立即返回 true；
+                        // 用户授权完回到 App 时刷新一次读数
+                        KeepalivePrefs.requestIgnoreBatteryOptimization(ctx)
+                        refresh++
+                    }
+                },
+            )
+        }
+
+        // ── 只读：精确闹钟 ──
+        ItemRow(
+            label = "精确闹钟授权",
+            desc = "Android 12+ 定时刻唤醒所需 · 未授权时定点签到会退化成系统窗口内随机",
+        ) {
+            MiniButton(
+                text = if (canExact) "已授权" else "去授权",
+                filled = !canExact,
+                onClick = {
+                    if (canExact) {
+                        toast(ctx, "已授权精确闹钟")
+                    } else {
+                        KeepalivePrefs.requestExactAlarm(ctx)
+                        refresh++
+                    }
+                },
+            )
+        }
+
+        // ── 真开关：签到结果通知 ──
+        SwitchRow(
+            label = "签到结果通知",
+            desc = "定时 / 手动签到完成后系统通知 · 只报本轮汇总，不逐账号刷屏",
+            checked = checkinNotify,
+            enabled = true,
+            onToggle = { want ->
+                checkinNotify = want
+                KeepalivePrefs.setCheckinNotify(ctx, want)
+            },
+        )
+
+        // ── 真开关：异常告警 ──
+        SwitchRow(
+            label = "服务异常告警",
+            desc = "网关启动失败时提醒 · 常驻通知会一直挂着失败原因，但你在别的页面时看不到",
+            checked = alertNotify,
+            enabled = true,
+            onToggle = { want ->
+                alertNotify = want
+                KeepalivePrefs.setAlertNotify(ctx, want)
+            },
+        )
+
+        Spacer(Modifier.height(8.dp))
+        Hint(
+            "前两行是系统权限与网关状态，只能看不能改；后两行是本机偏好，" +
+                "改完立即生效，不需要重启网关。",
+            C,
+        )
+    }
 }

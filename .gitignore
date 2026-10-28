@@ -31,3 +31,11 @@ core-gateway/src/main/jniLibs/
 
 # 本地取回的 CI 产物（APK），不入库
 dist/
+
+# JVM 崩溃现场（Kotlin daemon 被 OOM 杀掉时会在工程根/模块根落这两个文件；
+# 内容是内存转储说明，没有分析价值但会污染 git status）
+hs_err_pid*.log
+replay_pid*.log
+
+# Kotlin 编译器的本地错误日志（.kotlin/errors/*.log）
+.kotlin/

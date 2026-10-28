@@ -55,7 +55,6 @@ import dev.agate.android.data.PresetRegistry
 import dev.agate.android.data.dto.AccountDto
 import dev.agate.core.GatewayPrefs
 import dev.agate.android.ui.components.AgateProviderAvatar
-import dev.agate.android.ui.components.AgateAvatar
 import dev.agate.android.ui.components.AgateBadge
 import dev.agate.android.ui.components.AgateSegmented
 import dev.agate.android.ui.components.BadgeTone
@@ -66,10 +65,17 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /**
- * 提供商详情（对齐 v44 sub-providerdetail）：
- * - 概览：账号统计 / 余额查询 / 登录通道 / 启用开关 / 队列位置
+ * 提供商详情（对齐 v44 sub-providerdetail，**两 tab**）：
  * - 账号：逐账号余额与操作（上移 · 编辑备注 · 启停 · 删除）+ 添加账号 + 批量操作
- * - 设置：测试连通性 / 删除提供商
+ * - 设置：启用开关 / 自动化 / 家专属设置 / 测试连通性 / 删除提供商
+ *
+ * ── 为什么没有「概览」tab（原三 tab 的第一段）─────────────────────
+ * 那一段 9 项里只有 2 项能改（启用提供商、自动续期），其余 7 项全是别处已经
+ * 写过的字：账号数顶栏徽章有、余额账号 tab 有、登录通道与接入说明是添加页的
+ * 内容、提供商 ID 是报障才要的技术细节、队列位置在路由页有完整版（还带跳过
+ * 原因）。一个「只能看、且看到的都是别处删节版」的 tab 只会让人多点一次。
+ * 所以把能改的两项并进「设置」（它本来就是设置语义），其余删掉 —— 队列位置
+ * 改成账号 tab 底部一行指路，提供商 ID 降级成设置页脚注。
  *
  * 真实数据源：/api/session.accounts（列表）、/api/accounts/usage（余额/积分）、
  * /api/accounts/batch（启停/删除）、PATCH /api/accounts/{id}（改备注名）、
@@ -78,7 +84,13 @@ import org.json.JSONObject
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ProviderDetailPage(providerId: String, onBack: () -> Unit, onAddAccount: () -> Unit = {}) {
+fun ProviderDetailPage(
+    providerId: String,
+    onBack: () -> Unit,
+    onAddAccount: () -> Unit = {},
+    /** 跳「路由预演」页（账号 tab 底部指路行用）。空实现时那一行不渲染。 */
+    onOpenRouting: (() -> Unit)? = null,
+) {
     val C = agateColors()
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -87,12 +99,17 @@ fun ProviderDetailPage(providerId: String, onBack: () -> Unit, onAddAccount: () 
     val snap by GatewayRepository.snapshot.collectAsState()
     val accounts = snap.accountList.filter { it.provider == providerId }
 
-    var tab by remember { mutableStateOf(0) }
+    // 两个 tab：0 = 账号（默认）、1 = 设置。进这页十次有九次是加账号或看余额。
+    var tab by remember { mutableStateOf(TAB_ACCOUNTS) }
+    // 批量工具条是否展开（页头「批量」按钮切换），切 tab 时自动收起
+    var bulkOpen by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
     var usageLabel = remember { mutableStateMapOf<String, String>() }   // id → 展示文案
     var editing by remember { mutableStateOf<AccountDto?>(null) }
     var editName by remember { mutableStateOf("") }
     var editConc by remember { mutableStateOf("") }
+    // CatPaw 账号的余额查询凭证草稿（编辑弹窗用；留空 = 不修改）
+    var editBalanceToken by remember { mutableStateOf("") }
     var confirmRemove by remember { mutableStateOf<AccountDto?>(null) }
     var confirmRemoveAll by remember { mutableStateOf(false) }
     // 「额度设限」的编辑目标（null = 弹窗关闭）
@@ -203,12 +220,36 @@ fun ProviderDetailPage(providerId: String, onBack: () -> Unit, onAddAccount: () 
                 enabledCount == 0 -> AgateBadge("全部停用", BadgeTone.RED)
                 else -> AgateBadge("$enabledCount/${accounts.size} 启用", BadgeTone.AMBER)
             }
+            // 「批量」只在账号 tab 出现：设置 tab 上没有可批量作用的对象。
+            // 无账号时也不出现 —— 三颗点了没反应的按钮比没有更糟。
+            if (tab == TAB_ACCOUNTS && accounts.isNotEmpty()) {
+                Spacer(Modifier.width(8.dp))
+                val on = bulkOpen
+                Text(
+                    "批量",
+                    color = if (on) C.accent else C.textSub,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier
+                        .background(
+                            if (on) C.accent.copy(alpha = 0.14f) else C.btnBg,
+                            RoundedCornerShape(9.dp),
+                        )
+                        .clickable { bulkOpen = !bulkOpen }
+                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                )
+            }
         }
 
         AgateSegmented(
-            options = listOf("概览", "账号 · ${accounts.size}", "设置"),
+            options = listOf("账号 · ${accounts.size}", "设置"),
             selected = tab,
-            onSelect = { tab = it },
+            onSelect = {
+                tab = it
+                // 切走时收起：否则下次回账号页会看到上次留下的工具条，
+                // 像是「批量模式一直开着」，而用户已不记得自己开过。
+                if (it != TAB_ACCOUNTS) bulkOpen = false
+            },
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
         )
 
@@ -228,18 +269,55 @@ fun ProviderDetailPage(providerId: String, onBack: () -> Unit, onAddAccount: () 
         }
 
         when (tab) {
-            0 -> OverviewTab(
+            TAB_ACCOUNTS -> AccountsTab(
                 accounts = accounts,
                 usageLabel = usageLabel,
                 busy = busy,
-                presetLabel = preset?.desc ?: "自定义 / 中转上游",
-                channel = preset?.let { channelLabel(it) } ?: "自定义",
-                providerId = providerId,
+                usageCapable = usageCapable,
+                onOpenLimiter = { acc -> limiterTarget = acc },
                 onQueryUsage = { loadUsage(force = true) },
-                onToggleAll = { enable -> batchAction(if (enable) "enable" else "disable", done = if (enable) "已全部启用" else "已全部禁用") },
-                onJumpToAccounts = { tab = 1 },
+                onEdit = { acc ->
+                    editing = acc
+                    editName = acc.displayName
+                    editConc = acc.raw.optInt("maxConcurrent", 0).takeIf { it > 0 }?.toString() ?: ""
+                    // 凭证值拿不到（内核只回 hasBalanceToken），草稿每次都从空开始
+                    editBalanceToken = ""
+                },
+                onPin = { acc ->
+                    if (!busy) {
+                        busy = true
+                        scope.launch {
+                            // 置顶 = 连续上移到本家队首（内核只有单向 move）
+                            repeat(accounts.size) { runCatching { AccountOps.move(acc.id, up = true) } }
+                            busy = false
+                            toast("已置顶")
+                            GatewayRepository.refreshOnce()
+                        }
+                    }
+                },
+                onToggle = { acc -> batchAction(if (acc.enabled) "disable" else "enable", listOf(acc.id), if (acc.enabled) "已禁用" else "已启用") },
+                onDelete = { acc -> confirmRemove = acc },
+                onAdd = onAddAccount,
+                onEnableAll = { batchAction("enable", done = "已全部启用") },
+                onDisableAll = { batchAction("disable", done = "已全部禁用") },
+                onDeleteAll = { confirmRemoveAll = true },
+                onPatchAccount = patchAccount,
+                bulkOpen = bulkOpen,
+                onOpenRouting = onOpenRouting,
+            )
+            else -> SettingsTab(
+                accounts = accounts,
+                providerId = providerId,
+                busy = busy,
+                onPatchAccount = patchAccount,
+                allEnabled = accounts.isNotEmpty() && accounts.all { it.enabled },
+                onToggleAll = { enable ->
+                    batchAction(
+                        if (enable) "enable" else "disable",
+                        done = if (enable) "已全部启用" else "已全部禁用",
+                    )
+                },
                 credTask = credTask,
-                checkinSupported = preset?.supportsCheckin == true,
                 autoRefreshOn = disabledProviders?.let { providerId !in it },
                 onToggleAutoRefresh = { enabled ->
                     val current = disabledProviders ?: emptySet()
@@ -276,44 +354,6 @@ fun ProviderDetailPage(providerId: String, onBack: () -> Unit, onAddAccount: () 
                         }
                     }
                 },
-            )
-            1 -> AccountsTab(
-                accounts = accounts,
-                usageLabel = usageLabel,
-                busy = busy,
-                usageCapable = usageCapable,
-                onOpenLimiter = { acc -> limiterTarget = acc },
-                onQueryUsage = { loadUsage(force = true) },
-                onEdit = { acc ->
-                    editing = acc
-                    editName = acc.displayName
-                    editConc = acc.raw.optInt("maxConcurrent", 0).takeIf { it > 0 }?.toString() ?: ""
-                },
-                onPin = { acc ->
-                    if (!busy) {
-                        busy = true
-                        scope.launch {
-                            // 置顶 = 连续上移到本家队首（内核只有单向 move）
-                            repeat(accounts.size) { runCatching { AccountOps.move(acc.id, up = true) } }
-                            busy = false
-                            toast("已置顶")
-                            GatewayRepository.refreshOnce()
-                        }
-                    }
-                },
-                onToggle = { acc -> batchAction(if (acc.enabled) "disable" else "enable", listOf(acc.id), if (acc.enabled) "已禁用" else "已启用") },
-                onDelete = { acc -> confirmRemove = acc },
-                onAdd = onAddAccount,
-                onEnableAll = { batchAction("enable", done = "已全部启用") },
-                onDisableAll = { batchAction("disable", done = "已全部禁用") },
-                onDeleteAll = { confirmRemoveAll = true },
-                onPatchAccount = patchAccount,
-            )
-            else -> SettingsTab(
-                accounts = accounts,
-                providerId = providerId,
-                busy = busy,
-                onPatchAccount = patchAccount,
                 onTest = {
                     val first = accounts.firstOrNull()
                     if (first == null) {
@@ -396,8 +436,11 @@ fun ProviderDetailPage(providerId: String, onBack: () -> Unit, onAddAccount: () 
         )
     }
 
-    // ── 编辑备注名 ──
+    // ── 编辑账号（备注名 / 并发 / CatPaw 余额凭证）──
     editing?.let { acc ->
+        // 该账号已配的余额凭证值拿不到（内核只回 hasBalanceToken），所以这里是
+        // 「留空 = 不修改」而不是「回填现值」：用户输入新值才写，留空不动。
+        val hasToken = acc.raw.optBoolean("hasBalanceToken", false)
         AlertDialog(
             onDismissRequest = { editing = null },
             title = { Text("编辑账号") },
@@ -414,22 +457,53 @@ fun ProviderDetailPage(providerId: String, onBack: () -> Unit, onAddAccount: () 
                         onValueChange = { v -> editConc = v.filter { it.isDigit() }.take(3) },
                         singleLine = true,
                     )
+                    // CatPaw 专属：余额查询凭证按账号填（见账号卡上的说明）
+                    if (acc.provider == "catpaw") {
+                        Spacer(Modifier.height(14.dp))
+                        Text(
+                            "余额查询凭证",
+                            fontSize = 12.sp, color = agateColors().textSub,
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        OutlinedTextField(
+                            value = editBalanceToken,
+                            onValueChange = { editBalanceToken = it.trim() },
+                            singleLine = true,
+                            placeholder = {
+                                Text(
+                                    if (hasToken) "已配置 · 留空 = 不修改" else "粘贴 token2 / balanceToken",
+                                    fontSize = 12.sp,
+                                )
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            "余额要带 passport cookie（token2）才能查。",
+                            fontSize = 11.sp, color = agateColors().textDim,
+                        )
+                    }
                 }
             },
             confirmButton = {
                 TextButton(onClick = {
                     val target = acc
+                    val tokenDraft = editBalanceToken
                     editing = null
+                    editBalanceToken = ""
                     scope.launch {
                         val patch = JSONObject().put("name", editName.trim())
                         editConc.trim().toIntOrNull()?.let { patch.put("maxConcurrent", it) }
+                        // 留空 = 不提交这个键（内核语义里空串是「清除」，与用户
+                        // 留空的意思「别动」不同，所以不能传空串进去）
+                        if (tokenDraft.isNotBlank()) patch.put("balanceToken", tokenDraft)
                         val r = AccountOps.update(target.id, patch)
                         toast(if (r.ok) "已保存" else (r.error ?: "保存失败"))
                         if (r.ok) GatewayRepository.refreshOnce()
                     }
                 }) { Text("保存") }
             },
-            dismissButton = { TextButton(onClick = { editing = null }) { Text("取消") } },
+            dismissButton = { TextButton(onClick = { editing = null; editBalanceToken = "" }) { Text("取消") } },
         )
     }
 
@@ -521,150 +595,6 @@ fun ProviderDetailPage(providerId: String, onBack: () -> Unit, onAddAccount: () 
     }
 }
 
-/* ───────────── 概览 ───────────── */
-@Composable
-private fun OverviewTab(
-    accounts: List<AccountDto>,
-    usageLabel: Map<String, String>,
-    busy: Boolean,
-    presetLabel: String,
-    channel: String,
-    providerId: String,
-    onQueryUsage: () -> Unit,
-    onToggleAll: (Boolean) -> Unit,
-    onJumpToAccounts: () -> Unit,
-    credTask: JSONObject?,
-    checkinSupported: Boolean,
-    autoRefreshOn: Boolean?,
-    onToggleAutoRefresh: (Boolean) -> Unit,
-    onEditInterval: () -> Unit,
-    onRefreshProvider: () -> Unit,
-) {
-    val C = agateColors()
-    val allEnabled = accounts.isNotEmpty() && accounts.all { it.enabled }
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp)) {
-        Spacer(Modifier.height(10.dp))
-
-        Card {
-            Text("概览", color = C.textMain, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-            Spacer(Modifier.height(6.dp))
-            CfgRow(
-                "账号",
-                "${accounts.size} 个 · ${accounts.count { it.enabled }} 启用",
-                if (accounts.isEmpty()) null else accounts.size.toString(),
-            )
-            CfgRow(
-                "余额 / 积分",
-                if (accounts.isEmpty()) "无账号" else if (usageLabel.isEmpty()) "点右侧查询" else "已查询 ${usageLabel.size}/${accounts.size}",
-                if (accounts.isEmpty()) null else if (busy) "查询中…" else "查询",
-                onValueClick = onQueryUsage,
-            )
-            CfgRow("登录通道", channel, null)
-            CfgRow("接入说明", presetLabel, null)
-            CfgRow("提供商 ID", providerId, null)
-            Row(
-                Modifier.fillMaxWidth().padding(vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(Modifier.weight(1f)) {
-                    Text("启用提供商", color = C.textMain, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-                    Text(
-                        if (allEnabled) "参与选号 · 关闭后本家账号全部停用" else "当前有账号停用 · 打开即全部启用",
-                        color = C.textSub, fontSize = 12.sp,
-                    )
-                }
-                Switch(checked = allEnabled, enabled = accounts.isNotEmpty(), onCheckedChange = onToggleAll)
-            }
-        }
-
-        Spacer(Modifier.height(12.dp))
-        Card {
-            Text("自动化", color = C.textMain, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-            Spacer(Modifier.height(8.dp))
-
-            // 自动续期：能力/节奏来自全局任务；「立即续期」按该家账号逐个触发
-            Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text("自动续期", color = C.textMain, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-                    Text(
-                        credTask?.let { t ->
-                            val on = t.optBoolean("enabled", true)
-                            val n = t.optInt("interval", 10)
-                            when {
-                                !on -> "全局已关闭 · 转发时仍按需续期"
-                                autoRefreshOn == false -> "该家已关闭 · 全局每 $n 分钟检查（不含本家）"
-                                else -> "已开启 · 每 $n 分钟检查临期凭证"
-                            }
-                        } ?: "节奏读取中…",
-                        color = C.textSub, fontSize = 12.sp,
-                    )
-                }
-                if (autoRefreshOn != null) {
-                    androidx.compose.material3.Switch(
-                        checked = autoRefreshOn,
-                        onCheckedChange = onToggleAutoRefresh,
-                    )
-                }
-                SmallAction("改间隔", enabled = !busy && credTask != null, onClick = onEditInterval)
-            }
-            Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    "转发时的按需续期始终生效，不受上面的开关影响。",
-                    color = C.textDim, fontSize = 11.sp, modifier = Modifier.weight(1f),
-                )
-                SmallAction("立即续期该家", enabled = !busy && accounts.isNotEmpty(), onClick = onRefreshProvider, primary = true)
-            }
-
-            // 自动签到：能力来自内核签到矩阵（PresetRegistry.supportsCheckin）
-            Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text("自动签到", color = C.textMain, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-                    Text(
-                        if (checkinSupported) "该家支持 · 在任务中心统一配置签到时间与范围"
-                        else "该家不支持签到（上游无签到能力）",
-                        color = C.textSub, fontSize = 12.sp,
-                    )
-                }
-                AgateBadge(
-                    if (checkinSupported) "支持" else "不支持",
-                    if (checkinSupported) BadgeTone.GREEN else BadgeTone.GRAY,
-                )
-            }
-        }
-
-        Spacer(Modifier.height(12.dp))
-        Card {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("队列位置", color = C.textMain, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
-                Text(
-                    "查看账号 ❯",
-                    color = C.accent, fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier.clickable(onClick = onJumpToAccounts),
-                )
-            }
-            Spacer(Modifier.height(6.dp))
-            if (accounts.isEmpty()) {
-                Text("该家还没有账号", color = C.textSub, fontSize = 12.sp)
-            } else {
-                accounts.take(6).forEachIndexed { i, acc ->
-                    Row(Modifier.fillMaxWidth().padding(vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Text("#${i + 1}", color = C.textDim, fontSize = 12.sp, modifier = Modifier.width(34.dp))
-                        Text(acc.displayName, color = C.textMain, fontSize = 13.sp, modifier = Modifier.weight(1f))
-                        AgateBadge(if (acc.enabled) "出战" else "跳过", if (acc.enabled) BadgeTone.GREEN else BadgeTone.GRAY)
-                    }
-                }
-            }
-        }
-
-        Spacer(Modifier.height(10.dp))
-        Text(
-            "倍率 / 凭证续期 / 策略覆盖 / 限流明细依赖内核暂未暴露的端点，本页不展示占位数据。",
-            color = C.textDim, fontSize = 11.sp,
-        )
-        Spacer(Modifier.height(24.dp))
-    }
-}
-
 /* ───────────── 账号 ───────────── */
 @Composable
 private fun AccountsTab(
@@ -685,12 +615,38 @@ private fun AccountsTab(
     onDeleteAll: () -> Unit,
     /** 账号级字段的写入（如 ZCode 的 zcodePlan / balanceToken）。 */
     onPatchAccount: (AccountDto, JSONObject) -> Unit,
+    /** 批量工具条是否展开（由页头「批量」按钮控制）。 */
+    bulkOpen: Boolean,
+    /** 跳路由页；null = 不渲染底部指路行。 */
+    onOpenRouting: (() -> Unit)?,
 ) {
     val C = agateColors()
     LazyColumn(
         Modifier.fillMaxSize().padding(horizontal = 16.dp),
         contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 10.dp),
     ) {
+        // ── 批量工具条：由页头「批量」按钮切换，浮在账号列表**上方** ──
+        // 放在列表上方而不是下方，是因为它作用的对象（账号）就在下面 ——
+        // 原来放在列表底部的常驻卡片要滚到底才点得到，而账号只有 1 个时
+        // 那三颗按钮常年无用却一直占位。
+        if (bulkOpen) {
+            item {
+                Row(
+                    Modifier.fillMaxWidth()
+                        .background(C.accent.copy(alpha = 0.07f), RoundedCornerShape(12.dp))
+                        .border(1.dp, C.accent.copy(alpha = 0.30f), RoundedCornerShape(12.dp))
+                        .padding(8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(7.dp),
+                ) {
+                    SmallAction("全部启用", enabled = !busy && accounts.isNotEmpty(), onClick = onEnableAll, modifier = Modifier.weight(1f))
+                    SmallAction("全部禁用", enabled = !busy && accounts.isNotEmpty(), onClick = onDisableAll, modifier = Modifier.weight(1f))
+                    // 删除放最右且标红：一行里混着危险操作时，靠颜色 + 位置区分，
+                    // 比隔行摆放更不容易误点相邻的普通按钮。
+                    SmallAction("删除全部", enabled = !busy && accounts.isNotEmpty(), onClick = onDeleteAll, modifier = Modifier.weight(1f), danger = true)
+                }
+                Spacer(Modifier.height(10.dp))
+            }
+        }
         item {
             Card {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -721,17 +677,25 @@ private fun AccountsTab(
                 SmallAction("+ 添加账号", primary = true, enabled = true, modifier = Modifier.fillMaxWidth(), onClick = onAdd)
             }
         }
-        item {
-            Spacer(Modifier.height(12.dp))
-            Card {
-                Text("批量操作", color = C.textMain, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                Spacer(Modifier.height(8.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                    SmallAction("全部启用", enabled = !busy && accounts.isNotEmpty(), onClick = onEnableAll, modifier = Modifier.weight(1f))
-                    SmallAction("全部禁用", enabled = !busy && accounts.isNotEmpty(), onClick = onDisableAll, modifier = Modifier.weight(1f))
+        // ── 队列位置：改成一行指路，不再重复渲染前 6 个账号 ──
+        // 路由页的「候选队列」是全量版，还写明每个账号被跳过的原因；
+        // 这里的删节版既不全也不解释，属于重复且更差的表达。
+        if (onOpenRouting != null) {
+            item {
+                Spacer(Modifier.height(12.dp))
+                Row(
+                    Modifier.fillMaxWidth()
+                        .clickable(onClick = onOpenRouting)
+                        .padding(vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        "本家账号在全局队列里的先后，在路由页统一调整",
+                        color = C.accent, fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Text("›", color = C.accent, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
                 }
-                Spacer(Modifier.height(8.dp))
-                SmallAction("删除全部账号", enabled = !busy && accounts.isNotEmpty(), onClick = onDeleteAll, modifier = Modifier.fillMaxWidth(), danger = true)
             }
         }
     }
@@ -779,6 +743,24 @@ private fun AccountBlock(
         // 凭证（与列表页账号卡同口径：双字段 + 秒毫秒归一 + 统一到期文案）
         credentialExpiryMs(acc)?.let { at ->
             ExpiryLine(at)
+        }
+        // ── 余额查询凭证（CatPaw 专属，**账号级**）────────────────
+        //
+        // 内核把它存在账号自己那条记录上（`update_catpaw_balance_token(id, …)`
+        // 按 id + provider 定位单条），视图只透出 `hasBalanceToken`（配没配，
+        // 值本身不下发前端 —— 它是完整会话凭证，而账号列表会被截图排障）。
+        // 之前这一项在「设置」tab 按 `accounts.first()` 取值：多账号时其余账号
+        // 永远查不到余额，界面上还看不出哪一个是缺的。按账号显示才说得清。
+        if (acc.provider == "catpaw") {
+            val hasToken = acc.raw.optBoolean("hasBalanceToken", false)
+            Row(Modifier.fillMaxWidth().padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("余额凭证", color = C.textSub, fontSize = 12.sp, modifier = Modifier.weight(1f))
+                Text(
+                    if (hasToken) "已配置" else "未配置 · 点「编辑」补",
+                    color = if (hasToken) C.textSub else C.amber,
+                    fontSize = 12.sp,
+                )
+            }
         }
         // 额度设限：只对支持余额查询的家显示（该家没接余额时填了阈值也看不到效果）
         if (usageCapable) {
@@ -913,6 +895,9 @@ private fun ZcodePlanRow(
         }
     }
 }
+
+/** 详情页默认 tab：0 = 账号（第二个 tab「设置」由 `else` 分支兜住）。 */
+private const val TAB_ACCOUNTS = 0
 
 /** 套餐通道取值（与内核 `zcode::normalize_plan` 逐字一致）。 */
 private const val CODING_PLAN = "coding-plan"
@@ -1122,55 +1107,113 @@ private fun SettingsTab(
     onTest: () -> Unit,
     onDeleteProvider: () -> Unit,
     onRefreshExpiring: () -> Unit,
+    /** 全部账号是否启用（启用提供商开关的读数）。 */
+    allEnabled: Boolean,
+    onToggleAll: (Boolean) -> Unit,
+    /** 凭证自动维护任务（全局；节奏对所有家生效）。null = 读取中。 */
+    credTask: JSONObject?,
+    /** 该家是否被排除在自动续期之外（null = 还没读到）。 */
+    autoRefreshOn: Boolean?,
+    onToggleAutoRefresh: (Boolean) -> Unit,
+    onEditInterval: () -> Unit,
+    onRefreshProvider: () -> Unit,
 ) {
     val C = agateColors()
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp)) {
         Spacer(Modifier.height(10.dp))
-        // ── 家专属设置（只在这几家出现；字段来自内核的按家白名单）──
-        val firstAccount = accounts.firstOrNull()
-        when (providerId) {
-            "catpaw" -> {
-                var token by remember { mutableStateOf("") }
-                Card {
-                    Text("余额查询凭证", color = C.textMain, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                    Spacer(Modifier.height(4.dp))
+
+        // ── 启用与选号 ──────────────────────────────────────────
+        // 这两段原本在「概览」tab 里。删掉概览后它们必须有个去处，而「启用 /
+        // 自动化」本来就是设置语义 —— 比跟一堆只读统计混在一张「概览」卡里合理。
+        Card {
+            Text("启用与选号", color = C.textMain, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.height(4.dp))
+            Row(
+                Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text("启用提供商", color = C.textMain, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
                     Text(
-                        "CatPaw 的余额要带 passport cookie（token2）才能查。留空 = 不修改。",
+                        if (allEnabled) "参与选号 · 关闭后本家账号全部停用" else "当前有账号停用 · 打开即全部启用",
                         color = C.textSub, fontSize = 12.sp,
                     )
-                    Spacer(Modifier.height(8.dp))
-                    OutlinedTextField(
-                        value = token,
-                        onValueChange = { token = it.trim() },
-                        singleLine = true,
-                        placeholder = { Text("粘贴 token2 / balanceToken", fontSize = 12.sp) },
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            if (firstAccount == null) "该家还没有账号" else "应用到：${firstAccount.displayName}",
-                            color = C.textDim, fontSize = 11.sp, modifier = Modifier.weight(1f),
-                        )
-                        SmallAction(
-                            "保存",
-                            false,
-                            !busy && firstAccount != null && token.isNotBlank(),
-                            onClick = {
-                                val acc = firstAccount ?: return@SmallAction
-                                onPatchAccount(acc, JSONObject().put("balanceToken", token))
-                                token = ""
-                            },
-                        )
-                    }
                 }
-                Spacer(Modifier.height(12.dp))
+                Switch(checked = allEnabled, enabled = accounts.isNotEmpty(), onCheckedChange = onToggleAll)
             }
         }
+        Spacer(Modifier.height(12.dp))
 
-        // ── 本家专有设置：出站身份（ZCode 版本号 / Cline 伪装头）──────
+        // ── 自动化 ──────────────────────────────────────────────
+        // 三行各只做一件事：开关 / 间隔 / 手动触发。
+        // 旧布局把「开关」和「改间隔」并排放在同一行右侧 —— 两者都有色块边框，
+        // 视觉重量相当，读起来像两个平级动作，实际却是「总开关」与「调一个参数」。
+        // 现在间隔做成可点的值胶囊（与设置页 ValueRow 同一种交互）：胶囊同时回答
+        // 「现在是多少」和「这里能点」，按钮只能回答后者。
+        Card {
+            Text("自动化", color = C.textMain, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.height(4.dp))
+
+            // 行 1：自动续期总开关（按家）
+            Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("自动续期", color = C.textMain, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        credTask?.let { t ->
+                            val on = t.optBoolean("enabled", true)
+                            val n = t.optInt("interval", 10)
+                            when {
+                                !on -> "全局已关闭 · 转发时仍按需续期"
+                                autoRefreshOn == false -> "该家已关闭 · 全局每 $n 分钟检查（不含本家）"
+                                else -> "定期检查本家账号的临期凭证并换新"
+                            }
+                        } ?: "节奏读取中…",
+                        color = C.textSub, fontSize = 12.sp,
+                    )
+                }
+                if (autoRefreshOn != null) {
+                    Switch(checked = autoRefreshOn, onCheckedChange = onToggleAutoRefresh)
+                }
+            }
+
+            // 行 2：检查间隔（可点的值胶囊）
+            Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("检查间隔", color = C.textMain, fontSize = 13.sp)
+                    Text("该节奏对所有提供商生效 · 点右侧修改", color = C.textSub, fontSize = 12.sp)
+                }
+                val minutes = credTask?.optInt("interval", 10)
+                Text(
+                    if (minutes == null) "读取中…" else "每 ${minutes} 分钟 ›",
+                    color = if (minutes == null) C.textDim else C.accent,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier
+                        .background(C.accent.copy(alpha = 0.10f), RoundedCornerShape(999.dp))
+                        .then(if (minutes == null) Modifier else Modifier.clickable(enabled = !busy, onClick = onEditInterval))
+                        .padding(horizontal = 12.dp, vertical = 5.dp),
+                )
+            }
+
+            // 行 3：按需续期说明 + 手动触发该家
+            Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "转发时的按需续期始终生效，不受上面的开关影响。",
+                    color = C.textDim, fontSize = 11.sp, modifier = Modifier.weight(1f),
+                )
+                SmallAction("立即续期该家", enabled = !busy && accounts.isNotEmpty(), onClick = onRefreshProvider, primary = true)
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+
+        // ── 家专属设置：出站身份（ZCode 版本号 / Cline 伪装头）────────
         // 两者都进上游请求头，上游按「像不像官方客户端」决定放不放行。
         // 放在「设置」tab 是因为它们是**这一家的接入形态**，不是某个账号的属性。
+        //
+        // ⚠️ CatPaw 的余额查询凭证曾经也在这里，已移走：它是**账号级**字段
+        // （内核 `update_catpaw_balance_token(id, …)` 按 id + provider 定位单条
+        // 记录），而这里原先只写 `accounts.first()` —— 多账号时其余账号的余额
+        // 永远查不到，界面上还看不出缺的是哪个。现在挂在「编辑账号」弹窗里。
         when (providerId) {
             "zcode", "zcode-intl" -> {
                 ZcodeVersionCard()
@@ -1203,9 +1246,30 @@ private fun SettingsTab(
         }
         Spacer(Modifier.height(12.dp))
         Text(
-            "本家专有设置（伪装头 / 设备指纹 / 免费池等）按家差异较大，后续按提供商逐个接入。",
+            "本家专有设置（伪装头 / 设备指纹 / 免费池等）按家差异较大，后续按提供商逐个接入。" +
+                "倍率 / 策略覆盖 / 限流明细依赖内核暂未暴露的端点，本页不展示占位数据。",
             color = C.textDim, fontSize = 11.sp,
         )
+        Spacer(Modifier.height(6.dp))
+        // 提供商 ID 原来在「概览」占一整行 —— 它只有报障时要，降级成脚注足够，
+        // 但选中可复制（贴到工单里比手抄准）。
+        val ctx = LocalContext.current
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("提供商 ID ", color = C.textDim, fontSize = 11.sp)
+            Text(
+                providerId,
+                color = C.textDim, fontSize = 11.sp,
+                modifier = Modifier
+                    .clickable {
+                        val cm = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+                                as android.content.ClipboardManager
+                        cm.setPrimaryClip(android.content.ClipData.newPlainText("providerId", providerId))
+                        android.widget.Toast.makeText(ctx, "已复制 $providerId", android.widget.Toast.LENGTH_SHORT).show()
+                    }
+                    .padding(vertical = 2.dp),
+                style = androidx.compose.ui.text.TextStyle(fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace),
+            )
+        }
         Spacer(Modifier.height(24.dp))
     }
 }
@@ -1222,32 +1286,6 @@ private fun Card(content: @Composable androidx.compose.foundation.layout.ColumnS
             .padding(14.dp),
         content = content,
     )
-}
-
-@Composable
-private fun CfgRow(
-    name: String,
-    desc: String,
-    value: String?,
-    onValueClick: (() -> Unit)? = null,
-) {
-    val C = agateColors()
-    Row(Modifier.fillMaxWidth().padding(vertical = 9.dp), verticalAlignment = Alignment.CenterVertically) {
-        Column(Modifier.weight(1f)) {
-            Text(name, color = C.textMain, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-            if (desc.isNotBlank()) Text(desc, color = C.textSub, fontSize = 12.sp)
-        }
-        if (value != null) {
-            Text(
-                value,
-                color = C.accent, fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
-                modifier = Modifier
-                    .background(C.accent.copy(alpha = 0.10f), RoundedCornerShape(999.dp))
-                    .then(if (onValueClick != null) Modifier.clickable(onClick = onValueClick) else Modifier)
-                    .padding(horizontal = 12.dp, vertical = 5.dp),
-            )
-        }
-    }
 }
 
 @Composable

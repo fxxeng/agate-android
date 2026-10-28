@@ -1,0 +1,452 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>提供商详情 · 已实现 · 设计预览</title>
+<style>
+  :root{
+    --bg:#0F172A; --card:#1E293B; --inset:#0B1220; --border:#334155;
+    --accent:#38BDF8; --textMain:#F8FAFC; --textSub:#A3B1C6; --textDim:#7C8BA1;
+    --green:#4ADE80; --red:#FB7185; --amber:#FBBF24;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:22px 14px 70px;background:#080F1C;color:var(--textMain);
+       font:14px/1.6 -apple-system,"PingFang SC","Microsoft YaHei",system-ui,sans-serif}
+  .wrap{max-width:900px;margin:0 auto}
+  h1{font-size:18px;font-weight:600;margin:0 0 6px}
+  .lead{color:var(--textSub);font-size:13px;margin:0 0 6px}
+  .rules{color:var(--textDim);font-size:12px;margin:0 0 26px;line-height:1.7}
+  .rules code{background:rgba(56,189,248,.12);color:var(--accent);padding:1px 5px;border-radius:4px;font-size:11px}
+  h2{font-size:15px;font-weight:600;margin:36px 0 4px}
+  h2:first-of-type{margin-top:20px}
+  .note{color:var(--textDim);font-size:12px;margin:0 0 12px;line-height:1.7}
+  .note b{color:var(--textSub);font-weight:600}
+  .note code{background:rgba(56,189,248,.1);color:var(--accent);padding:1px 4px;border-radius:4px;font-size:11px}
+  .phone{width:100%;max-width:396px;margin:0 auto;background:var(--bg);
+         border:1px solid #1c2a3f;border-radius:16px;padding:12px}
+  .phone + .phone{margin-top:14px}
+
+  /* 页头 */
+  .hd{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+  .hd-back{width:24px;height:24px;display:flex;align-items:center;justify-content:center;
+           color:var(--textSub);flex:0 0 auto}
+  .hd-av{width:32px;height:32px;border-radius:10px;flex:0 0 auto;
+         background:rgba(56,189,248,.14);color:var(--accent);
+         display:flex;align-items:center;justify-content:center;
+         font-size:12px;font-weight:700}
+  .hd-t{font-size:17px;font-weight:600;flex:1 1 auto;white-space:nowrap}
+  /* 页头的「批量」按钮 */
+  .hd-act{font-size:11px;padding:4px 10px;border-radius:8px;border:1px solid var(--border);
+          color:var(--textSub);background:var(--inset);white-space:nowrap;flex:0 0 auto}
+  .hd-act.on{color:var(--accent);border-color:rgba(56,189,248,.5);background:rgba(56,189,248,.14);
+             font-weight:600}
+
+  /* 分段控件 */
+  .seg{display:flex;background:var(--inset);border:1px solid var(--border);
+       border-radius:10px;padding:3px;gap:3px;margin:6px 0 10px}
+  .seg>span{flex:1;text-align:center;font-size:11.5px;padding:6px 2px;border-radius:8px;
+            color:var(--textSub);white-space:nowrap}
+  .seg>span.on{background:rgba(56,189,248,.18);color:var(--accent);font-weight:600}
+  .seg>span.gone{color:#5A6779;text-decoration:line-through;text-decoration-color:rgba(251,113,133,.7)}
+
+  /* 批量工具条 */
+  .bulk{display:flex;gap:7px;background:rgba(56,189,248,.07);
+        border:1px solid rgba(56,189,248,.3);border-radius:12px;
+        padding:8px;margin-bottom:10px}
+  .bulk .bb{flex:1;text-align:center;font-size:11.5px;font-weight:600;padding:7px 4px;
+            border-radius:8px;border:1px solid var(--border);color:var(--textSub);
+            background:var(--card);white-space:nowrap}
+  .bulk .bb.dan{color:var(--red);border-color:rgba(225,29,72,.4);background:rgba(225,29,72,.1)}
+
+  /* 卡片 */
+  .card{background:var(--card);border:1px solid var(--border);border-radius:16px;
+        padding:12px 13px;margin-bottom:10px}
+  .card-t{font-size:13px;font-weight:600;margin-bottom:2px;color:var(--textMain)}
+  .card-h{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+  .card-h .card-t{flex:1 1 auto;margin:0}
+
+  /* 行 */
+  .row{display:flex;align-items:flex-start;gap:10px;padding:9px 0;
+       border-bottom:1px solid rgba(51,65,85,.45)}
+  .row:last-child{border-bottom:none;padding-bottom:2px}
+  .row-m{flex:1 1 auto;min-width:0}
+  .row-n{font-size:12.5px;font-weight:600;line-height:1.4}
+  .row-d{font-size:10.5px;color:var(--textDim);line-height:1.55;margin-top:2px}
+  .row-d b{color:var(--textSub);font-weight:600}
+  .row-r{flex:0 0 auto;display:flex;align-items:center;gap:6px;padding-top:1px}
+
+  /* 值胶囊 */
+  .val{font-size:11.5px;padding:5px 9px;border-radius:8px;border:1px solid var(--border);
+       color:var(--textSub);white-space:nowrap;background:var(--inset);
+       font-family:ui-monospace,Menlo,monospace}
+  .val.on{color:var(--accent);border-color:rgba(56,189,248,.45);background:rgba(56,189,248,.12)}
+  .val.warn{color:var(--amber);border-color:rgba(217,119,6,.45);background:rgba(217,119,6,.12)}
+  .val.ro{color:var(--textDim);background:transparent;border-style:dashed}
+
+  /* 开关 */
+  .sw{width:38px;height:22px;border-radius:11px;background:#334155;position:relative;flex:0 0 auto}
+  .sw::after{content:"";position:absolute;top:2px;left:2px;width:18px;height:18px;
+             border-radius:50%;background:#94A3B8;transition:.2s}
+  .sw.on{background:rgba(56,189,248,.5)}
+  .sw.on::after{left:18px;background:var(--accent)}
+
+  .btn{font-size:11.5px;padding:5px 10px;border-radius:8px;border:1px solid var(--border);
+       color:var(--textSub);white-space:nowrap;background:var(--inset)}
+  .btn.pri{color:var(--accent);border-color:rgba(56,189,248,.45);background:rgba(56,189,248,.12)}
+  .btn.dan{color:var(--red);border-color:rgba(225,29,72,.4);background:rgba(225,29,72,.1)}
+
+  .tag{font-size:9.5px;padding:2px 6px;border-radius:5px;border:1px solid var(--border);
+       color:var(--textDim);white-space:nowrap}
+  .tag.g{color:var(--green);border-color:rgba(34,197,94,.35);background:rgba(34,197,94,.1)}
+  .tag.r{color:var(--red);border-color:rgba(225,29,72,.35);background:rgba(225,29,72,.1)}
+  .tag.a{color:var(--amber);border-color:rgba(217,119,6,.4);background:rgba(217,119,6,.12)}
+  .tag.b{color:var(--accent);border-color:rgba(56,189,248,.35);background:rgba(56,189,248,.1)}
+
+  /* 账号块 */
+  .acct{background:var(--inset);border:1px solid rgba(51,65,85,.7);border-radius:12px;
+        padding:10px 11px;margin-bottom:8px}
+  .acct-h{display:flex;align-items:center;gap:7px}
+  .acct-n{font-size:12.5px;font-weight:600;flex:1 1 auto;min-width:0;
+          overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .acct-rank{font-size:11px;color:var(--textDim);font-family:ui-monospace,Menlo,monospace}
+  .mini{margin-top:7px;height:4px;border-radius:2px;background:rgba(51,65,85,.8);overflow:hidden}
+  .mini>i{display:block;height:100%;border-radius:2px}
+  .kvline{display:flex;justify-content:space-between;font-size:11px;color:var(--textSub);margin-top:5px}
+  .kvline b{color:var(--textMain);font-weight:600;font-family:ui-monospace,Menlo,monospace}
+  .kvline .warnv{color:var(--amber);font-weight:600}
+
+  .hint{font-size:10.5px;color:var(--textDim);margin-top:8px;line-height:1.6}
+  .linkline{display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--accent);
+            padding:8px 0 2px;font-weight:600}
+  .strike{color:#5A6779;text-decoration:line-through;text-decoration-color:rgba(251,113,133,.75)}
+
+  /* 弹窗 */
+  .scrim{background:rgba(2,6,23,.55);border-radius:16px;padding:10px;max-width:396px;margin:0 auto}
+  .sheet{background:var(--card);border:1px solid var(--border);border-radius:16px;padding:14px}
+  .sheet-t{font-size:15px;font-weight:600;margin-bottom:12px}
+  .flabel{font-size:11px;color:var(--textDim);margin-bottom:5px;margin-top:11px}
+  .flabel:first-of-type{margin-top:0}
+  .field{background:var(--inset);border:1px solid var(--border);border-radius:10px;
+         padding:10px 11px;font-size:12.5px;color:var(--textDim);min-height:40px;
+         display:flex;align-items:center}
+  .field.filled{color:var(--textMain);font-family:ui-monospace,Menlo,monospace;font-size:12px}
+  .fhint{font-size:10px;color:var(--textDim);margin-top:5px;line-height:1.5}
+  .sheet-foot{display:flex;justify-content:flex-end;gap:8px;margin-top:14px}
+
+  /* 对比表 */
+  .tbl{width:100%;border-collapse:collapse;font-size:12px;margin-top:10px}
+  .tbl th,.tbl td{text-align:left;padding:7px 9px;border-bottom:1px solid rgba(51,65,85,.5);
+                  vertical-align:top}
+  .tbl th{color:var(--textDim);font-weight:500;font-size:11px}
+  .tbl td{color:var(--textSub)}
+  .tbl td:first-child{color:var(--textMain);white-space:nowrap}
+  .tbl code{background:rgba(56,189,248,.1);color:var(--accent);padding:1px 4px;
+            border-radius:4px;font-size:10.5px}
+  .drop{color:var(--red)}
+  .keep{color:var(--green)}
+  .kv{margin:10px 0 0;padding:0;list-style:none;font-size:12px;line-height:1.8}
+  .kv li{padding-left:14px;position:relative;color:var(--textSub)}
+  .kv li::before{content:"·";position:absolute;left:2px;color:var(--accent)}
+  .kv code{background:rgba(56,189,248,.1);color:var(--accent);padding:1px 4px;
+           border-radius:4px;font-size:11px}
+  .warnbox{font-size:11px;color:var(--amber);line-height:1.65;margin-top:10px;
+           background:rgba(217,119,6,.08);border:1px solid rgba(217,119,6,.28);
+           border-radius:9px;padding:9px 11px}
+  .okbox{font-size:11px;color:var(--green);line-height:1.65;margin-top:10px;
+         background:rgba(34,197,94,.07);border:1px solid rgba(34,197,94,.25);
+         border-radius:9px;padding:9px 11px}
+  .warnbox b,.okbox b{font-weight:600}
+  .cmp{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  @media(max-width:760px){.cmp{grid-template-columns:1fr}}
+  .cmp-h{font-size:11px;color:var(--textDim);text-align:center;margin-bottom:6px;
+         font-weight:600;letter-spacing:.3px}
+  .cmp-h.bad{color:var(--red)}
+  .cmp-h.good{color:var(--green)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>提供商详情 · 三条已实现</h1>
+  <p class="lead">① 批量操作收进页头按钮 + 工具条　② 自动化卡片重排　③ CatPaw 余额凭证改绑账号</p>
+  <p class="rules">
+    状态：<b>已改完并通过编译</b>（<code>:app:compileDebugKotlin</code> / <code>assembleDebug</code> / 31 条单测全绿）。本页保留作实现依据。
+  </p>
+
+  <!-- ═══════════ ① 批量操作 ═══════════ -->
+  <h2>① 批量操作：页头一个按钮，点开后工具条浮在账号列表上方</h2>
+  <p class="note">
+    原来批量操作是账号列表<b>下面</b>一张常驻卡片 —— 要滚到底才能点，而它服务的对象（账号列表）在上方。
+    改成页头按钮后：默认不占版面，点开才出现，用完再点收起。<b>只在「账号」tab 出现</b>（设置 tab 没有意义）。
+  </p>
+
+  <div class="cmp">
+    <div>
+      <div class="cmp-h bad">改前 · 常驻卡片在列表下方</div>
+      <div class="phone">
+        <div class="hd">
+          <span class="hd-back"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg></span>
+          <span class="hd-av">CP</span>
+          <span class="hd-t">CatPaw</span>
+          <span class="tag g">就绪</span>
+        </div>
+        <div class="seg"><span class="on">账号 · 2</span><span>设置</span></div>
+
+        <div class="card">
+          <div class="card-h"><div class="card-t">账号列表</div><span class="btn">刷新余额</span></div>
+          <div class="acct">
+            <div class="acct-h"><span class="acct-rank">#1</span><span class="acct-n">★ 主力账号 01</span><span class="tag g">就绪</span></div>
+            <div class="kvline"><span>余额</span><b>45,200 pts</b></div>
+            <div class="mini"><i style="width:72%;background:var(--green)"></i></div>
+          </div>
+          <div class="acct">
+            <div class="acct-h"><span class="acct-rank">#2</span><span class="acct-n">备用账号 02</span><span class="tag a">余额低</span></div>
+            <div class="kvline"><span>余额</span><b>860 pts</b></div>
+            <div class="mini"><i style="width:9%;background:var(--amber)"></i></div>
+          </div>
+          <div class="btn pri" style="display:block;text-align:center;margin-top:4px">+ 添加账号</div>
+        </div>
+
+        <div class="card" style="border-style:dashed;border-color:rgba(251,113,133,.4)">
+          <div class="card-t" style="color:var(--red)">批量操作 <span class="tag r">在下方</span></div>
+          <div style="display:flex;gap:8px;margin-top:8px">
+            <span class="btn" style="flex:1;text-align:center">全部启用</span>
+            <span class="btn" style="flex:1;text-align:center">全部禁用</span>
+          </div>
+          <div class="btn dan" style="display:block;text-align:center;margin-top:8px">删除全部账号</div>
+          <div class="hint">要滚到底才看得见 · 且常年占位，账号只有 1 个时这三颗按钮毫无用处</div>
+        </div>
+      </div>
+    </div>
+
+    <div>
+      <div class="cmp-h good">改后 · 页头按钮 + 工具条（展开态）</div>
+      <div class="phone">
+        <div class="hd">
+          <span class="hd-back"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg></span>
+          <span class="hd-av">CP</span>
+          <span class="hd-t">CatPaw</span>
+          <span class="hd-act on">批量</span>
+        </div>
+        <div class="seg"><span class="on">账号 · 2</span><span>设置</span></div>
+
+        <div class="bulk">
+          <span class="bb">全部启用</span>
+          <span class="bb">全部禁用</span>
+          <span class="bb dan">删除全部</span>
+        </div>
+
+        <div class="card">
+          <div class="card-h"><div class="card-t">账号列表</div><span class="btn">刷新余额</span></div>
+          <div class="acct">
+            <div class="acct-h"><span class="acct-rank">#1</span><span class="acct-n">★ 主力账号 01</span><span class="tag g">就绪</span></div>
+            <div class="kvline"><span>余额</span><b>45,200 pts</b></div>
+            <div class="mini"><i style="width:72%;background:var(--green)"></i></div>
+            <div class="kvline"><span>余额凭证</span><span class="warnv">未配置</span></div>
+          </div>
+          <div class="acct">
+            <div class="acct-h"><span class="acct-rank">#2</span><span class="acct-n">备用账号 02</span><span class="tag a">余额低</span></div>
+            <div class="kvline"><span>余额</span><b>860 pts</b></div>
+            <div class="mini"><i style="width:9%;background:var(--amber)"></i></div>
+            <div class="kvline"><span>余额凭证</span><span>已配置</span></div>
+          </div>
+          <div class="btn pri" style="display:block;text-align:center;margin-top:4px">+ 添加账号</div>
+        </div>
+
+        <div class="linkline">本家账号在全局队列里的先后，在路由页统一调整 ›</div>
+        <div class="hint">工具条出现时，页头「批量」按钮变高亮（再点一次收起）。工具条本身不占常规版面。</div>
+      </div>
+    </div>
+  </div>
+
+  <p class="note" style="margin-top:14px">
+    <b>三个按钮一行</b>：全部启用 / 全部禁用 / 删除全部。前两个是普通描边，删除用红色描边 —— 一行里有一个危险操作时，
+    颜色区分比隔行摆放更安全（不会误点到相邻的普通按钮，因为它在最右端且颜色不同）。
+  </p>
+
+  <!-- ═══════════ ② 自动化卡片 ═══════════ -->
+  <h2>② 自动化卡片：把「改间隔」从开关旁边拿下来</h2>
+  <p class="note">
+    原来一行里挤了三个元素：<code>标题 + 说明</code> · <code>开关</code> · <code>改间隔按钮</code>。
+    开关和按钮并排时视觉重量相当，读起来像两个平级动作，但实际是「总开关」和「调一个参数」——
+    层级完全不同。改成分两行：<b>开关只管开/关，间隔做成可点的值胶囊</b>，和设置页其它地方
+    （<code>ValueRow</code>）的写法统一。
+  </p>
+
+  <div class="cmp">
+    <div>
+      <div class="cmp-h bad">改前 · 三个元素挤一行</div>
+      <div class="phone">
+        <div class="card">
+          <div class="card-t">自动化</div>
+          <div class="row">
+            <div class="row-m">
+              <div class="row-n">自动续期</div>
+              <div class="row-d">已开启 · 每 10 分钟检查临期凭证</div>
+            </div>
+            <div class="row-r"><span class="sw on"></span><span class="btn">改间隔</span></div>
+          </div>
+          <div class="row">
+            <div class="row-m"><div class="row-d">转发时的按需续期始终生效…</div></div>
+            <div class="row-r"><span class="btn pri">立即续期该家</span></div>
+          </div>
+        </div>
+        <div class="hint">开关与按钮贴在一起、都有边框色块，视觉上分不出主次；「改间隔」离它要改的数字（10 分钟）也远。</div>
+      </div>
+    </div>
+
+    <div>
+      <div class="cmp-h good">改后 · 开关独立，间隔成可点胶囊</div>
+      <div class="phone">
+        <div class="card">
+          <div class="card-t">自动化</div>
+          <div class="row">
+            <div class="row-m">
+              <div class="row-n">自动续期</div>
+              <div class="row-d">定期检查本家账号的临期凭证并换新</div>
+            </div>
+            <div class="row-r"><span class="sw on"></span></div>
+          </div>
+          <div class="row">
+            <div class="row-m">
+              <div class="row-n" style="font-size:12px">检查间隔</div>
+              <div class="row-d">该节奏对所有提供商生效 · 点右侧修改</div>
+            </div>
+            <div class="row-r"><span class="val on">每 10 分钟 ›</span></div>
+          </div>
+          <div class="row">
+            <div class="row-m">
+              <div class="row-d">转发时的按需续期始终生效，不受上面的开关影响</div>
+            </div>
+            <div class="row-r"><span class="btn pri">立即续期该家</span></div>
+          </div>
+        </div>
+        <div class="hint">三行各自只做一件事。「每 10 分钟 ›」既显示当前值又是入口，点击弹窗改 —— 与设置页的值胶囊同一种交互。</div>
+      </div>
+    </div>
+  </div>
+
+  <p class="note" style="margin-top:14px">
+    <b>为什么值胶囊比按钮好</b>：按钮只回答「这里能点」，胶囊同时回答「现在是多少」。
+    设置页里凡是「有当前值的可改项」都已经是这种写法，这里保持一致，不用引入第三种形态。
+  </p>
+
+  <!-- ═══════════ ③ CatPaw 余额凭证 ═══════════ -->
+  <h2>③ CatPaw 余额查询凭证：取消家级卡片，绑到账号上</h2>
+  <p class="note">
+    这条不只是「布局更顺」，而是<b>修正一处静默失效</b>。原实现卡上写「该家设置」，代码只写进
+    <code>accounts.firstOrNull()</code> —— CatPaw 有多个账号时，其余账号的余额永远查不到，而用户看不出。
+    内核侧 <code>balanceToken</code> 本来就是账号字段（<code>PATCH /api/accounts/{id}</code> 直写，
+    见 <code>update_catpaw_balance_token</code>），按账号填才是它的本来语义。
+  </p>
+
+  <div class="phone">
+    <div class="hd">
+      <span class="hd-back"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg></span>
+      <span class="hd-av">CP</span>
+      <span class="hd-t">CatPaw</span>
+      <span class="tag g">就绪</span>
+    </div>
+    <div class="seg"><span class="on">账号 · 2</span><span>设置</span></div>
+
+    <div class="acct" style="margin-bottom:10px">
+      <div class="acct-h"><span class="acct-rank">#1</span><span class="acct-n">★ 主力账号 01</span><span class="tag g">就绪</span></div>
+      <div class="kvline"><span>余额</span><b>45,200 pts</b></div>
+      <div class="mini"><i style="width:72%;background:var(--green)"></i></div>
+      <div class="kvline"><span>余额凭证</span><span class="warnv">未配置 · 点「编辑」补</span></div>
+      <div style="display:flex;gap:6px;margin-top:8px">
+        <span class="btn" style="flex:1;text-align:center">置顶</span>
+        <span class="btn on" style="flex:1;text-align:center;color:var(--accent);border-color:rgba(56,189,248,.45);background:rgba(56,189,248,.12)">编辑</span>
+        <span class="btn" style="flex:1;text-align:center">停用</span>
+        <span class="btn dan" style="flex:1;text-align:center">删除</span>
+      </div>
+    </div>
+
+    <div class="acct">
+      <div class="acct-h"><span class="acct-rank">#2</span><span class="acct-n">备用账号 02</span><span class="tag a">余额低</span></div>
+      <div class="kvline"><span>余额</span><b>860 pts</b></div>
+      <div class="mini"><i style="width:9%;background:var(--amber)"></i></div>
+      <div class="kvline"><span>余额凭证</span><span>已配置</span></div>
+    </div>
+
+    <div class="hint">
+      账号卡上多一行「余额凭证：已配 / 未配」，这样哪个账号查不到余额一眼可见。
+      其它 25 家不显示这一行（只有 CatPaw 有这个字段）。
+    </div>
+  </div>
+
+  <p class="note" style="margin-top:14px">点「编辑」后的弹窗 —— 余额凭证作为 CatPaw 专属的一段接在原有字段后面：</p>
+
+  <div class="scrim">
+    <div class="sheet">
+      <div class="sheet-t">编辑账号</div>
+
+      <div class="flabel">备注名</div>
+      <div class="field filled">主力账号 01</div>
+
+      <div class="flabel">并发上限（留空 = 不限）</div>
+      <div class="field">未设置</div>
+
+      <div class="flabel" style="margin-top:16px;padding-top:12px;border-top:1px solid rgba(51,65,85,.6)">
+        余额查询凭证 · 仅 CatPaw
+      </div>
+      <div class="field">粘贴 token2 / balanceToken（当前未配置）</div>
+      <div class="fhint">
+        余额要带 passport cookie（token2）才能查。留空 = 不修改；已配置时输入框留空即保持原值。
+      </div>
+
+      <div class="sheet-foot">
+        <span class="btn">取消</span>
+        <span class="btn pri">保存</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="okbox">
+    <b>内核已经准备好了，不需要改 Rust：</b>账号视图里带 <code>hasBalanceToken</code>
+    （只透出「配没配」，凭证值本身不下发到前端），客户端用 <code>acc.raw.optBoolean("hasBalanceToken")</code>
+    就能画那一行状态。写入走现有的 <code>AccountOps.update(id, {"balanceToken": …})</code>。
+  </div>
+
+  <!-- ═══════════ 改动清单 ═══════════ -->
+  <h2>④ 本轮完整改动清单</h2>
+  <table class="tbl">
+    <thead><tr><th>文件</th><th>改动</th><th>规模</th></tr></thead>
+    <tbody>
+      <tr><td>ProviderDetailPage.kt</td>
+          <td>删 <code>OverviewTab</code>；<code>AgateSegmented</code> 3 项改 2 项；<code>when(tab)</code> 重排；默认 tab 为账号</td>
+          <td>约 −150 行</td></tr>
+      <tr><td>ProviderDetailPage.kt</td>
+          <td>顶栏加「批量」按钮（仅账号 tab 显示）+ <code>bulkOpen</code> 状态；账号列表上方加工具条；删原批量操作卡</td>
+          <td>约 +35 行</td></tr>
+      <tr><td>ProviderDetailPage.kt</td>
+          <td><code>SettingsTab</code> 接收 <code>credTask</code> / <code>autoRefreshOn</code> / 四个回调，新增「启用与选号」「自动化」两卡（自动化按新布局）</td>
+          <td>约 +55 行</td></tr>
+      <tr><td>ProviderDetailPage.kt</td>
+          <td>删 <code>providerId == "catpaw"</code> 那个家级凭证卡；编辑弹窗加 CatPaw 专属「余额查询凭证」输入框；账号卡加「余额凭证」行</td>
+          <td>约 −20 / +30 行</td></tr>
+      <tr><td>ProviderDetailPage.kt</td>
+          <td>账号列表下方加一行指向路由页的文字链（<code>onOpenRouting</code> 回调）</td>
+          <td>+5 行</td></tr>
+      <tr><td>AgateNavHost.kt</td>
+          <td><code>ProviderDetailPage(...)</code> 调用处接 <code>onOpenRouting</code>（跳路由页）</td>
+          <td>+3 行</td></tr>
+    </tbody>
+  </table>
+
+  <ul class="kv">
+    <li><b>无内核改动</b>：<code>balanceToken</code> 写入与 <code>hasBalanceToken</code> 读取两边都已存在</li>
+    <li><b>无新偏好键、无新端点</b></li>
+    <li>「费用 / 倍率 / 策略覆盖 / 限流明细」仍缺内核端点，继续在页脚一行说明，不做占位</li>
+  </ul>
+
+  <div class="warnbox">
+    <b>有一处需要你定：</b>编辑弹窗里「余额查询凭证」是和备注名/并发同一个弹窗（如上面预览），
+    还是单独给个入口？我倾向同一个弹窗 —— 用户改账号时一次改完，不用开两个窗。
+    如果你想更省事，也可以只在账号卡上留一个「凭证」小按钮直接弹单字段窗。
+  </div>
+
+</div>
+</body>
+</html>

@@ -98,6 +98,31 @@ fun AgatePageHeader(
     Box(Modifier.fillMaxWidth().height(1.dp).background(C.border))
 }
 
+/**
+ * 二级页专用页头：只有返回箭头，没有抽屉入口。
+ *
+ * 为什么单独一个函数而不是让调用方写 `onOpenDrawer = {}`：
+ * 二级页本来就没有侧栏（返回箭头已经占掉了左侧那个 36dp 的槽位），
+ * 让每个二级页都传一个永远不调用的 `{}` 是纯粹的噪声 —— 而且一旦有人
+ * 忘了传，尾随 lambda 会被编译器绑给 `onOpenDrawer`（`() -> Unit`），
+ * 于是页面内容被塞进一个非 Composable 的槽位，报出的却是
+ * 「@Composable invocations can only happen from the context of a @Composable function」，
+ * 与真正的原因（少传参数）完全对不上。这个重载把那个坑填掉。
+ */
+@Composable
+fun AgateSubPageHeader(
+    title: String,
+    onBack: () -> Unit,
+    modifier: Modifier = Modifier,
+    actions: @Composable RowScope.() -> Unit = {},
+) = AgatePageHeader(
+    title = title,
+    onOpenDrawer = {},
+    modifier = modifier,
+    onBack = onBack,
+    actions = actions,
+)
+
 /** 底栏一项（路由 + 文案 + 图标）。 */
 data class AgateTabItem(val route: String, val label: String, val icon: ImageVector)
 

@@ -25,6 +25,8 @@ object GatewayPrefs {
     private const val KEY_THEME_MODE = "theme_mode"
     private const val KEY_PORT = "port"
     private const val KEY_SCHEDULER_ON = "scheduler_on"
+    private const val KEY_CHECKIN_NOTIFY = "checkin_notify_enabled"
+    private const val KEY_ALERT_NOTIFY = "alert_notify_enabled"
 
     /** 局域网监听（0.0.0.0 + 内核 panel gate + fail-closed）。默认关。 */
     /**
@@ -133,6 +135,31 @@ object GatewayPrefs {
 
     fun setNextAlarmAt(ctx: Context, atMs: Long) {
         prefs(ctx).edit().putLong(KEY_NEXT_ALARM_AT, atMs).apply()
+    }
+
+    /**
+     * 签到结果通知开关（设置页「保活与通知」）。
+     *
+     * 放在 GatewayPrefs 而不是 app 模块：读它的是
+     * `AgateForegroundService.runTick` 的收尾处，那是**没有 UI 的壳层组件**，
+     * 而依赖方向是 app → core-gateway，core-gateway 读不到 app 的偏好对象。
+     * 设置页那边经同一个 SharedPreferences 文件读写，键不重复定义。
+     *
+     * 默认开：定时签到多在息屏时跑完，不给通知用户根本不知道结果。
+     */
+    fun checkinNotify(ctx: Context): Boolean =
+        prefs(ctx).getBoolean(KEY_CHECKIN_NOTIFY, true)
+
+    fun setCheckinNotify(ctx: Context, value: Boolean) {
+        prefs(ctx).edit().putBoolean(KEY_CHECKIN_NOTIFY, value).apply()
+    }
+
+    /** 服务异常告警开关（网关启动失败 / 全部账号不可用）。默认开。 */
+    fun alertNotify(ctx: Context): Boolean =
+        prefs(ctx).getBoolean(KEY_ALERT_NOTIFY, true)
+
+    fun setAlertNotify(ctx: Context, value: Boolean) {
+        prefs(ctx).edit().putBoolean(KEY_ALERT_NOTIFY, value).apply()
     }
 
     private fun prefs(ctx: Context) =
