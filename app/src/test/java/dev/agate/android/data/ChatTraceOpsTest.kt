@@ -109,6 +109,26 @@ class ChatTraceOpsTest {
     }
 
     @Test
+    fun `只有工具结果时也算有内容`() {
+        // 界面靠 isEmpty 决定整卡渲不渲染。这一条是唯一「真有两段其一为空」
+        // 的组合：请求体里有 tool 结果，但响应体是空的（比如上一次请求的报文
+        // 已被清理，只剩这次请求体）。此时必须仍然渲染，否则用户看不到结果。
+        val request = """
+            {"messages":[
+              {"role":"assistant","content":null,"tool_calls":[
+                {"id":"call_y","type":"function","function":{"name":"list_models","arguments":"{}"}}
+              ]},
+              {"role":"tool","tool_call_id":"call_y","content":"{\"models\":[]}"}
+            ]}
+        """.trimIndent()
+        val trace = ChatTraceOps.parse(request, "", false)
+        assertFalse(trace.isEmpty)
+        assertTrue(trace.reasoning.isBlank())
+        assertTrue(trace.toolCalls.isEmpty())
+        assertEquals(1, trace.toolResults.size)
+    }
+
+    @Test
     fun `空报文不抛异常且视为无内容`() {
         val trace = ChatTraceOps.parse("", "", false)
         assertTrue(trace.isEmpty)

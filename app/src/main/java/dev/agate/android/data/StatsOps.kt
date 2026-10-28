@@ -190,8 +190,27 @@ object StatsOps {
         return OpResult(true, Filters(models, providers), null)
     }
 
+    /**
+     * 单条请求的原始正文。
+     *
+     * 404 是一个**正常状态**，不是错误：未开调试模式时内核两侧都不采，
+     * `raw_body` 返回 None，接口给 404。这里把它映射成「没有报文」而不是
+     * 「无法连接内核」—— 后者会让人以为网关挂了，去查一个根本不存在的问题。
+     */
     suspend fun raw(id: String): OpResult<RawBody> {
-        val data = get("/api/stats/requests/raw?id=${id.enc()}") ?: return OpResult(false, null, "无法连接内核")
+        val reply = withContext(Dispatchers.IO) { CoreTransport.get("/api/stats/requests/raw?id=${id.enc()}") }
+        if (reply !is CoreTransport.Reply.Ok) {
+            return OpResult(false, null, (reply as? CoreTransport.Reply.Down)?.message ?: "链路错误")
+        }
+        if (reply.status == 404) {
+            return OpResult(false, null, "这条请求没有保存报文（未开启调试模式时新请求不采集）")
+        }
+        val body = runCatching { JSONObject(reply.text) }.getOrNull()
+            ?: return OpResult(false, null, "响应不是合法 JSON")
+        if (!body.optBoolean("success")) {
+            return OpResult(false, null, body.optString("error").ifBlank { "读取报文失败" })
+        }
+        val data = body.optJSONObject("data") ?: body
         return OpResult(
             true,
             RawBody(

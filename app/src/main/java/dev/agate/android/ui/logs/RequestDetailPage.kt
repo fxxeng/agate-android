@@ -37,6 +37,7 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import dev.agate.android.data.ChatTraceOps
 import dev.agate.android.data.GatewayRepository
 import dev.agate.android.data.StatsOps
 import dev.agate.android.ui.components.AgateBadge
@@ -81,9 +82,9 @@ fun RequestDetailPage(
 
     var entry by remember { mutableStateOf<StatsOps.Entry?>(null) }
     var raw by remember { mutableStateOf<StatsOps.RawBody?>(null) }
-    var loading by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var rawError by remember { mutableStateOf<String?>(null) }
+    var rawLoading by remember { mutableStateOf(false) }
 
     fun toast(text: String) = Toast.makeText(ctx, text, Toast.LENGTH_SHORT).show()
 
@@ -93,9 +94,7 @@ fun RequestDetailPage(
     }
 
     LaunchedEffect(requestId) {
-        loading = true
         val p = StatsOps.page(limit = 200)
-        loading = false
         if (p.ok && p.data != null) {
             entry = p.data.entries.firstOrNull { it.id == requestId }
             if (entry == null) error = "这条请求已不在列表中（可能已被清理）"
@@ -106,15 +105,23 @@ fun RequestDetailPage(
 
     fun loadRaw() {
         scope.launch {
+            rawLoading = true
             val r = StatsOps.raw(requestId)
+            rawLoading = false
             if (r.ok) {
                 raw = r.data
                 rawError = null
             } else {
+                // 失败也要记下来：AI 轨迹卡靠 rawError 决定「不渲染」还是
+                // 「显示原因」，两种都不该静默
                 rawError = r.error ?: "读取报文失败"
             }
         }
     }
+
+    // 进页面就拉一次：AI 轨迹要它才能解析。原先只在用户点开「报文原文」时
+    // 才拉，那是因为只有那一张卡需要；现在轨迹也要，晚拉等于轨迹永远不出现。
+    LaunchedEffect(requestId) { loadRaw() }
 
     Column(modifier = modifier.fillMaxSize().background(C.bg)) {
         AgatePageHeader(title = "请求详情", onOpenDrawer = {}, onBack = onBack) {
@@ -165,10 +172,28 @@ fun RequestDetailPage(
                 TimingCard(entry = e)
                 Spacer(Modifier.height(10.dp))
                 AttemptsCard(entry = e)
+
+                // ── AI 轨迹：与「报文原文」共用同一份 raw ──
+                // 两者都靠 StatsOps.raw(id) 那一次请求，所以只在这里解析一次、
+                // 传下去。让两个卡片各发一次请求既浪费又会出现「一个加载完、
+                // 另一个还在转」的错位。
+                val trace = remember(raw) {
+                    raw?.let {
+                        ChatTraceOps.parse(it.requestBody, it.responseBody, it.truncated)
+                    }
+                }
+                // 只有真的有东西可看时才占位；trace 为 null（还没拉 raw）时
+                // 不显示 —— 拉取动作由「报文原文」那张卡的点击触发
+                trace?.takeIf { !it.isEmpty }?.let { t ->
+                    Spacer(Modifier.height(10.dp))
+                    TraceCard(trace = t)
+                }
+
                 Spacer(Modifier.height(10.dp))
                 RawCard(
                     raw = raw,
                     rawError = rawError,
+                    loading = rawLoading,
                     onLoad = { loadRaw() },
                     onCopy = { text ->
                         clipboard.setText(AnnotatedString(text))
@@ -363,11 +388,136 @@ private fun AttemptsCard(entry: StatsOps.Entry) {
     }
 }
 
+/**
+ * AI 轨迹：把一次请求里「模型想了什么 / 调了什么工具 / 工具回了什么」摊开。
+ *
+ * 对齐上游 3.0.8 请求详情弹窗的三段折叠（思考过程 / 调用工具 / 工具结果）。
+ * 数据来源是 `StatsOps.raw` 的同一次响应 —— 这里不自己发请求。
+ *
+ * **整卡只在有内容时渲染**（调用点已经用 `!it.isEmpty` 挡过）。这不是省事，
+ * 而是刻意：未开调试模式时两侧都不采，画一个空折叠条会让人以为「数据丢了」，
+ * 而实际是「本来就没采」。
+ */
+@Composable
+private fun TraceCard(trace: ChatTraceOps.Trace) {
+    val C = agateColors()
+    // 默认全折叠：这三段动辄几百行，一进来就铺开会把下面所有卡片顶出屏幕
+    var openReasoning by remember { mutableStateOf(false) }
+    var openCalls by remember { mutableStateOf(false) }
+    var openResults by remember { mutableStateOf(false) }
+
+    val summary = buildList {
+        if (trace.reasoning.isNotBlank()) add("思考 ${trace.reasoning.length} 字")
+        if (trace.toolCalls.isNotEmpty()) add("${trace.toolCalls.size} 次工具调用")
+        if (trace.toolResults.isNotEmpty()) add("${trace.toolResults.size} 条工具结果")
+    }.joinToString(" · ")
+
+    CardShell(
+        title = "AI 轨迹",
+        subtitle = summary.ifBlank { null },
+        trailing = if (trace.truncated) {
+            { Text("可能不完整", fontSize = 10.5.sp, color = C.amber) }
+        } else {
+            null
+        },
+    ) {
+        if (trace.reasoning.isNotBlank()) {
+            TraceSection(
+                title = "思考过程",
+                open = openReasoning,
+                onToggle = { openReasoning = !openReasoning },
+                body = trace.reasoning,
+                tone = C.blue,
+            )
+        }
+        if (trace.toolCalls.isNotEmpty()) {
+            if (trace.reasoning.isNotBlank()) Spacer(Modifier.height(8.dp))
+            TraceSection(
+                title = "调用工具",
+                open = openCalls,
+                onToggle = { openCalls = !openCalls },
+                body = trace.toolCalls.joinToString("\n\n") { call ->
+                    // 工具名单独一行、参数缩进，比把两者挤在一行好读
+                    "${call.name.ifBlank { "（未命名）" }}(${call.id})\n" +
+                        ChatTraceOps.prettyJson(call.arguments)
+                },
+                tone = C.accent,
+            )
+        }
+        if (trace.toolResults.isNotEmpty()) {
+            if (trace.reasoning.isNotBlank() || trace.toolCalls.isNotEmpty()) {
+                Spacer(Modifier.height(8.dp))
+            }
+            TraceSection(
+                title = "工具结果",
+                open = openResults,
+                onToggle = { openResults = !openResults },
+                body = trace.toolResults.joinToString("\n\n") { r ->
+                    "${r.name.ifBlank { r.callId }.ifBlank { "（未知工具）" }}\n${r.content}"
+                },
+                tone = C.green,
+            )
+        }
+    }
+}
+
+/** 一段可折叠的轨迹内容。折叠头始终一行，展开后正文限高并内部滚动。 */
+@Composable
+private fun TraceSection(
+    title: String,
+    open: Boolean,
+    onToggle: () -> Unit,
+    body: String,
+    tone: androidx.compose.ui.graphics.Color,
+) {
+    val C = agateColors()
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .background(C.insetBg, RoundedCornerShape(10.dp))
+            .border(1.dp, C.border, RoundedCornerShape(10.dp)),
+    ) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .clickable { onToggle() }
+                .padding(horizontal = 10.dp, vertical = 9.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            // 小色点当分类标记：三段各自的色调不同，扫一眼能分辨
+            Box(Modifier.size(6.dp).background(tone, RoundedCornerShape(3.dp)))
+            Spacer(Modifier.width(8.dp))
+            Text(title, fontSize = 12.5.sp, fontWeight = FontWeight.Medium, color = C.textMain)
+            Spacer(Modifier.weight(1f))
+            Text(if (open) "⌃" else "⌄", fontSize = 13.sp, color = C.textDim)
+        }
+        if (open) {
+            Box(Modifier.fillMaxWidth().height(1.dp).background(C.border))
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 60.dp, max = 260.dp)
+                    .verticalScroll(rememberScrollState())
+                    .padding(10.dp),
+            ) {
+                Text(
+                    text = body.ifBlank { "（空）" },
+                    fontSize = 11.sp,
+                    color = C.textSub,
+                    lineHeight = 15.sp,
+                    style = AgateType.Num,
+                )
+            }
+        }
+    }
+}
+
 /** ④ 报文原文：按需拉取，折叠展示。 */
 @Composable
 private fun RawCard(
     raw: StatsOps.RawBody?,
     rawError: String?,
+    loading: Boolean,
     onLoad: () -> Unit,
     onCopy: (String) -> Unit,
 ) {
@@ -394,7 +544,12 @@ private fun RawCard(
             Text("报文原文", fontSize = 13.5.sp, fontWeight = FontWeight.SemiBold, color = C.textMain)
             Spacer(Modifier.weight(1f))
             Text(
-                if (raw?.truncated == true) "正文可能已被截断" else "凭据已替换为 [redacted]",
+                when {
+                    loading -> "读取中…"
+                    raw == null && rawError != null -> "未采集"
+                    raw?.truncated == true -> "正文可能已被截断"
+                    else -> "凭据已替换为 [redacted]"
+                },
                 fontSize = 10.5.sp,
                 color = C.textDim,
             )
@@ -422,7 +577,7 @@ private fun RawCard(
                 }
                 Spacer(Modifier.height(8.dp))
                 val text = when {
-                    raw == null -> rawError ?: "正在加载…"
+                    raw == null -> rawError ?: if (loading) "正在加载…" else "没有报文"
                     section == 0 -> raw!!.requestBody
                     else -> raw!!.responseBody
                 }
@@ -443,7 +598,7 @@ private fun RawCard(
                         style = AgateType.Num,
                     )
                 }
-                if (raw == null && rawError == null) {
+                if (raw == null && rawError == null && !loading) {
                     Text(
                         "未开启「调试模式」时新请求不保存报文",
                         fontSize = 11.sp,
