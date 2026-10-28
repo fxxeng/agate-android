@@ -114,6 +114,18 @@ object GatewayRepository {
         val images: Boolean,
         val reasoning: Boolean,
         val isDefault: Boolean,
+        /**
+         * 启停状态。`/api/session` 的清单**只含已启用**的模型，所以从那边解析
+         * 出来的行恒为 `true`；模型页会把 `/api/models/manage` 里「已禁用」的
+         * 条目并进来（那时才是 `false`），用于置灰 + 画开关。
+         */
+        val enabled: Boolean = true,
+        /**
+         * 在不在**官方客户端下拉（picker）**里。`true` = 桌面端也列它；
+         * `false` = 只有我们列（上游目录里有、桌面端不展示）；
+         * `null` = 拿不到名单，不做判断（界面不标注）。
+         */
+        val official: Boolean? = null,
     )
 
     /** v44 .qrow 一行：序号由渲染端下标，这里只带语义字段。 */

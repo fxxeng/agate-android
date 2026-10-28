@@ -33,7 +33,7 @@ use super::{current, save};
 pub const WORKBUDDY_DEFAULT_ENABLED: &[&str] = &["hy3", "hy4-preview-f", "deepseek-v4.1-flash"];
 
 /// WorkBuddy 清单的**默认规则种子**：对 `ids` 里每个还没种过的模型记入
-/// `seeded`，不在 [`WORKBUDDY_DEFAULT_ENABLED`] 里的同时默认禁用。
+/// `seeded`，不在**官方 picker 名单**（`official`）里的同时默认禁用。
 ///
 /// 调用点有两类：清单**首次落地**（`core::models` 的 `apply_remote`，覆盖
 /// /v3/config 与企业清单两条路径），以及编排入口对**当前缓存清单**的补种
@@ -44,8 +44,13 @@ pub const WORKBUDDY_DEFAULT_ENABLED: &[&str] = &["hy3", "hy4-preview-f", "deepse
 /// ── `provider` 为什么是参数（2026-10 拆家）────────────────────
 /// 种子按 `(provider, id)` 记账，而 WorkBuddy 现在是两家：只种国内版会让
 /// 国际版的新模型停在全开状态（而两家的模型名很可能同名，用户看到的是
-/// 「同一个名字在两个分组里默认状态不一样」）。白名单两地共用一份，
+/// 「同一个名字在两个分组里默认状态不一样」）。名单两家各按各的下发取，
 /// 差异只在 provider 键上。展示名从注册表查（`label_of`），别处不要再写名字。
+///
+/// ── `official` 是什么（2026-10-28 第二次修）──────────────────
+/// 官方客户端下拉里那份名单（`data.agents[cli].models`，见
+/// `models::picker_model_ids`）—— **默认启用的唯一依据**。`None` = 本次拿不到
+/// 名单（企业分支 / 上游没下发 `agents`），此时不做判断（保持全开）。
 ///
 /// ── `authoritative` 是什么（2026-10-28）──────────────────────
 /// 表示 `ids` 是**远程下发的完整清单**，还是「冷启动手里的内置目录 / 旧缓存」。
@@ -61,34 +66,48 @@ pub fn seed_workbuddy_defaults(
     provider: &str,
     ids: &[String],
     authoritative: bool,
+    official: Option<&[String]>,
 ) -> Option<String> {
     let label = crate::server::core::providers::label_of(provider);
-    // ── 不再「按白名单批量禁用」（本次修复）─────────────────────
-    // 旧行为：不在 [`WORKBUDDY_DEFAULT_ENABLED`] 里的模型**默认禁用**。那份
-    // 白名单只有 3 条，而上游 `/v3/config` 现在给 40 条 —— 于是「拉到 40 个、
-    // 对外只出 2 个」：其余 38 个被种子关掉，`builtin_target` 直接返回 None，
-    // `/v1/models` 与模型页都看不到它们。
+    // ── 默认启用 = 官方 picker 名单（2026-10-28 第二次修）──────────
+    // 上一轮把「按白名单批量禁用」整条去掉了，于是**全部默认启用** —— 上游
+    // `/v3/config` 给 40 条（`data.models` 里所有像对话模型的），用户看到
+    // 40 个，而桌面客户端下拉只有 18 个。两边的差异不是我们漏了什么，而是
+    // 我们**多认了**：桌面端只认 `data.agents[cli].models` 那份名单。
     //
-    // 为什么要整条去掉而不是「把白名单补长」：**是不是对话模型该由准入过滤
-    // 决定**（[`super::super::models::filter_with_meta`]：官方 picker 名单 +
-    // maxOutputTokens 推断），种子再做一次「默认关闭」等于第二道没有依据的
-    // 关卡，而它的依据（一份写死的 3 个名字）早就过期了。
+    // 所以默认依据换成了那份名单（`official`，由 `apply_remote` 从同一个
+    // 响应里取，见 `models::picker_model_ids`）：
+    //   · 在名单里 → 默认启用（与桌面端一致）
+    //   · 不在名单里 → 默认禁用（模型页仍列出、开关可随时打开）
+    //   · 拿不到名单（企业分支 / 上游没下发 `agents`）→ 传 `None`，
+    //     **不做判断**，保持上一轮「全部启用」的行为。没依据就不下判断，
+    //     与 `visibility` 缺失时界面显示「—」是同一个原则。
     //
-    // 现在种子只负责**记账**（写 `seeded`），默认状态一律「启用」；用户想关
-    // 哪个在管理页自己关（那是显式意图，种子永不覆盖）。
-    //
-    // ⚠️ 传 `None`（而不是空数组 `&[]`）：`seed_default_enabled` 的语义是
-    // 「不在白名单里 → 禁用」，空数组会让那个判定恒假 —— 也就是**全部禁用**，
-    // 与这里要的正好相反。这个坑真的踩过（一份 39 个的清单只出 15 个），
-    // 详见 `seed_default_enabled` 的函数头。
+    // 为什么不再用写死的 [`WORKBUDDY_DEFAULT_ENABLED`]：那份 3 个名字的清单
+    // 早就过期（它连 `glm-5.3` 都没有）。「哪些模型是官方认可的」这件事只有
+    // 上游知道，写在代码里的副本一定会烂掉。
     let _ = WORKBUDDY_DEFAULT_ENABLED;
-    let summary = super::seed_default_enabled(provider, &label, None, ids);
+    let whitelist: Option<Vec<&str>> = official.map(|list| {
+        list.iter().map(String::as_str).collect::<Vec<&str>>()
+    });
+    let summary = super::seed_default_enabled(provider, &label, whitelist.as_deref(), ids);
     // 一次性纠偏：把旧白名单**自动关掉**的那些模型重新打开。
     // `authoritative` 透传：非权威清单整段跳过（不烧标记，也不动手），见函数头。
-    let migration = super::migrate_enable_vetted(provider, ids, authoritative);
-    match (summary, migration) {
-        (None, None) => None,
-        (a, b) => Some([a, b].into_iter().flatten().collect::<Vec<_>>().join(" · ")),
+    let migration = super::migrate_enable_vetted(provider, ids, authoritative, official);
+    // 一次性对齐：把不在官方名单里的**存量**模型关掉。上一轮之前它们是被
+    // 旧白名单关着的，上一轮放开后全开了；这一条把「全开」纠正成「对齐桌面端」。
+    // 与上面那条纠偏方向相反，所以顺序不能反：先纠偏（旧白名单误关的要打开），
+    // 再对齐（不该开着的关掉）。两条各有各的一次性标记，各自只跑一次。
+    let align = super::align_to_official(provider, ids, official, authoritative);
+    match (summary, migration, align) {
+        (None, None, None) => None,
+        (a, b, c) => Some(
+            [a, b, c]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join(" · "),
+        ),
     }
 }
 

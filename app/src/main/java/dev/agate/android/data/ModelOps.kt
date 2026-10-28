@@ -45,6 +45,87 @@ object ModelOps {
 
     class OpResult(val ok: Boolean, val data: JSONObject?, val error: String?)
 
+    /**
+     * `GET /api/models/manage` 的 `models[]` 一条 —— **含已禁用的条目**。
+     *
+     * 与 `/api/session` 的 `models` 是两回事：那边只给「已启用」（客户端真会
+     * 收到的清单），没有 `enabled` 字段，也**没有已关掉的那些**。模型页要画
+     * 启停开关、要把关掉的置灰留着，就必须读这一份。
+     *
+     * 能力位在这里是 `capabilities` 对象（键名 `supportsToolCall` 等），而
+     * session 清单里是扁平的 `supports_tool_call` 等 —— 两套命名都要认，
+     * 所以解析在 [toModelRow] 里统一成 [GatewayRepository.ModelRow]。
+     */
+    class ManageModelRow(
+        val id: String,
+        val provider: String,
+        val providerLabel: String,
+        val credits: String?,
+        val enabled: Boolean,
+        /** `null` = 上游没给 picker 名单，不做判断（见 `manage_view` 的 visibility）。 */
+        val official: Boolean?,
+        val maxInput: Int?,
+        val maxOutput: Int?,
+        val toolCall: Boolean,
+        val images: Boolean,
+        val reasoning: Boolean,
+        val isDefault: Boolean,
+    ) {
+        fun toModelRow(): GatewayRepository.ModelRow = GatewayRepository.ModelRow(
+            id = id,
+            provider = provider,
+            providerLabel = providerLabel,
+            name = null,
+            credits = credits,
+            maxInput = maxInput,
+            maxOutput = maxOutput,
+            toolCall = toolCall,
+            images = images,
+            reasoning = reasoning,
+            isDefault = isDefault,
+            enabled = enabled,
+            official = official,
+        )
+
+        companion object {
+            /** 解析 manage 响应的 `models[]`；结构不对的条目跳过（不猜）。 */
+            fun parse(data: JSONObject?): List<ManageModelRow> {
+                val arr = data?.optJSONArray("models") ?: return emptyList()
+                val out = ArrayList<ManageModelRow>(arr.length())
+                for (i in 0 until arr.length()) {
+                    val o = arr.optJSONObject(i) ?: continue
+                    val id = o.optString("id")
+                    if (id.isBlank()) continue
+                    val caps = o.optJSONObject("capabilities")
+                    val provider = o.optString("provider")
+                    out += ManageModelRow(
+                        id = id,
+                        provider = provider,
+                        providerLabel = o.optString("providerLabel").ifBlank { provider },
+                        // credits 可能是 JSON null：`optString` 会把它读成字符串
+                        // "null"（org.json 的 objectToString），那种值别当倍率显示。
+                        credits = (o.opt("credits") as? String)?.trim()?.takeIf { it.isNotEmpty() },
+                        enabled = o.optBoolean("enabled", true),
+                        // visibility 缺失 = 没依据 → null（界面不标注），
+                        // 不能当成 false 去标「桌面端未列」—— 那是谎报。
+                        official = when (o.opt("visibility") as? String) {
+                            "shown" -> true
+                            "hidden" -> false
+                            else -> null
+                        },
+                        maxInput = caps?.optInt("maxInputTokens", 0)?.takeIf { it > 0 },
+                        maxOutput = caps?.optInt("maxOutputTokens", 0)?.takeIf { it > 0 },
+                        toolCall = caps?.optBoolean("supportsToolCall") ?: false,
+                        images = caps?.optBoolean("supportsImages") ?: false,
+                        reasoning = caps?.optBoolean("supportsReasoning") ?: false,
+                        isDefault = o.optBoolean("isDefault"),
+                    )
+                }
+                return out
+            }
+        }
+    }
+
     /** 映射行（manage 视图 mappings[] 一条）。 */
     class MappingRow(
         val alias: String,

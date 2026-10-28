@@ -22,9 +22,12 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -35,6 +38,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -208,6 +212,11 @@ fun ModelsPage(
     // 客户端所见清单的状态 + 推演计数（来自 /api/models/list-view）
     var listView by remember { mutableStateOf(ListView()) }
     var configuring by remember { mutableStateOf(false) }
+    // 管理视图（含已禁用条目 + 官方可见性）。`snap.models` 只有「已启用」，
+    // 光靠它画不出开关，也画不出被关掉的那些（它们已从清单里消失）。
+    var manage by remember { mutableStateOf<List<ModelOps.ManageModelRow>>(emptyList()) }
+    /** 正在切换的条目键（provider|id），用来禁掉重复点击。 */
+    var toggling by remember { mutableStateOf<String?>(null) }
 
     // 提供商 (id, label) 列表：混合模式的 pin 选择要用（模型行里带 providerLabel）
     val providers = remember(models) {
@@ -219,6 +228,45 @@ fun ModelsPage(
 
     fun loadListView() {
         scope.launch { listView = ListView.parse(ModelOps.fetchListView().data) }
+    }
+
+    fun loadManage() {
+        scope.launch { manage = ModelOps.ManageModelRow.parse(ModelOps.fetchManage().data) }
+    }
+
+    // 管理视图进页面拉一次：启停状态与「桌面端是否列出」只有它给得出。
+    // 放在 `loadManage` 之后 —— 局部函数必须先声明后使用。
+    LaunchedEffect(Unit) { loadManage() }
+
+    /**
+     * 启停一条（提供商 × 模型 id）。
+     *
+     * ── 为什么改完要拉两次 ───────────────────────────────────
+     * `setState` 的结果立刻反映在 manage 视图（开关状态），但**客户端所见清单**
+     * （`/api/session` 的 models、以及 `list-view` 的推演计数）是另一个出口 ——
+     * 关掉一个模型后「客户端会看到几个」要跟着变，所以两边都得刷。
+     *
+     * 不做乐观更新：开关回弹比慢半秒更让人困惑（而且内核可能拒绝，比如 tid
+     * 不属于任何已知提供商）。`toggling` 期间禁用本行，避免连点打架。
+     */
+    fun toggle(row: GatewayRepository.ModelRow) {
+        // 会话清单里的 id 在 provider 形态下带 `provider/` 前缀，
+        // 而启停接口要的是**上游裸 id**。
+        val bare = if ('/' in row.id) row.id.substringAfter('/') else row.id
+        val key = "${row.provider}|$bare"
+        if (toggling != null) return
+        toggling = key
+        scope.launch {
+            val r = ModelOps.setState(bare, !row.enabled, row.provider.ifBlank { null })
+            toggling = null
+            if (r.ok) {
+                loadManage()
+                loadListView()
+                GatewayRepository.refreshOnce()
+            } else {
+                Toast.makeText(ctx, r.error ?: "切换失败", Toast.LENGTH_SHORT).show()
+            }
+        }
     }
 
     /** 切模式 / 改 pin：一起提交（两者表达同一件事，见内核 set_models_list 的说明）。 */
@@ -262,11 +310,41 @@ fun ModelsPage(
                 Toast.LENGTH_SHORT,
             ).show()
             if (r.ok) GatewayRepository.refreshOnce()
+            // 新拉到（或下架）的模型要立刻反映在开关列表里：manage 是全量的那份，
+            // 不重拉的话「刚拉的模型」不在页面上，用户会以为没拉成功。
+            if (r.ok) loadManage()
         }
     }
 
-    val filtered = models.filter {
-        query.isBlank() || it.id.contains(query, ignoreCase = true) || it.providerLabel.contains(query, ignoreCase = true)
+    // ── 合并「已启用（会话清单）」与「管理视图（含已禁用 + 可见性）」──
+    // 会话清单（`/api/session` 的 models）给的是富数据（上下文 / 能力位），但
+    // **只含已启用**的、且没有 `enabled` 字段；管理视图给全量 + 启停状态，但
+    // 能力位在 `capabilities` 子对象里。两者按 (provider, 裸 id) 对齐 ——
+    // 会话清单在 provider 形态下 id 带 `provider/` 前缀，管理视图永远给裸 id。
+    //
+    // 结果 = 会话清单那些（补上 official）+ 只存在于管理视图的那些（已禁用）。
+    // 关掉的模型因此仍留在页面上（置灰），这正是「全部列出、关掉的置灰」。
+    val allRows: List<GatewayRepository.ModelRow> = remember(models, manage) {
+        fun bare(id: String) = if ('/' in id) id.substringAfter('/') else id
+        val byKey = manage.associateBy { "${it.provider.lowercase()}|${it.id.lowercase()}" }
+        val fromSession = models.map { m ->
+            val mg = byKey["${m.provider.lowercase()}|${bare(m.id).lowercase()}"]
+            m.copy(enabled = true, official = mg?.official)
+        }
+        val present = fromSession
+            .map { "${it.provider.lowercase()}|${bare(it.id).lowercase()}" }
+            .toHashSet()
+        val extra = manage
+            .filter { "${it.provider.lowercase()}|${it.id.lowercase()}" !in present }
+            .map { it.toModelRow() }
+        fromSession + extra
+    }
+    val enabledCount = allRows.count { it.enabled }
+
+    val filtered = allRows.filter {
+        query.isBlank() ||
+            it.id.contains(query, ignoreCase = true) ||
+            it.providerLabel.contains(query, ignoreCase = true)
     }
 
     Column(modifier = modifier.fillMaxSize().background(C.bg)) {
@@ -311,8 +389,20 @@ fun ModelsPage(
                 onSelect = { view = it },
             )
             Spacer(Modifier.height(10.dp))
+            // 「已启用 / 全部」放在分段控件下面一行：它是**读数**（客户端真会
+            // 收到几个），不是筛选器 —— 关掉的模型仍然列在下面（置灰），
+            // 所以这里不给第二个分段，避免用户以为是一种新的视图形态。
+            if (allRows.isNotEmpty()) {
+                Text(
+                    "已启用 $enabledCount / ${allRows.size}" +
+                        if (enabledCount < allRows.size) " · 关掉的置灰，点开关可开回来" else "",
+                    style = AgateType.Caption,
+                    color = if (enabledCount < allRows.size) C.textDim else C.textDim,
+                )
+                Spacer(Modifier.height(8.dp))
+            }
 
-            if (models.isEmpty()) {
+            if (allRows.isEmpty()) {
                 EmptyHint(fetched = snap.fetchedAtMs > 0)
             } else if (view == 1) {
                 // ── 按提供商分组（v44 #view-provider）──
@@ -325,6 +415,8 @@ fun ModelsPage(
                             providerId = pid,
                             label = list.firstOrNull()?.providerLabel ?: PresetRegistry.labelOf(pid),
                             models = list,
+                            toggling = toggling,
+                            onToggle = { toggle(it) },
                             onOpenCaps = onOpenCaps,
                         )
                         Spacer(Modifier.height(10.dp))
@@ -336,6 +428,8 @@ fun ModelsPage(
                     ModelAggregateCard(
                         id = id,
                         providers = list,
+                        toggling = toggling,
+                        onToggle = { toggle(it) },
                         onOpenCaps = onOpenCaps,
                     )
                     Spacer(Modifier.height(10.dp))
@@ -376,6 +470,7 @@ fun ModelsPage(
                         }
                         refreshAt = System.currentTimeMillis()
                         if (r.ok) GatewayRepository.refreshOnce()
+                        if (r.ok) loadManage()
                     }
                 }
             },
@@ -975,6 +1070,8 @@ private fun ProviderModelGroup(
     providerId: String,
     label: String,
     models: List<GatewayRepository.ModelRow>,
+    toggling: String?,
+    onToggle: (GatewayRepository.ModelRow) -> Unit,
     onOpenCaps: () -> Unit,
 ) {
     val C = agateColors()
@@ -993,22 +1090,82 @@ private fun ProviderModelGroup(
             Spacer(Modifier.width(8.dp))
             Text(label, color = C.textMain, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.width(8.dp))
-            Text("${models.size} 个模型", color = C.textSub, fontSize = 12.sp, modifier = Modifier.weight(1f))
+            Text(
+                "${models.size} 个模型 · ${models.count { it.enabled }} 启用",
+                color = C.textSub,
+                fontSize = 12.sp,
+                modifier = Modifier.weight(1f),
+            )
             Text("⌄", color = C.textDim, fontSize = 14.sp, modifier = Modifier.rotate(if (expanded) 180f else 0f))
         }
         if (expanded) {
             Spacer(Modifier.height(10.dp))
             models.forEachIndexed { i, m ->
+                val bareId = if ('/' in m.id) m.id.substringAfter('/') else m.id
+                val busy = toggling == "${m.provider}|$bareId"
                 Row(
-                    Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                    Modifier.fillMaxWidth().padding(vertical = 3.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text("↳ ${m.id}", color = C.textSub, fontSize = 12.sp, modifier = Modifier.weight(1f))
+                    // 关掉的用 textDim：一眼能分出「在列但没开」
+                    Text(
+                        "↳ ${m.id}",
+                        color = if (m.enabled) C.textSub else C.textDim,
+                        fontSize = 12.sp,
+                        modifier = Modifier.weight(1f),
+                    )
+                    if (m.official == false) {
+                        Text(
+                            "桌面端未列",
+                            color = C.textDim,
+                            fontSize = 9.sp,
+                            modifier = Modifier
+                                .padding(end = 6.dp)
+                                .border(1.dp, C.border, RoundedCornerShape(6.dp))
+                                .padding(horizontal = 4.dp, vertical = 1.dp),
+                        )
+                    }
                     m.credits?.let { CreditsTag(it) }
+                    Spacer(Modifier.width(6.dp))
+                    ModelToggle(
+                        enabled = m.enabled,
+                        busy = busy,
+                        onToggle = { onToggle(m) },
+                    )
                 }
                 if (i < models.size - 1) Box(Modifier.fillMaxWidth().height(1.dp).background(C.border.copy(alpha = 0.4f)))
             }
         }
+    }
+}
+
+/**
+ * 单条模型的启停开关。
+ *
+ * 用 Material3 的 `Switch` 缩放 0.7 —— 列表一行里有 id、可能还有「桌面端未列」
+ * 标记和倍率标签，原尺寸的 Switch（52×32）会把它们挤到换行。缩放在布局里占的
+ * 仍然是原尺寸的测量框，所以外面套一层固定宽的 Box 剪掉多余留白。
+ *
+ * `busy` 期间禁用：请求还没回来就允许再点，会产生「开关已经翻了、状态又被打回」
+ * 的观感（内核可能拒绝）。
+ */
+@Composable
+private fun ModelToggle(enabled: Boolean, busy: Boolean, onToggle: () -> Unit) {
+    val C = agateColors()
+    Box(Modifier.width(34.dp), contentAlignment = Alignment.Center) {
+        Switch(
+            checked = enabled,
+            onCheckedChange = { if (!busy) onToggle() },
+            enabled = !busy,
+            modifier = Modifier.scale(0.68f),
+            colors = SwitchDefaults.colors(
+                checkedThumbColor = C.onAccent,
+                checkedTrackColor = C.accent,
+                uncheckedThumbColor = C.textDim,
+                uncheckedTrackColor = C.btnBg,
+                uncheckedBorderColor = C.border,
+            ),
+        )
     }
 }
 
@@ -1029,13 +1186,21 @@ private fun ProviderModelGroup(
 private fun ModelAggregateCard(
     id: String,
     providers: List<GatewayRepository.ModelRow>,
+    toggling: String?,
+    onToggle: (GatewayRepository.ModelRow) -> Unit,
     onOpenCaps: () -> Unit,
 ) {
     val C = agateColors()
-    // 倍率升序：最便宜的排第一（`null` 视为最差，排最后）
-    val ranked = providers.sortedBy { parseMultiplier(it.credits ?: "") ?: Double.MAX_VALUE }
-    val best = ranked.firstOrNull()
-    val bestMult = best?.let { parseMultiplier(it.credits ?: "") }
+    // 倍率升序：最便宜的排第一（`null` 视为最差，排最后）。
+    // **已启用的排在前面**：关掉的家仍然是候选（可以随时开回来），但不该
+    // 占着「最优」的位置 —— 一个关着的家再便宜也用不上。
+    val ranked = providers.sortedWith(
+        compareByDescending<GatewayRepository.ModelRow> { it.enabled }
+            .thenBy { parseMultiplier(it.credits ?: "") ?: Double.MAX_VALUE }
+    )
+    val usable = ranked.filter { it.enabled }
+    val best = usable.firstOrNull() ?: ranked.first()
+    val bestMult = best.takeIf { it.enabled }?.let { parseMultiplier(it.credits ?: "") }
     // 能力与上下文：取「第一条真的声明了这一项」的记录
     val capsSource = ranked.firstOrNull { it.maxInput != null }
         ?: ranked.firstOrNull { it.toolCall || it.images || it.reasoning }
@@ -1054,37 +1219,56 @@ private fun ModelAggregateCard(
                 Text(id, color = C.textMain, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
                 Text(
                     buildString {
-                        append("${ranked.size} 家可用")
-                        best?.let { append(" · 最优 ${it.providerLabel}") }
+                        append("${usable.size}/${ranked.size} 家启用")
+                        best.takeIf { it.enabled }?.let { append(" · 最优 ${it.providerLabel}") }
                     },
                     color = C.textSub,
                     fontSize = 12.sp,
                 )
             }
             Column(horizontalAlignment = Alignment.End) {
-                best?.credits?.let {
+                best.takeIf { it.enabled }?.credits?.let {
                     Text(it, color = C.textMain, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                 }
-                if (bestMult != null && ranked.size > 1) {
+                if (bestMult != null && usable.size > 1) {
                     Text("最低", color = C.green, fontSize = 10.sp)
                 }
             }
         }
 
-        // ── 各家候选（倍率升序）──
+        // ── 各家候选（已启用在前，同组内倍率升序）──
         Spacer(Modifier.height(8.dp))
         ranked.forEachIndexed { i, m ->
+            val bareId = if ('/' in m.id) m.id.substringAfter('/') else m.id
+            val busy = toggling == "${m.provider}|$bareId"
             Row(
-                Modifier.fillMaxWidth().padding(vertical = 3.dp),
+                Modifier.fillMaxWidth().padding(vertical = 2.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
                     m.providerLabel,
-                    color = if (i == 0 && ranked.size > 1) C.green else C.textSub,
+                    color = when {
+                        !m.enabled -> C.textDim
+                        i == 0 && usable.size > 1 -> C.green
+                        else -> C.textSub
+                    },
                     fontSize = 12.sp,
                     modifier = Modifier.weight(1f),
                 )
+                if (m.official == false) {
+                    Text(
+                        "桌面端未列",
+                        color = C.textDim,
+                        fontSize = 9.sp,
+                        modifier = Modifier
+                            .padding(end = 6.dp)
+                            .border(1.dp, C.border, RoundedCornerShape(6.dp))
+                            .padding(horizontal = 4.dp, vertical = 1.dp),
+                    )
+                }
                 m.credits?.let { CreditsTag(it) }
+                Spacer(Modifier.width(6.dp))
+                ModelToggle(enabled = m.enabled, busy = busy, onToggle = { onToggle(m) })
             }
         }
 

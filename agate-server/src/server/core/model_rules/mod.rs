@@ -1419,7 +1419,17 @@ pub fn seed_qoder_defaults(provider: &str, label: &str, ids: &[String]) -> Optio
 ///
 /// `authoritative` = 传进来的 `ids` 是不是**远程下发的完整清单**（见 ③）。
 /// 调用方从 `CatalogState::remote_refreshed()` 取，别自己猜。
-fn migrate_enable_vetted(provider: &str, ids: &[String], authoritative: bool) -> Option<String> {
+///
+/// `official` = 官方客户端下拉那份名单（见 [`align_to_official`]）。给了就
+/// **只恢复名单内的**——名单外的模型本来就不该开，把它们算成「被误关」再
+/// 打开，只会让紧跟着的对齐白干一趟。`None`（拿不到名单）时恢复全部，与
+/// 加这个参数之前一致。
+fn migrate_enable_vetted(
+    provider: &str,
+    ids: &[String],
+    authoritative: bool,
+    official: Option<&[String]>,
+) -> Option<String> {
     // ── 见上文 ③：标记只能在远程权威清单上烧 ────────────────────
     // 而**非权威清单也不该顺手纠偏**：不烧标记意味着这条路径每次启动都会跑，
     // 纠偏又是「解除这批 id 的全部禁用」，于是用户在管理页显式关掉的模型会
@@ -1443,6 +1453,17 @@ fn migrate_enable_vetted(provider: &str, ids: &[String], authoritative: bool) ->
         if id.is_empty() || !rules.is_disabled(provider, id) {
             continue;
         }
+        // ── 只恢复「官方客户端也列」的那些（2026-10-28）──────────────
+        // 没有这一条过滤时，本轮新加的「对齐 picker」会立刻被这里抵消：
+        // 纠偏先把整批解除禁用，对齐再把不在名单里的关掉 —— 净效果虽然对，
+        // 但日志会先喊一句「恢复 22 个」，而那 22 个正是桌面端根本不显示的。
+        // 纠偏的语义本来就是「把旧白名单**误关**的打开」，官方名单外的那些
+        // 从来不算误关。拿不到名单时（`None`）保持原行为，不做判断。
+        if let Some(list) = official {
+            if !list.iter().any(|name| name.eq_ignore_ascii_case(id)) {
+                continue;
+            }
+        }
         set_membership(&mut rules.disabled, Some(provider), id, false);
         re_enabled.push(id.to_string());
     }
@@ -1456,6 +1477,70 @@ fn migrate_enable_vetted(provider: &str, ids: &[String], authoritative: bool) ->
         "🔧 迁移[{provider}]: 恢复 {} 个此前被默认禁用、但本轮清单里确实存在的模型 [{}]",
         re_enabled.len(),
         re_enabled.join(", ")
+    ))
+}
+
+/// 一次性把「不在官方 picker 名单里的存量模型」关掉 —— 对齐桌面客户端的下拉。
+///
+/// ── 为什么要有这一步（2026-10-28）────────────────────────────
+/// 上游 `/v3/config` 同时下发两份清单：`data.models`（约 60 条，含补全 / 改写 /
+/// 内部 / 图像 / 旧代）与 `data.agents[cli].models`（约 18 条裸 id，**桌面端下拉
+/// 里真正展示的那批**）。`models::filter_with_meta` 按「像不像对话模型」把前者
+/// 收到 40 条，于是客户端看到 40 个，而桌面端只有 18 个。
+///
+/// 修「默认值」还不够：[`seed_default_enabled`] 会跳过**已经种过**的 id，
+/// 所以上一轮把默认放开之后，存量模型的「启用」状态再也不会被种子改回来 ——
+/// 必须有一趟显式纠正，否则老用户永远停在 40 个。
+///
+/// ── 与 [`migrate_enable_vetted`] 的关系（两者方向相反，顺序有意义）──
+/// 那条是「旧白名单误关的，打开」；本条是「不该开着的，关掉」。所以调用方必须
+/// **先纠偏、再对齐**，反过来会把刚打开的又关回去。两条各带各的一次性标记：
+/// 对齐标记是 `migration:align-official-v1:{provider}`，烧掉之后**永不重跑**，
+/// 用户在模型页手动打开的条目不会再被它碰。
+///
+/// ── `official` 为 `None` 时不动 ──────────────────────────────
+/// 拿不到名单（企业分支 / 上游没下发 `agents`）就没有依据，关谁都是猜。
+/// 与 `visibility` 缺失时界面显示「—」同一个原则。
+fn align_to_official(
+    provider: &str,
+    ids: &[String],
+    official: Option<&[String]>,
+    authoritative: bool,
+) -> Option<String> {
+    // 标记只能在远程权威清单上烧：非权威（内置目录 / 旧缓存）时整段跳过，
+    // 连 `current()` 都不读。理由与 `migrate_enable_vetted` 的同名闸门一致。
+    if !authoritative {
+        return None;
+    }
+    let official = official?;
+    let mark = format!("migration:align-official-v1:{provider}");
+    let mut rules = current();
+    if rules.migrations.iter().any(|m| m == &mark) {
+        return None;
+    }
+    let mut disabled_now: Vec<String> = Vec::new();
+    for id in ids {
+        let id = id.trim();
+        if id.is_empty() {
+            continue;
+        }
+        let listed = official.iter().any(|name| name.eq_ignore_ascii_case(id));
+        if listed || rules.is_disabled(provider, id) {
+            continue;
+        }
+        set_membership(&mut rules.disabled, Some(provider), id, true);
+        disabled_now.push(id.to_string());
+    }
+    rules.migrations.push(mark);
+    save(&rules);
+    if disabled_now.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "🎯 对齐[{provider}]: 关闭 {} 个不在官方客户端下拉里的模型 [{}] —— \
+         模型页仍列出它们，需要时任一条都能打开",
+        disabled_now.len(),
+        disabled_now.join(", ")
     ))
 }
 

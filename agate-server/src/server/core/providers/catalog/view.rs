@@ -282,6 +282,13 @@ pub fn manage_view(store: &AccountStore) -> Value {
                 "source": source, "enabled": enabled, "aliases": aliases,
                 "capabilities": capability::effective(&item),
                 "capOverrides": cap_overrides,
+                // 在不在**官方客户端下拉（picker）**里：`shown` / `hidden`，
+                // 拿不到名单时缺失（null）。这是 `apply_remote` 写进清单条目的
+                // 同一个键 —— 在此之前它**没有任何消费方**（管理视图不返回、
+                // 前端不读），于是「上游给了 40 条、桌面端只显示 18 条」这件事
+                // 在界面上完全看不出来。模型页据它标「桌面端未列」并解释
+                // 「为什么我这个客户端看到的名字和桌面端不一样」。
+                "visibility": item.get("visibility"),
                 // 每个能力键的**来源**（`upstream` / `modelsdev` / `user`，见
                 // `core::model_meta` 的模块头）。管理页据它把「上游实测」「社区
                 // 库补的」「用户改的」三档分开显示 —— 没有它，六个键看起来一样

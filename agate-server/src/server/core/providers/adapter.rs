@@ -1346,15 +1346,29 @@ fn seed_current_raccoon_defaults() {
 fn seed_current_workbuddy_defaults() {
     for region in super::workbuddy::Region::ALL {
         let catalog = crate::server::core::models::global_catalog(region);
-        let ids: Vec<String> = catalog
-            .list()
+        let items = catalog.list();
+        let ids: Vec<String> = items
             .iter()
             .filter_map(|item| item.get("id").and_then(Value::as_str).map(str::to_string))
             .collect();
+        // 官方 picker 名单从**清单条目自带的 `visibility`** 反推：那是上次远程
+        // 刷新时由 `models::apply_remote` 按 `data.agents[cli].models` 写进去并
+        // 随缓存落盘的（见 `catalog_cache`）。缓存恢复的清单因此仍带着这份依据。
+        //
+        // 一个 `shown` 都没有 = 这份清单从没拿到过 picker（内置兜底 / 企业分支）
+        // —— 传 `None` 让种子**不做判断**，而不是「一个都不认 → 全关」。
+        // 这个「空列表 ≠ 没有依据」的区别，正是上一轮 `&[]` 那个 bug 的教训。
+        let official: Vec<String> = items
+            .iter()
+            .filter(|item| item.get("visibility").and_then(Value::as_str) == Some("shown"))
+            .filter_map(|item| item.get("id").and_then(Value::as_str).map(str::to_string))
+            .collect();
+        let official = if official.is_empty() { None } else { Some(official) };
         if let Some(summary) = crate::server::core::model_rules::seed_workbuddy_defaults(
             region.provider_id(),
             &ids,
             catalog.remote_refreshed(),
+            official.as_deref(),
         ) {
             crate::server::logging::log("[Models]", &summary);
         }
