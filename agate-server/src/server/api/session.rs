@@ -104,6 +104,8 @@ pub async fn get_session(State(state): State<ServerState>) -> Response {
         "models": crate::server::core::providers::catalog::session_models(state.store()),
         // 指纹脱敏开关（与 GET /api/sanitize 同一个键、同一个值）
         config::KEY_SANITIZE_FINGERPRINTS: snapshot.sanitize_fingerprints(),
+        // 零宽空格词表（与 GET /api/zwsp 同一个键、同一个值）
+        config::KEY_SANITIZE_ZWSP_WORDS: snapshot.sanitize_zwsp_words(),
     }))
 }
 

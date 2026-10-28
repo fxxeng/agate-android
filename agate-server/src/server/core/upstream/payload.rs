@@ -89,6 +89,13 @@ pub(super) struct ProviderContext<'a> {
     /// 否则用户在请求进行中改了设置，会出现「前一家脱敏过、后一家没脱敏」
     /// 这类语义漂移；快照也让判定与日志用的是同一份值。
     pub sanitize_fingerprints: bool,
+    /// 本次请求的**零宽空格词表**快照（请求开始时取一次，与
+    /// `sanitize_fingerprints` 同一取舍：同一次请求内各家的判定必须一致）。
+    ///
+    /// 为什么不能每家现读：用户在请求进行中改了词表，会出现「前一家打断过、
+    /// 后一家没打断」这类语义漂移。`Arc` 快照的克隆只付一次指针自增。
+    /// 空切片 = 这一层不生效（见 `config::KEY_SANITIZE_ZWSP_WORDS`）。
+    pub sanitize_zwsp_words: &'a [String],
     /// 本次请求的**开发者角色兼容**开关快照（请求开始时取一次，与
     /// `sanitize_fingerprints` 同一取舍：同一次请求内各家的判定必须一致）。
     ///
@@ -238,7 +245,7 @@ pub(super) fn send_body<'a>(
     };
     // ── ② 指纹脱敏层（核心规则见 `core::sanitize`）─────────────────────
     let body = match ctx.sanitize_fingerprints {
-        true => match crate::server::core::sanitize::sanitize_body(after_prompt.as_ref()) {
+        true => match crate::server::core::sanitize::sanitize_body(after_prompt.as_ref(), ctx.sanitize_zwsp_words) {
             Some((scrubbed, hits)) => {
                 // 命中表可能为空：`sanitize_text` 末尾的去空白也能单独构成一次
                 // 改动（预检命中、但没有任何规则真正替换）。那时不该往请求日志

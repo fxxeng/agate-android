@@ -182,6 +182,50 @@ pub(super) fn string_field(map: &Map<String, Value>, key: &str) -> Option<String
         .map(str::to_string)
 }
 
+/// 零宽空格打断层用户词表的解析（[`KEY_SANITIZE_ZWSP_WORDS`]）。
+///
+/// ── 各形态的落点（与 `no_retry_codes_field` 同一口径）──────────
+///   - 键缺失 / 不是数组 → **空表**（这一层不生效）。词表没有「默认值」可言：
+///     预置的词会静默改写用户正常文本，那是我们无权替他做的决定。
+///   - 空数组 → 同样空表，与「没配过」等价（两项的行为本就一样，不必区分）。
+///   - 数组里的垃圾项（非字符串 / 去空白后为空 / 超过长度上限）→ **丢弃该项**：
+///     接口写入侧已整单校验（400），能到这里的坏项只来自手改库，跳过比让整份
+///     词表失效更接近手改者的本意。
+///
+/// ── 为什么去重且保序 ────────────────────────────────────────
+/// 保序：用户词表是**人写的**，顺序是他看到的顺序，重排会让「我加的词去哪了」
+/// 变成一个新问题（与 `no_retry_codes_field` 的排序不同 —— 那份是错误码，
+/// 判定只问 `contains`，顺序无意义；这份的每一项都会在文本里被查找一遍）。
+/// 去重：同一个词出现两次会让插入逻辑对同一处命中两次，语义上是错的。
+///
+/// 返回 `Arc<[String]>` 的理由与 `RetrySettings::no_retry_codes` 相同：快照被
+/// 逐请求克隆，`Arc` 让克隆只付一次指针自增。
+pub(super) fn zwsp_words_field(map: &Map<String, Value>, key: &str) -> std::sync::Arc<[String]> {
+    let Some(Value::Array(items)) = map.get(key) else {
+        return std::sync::Arc::from(Vec::new());
+    };
+    let mut words: Vec<String> = Vec::new();
+    for item in items {
+        let Some(text) = item.as_str() else {
+            continue;
+        };
+        let text = text.trim();
+        if text.is_empty() || text.chars().count() > SANITIZE_ZWSP_MAX_WORD_CHARS {
+            continue;
+        }
+        if words.iter().any(|existing| existing == text) {
+            continue;
+        }
+        if words.len() >= SANITIZE_ZWSP_MAX_WORDS {
+            // 截断到上限而不是整份作废：手改库塞进 500 条时，前 200 条仍然
+            // 是用户想要的，丢掉后面的是「按顺序取」这一读法的一部分。
+            break;
+        }
+        words.push(text.to_string());
+    }
+    std::sync::Arc::from(words)
+}
+
 /// 从原始 JSON 里取天数（`bounded_int_field` 的保留期特化）
 pub(super) fn days_field(map: &Map<String, Value>, key: &str, default: i64) -> i64 {
     bounded_int_field(map, key, default, RETENTION_MIN_DAYS, RETENTION_MAX_DAYS)

@@ -114,6 +114,10 @@ pub mod retry_api;
 pub mod role_compat;
 pub mod routing_api;
 pub mod sanitize;
+// 零宽空格脱敏词表（GET/PUT /api/zwsp）：与 /api/sanitize 是**两层**，
+// 前者管内置规则集（封闭），这个管用户自己的词表（开放）。
+// 实施点在 `core::sanitize` 的 insert_zwsp，见该处文档。
+pub mod zwsp;
 pub mod scheduled_tasks;
 pub mod session;
 pub mod stats_api;

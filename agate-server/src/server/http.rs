@@ -550,6 +550,15 @@ pub fn panel_router(state: ServerState) -> Router {
             "/api/sanitize",
             get(api::sanitize::get_sanitize).put(api::sanitize::put_sanitize),
         )
+        // ── 零宽空格脱敏词表 ──
+        // 与 /api/sanitize 同族（GET 读 / PUT 写，响应体就是新状态），挂 protected：
+        // 它改的是**发给上游的请求体**（在用户文本里插入不可见字符），
+        // 敏感度与 /api/sanitize 同级。两层互不替代：那条管内置规则集，
+        // 本条管用户词表（详见 api::zwsp 的模块头）。
+        .route(
+            "/api/zwsp",
+            get(api::zwsp::get_zwsp).put(api::zwsp::put_zwsp),
+        )
         // ── 开发者角色兼容开关 ──
         // 与 /api/sanitize 同形的单开关端点（GET 读 / PUT 写），挂 protected：
         // 它决定出站请求里 developer 角色消息要不要归一成 system（改的是发给

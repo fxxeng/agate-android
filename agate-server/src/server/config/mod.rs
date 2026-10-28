@@ -144,6 +144,16 @@ pub struct RuntimeConfig {
     /// 请求就生效，不重启进程），从 `Value` 里翻一次要处理类型判定，解析一次存
     /// 下来最省事 —— 这条判定在转发热路径上。
     sanitize_fingerprints: bool,
+    /// 零宽空格打断层的用户词表（设置页「通用 → 零宽空格脱敏」）。
+    ///
+    /// 与 `sanitize_fingerprints` 同一理由（转发层每次发送前都要用它），
+    /// 但形态不同：那份是规则集内置的布尔开关，这份是**用户维护的词表**，
+    /// 故用 `Arc<[String]>` 存下已规整的形态 —— 快照逐请求克隆只付一次指针
+    /// 自增，与 `RetrySettings::no_retry_codes` 同一取舍。
+    ///
+    /// 空切片 = 这一层不生效（`core::sanitize` 走零成本快路径），语义与
+    /// 「开关关着」等价 —— 见 [`KEY_SANITIZE_ZWSP_WORDS`] 的说明。
+    sanitize_zwsp_words: std::sync::Arc<[String]>,
     /// 开发者角色兼容开关（设置页「网关 → 开发者角色兼容」）。
     ///
     /// 与 `sanitize_fingerprints` 同一理由：转发层**每次发送前**都要判一次
@@ -298,6 +308,11 @@ impl RuntimeConfig {
     /// 出站指纹脱敏是否开启（转发层每次发送前判一次，见字段说明）
     pub fn sanitize_fingerprints(&self) -> bool {
         self.sanitize_fingerprints
+    }
+
+    /// 零宽空格打断层的用户词表（转发层每次发送前取一次，见字段说明）
+    pub fn sanitize_zwsp_words(&self) -> &[String] {
+        &self.sanitize_zwsp_words
     }
 
     /// 开发者角色兼容是否开启（转发层每次发送前判一次，见字段说明）
@@ -571,6 +586,9 @@ fn build(raw: Map<String, Value>) -> RuntimeConfig {
             .get(KEY_SANITIZE_FINGERPRINTS)
             .and_then(Value::as_bool)
             .unwrap_or(true),
+        // 零宽空格词表：缺失 / 写坏 → 空表（这一层不生效）。没有「默认值」可言，
+        // 理由见 zwsp_words_field 的说明：预置词会静默改写用户的正常文本。
+        sanitize_zwsp_words: zwsp_words_field(&raw, KEY_SANITIZE_ZWSP_WORDS),
         // 只有字面 `false` 算关闭：**默认开**（缺失 → true）。改写语义无损
         // （developer 与 system 在 OpenAI 语义上等价），而默认关会让发 developer
         // 角色的客户端（新版 OpenAI SDK、Claude Code 等）一上来就撞不认识该角色
@@ -1799,6 +1817,26 @@ pub fn set_sanitize_fingerprints(enabled: bool) -> bool {
             .raw
             .insert(KEY_SANITIZE_FINGERPRINTS.to_string(), Value::Bool(enabled));
         config.sanitize_fingerprints = enabled;
+    })
+}
+
+/// 写入零宽空格打断层的**整份**用户词表（PUT 语义 = 整体替换）。
+///
+/// 与 `set_cline_upstream_headers` 同一模式：内存快照与 raw 底稿一起改 —— 前者
+/// 让下一个请求立刻用新值（转发层逐请求读快照），后者保证写盘时不吃掉配置里的
+/// 其它字段。空表 = 关掉这一层（与不配这个键等价）。
+///
+/// 调用方（`api::zwsp`）负责入参校验（字符串数组、去空白非空、长度与条数有界）
+/// —— 本函数按「已合法」处理，与 `set_sanitize_fingerprints` 的分工一致。
+pub fn set_sanitize_zwsp_words(words: Vec<String>) -> bool {
+    let list: std::sync::Arc<[String]> = std::sync::Arc::from(words);
+    update(|config| {
+        // 落盘形态：JSON 字符串数组（空表也写，显式表达「用户清空了词表」）
+        let values: Vec<Value> = list.iter().map(|word| Value::from(word.as_str())).collect();
+        config
+            .raw
+            .insert(KEY_SANITIZE_ZWSP_WORDS.to_string(), Value::Array(values));
+        config.sanitize_zwsp_words = list.clone();
     })
 }
 

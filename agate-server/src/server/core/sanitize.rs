@@ -91,6 +91,91 @@ const SANITIZE_REWRITES: &[(&str, &str)] = &[
 /// 请求日志的悬停面板里会糊成一片）。改写规则取 `from` 原串，正则类取这里的短名。
 const LABEL_BARE_HDR: &str = "x-anthropic-billing-header";
 const LABEL_KV: &str = "cc_*=";
+/// 零宽空格（U+200B）。用转义写而不是贴一个不可见字符：那类字符在编辑器、
+/// diff、终端里都是隐形的，误删或误改时没人会发现。
+const ZWSP: &str = "\u{200B}";
+
+/// 把一个词的所有**尚未打断**的出现位置各插入一个零宽空格，返回新串与插入次数。
+///
+/// 为什么不直接用 `str::replace`：`"词"` 也是 `"词\u{200B}"` 的子串，
+/// `replace` 会把**已经打断过**的位置再插一次 —— 而多轮对话里每条历史消息
+/// 每次出站都会重过一遍本函数，零宽空格就会一轮一个地累积下去。这里逐个
+/// 命中位置判定「后面是不是已经跟着 ZWSP」，跟了就不再插。
+fn break_word(text: &str, word: &str, zwsp: &str) -> (String, usize) {
+    // 空词条会让 find("") 在每个字节位命中，
+    // 且 end == pos 让 rest 不缩短 —— 死循环。写成自守卫
+    // 而不是依赖调用方把空词筛掉。
+    if word.is_empty() || zwsp.is_empty() {
+        return (text.to_string(), 0);
+    }
+    let mut out = String::with_capacity(text.len() + word.len());
+    let mut rest = text;
+    let mut inserted = 0usize;
+    while let Some(pos) = rest.find(word) {
+        let end = pos + word.len();
+        out.push_str(&rest[..end]);
+        // 已经跟着一个零宽空格 = 上一次出站已经打断过，不重复插入
+        if !rest[end..].starts_with(zwsp) {
+            out.push_str(zwsp);
+            inserted += 1;
+        }
+        rest = &rest[end..];
+    }
+    out.push_str(rest);
+    (out, inserted)
+}
+
+/// 零宽空格打断层：在**每一处**尚未打断的命中位置插入一个零宽空格，词本身
+/// 一个字不改。返回 `None` = 这一层的词表没命中任何一处。
+///
+/// ── 这一层为什么存在（与上面规则集的分工）────────────────────
+/// 上面的 [`SANITIZE_REWRITES`] 是**封闭的**：它只知道上游实测拦过的那几句话，
+/// 上游换一句模板就得改代码发版。本层处理另一半场景 —— 用户知道（或怀疑）
+/// 「我这段话里的某个词会被拦」，而规则集里没有它。词表由用户维护，改完下一个
+/// 请求就生效，不需要发版。
+///
+/// ── 为什么插零宽空格，而不是替词 / 删词 ──────────────────────
+/// 它是唯一**不改语义、不改可见外观**的手法：人眼读到的是同一个词，而逐字精确
+/// 匹配的内容审核匹配不上。替词要用户授权网关改写他的措辞，删词直接丢信息
+/// —— 两者都不是网关该替用户决定的事。
+///
+/// ── 与模块头那条「零宽空格对数字类指纹无效」的结论不矛盾 ────
+/// 那条实测结论依然成立：上游会把数字归一化，所以错误码那里必须是真正的字面
+/// 改动。本层不推翻它 —— 它对文本类词有效，对裸数字串无效。两层的适用范围
+/// 本就不同：规则集管已知的、含数字的、必须字面改写的指纹；本层管用户自定义
+/// 的文本词。
+///
+/// ── 为什么必须在预检之前调用 ────────────────────────────────
+/// [`sanitize_text`] 的预检 [`has_fingerprint`] 只看规则集的特征串。用户词表
+/// 里的词**不在**那份特征表里，命中它的文本会被预检判定为「不需要净化」而整段
+/// 跳过 —— 本层必须先跑，否则它永远不生效。
+fn insert_zwsp(text: &str, words: &[String], hits: &mut Hits) -> Option<String> {
+    if words.is_empty() || text.is_empty() {
+        return None;
+    }
+    let mut out: Option<String> = None;
+    for word in words {
+        if word.is_empty() {
+            continue;
+        }
+        // 判定基于**当前**串：前一个词插入的 ZWSP 不影响后一个词的匹配
+        //（它只是一个字符），但会让「这一处已经打断过」可被识别出来。
+        let current = out.as_deref().unwrap_or(text);
+        if !current.contains(word.as_str()) {
+            continue;
+        }
+        let (next, inserted) = break_word(current, word, ZWSP);
+        if inserted > 0 {
+            // 命中计数按**新插入**的位置数（已打断的不重复计）：
+            // 同一条历史消息重复出站时，「敏」标签的计数不会一轮涨一次。
+            hits.bump(word);
+        }
+        if next != current {
+            out = Some(next);
+        }
+    }
+    out
+}
 
 // ─── 正则（惰性编译一次）────────────────────────────────────
 //
@@ -169,15 +254,33 @@ impl Hits {
     }
 }
 
-/// 单段文本净化：预检不中 → 返回原串（零分配）。命中时把规则标签记进 `hits`。
+/// 单段文本净化：两层都没命中 → 返回原串（零分配）。命中时把规则标签记进
+/// `hits`。
 ///
-/// 顺序照抄 Go 的 `sanitizeText`：改写层 → 表头剥离层 → cc_ 键值循环清理 →
-/// 裸键名缩写兜底 → 去首尾空白。**顺序不能换**：改写在前是因为它要求原串
-/// 完整（表头剥离会动到同一段文本的其它位置）；`cc_` 循环在裸键名缩写之前，
-/// 是因为缩写会把键名改掉、再清 `cc_` 就认不出来了。
-pub fn sanitize_text(text: &str, hits: &mut Hits) -> String {
+/// ── 两层、两个顺序（都不能换）───────────────────────────────
+/// **层 A（内置规则集）**：改写 → 表头剥离 → `cc_` 键值循环清理 → 裸键名缩写
+/// → 去首尾空白。这一段的内部次序照抄 Go 的 `sanitizeText`：表头剥离会动到
+/// 同一段文本的其它位置，故必须等改写做完；`cc_` 循环在裸键名缩写之前，是因为
+/// 缩写会把键名改掉、再清 `cc_` 就认不出来了。
+///
+/// **层 B（用户词表 + 零宽空格）**：在层 A 的**结果**上跑。
+///
+/// 为什么 B 必须在 A 之后：层 A 的改写要求 `from` 原文完整出现，而零宽空格会
+/// 在词中间插字符 —— 先跑 B 会让层 A 再也匹配不上（`Default branch` 被插成
+/// `Def<ZWSP>ault branch` 就匹配不到 `Default branch (` 了）。
+///
+/// 为什么 B 不看预检结果：预检 [`has_fingerprint`] 只查层 A 的特征表，用户词表
+/// 里的词**不在**那张表里。所以「预检不中」意味着「层 A 没事做」，不意味着
+/// 「层 B 没事做」—— 层 B 有自己的判定，两条路径都要走一遍它。
+pub fn sanitize_text(text: &str, words: &[String], hits: &mut Hits) -> String {
     if !has_fingerprint(text) {
-        return text.to_string();
+        // 层 A 不适用：只剩层 B 与「一个字节都没动」两条路。
+        // 注意这里**不做 trim**：没命中任何规则时，改造前后的行为都是原串照还
+        // （层 A 的 trim 是「改写过之后整理残留空白」的收尾，不是无条件规整）。
+        return match insert_zwsp(text, words, hits) {
+            Some(next) => next,
+            None => text.to_string(),
+        };
     }
     let mut out = text.to_string();
     for (from, to) in SANITIZE_REWRITES {
@@ -194,8 +297,8 @@ pub fn sanitize_text(text: &str, hits: &mut Hits) -> String {
     if out.contains("cc_") {
         let kv = kv_re();
         let mut prev = String::new();
-        // 清尾随裸 kv（cc_version=...; cc_entrypoint=...;）：一次替换可能因为
-        // 相邻键值的新边界又暴露出下一个，循环到不动为止
+        // 清尾随裸 kv：一次替换可能因为相邻键值的新边界又暴露出下一个，
+        // 循环到不动为止
         while prev != out {
             prev = out.clone();
             let next = kv.replace_all(&out, "").into_owned();
@@ -210,6 +313,10 @@ pub fn sanitize_text(text: &str, hits: &mut Hits) -> String {
         hits.bump(LABEL_BARE_HDR);
         out = bare_hdr_re().replace_all(&out, "x-anthropic-billing-hdr").into_owned();
     }
+    // 层 B：跑在层 A 的**结果**上（不是原始 text —— 那样会把上面所有改写冲掉）
+    if let Some(next) = insert_zwsp(&out, words, hits) {
+        out = next;
+    }
     out.trim().to_string()
 }
 
@@ -217,10 +324,10 @@ pub fn sanitize_text(text: &str, hits: &mut Hits) -> String {
 ///
 /// 与 Go 一致，**不判 `type`**：任何带 `text` 字符串的分片都过一遍。
 /// 返回是否发生变化。
-fn sanitize_content(value: &mut Value, hits: &mut Hits) -> bool {
+fn sanitize_content(value: &mut Value, words: &[String], hits: &mut Hits) -> bool {
     match value {
         Value::String(text) => {
-            let next = sanitize_text(text, hits);
+            let next = sanitize_text(text, words, hits);
             if next != *text {
                 *text = next;
                 true
@@ -237,7 +344,7 @@ fn sanitize_content(value: &mut Value, hits: &mut Hits) -> bool {
                 let Some(Value::String(text)) = object.get_mut("text") else {
                     continue;
                 };
-                let next = sanitize_text(text, hits);
+                let next = sanitize_text(text, words, hits);
                 if next != *text {
                     *text = next;
                     changed = true;
@@ -255,7 +362,7 @@ fn sanitize_content(value: &mut Value, hits: &mut Hits) -> bool {
 /// 这块长期是盲区：工具调用消息的 content 通常是 null，早期实现在 content 缺失时
 /// 直接跳过整条消息，于是历史里任何写进工具参数的被拦字符串（文件名、命令、
 /// 写入内容）都会原样漏出。
-fn sanitize_tool_calls(value: &mut Value, hits: &mut Hits) -> bool {
+fn sanitize_tool_calls(value: &mut Value, words: &[String], hits: &mut Hits) -> bool {
     let Some(call_list) = value.as_array_mut() else {
         return false;
     };
@@ -270,7 +377,7 @@ fn sanitize_tool_calls(value: &mut Value, hits: &mut Hits) -> bool {
         let Some(Value::String(arguments)) = function.get_mut("arguments") else {
             continue;
         };
-        let next = sanitize_text(arguments, hits);
+        let next = sanitize_text(arguments, words, hits);
         if next != *arguments {
             *arguments = next;
             changed = true;
@@ -280,7 +387,7 @@ fn sanitize_tool_calls(value: &mut Value, hits: &mut Hits) -> bool {
 }
 
 /// 净化 messages 中的 content、reasoning_content 与 tool_calls；任一命中返回 true。
-fn sanitize_messages(messages: &mut Value, hits: &mut Hits) -> bool {
+fn sanitize_messages(messages: &mut Value, words: &[String], hits: &mut Hits) -> bool {
     let Some(list) = messages.as_array_mut() else {
         return false;
     };
@@ -292,20 +399,20 @@ fn sanitize_messages(messages: &mut Value, hits: &mut Hits) -> bool {
         // content 与 tool_calls 各自独立判断：content 可以为 null（工具调用轮），
         // 早期实现在这里跳过整条消息，导致这类消息的 tool_calls 完全不被净化。
         if let Some(content) = object.get_mut("content") {
-            if sanitize_content(content, hits) {
+            if sanitize_content(content, words, hits) {
                 changed = true;
             }
         }
         // reasoning_content（思维链回填字段）实测同样携带指纹，与 content 同等净化。
         if let Some(Value::String(reasoning)) = object.get_mut("reasoning_content") {
-            let next = sanitize_text(reasoning, hits);
+            let next = sanitize_text(reasoning, words, hits);
             if next != *reasoning {
                 *reasoning = next;
                 changed = true;
             }
         }
         if let Some(tool_calls) = object.get_mut("tool_calls") {
-            if sanitize_tool_calls(tool_calls, hits) {
+            if sanitize_tool_calls(tool_calls, words, hits) {
                 changed = true;
             }
         }
@@ -320,18 +427,148 @@ fn sanitize_messages(messages: &mut Value, hits: &mut Hits) -> bool {
 ///
 /// 无 `messages` 数组时原样返回 `None`：上游只认 messages 形态，别处（顶层
 /// `system`、`input` 等）不是本规则集的作用面，与 Go 的调用点一致。
-pub fn sanitize_body(body: &Value) -> Option<(Value, Vec<(String, usize)>)> {
+pub fn sanitize_body(body: &Value, words: &[String]) -> Option<(Value, Vec<(String, usize)>)> {
     let mut next = body.clone();
     let mut hits = Hits::default();
     let changed = match next
         .as_object_mut()
         .and_then(|object| object.get_mut("messages"))
     {
-        Some(messages) => sanitize_messages(messages, &mut hits),
+        Some(messages) => sanitize_messages(messages, words, &mut hits),
         None => false,
     };
     if !changed {
         return None;
     }
     Some((next, hits.into_sorted()))
+}
+
+#[cfg(test)]
+mod zwsp_tests {
+    //! 零宽空格词表层的判据。
+    //!
+    //! ── 为什么钉在这里 ────────────────────────────────
+    //! 本机没有 cargo，改动只能靠静态检查（tools/rust_balance.py）
+    //! 与人工对读；这几条用例是唯一能在 CI 上真正执行的验证。
+    //! 每一条都对应一个**看起来合理**的错误实现。
+
+    use super::*;
+
+    /// 空词表：这一层完全不存在（返回 None，调用方保持零拷贝）。
+    #[test]
+    fn an_empty_word_list_never_touches_the_text() {
+        let mut hits = Hits::default();
+        assert!(insert_zwsp("任意文本", &[], &mut hits).is_none());
+        assert!(hits.into_sorted().is_empty());
+    }
+
+    /// 基础：每一处命中各插一个 ZWSP，词本身一个字不改。
+    #[test]
+    fn every_occurrence_gets_exactly_one_marker() {
+        let mut hits = Hits::default();
+        let next = insert_zwsp("甲敏感乙敏感丙", &["敏感".to_string()], &mut hits)
+            .expect("命中了就不能返回 None");
+        assert_eq!(
+            next,
+            "甲敏感\u{200B}乙敏感\u{200B}丙",
+            "两处命中、两个标记，位置在词尾"
+        );
+    }
+
+    /// **关键**：同一段文本重复出站不能让 ZWSP 累积。
+    ///
+    /// 钉住的写歪：用 `str::replace` 直接替换 —— `词` 也是
+    /// `词+ZWSP` 的子串，于是每探一次就多一个。而多轮对话里
+    /// 每条历史消息每次出站都会重过一遍本函数。
+    #[test]
+    fn a_second_pass_does_not_stack_more_markers() {
+        let words = ["敏感".to_string()];
+        let mut first = Hits::default();
+        let once = insert_zwsp("这是敏感内容", &words, &mut first).expect("首次必命中");
+
+        let mut second = Hits::default();
+        assert!(
+            insert_zwsp(&once, &words, &mut second).is_none(),
+            "已打断过的文本不该再被改动"
+        );
+        assert!(
+            second.into_sorted().is_empty(),
+            "重复出站不该再计一次命中（否则「敏」标签会一轮涨一次）"
+        );
+        assert_eq!(once.matches(ZWSP).count(), 1, "只该有一个标记");
+    }
+
+    /// 空词条不能让循环打死（`find("")` 在每个字节位命中）。
+    ///
+    /// 写歪：只在 `insert_zwsp` 里跳过空词、`break_word` 自己不守
+    /// —— 那样调用方一变就成了一个死循环。
+    #[test]
+    fn an_empty_word_cannot_spin_forever() {
+        let (text, inserted) = break_word("任意文本", "", ZWSP);
+        assert_eq!(text, "任意文本");
+        assert_eq!(inserted, 0);
+    }
+
+    /// 未命中返回 None：调用方据此保持原串（不多一次分配）。
+    #[test]
+    fn a_miss_returns_none_rather_than_the_same_text() {
+        let mut hits = Hits::default();
+        assert!(insert_zwsp("完全无关的文本", &["敏感".to_string()], &mut hits).is_none());
+        assert!(hits.into_sorted().is_empty());
+    }
+
+    /// 多个词各自独立打断，且都记一次命中。
+    #[test]
+    fn several_words_break_independently() {
+        let words = ["甲".to_string(), "乙".to_string()];
+        let mut hits = Hits::default();
+        let next = insert_zwsp("先说甲再说乙", &words, &mut hits).expect("两个词都命中");
+        assert_eq!(next, "先说甲\u{200B}再说乙\u{200B}");
+        let labels: Vec<String> = hits.into_sorted().into_iter().map(|(word, _)| word).collect();
+        assert_eq!(labels.len(), 2, "两个词各记一条");
+    }
+
+    /// 词表层**不做 trim**：它不是规则集的收尾，没理由改动首尾空白。
+    #[test]
+    fn the_word_layer_does_not_trim_on_its_own() {
+        let mut hits = Hits::default();
+        let next = insert_zwsp("  敏感  ", &["敏感".to_string()], &mut hits).expect("命中");
+        assert_eq!(next, "  敏感\u{200B}  ", "首尾空白应当原样得保留");
+    }
+
+    /// 已打断的位置与未打断的位置共存时，只处理后者。
+    #[test]
+    fn only_the_unbroken_occurrences_are_touched() {
+        let words = ["敏感".to_string()];
+        let mut hits = Hits::default();
+        let mixed = "敏感\u{200B}内容里又有敏感";
+        let next = insert_zwsp(mixed, &words, &mut hits).expect("还有一处未打断");
+        assert_eq!(next, "敏感\u{200B}内容里又有敏感\u{200B}");
+    }
+
+    /// 整体结构：`sanitize_body` 带着词表能把 messages 里的文本打断。
+    #[test]
+    fn sanitize_body_carries_the_word_list_into_messages() {
+        let body = serde_json::json!({
+            "model": "m",
+            "messages": [
+                {"role": "user", "content": "这里有敏感词"}
+            ]
+        });
+        let words = vec!["敏感".to_string()];
+        let (next, hits) = sanitize_body(&body, &words).expect("命中后必须返回 Some");
+        let text = next["messages"][0]["content"].as_str().expect("content 是字符串");
+        assert_eq!(text, "这里有敏感\u{200B}词");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].0, "敏感");
+    }
+
+    /// 词表为空时，`sanitize_body` 对无指纹文本依然返回 None。
+    #[test]
+    fn an_empty_word_list_leaves_a_clean_body_untouched() {
+        let body = serde_json::json!({
+            "messages": [{"role": "user", "content": "一句干净的话"}]
+        });
+        assert!(sanitize_body(&body, &[]).is_none());
+    }
 }

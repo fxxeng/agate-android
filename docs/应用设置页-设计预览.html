@@ -1,0 +1,1030 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>应用设置页 · 设计预览（十组）</title>
+<style>
+  :root{
+    --bg:#0F172A; --card:#1E293B; --inset:#0B1220; --border:#334155;
+    --accent:#38BDF8; --textMain:#F8FAFC; --textSub:#A3B1C6; --textDim:#7C8BA1;
+    --green:#4ADE80; --red:#FB7185; --amber:#FBBF24;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:22px 14px 70px;background:#080F1C;color:var(--textMain);
+       font:14px/1.6 -apple-system,"PingFang SC","Microsoft YaHei",system-ui,sans-serif}
+  .wrap{max-width:900px;margin:0 auto}
+  h1{font-size:18px;font-weight:600;margin:0 0 6px}
+  .lead{color:var(--textSub);font-size:13px;margin:0 0 6px}
+  .rules{color:var(--textDim);font-size:12px;margin:0 0 26px;line-height:1.7}
+  .rules code{background:rgba(56,189,248,.12);color:var(--accent);padding:1px 5px;border-radius:4px;font-size:11px}
+  h2{font-size:15px;font-weight:600;margin:36px 0 4px}
+  h2:first-of-type{margin-top:20px}
+  .note{color:var(--textDim);font-size:12px;margin:0 0 12px;line-height:1.7}
+  .note b{color:var(--textSub);font-weight:600}
+  .phone{width:100%;max-width:396px;margin:0 auto;background:var(--bg);
+         border:1px solid #1c2a3f;border-radius:16px;padding:12px}
+  .phone + .phone{margin-top:14px}
+
+  /* 页头 */
+  .hd{display:flex;align-items:center;gap:8px;margin-bottom:10px}
+  .hd-back{width:24px;height:24px;display:flex;align-items:center;justify-content:center;
+           color:var(--textSub);flex:0 0 auto}
+  .hd-t{font-size:17px;font-weight:600;flex:1 1 auto;white-space:nowrap}
+  .hd-g{font-size:10px;color:var(--textDim);padding:3px 7px;border-radius:6px;
+        border:1px solid var(--border);white-space:nowrap;flex:0 0 auto;
+        font-family:ui-monospace,Menlo,monospace}
+
+  /* 手风琴分组 */
+  .sg{background:var(--card);border:1px solid var(--border);border-radius:18px;
+      padding:0;margin-bottom:9px;overflow:hidden}
+  .sg-h{display:flex;align-items:center;gap:11px;padding:12px 13px;min-height:58px}
+  .sg-ico{width:34px;height:34px;border-radius:11px;flex:0 0 auto;display:flex;
+          align-items:center;justify-content:center;background:rgba(56,189,248,.12);color:var(--accent)}
+  .sg-ico svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.9;
+              stroke-linecap:round;stroke-linejoin:round}
+  .sg-m{flex:1 1 auto;min-width:0}
+  .sg-t{font-size:14px;font-weight:600;line-height:1.3}
+  .sg-s{font-size:11px;color:var(--textSub);margin-top:2px;white-space:nowrap;
+        overflow:hidden;text-overflow:ellipsis}
+  .sg-chev{width:20px;height:20px;flex:0 0 auto;display:flex;align-items:center;
+           justify-content:center;color:var(--textDim)}
+  .sg-chev svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:2.2;
+               stroke-linecap:round;stroke-linejoin:round}
+  .sg.open .sg-chev{transform:rotate(180deg)}
+  .sg.dim{opacity:.5}
+  .sg-b{padding:4px 13px 13px;border-top:1px solid rgba(51,65,85,.6);
+        margin-top:0;padding-top:11px}
+
+  /* 行 */
+  .row{display:flex;align-items:flex-start;gap:10px;padding:10px 0;
+       border-bottom:1px solid rgba(51,65,85,.45)}
+  .row:last-child{border-bottom:none;padding-bottom:2px}
+  .row:first-child{padding-top:2px}
+  .row-m{flex:1 1 auto;min-width:0}
+  .row-n{font-size:12.5px;font-weight:600;line-height:1.4}
+  .row-d{font-size:10.5px;color:var(--textDim);line-height:1.55;margin-top:2px}
+  .row-d b{color:var(--textSub);font-weight:600}
+  .row-r{flex:0 0 auto;display:flex;align-items:center;gap:6px;padding-top:1px}
+
+  /* 值胶囊 */
+  .val{font-size:11.5px;padding:5px 9px;border-radius:8px;border:1px solid var(--border);
+       color:var(--textSub);white-space:nowrap;background:var(--inset);
+       font-family:ui-monospace,Menlo,monospace}
+  .val.on{color:var(--accent);border-color:rgba(56,189,248,.45);background:rgba(56,189,248,.12)}
+  .val.warn{color:var(--amber);border-color:rgba(217,119,6,.45);background:rgba(217,119,6,.12)}
+  .val.ro{color:var(--textDim);background:transparent;border-style:dashed}
+
+  /* 开关 */
+  .sw{width:38px;height:22px;border-radius:11px;background:#334155;position:relative;flex:0 0 auto}
+  .sw::after{content:"";position:absolute;top:2px;left:2px;width:18px;height:18px;
+             border-radius:50%;background:#94A3B8;transition:.2s}
+  .sw.on{background:rgba(56,189,248,.5)}
+  .sw.on::after{left:18px;background:var(--accent)}
+
+  /* 分段 */
+  .seg{display:flex;background:var(--inset);border:1px solid var(--border);
+       border-radius:10px;padding:3px;gap:3px;margin-top:7px}
+  .seg>span{flex:1;text-align:center;font-size:11.5px;padding:5px 2px;border-radius:8px;
+            color:var(--textSub);white-space:nowrap}
+  .seg>span.on{background:rgba(56,189,248,.18);color:var(--accent);font-weight:600}
+
+  /* 内嵌说明块 */
+  .info{background:var(--inset);border:1px solid var(--border);border-radius:11px;
+        padding:9px 11px;margin:2px 0 4px}
+  .info-k{font-size:10.5px;color:var(--textDim)}
+  .info-v{font-size:12px;color:var(--accent);font-weight:600;margin-top:4px;
+          word-break:break-all;font-family:ui-monospace,Menlo,monospace}
+  .chips{display:flex;gap:5px;flex-wrap:wrap;margin-top:7px}
+  .chip{font-size:10px;padding:2px 7px;border-radius:6px;border:1px solid var(--border);
+        color:var(--textDim)}
+
+  .btn{font-size:11.5px;padding:5px 10px;border-radius:8px;border:1px solid var(--border);
+       color:var(--textSub);white-space:nowrap;background:var(--inset)}
+  .btn.pri{color:var(--accent);border-color:rgba(56,189,248,.45);background:rgba(56,189,248,.12)}
+  .btn.dan{color:var(--red);border-color:rgba(225,29,72,.4);background:rgba(225,29,72,.1)}
+
+  .tag{font-size:9.5px;padding:2px 6px;border-radius:5px;border:1px solid var(--border);
+       color:var(--textDim);white-space:nowrap}
+  .tag.g{color:var(--green);border-color:rgba(34,197,94,.35);background:rgba(34,197,94,.1)}
+  .tag.r{color:var(--red);border-color:rgba(225,29,72,.35);background:rgba(225,29,72,.1)}
+  .tag.a{color:var(--amber);border-color:rgba(217,119,6,.4);background:rgba(217,119,6,.12)}
+  .tag.b{color:var(--accent);border-color:rgba(56,189,248,.35);background:rgba(56,189,248,.1)}
+
+  .hint{font-size:10.5px;color:var(--textDim);margin-top:8px;line-height:1.6}
+  .warnbox{font-size:10.5px;color:var(--amber);line-height:1.6;margin-top:8px;
+           background:rgba(217,119,6,.08);border:1px solid rgba(217,119,6,.28);
+           border-radius:9px;padding:8px 10px}
+
+  /* 底部弹层 */
+  .scrim{background:rgba(2,6,23,.6);border-radius:16px;padding:0;margin:0 auto;
+         max-width:396px}
+  .sheet{background:var(--card);border:1px solid var(--border);
+         border-radius:16px 16px 16px 16px;padding:14px}
+  .sheet-h{display:flex;align-items:center;gap:8px;margin-bottom:4px}
+  .sheet-t{font-size:15px;font-weight:600;flex:1 1 auto}
+  .sheet-x{color:var(--textDim);font-size:13px}
+  .sheet-sub{font-size:10.5px;color:var(--textDim);margin-bottom:12px;line-height:1.6}
+  .field{background:var(--inset);border:1px solid var(--border);border-radius:11px;
+         padding:9px 11px;display:flex;align-items:center;gap:8px;margin-bottom:9px}
+  .field-l{font-size:11px;color:var(--textDim);flex:0 0 auto;min-width:56px}
+  .field-v{font-size:14px;font-weight:600;flex:1 1 auto;font-family:ui-monospace,Menlo,monospace;
+           color:var(--textMain)}
+  .field-u{font-size:10.5px;color:var(--textDim);flex:0 0 auto}
+  .field-hint{font-size:10px;color:var(--textDim);margin:-5px 0 10px;padding-left:2px;line-height:1.5}
+  .field-hint.bad{color:var(--red)}
+  .steps{display:flex;gap:6px;margin-top:8px}
+  .step{flex:1;text-align:center;font-size:11px;padding:6px;border-radius:8px;
+        background:var(--inset);border:1px solid var(--border);color:var(--textSub)}
+
+  /* 提示词全屏子页 */
+  .full{background:var(--bg);border:1px solid #1c2a3f;border-radius:16px;padding:12px}
+  .ta{background:var(--inset);border:1px solid var(--border);border-radius:11px;
+      padding:10px 11px;font:11.5px/1.65 ui-monospace,Menlo,monospace;color:var(--textSub);
+      height:190px;overflow:hidden;position:relative}
+  .ta::after{content:"";position:absolute;left:0;right:0;bottom:0;height:50px;
+             background:linear-gradient(transparent,var(--inset))}
+  .ta-t{white-space:pre-wrap}
+  .bar{display:flex;align-items:center;gap:8px;margin-top:8px;font-size:10.5px;
+       color:var(--textDim)}
+
+  /* 注释列表 */
+  .kv{margin:10px 0 0;padding:0;list-style:none;font-size:12px;line-height:1.8}
+  .kv li{padding-left:14px;position:relative;color:var(--textSub)}
+  .kv li::before{content:"·";position:absolute;left:2px;color:var(--accent)}
+  .kv code{background:rgba(56,189,248,.1);color:var(--accent);padding:1px 4px;
+           border-radius:4px;font-size:11px}
+  .tbl{width:100%;border-collapse:collapse;font-size:12px;margin-top:10px}
+  .tbl th,.tbl td{text-align:left;padding:7px 9px;border-bottom:1px solid rgba(51,65,85,.5);
+                  vertical-align:top}
+  .tbl th{color:var(--textDim);font-weight:500;font-size:11px}
+  .tbl td{color:var(--textSub)}
+  .tbl td:first-child{color:var(--textMain);white-space:nowrap}
+  .tbl code{background:rgba(56,189,248,.1);color:var(--accent);padding:1px 4px;
+            border-radius:4px;font-size:10.5px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>应用设置 · 设计预览</h1>
+  <p class="lead">十组手风琴 · 面板对齐 v44 的 <code>sub-appsettings</code>，字段与范围逐条对齐内核端点</p>
+  <p class="rules">
+    这一版只做<b>内核真有端点</b>的项。v44 里有、但内核没接口的（监听端口 / 无 Key 调用 / 忽略电池优化 / 自动更新间隔）
+    不放进这一页 —— 放进去就是点了没反应的死按钮。理由逐条列在文末「取舍」表里。
+  </p>
+
+  <!-- ═══════════════ 1. 折叠全览 ═══════════════ -->
+  <h2>① 折叠态：一行一个现状</h2>
+  <p class="note">
+    每组标题右侧固定一行<b>当前值摘要</b>（从内核读回来的真实值，不是写死的文案）。
+    这样不展开也能判断现状 —— 设置页最常被打开的理由是「我现在是多少」，不是「我要改」。
+  </p>
+
+  <div class="phone">
+    <div class="hd">
+      <span class="hd-back"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg></span>
+      <span class="hd-t">设置</span>
+      <span class="hd-g">0.4.0-m3</span>
+    </div>
+
+    <div class="sg">
+      <div class="sg-h">
+        <span class="sg-ico"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9L17 7M7 17l-2.1 2.1"/></svg></span>
+        <div class="sg-m"><div class="sg-t">外观</div><div class="sg-s">跟随系统</div></div>
+        <span class="sg-chev"><svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></span>
+      </div>
+    </div>
+
+    <div class="sg open">
+      <div class="sg-h">
+        <span class="sg-ico"><svg viewBox="0 0 24 24"><path d="M9 2v6M15 2v6"/><path d="M6 8h12v4a6 6 0 0 1-12 0z"/><path d="M12 18v4"/></svg></span>
+        <div class="sg-m"><div class="sg-t">服务接入</div><div class="sg-s">8787 · Key 已设 · 简体中文</div></div>
+        <span class="sg-chev"><svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></span>
+      </div>
+      <div class="sg-b">
+        <div class="info">
+          <div class="info-k">本机地址 · OpenAI 兼容</div>
+          <div class="info-v">http://127.0.0.1:8787/v1</div>
+          <div class="chips">
+            <span class="chip">chat</span><span class="chip">responses</span>
+            <span class="chip">messages</span><span class="chip">models</span>
+          </div>
+        </div>
+
+        <div class="row">
+          <div class="row-m">
+            <div class="row-n">API Key</div>
+            <div class="row-d">掩码只用来显示「已经有了」，值拿不到也不该拿到 · 清除后接口恢复免鉴权</div>
+          </div>
+          <div class="row-r">
+            <span class="val on">agate-…a1b2</span>
+            <span class="btn pri">改</span>
+          </div>
+        </div>
+
+        <div class="row">
+          <div class="row-m">
+            <div class="row-n">计费语言</div>
+            <div class="row-d">影响余额 / 用量文案的语言（zh-CN / en-US）</div>
+          </div>
+          <div class="row-r"><span class="val">zh-CN</span></div>
+        </div>
+
+        <div class="row">
+          <div class="row-m">
+            <div class="row-n">默认模型</div>
+            <div class="row-d">客户端不指定 model 时用哪个</div>
+          </div>
+          <div class="row-r"><span class="val ro">auto</span><span class="tag">只读</span></div>
+        </div>
+        <div class="hint">默认模型由账号与模型管理决定，这一页只显示；要改去「模型 → 映射」。</div>
+      </div>
+    </div>
+
+    <div class="sg">
+      <div class="sg-h">
+        <span class="sg-ico"><svg viewBox="0 0 24 24"><path d="M13 2L3 14h8l-1 8 10-12h-8z"/></svg></span>
+        <div class="sg-m"><div class="sg-t">流式与输出</div><div class="sg-s">保活丢弃开 · 续写关 · 调试模式关</div></div>
+        <span class="sg-chev"><svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></span>
+      </div>
+    </div>
+
+    <div class="sg">
+      <div class="sg-h">
+        <span class="sg-ico"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></span>
+        <div class="sg-m"><div class="sg-t">排队与超时</div><div class="sg-s">等 2 次 · 30/300/300/300 秒</div></div>
+        <span class="sg-chev"><svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></span>
+      </div>
+    </div>
+
+    <div class="sg">
+      <div class="sg-h">
+        <span class="sg-ico"><svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg></span>
+        <div class="sg-m"><div class="sg-t">重试</div><div class="sg-s">原地 3 次 · 换号 5 个 · 间隔 5 秒</div></div>
+        <span class="sg-chev"><svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></span>
+      </div>
+    </div>
+
+    <div class="sg">
+      <div class="sg-h">
+        <span class="sg-ico"><svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></span>
+        <div class="sg-m"><div class="sg-t">安全防护</div><div class="sg-s">指纹剥离开 · 跨域关 · 角色兼容开</div></div>
+        <span class="sg-chev"><svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></span>
+      </div>
+    </div>
+
+    <div class="sg">
+      <div class="sg-h">
+        <span class="sg-ico"><svg viewBox="0 0 24 24"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6M8 13h8M8 17h6"/></svg></span>
+        <div class="sg-m"><div class="sg-t">提示词</div><div class="sg-s">替换 system · 来源：界面编辑 · 112 行</div></div>
+        <span class="sg-chev"><svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></span>
+      </div>
+    </div>
+
+    <div class="sg">
+      <div class="sg-h">
+        <span class="sg-ico"><svg viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></svg></span>
+        <div class="sg-m"><div class="sg-t">数据管理</div><div class="sg-s">库 12.6 MB · 请求 3 214 条</div></div>
+        <span class="sg-chev"><svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></span>
+      </div>
+    </div>
+
+    <div class="sg">
+      <div class="sg-h">
+        <span class="sg-ico"><svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-9-9"/><path d="M21 3v6h-6"/><path d="M12 8v4l2 2"/></svg></span>
+        <div class="sg-m"><div class="sg-t">备份与恢复</div><div class="sg-s">上次导出 10-28 20:15 · 12.4 MB</div></div>
+        <span class="sg-chev"><svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></span>
+      </div>
+    </div>
+
+    <div class="sg">
+      <div class="sg-h">
+        <span class="sg-ico"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v6"/><circle cx="12" cy="7.5" r=".6"/></svg></span>
+        <div class="sg-m"><div class="sg-t">关于</div><div class="sg-s">0.4.0-m3 · 内核已连接</div></div>
+        <span class="sg-chev"><svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════ 2. 数字组 ═══════════════ -->
+  <h2>② 数字组：展开即显示全部字段，点值得弹层</h2>
+  <p class="note">
+    超时 / 重试 / 排队三组都是「一组几个有界整数 + 允许部分更新」。展开后一次列全，
+    <b>点值开弹层单独改一项</b>，保存只提交那一项 —— 不做「整组一起提交」，
+    因为整组提交时用户改一项、另一项恰好被别人改过，会被自己的旧值覆盖回去。
+  </p>
+
+  <div class="phone">
+    <div class="hd">
+      <span class="hd-back"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg></span>
+      <span class="hd-t">设置</span><span class="hd-g">0.4.0-m3</span>
+    </div>
+
+    <div class="sg dim">
+      <div class="sg-h"><span class="sg-ico"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/></svg></span>
+        <div class="sg-m"><div class="sg-t">外观</div><div class="sg-s">跟随系统</div></div></div>
+    </div>
+
+    <div class="sg open">
+      <div class="sg-h">
+        <span class="sg-ico"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></span>
+        <div class="sg-m"><div class="sg-t">排队与超时</div><div class="sg-s">等 2 次 · 30/300/300/300 秒</div></div>
+        <span class="sg-chev"><svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></span>
+      </div>
+      <div class="sg-b">
+        <div class="row">
+          <div class="row-m">
+            <div class="row-n">最多等几次</div>
+            <div class="row-d">上游繁忙时只回「N 秒后再来」的，等几轮再报错 · <b>0 = 排队即返回 503</b></div>
+          </div>
+          <div class="row-r"><span class="val on">2 次</span></div>
+        </div>
+        <div class="row">
+          <div class="row-m">
+            <div class="row-n">单次等待</div>
+            <div class="row-d"><b>0 = 跟随上游建议</b>，上游没给建议时退到 15 秒</div>
+          </div>
+          <div class="row-r"><span class="val">跟随建议</span></div>
+        </div>
+
+        <div class="row">
+          <div class="row-m">
+            <div class="row-n">连接超时</div>
+            <div class="row-d">建 TCP/TLS 连接（含到代理那段）</div>
+          </div>
+          <div class="row-r"><span class="val">30 秒</span></div>
+        </div>
+        <div class="row">
+          <div class="row-m">
+            <div class="row-n">等待响应</div>
+            <div class="row-d">请求发出 → 响应头到达 · <b>推理模型的思考也在这段里</b></div>
+          </div>
+          <div class="row-r"><span class="val">300 秒</span></div>
+        </div>
+        <div class="row">
+          <div class="row-m">
+            <div class="row-n">流式空闲</div>
+            <div class="row-d">相邻两片数据之间的静默 · <b>收到新数据即重置，不是总时长</b></div>
+          </div>
+          <div class="row-r"><span class="val">300 秒</span></div>
+        </div>
+        <div class="row">
+          <div class="row-m">
+            <div class="row-n">非流式响应</div>
+            <div class="row-d">响应体读完的总预算 · 一次性计时，不重置</div>
+          </div>
+          <div class="row-r"><span class="val">300 秒</span></div>
+        </div>
+
+        <div class="hint">改完对下一个请求立即生效，无需重启。排队发生在首字节之前，吃的是「等待响应」那份预算。</div>
+      </div>
+    </div>
+
+    <div class="sg">
+      <div class="sg-h">
+        <span class="sg-ico"><svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg></span>
+        <div class="sg-m"><div class="sg-t">重试</div><div class="sg-s">原地 3 次 · 换号 5 个 · 间隔 5 秒</div></div>
+        <span class="sg-chev"><svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></span>
+      </div>
+    </div>
+  </div>
+
+  <p class="note" style="margin-top:14px">重试组展开后的样子 —— 多一个「指定状态码直接换号」的数组项：</p>
+
+  <div class="phone">
+    <div class="sg open">
+      <div class="sg-h">
+        <span class="sg-ico"><svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg></span>
+        <div class="sg-m"><div class="sg-t">重试</div><div class="sg-s">原地 3 次 · 换号 5 个 · 间隔 5 秒</div></div>
+        <span class="sg-chev"><svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></span>
+      </div>
+      <div class="sg-b">
+        <div class="row">
+          <div class="row-m">
+            <div class="row-n">原地重发</div>
+            <div class="row-d">在<b>同一个账号</b>上重发几次 · 0 = 失败立即换号</div>
+          </div>
+          <div class="row-r"><span class="val">3 次</span></div>
+        </div>
+        <div class="row">
+          <div class="row-m">
+            <div class="row-n">换号次数</div>
+            <div class="row-d">失败后最多换几个账号再试（按账号计）</div>
+          </div>
+          <div class="row-r"><span class="val">5 次</span></div>
+        </div>
+        <div class="row">
+          <div class="row-m">
+            <div class="row-n">重试间隔</div>
+            <div class="row-d">每次重发前等多久 · 0 = 立即</div>
+          </div>
+          <div class="row-r"><span class="val">5 秒</span></div>
+        </div>
+        <div class="row">
+          <div class="row-m">
+            <div class="row-n">直接换号的状态码</div>
+            <div class="row-d">撞上这些码时<b>不在同一账号重发</b>，直接换下一个 · 空 = 一律照常重试</div>
+            <div class="chips" style="margin-top:6px">
+              <span class="chip" style="color:var(--accent);border-color:rgba(56,189,248,.4);background:rgba(56,189,248,.1)">402</span>
+            </div>
+          </div>
+          <div class="row-r"><span class="btn">编辑</span></div>
+        </div>
+        <div class="hint">内核会排序去重后落库；任何一项越界都是整单 400 不落盘，所以界面先本地挡一遍。</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════ 3. 数字弹层 ═══════════════ -->
+  <h2>③ 数字编辑弹层</h2>
+  <p class="note">
+    范围与默认值全部来自 <code>SettingsOps.TIMEOUT_FIELDS</code> 等常量（逐字对齐内核），
+    弹层里直接显示 <b>合法区间 + 默认值 + 这一项到底管什么</b>。
+    越界时保存按钮禁用、下方红字给具体原因 —— 不把「填错了」的判定推给内核往返。
+  </p>
+
+  <div class="scrim">
+    <div class="sheet">
+      <div class="sheet-h">
+        <span class="sheet-t">等待响应</span>
+        <span class="sheet-x">✕</span>
+      </div>
+      <div class="sheet-sub">请求发出到响应头到达。推理模型的思考时间也算在这一段里。</div>
+
+      <div class="field">
+        <span class="field-l">数值</span>
+        <span class="field-v">300</span>
+        <span class="field-u">秒</span>
+      </div>
+      <div class="field-hint">范围 1–3600 秒 · 默认 300 秒</div>
+
+      <div class="steps">
+        <span class="step">−10</span>
+        <span class="step">−1</span>
+        <span class="step">+1</span>
+        <span class="step">+10</span>
+        <span class="step">默认</span>
+      </div>
+
+      <div class="hint">保存只提交这一项，其余字段保持原值（内核 allowed partial update）。</div>
+
+      <div class="bar" style="justify-content:flex-end;margin-top:14px">
+        <span class="btn">取消</span>
+        <span class="btn pri">保存</span>
+      </div>
+    </div>
+  </div>
+
+  <p class="note" style="margin-top:14px">越界态 —— 不发出请求：</p>
+
+  <div class="scrim">
+    <div class="sheet">
+      <div class="sheet-h">
+        <span class="sheet-t">连接超时</span>
+        <span class="sheet-x">✕</span>
+      </div>
+      <div class="sheet-sub">建立上游 TCP/TLS 连接（含到代理那段）。给太短会在慢网络下大量误判失败。</div>
+
+      <div class="field" style="border-color:rgba(225,29,72,.5)">
+        <span class="field-l">数值</span>
+        <span class="field-v" style="color:var(--red)">0</span>
+        <span class="field-u">秒</span>
+      </div>
+      <div class="field-hint bad">必须在 1–3600 秒之间（收到 0）</div>
+
+      <div class="bar" style="justify-content:flex-end;margin-top:14px">
+        <span class="btn">取消</span>
+        <span class="btn" style="color:var(--textDim);opacity:.5">保存</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════ 4. 开关组 ═══════════════ -->
+  <h2>④ 开关组：开关即时生效，不留「保存」按钮</h2>
+  <p class="note">
+    流式与输出、安全防护这两组里每个开关都是<b>独立单键端点</b>（内核 GET/PUT 同形、响应就是新状态）。
+    点开关 → 立刻 PUT → 用响应回填。失败则回弹并在开关下方给原因，<b>不让开关停在错误位置</b>。
+  </p>
+
+  <div class="phone">
+    <div class="sg open">
+      <div class="sg-h">
+        <span class="sg-ico"><svg viewBox="0 0 24 24"><path d="M13 2L3 14h8l-1 8 10-12h-8z"/></svg></span>
+        <div class="sg-m"><div class="sg-t">流式与输出</div><div class="sg-s">保活丢弃开 · 续写关 · 调试模式关</div></div>
+        <span class="sg-chev"><svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></span>
+      </div>
+      <div class="sg-b">
+        <div class="row">
+          <div class="row-m">
+            <div class="row-n">丢弃纯换行的保活分片</div>
+            <div class="row-d">防止 markdown 把一句话拆成一行一个词 · <b>模型确实单独输出过的空行会一并丢弃</b></div>
+          </div>
+          <div class="row-r"><span class="sw on"></span></div>
+        </div>
+        <div class="row">
+          <div class="row-m">
+            <div class="row-n">断流续写</div>
+            <div class="row-d">上游说到一半就停时，回放半截追一句「请继续输出」再打一次 · <b>会多消耗配额</b></div>
+          </div>
+          <div class="row-r"><span class="sw"></span></div>
+        </div>
+        <div class="row">
+          <div class="row-m">
+            <div class="row-n">续写轮数上限</div>
+            <div class="row-d">只在续写开着时有意义</div>
+          </div>
+          <div class="row-r"><span class="val ro">3 轮</span></div>
+        </div>
+        <div class="row">
+          <div class="row-m">
+            <div class="row-n">开发者角色兼容</div>
+            <div class="row-d">把 <code>role: developer</code> 改写成 <code>system</code> 再发 · 部分上游不认这个角色会直接 400</div>
+          </div>
+          <div class="row-r"><span class="sw on"></span></div>
+        </div>
+        <div class="row">
+          <div class="row-m">
+            <div class="row-n">调试模式（报文采集）</div>
+            <div class="row-d">完整保存发给上游的请求与响应 · 只保留最近 500 条 · 凭据类头落盘前已脱敏 · <b>只对新请求生效</b></div>
+          </div>
+          <div class="row-r"><span class="sw"></span></div>
+        </div>
+        <div class="row">
+          <div class="row-m">
+            <div class="row-n">出网取证</div>
+            <div class="row-d">已采集的报文在这里看</div>
+          </div>
+          <div class="row-r"><span class="val on">调用记录 ❯</span></div>
+        </div>
+        <div class="row">
+          <div class="row-m">
+            <div class="row-n">工具声明形态适配</div>
+            <div class="row-d">转发层自动处理，无需配置</div>
+          </div>
+          <div class="row-r"><span class="tag b">自动</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <p class="note" style="margin-top:14px">安全防护 —— 三个开关，每个都有一句「开了会怎样 / 关了会怎样」：</p>
+
+  <div class="phone">
+    <div class="sg open">
+      <div class="sg-h">
+        <span class="sg-ico"><svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></span>
+        <div class="sg-m"><div class="sg-t">安全防护</div><div class="sg-s">指纹剥离开 · 跨域关 · 角色兼容开</div></div>
+        <span class="sg-chev"><svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></span>
+      </div>
+      <div class="sg-b">
+        <div class="row">
+          <div class="row-m">
+            <div class="row-n">上游审核指纹剥离</div>
+            <div class="row-d">出站前剥离审核黑名单指纹。<b>关掉 = 客户端 system 模板原样发出</b>，那正是被误拦（400 code=11-128）的原因</div>
+          </div>
+          <div class="row-r"><span class="sw on"></span></div>
+        </div>
+        <div class="row">
+          <div class="row-m">
+            <div class="row-n">网关跨域访问（CORS）</div>
+            <div class="row-d">开着时 <code>/v1/*</code> 应答跨源请求（来源 <code>*</code>，预检直接 204）· <b>开着又没配 Key 时，任何网页都能借本机网关打上游</b></div>
+          </div>
+          <div class="row-r"><span class="sw"></span></div>
+        </div>
+        <div class="row">
+          <div class="row-m">
+            <div class="row-n">开发者角色兼容</div>
+            <div class="row-d">developer → system 的固定改写，语义无损</div>
+          </div>
+          <div class="row-r"><span class="sw on"></span></div>
+        </div>
+        <div class="warnbox">
+          跨域开着、且 API Key 为空 —— 这两个条件同时成立时，同一网段的任何网页都能免鉴权调用本机网关。
+          界面在这里直接给出这条组合警告。
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════ 5. 提示词 ═══════════════ -->
+  <h2>⑤ 提示词：模式 + 来源 + 正文（正文单独一页）</h2>
+  <p class="note">
+    这一组有三个「容易误解」的地方，界面必须说清：
+    <b>(a)</b> 生效正文可能来自文件，界面上改的那份会被文件盖掉 —— 所以要显示<b>来源</b>；
+    <b>(b)</b> `passthrough` 下正文是空串且不读文件，输入要禁用；
+    <b>(c)</b> 撞审降级是运行期状态，只有「立即解除」一个动作，不能靠改配置关掉。
+    正文动辄几百行，弹层装不下 —— 单独一个全屏子页。
+  </p>
+
+  <div class="phone">
+    <div class="sg open">
+      <div class="sg-h">
+        <span class="sg-ico"><svg viewBox="0 0 24 24"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6M8 13h8M8 17h6"/></svg></span>
+        <div class="sg-m"><div class="sg-t">提示词</div><div class="sg-s">替换 system · 来源：界面编辑 · 112 行</div></div>
+        <span class="sg-chev"><svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></span>
+      </div>
+      <div class="sg-b">
+        <div class="row">
+          <div class="row-m">
+            <div class="row-n">system 指纹处理</div>
+            <div class="row-d">客户端 CLI 会注入几十句固定模板，上游逐字审核命中即整单 400 · <b>只改发给上游的副本</b></div>
+            <div class="seg">
+              <span>透传</span><span class="on">替换</span><span>追加</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="row">
+          <div class="row-m">
+            <div class="row-n">生效正文来源</div>
+            <div class="row-d">优先级：<b>界面正文 &gt; 文件 &gt; 内置默认</b></div>
+          </div>
+          <div class="row-r"><span class="val on">界面编辑</span></div>
+        </div>
+
+        <div class="row">
+          <div class="row-m">
+            <div class="row-n">提示词文件</div>
+            <div class="row-d">留空 = 不用文件 · 读不到时会回落内置默认并在这里给原因</div>
+          </div>
+          <div class="row-r"><span class="val ro">未设置</span></div>
+        </div>
+
+        <div class="row">
+          <div class="row-m">
+            <div class="row-n">提示词正文</div>
+            <div class="row-d">112 行 · 点开全屏编辑</div>
+          </div>
+          <div class="row-r"><span class="btn pri">编辑</span></div>
+        </div>
+
+        <div class="row">
+          <div class="row-m">
+            <div class="row-n">按提供商覆盖</div>
+            <div class="row-d">每家的模式与正文可以不同 · 网关自带提示词可关可改正文</div>
+          </div>
+          <div class="row-r"><span class="val">0 家覆盖</span></div>
+        </div>
+
+        <div class="row">
+          <div class="row-m">
+            <div class="row-n">撞审降级</div>
+            <div class="row-d">撞内容拦截后自动换中性提示词 · 降到次日 00:00（UTC+8）自动恢复 · <b>状态在内存，重启清零</b></div>
+          </div>
+          <div class="row-r"><span class="tag">未降级</span></div>
+        </div>
+
+        <div class="hint">当前 替换 模式下，客户端的 system 消息会被这份正文整条替换；客户端原本的内容不发给上游。</div>
+      </div>
+    </div>
+  </div>
+
+  <p class="note" style="margin-top:14px">降级中 —— 多一行状态与「立即解除」：</p>
+
+  <div class="phone">
+    <div class="sg open">
+      <div class="sg-b" style="border-top:none">
+        <div class="row">
+          <div class="row-m">
+            <div class="row-n">撞审降级</div>
+            <div class="row-d">降级至 <b>2026-10-29 00:00</b> · 期间所有请求直接带中性提示词出门，不再先撞一次 400</div>
+          </div>
+          <div class="row-r"><span class="tag a">降级中</span></div>
+        </div>
+        <div class="row">
+          <div class="row-m">
+            <div class="row-d">改好提示词了？点这里立刻恢复本模式自己的提示词，不必等到零点。</div>
+          </div>
+          <div class="row-r"><span class="btn">立即解除</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <p class="note" style="margin-top:14px">提示词全屏子页 —— 底部固定「行数 / 保存 / 撤销」：</p>
+
+  <div class="full">
+    <div class="hd">
+      <span class="hd-back"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg></span>
+      <span class="hd-t">提示词正文</span>
+      <span class="hd-g">替换模式</span>
+    </div>
+    <div class="ta"><div class="ta-t">You are a helpful assistant.
+
+Follow the user's instructions carefully.
+When the task requires reading files,
+use the available tools before answering…
+
+（正文 112 行，编辑器内可滚动）</div></div>
+    <div class="bar">
+      <span>112 行 · 4 812 字</span>
+      <span style="flex:1"></span>
+      <span class="btn">撤销</span>
+      <span class="btn pri">保存</span>
+    </div>
+    <div class="hint">
+      保存后立刻重跑一次解析：内核会顺手把文件内容重读一遍，所以「刚改完文件」也能一次生效。
+      清空正文 = 回落到文件 / 内置默认，不报错。
+    </div>
+  </div>
+
+  <!-- ═══════════════ 6. 数据与备份 ═══════════════ -->
+  <h2>⑥ 数据管理 / 备份：只读概况 + 危险动作二次确认</h2>
+  <p class="note">
+    存储是<b>单库语义</b>（三类数据不再各有目录），所以这一组只展示、不提供「搬家」。
+    响应是嵌套的 <code>{configDir, database:{…}}</code>；<code>available:false</code> 时各计数回落 0，
+    与「真的没有数据」在数字上无法区分 —— 界面必须看这个布尔说「不可用」，而不是显示一排看着正常的 0。
+  </p>
+
+  <div class="phone">
+    <div class="sg open">
+      <div class="sg-h">
+        <span class="sg-ico"><svg viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></svg></span>
+        <div class="sg-m"><div class="sg-t">数据管理</div><div class="sg-s">库 12.6 MB · 请求 3 214 条</div></div>
+        <span class="sg-chev"><svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></span>
+      </div>
+      <div class="sg-b">
+        <div class="info">
+          <div class="info-k">库文件 · 12.6 MB</div>
+          <div class="info-v">/data/data/dev.agate.android/files/agate.db</div>
+        </div>
+
+        <div class="row">
+          <div class="row-m"><div class="row-n">请求明细</div></div>
+          <div class="row-r"><span class="val">3 214</span></div>
+        </div>
+        <div class="row">
+          <div class="row-m"><div class="row-n">事件日志</div></div>
+          <div class="row-r"><span class="val">1 876</span></div>
+        </div>
+        <div class="row">
+          <div class="row-m"><div class="row-n">调试报文</div></div>
+          <div class="row-r"><span class="val">0</span></div>
+        </div>
+        <div class="row">
+          <div class="row-m"><div class="row-n">账号</div></div>
+          <div class="row-r"><span class="val">9</span></div>
+        </div>
+
+        <div class="row" style="border-top:1px solid rgba(51,65,85,.45);padding-top:11px">
+          <div class="row-m">
+            <div class="row-n">日志保留</div>
+            <div class="row-d">与上游交互的流水，超出自动滚动丢弃</div>
+          </div>
+          <div class="row-r"><span class="val">30 天</span></div>
+        </div>
+        <div class="row">
+          <div class="row-m">
+            <div class="row-n">请求明细保留</div>
+            <div class="row-d">改小后<b>立即裁剪</b>，不等下一次记账</div>
+          </div>
+          <div class="row-r"><span class="val">99999 天</span></div>
+        </div>
+        <div class="row">
+          <div class="row-m">
+            <div class="row-n">按日聚合保留</div>
+            <div class="row-d">报表里的长期趋势靠它</div>
+          </div>
+          <div class="row-r"><span class="val">99999 天</span></div>
+        </div>
+
+        <div class="hint">
+          想换库的位置只能改环境变量 <code>AGATE_PROXY_HOME</code> 后重启 —— 这一页只展示，不给「更改」按钮：
+          一个点了必然报错的按钮比没有按钮更糟。
+        </div>
+      </div>
+    </div>
+
+    <div class="sg open">
+      <div class="sg-h">
+        <span class="sg-ico"><svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-9-9"/><path d="M21 3v6h-6"/><path d="M12 8v4l2 2"/></svg></span>
+        <div class="sg-m"><div class="sg-t">备份与恢复</div><div class="sg-s">上次导出 10-28 20:15 · 12.4 MB</div></div>
+        <span class="sg-chev"><svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></span>
+      </div>
+      <div class="sg-b">
+        <div class="row">
+          <div class="row-m">
+            <div class="row-n">导出整库</div>
+            <div class="row-d">SQL 文本落到指定路径 · 路径由后端直读写，大文件不过 HTTP</div>
+          </div>
+          <div class="row-r"><span class="btn pri">导出</span></div>
+        </div>
+        <div class="row">
+          <div class="row-m">
+            <div class="row-n">包含日志与报文</div>
+            <div class="row-d">关掉 = 只导账号与配置，文件小很多（只想换机器带走凭证时用它）</div>
+          </div>
+          <div class="row-r"><span class="sw on"></span></div>
+        </div>
+        <div class="row">
+          <div class="row-m">
+            <div class="row-n">从备份恢复</div>
+            <div class="row-d"><b>整体覆盖主库</b> · 账号、Key、设置全部被替换 · 进行中的请求会断开</div>
+          </div>
+          <div class="row-r"><span class="btn dan">恢复</span></div>
+        </div>
+        <div class="warnbox">
+          恢复是覆盖式的：<b>先导出当前库</b>再恢复。备份文件必须是绝对路径且以 <code>.sql</code> 结尾 —— 内核只认自家格式。
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <p class="note" style="margin-top:14px">恢复的二次确认 —— 必须复述「会丢什么」：</p>
+
+  <div class="scrim">
+    <div class="sheet">
+      <div class="sheet-h">
+        <span class="sheet-t">从备份恢复整库？</span>
+        <span class="sheet-x">✕</span>
+      </div>
+      <div class="sheet-sub">
+        这会用备份文件整体覆盖当前数据库，<b>不可撤销</b>：
+      </div>
+      <ul class="kv" style="margin-top:0">
+        <li>当前 <b>9 个账号</b>与其凭证</li>
+        <li>当前 <b>3 214 条</b>请求明细与报表聚合</li>
+        <li>API Key、提示词、全部设置项</li>
+      </ul>
+      <div class="hint">进行中的请求会被断开。恢复完成后建议重启内核让缓存对齐。</div>
+      <div class="bar" style="justify-content:flex-end;margin-top:14px">
+        <span class="btn">取消</span>
+        <span class="btn dan">确认覆盖</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════ 7. 关于 ═══════════════ -->
+  <h2>⑦ 关于：版本与内核状态</h2>
+  <p class="note">
+    v44 的「检查更新 / beta 通道」在 Android 上暂时没有可用的更新源（内核 <code>/api/update/*</code> 走 GitHub Releases，
+    取的是桌面端的二进制），所以这一组只放<b>真的能点</b>的东西：版本、内核连通状态、数据目录、仓库地址。
+  </p>
+
+  <div class="phone">
+    <div class="sg open">
+      <div class="sg-h">
+        <span class="sg-ico"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v6"/><circle cx="12" cy="7.5" r=".6"/></svg></span>
+        <div class="sg-m"><div class="sg-t">关于</div><div class="sg-s">0.4.0-m3 · 内核已连接</div></div>
+        <span class="sg-chev"><svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></span>
+      </div>
+      <div class="sg-b">
+        <div class="row">
+          <div class="row-m"><div class="row-n">当前版本</div></div>
+          <div class="row-r"><span class="val ro">0.4.0-m3 (3)</span></div>
+        </div>
+        <div class="row">
+          <div class="row-m">
+            <div class="row-n">内核状态</div>
+            <div class="row-d">经 JNI 直调管理面的连通性</div>
+          </div>
+          <div class="row-r"><span class="tag g">已连接</span></div>
+        </div>
+        <div class="row">
+          <div class="row-m">
+            <div class="row-n">配置目录</div>
+            <div class="row-d">库文件所在位置</div>
+          </div>
+          <div class="row-r"><span class="btn">复制</span></div>
+        </div>
+        <div class="row">
+          <div class="row-m">
+            <div class="row-n">源码仓库</div>
+            <div class="row-d">在浏览器打开</div>
+          </div>
+          <div class="row-r"><span class="val">GitHub ❯</span></div>
+        </div>
+        <div class="row">
+          <div class="row-m">
+            <div class="row-n">导出诊断信息</div>
+            <div class="row-d">版本 + 存储概况 + 最近 200 条日志，用于反馈问题时贴给我</div>
+          </div>
+          <div class="row-r"><span class="btn">导出</span></div>
+        </div>
+        <div class="hint">个人开发开源维护，不收集任何账号数据。</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════ 8. 交互规则 ═══════════════ -->
+  <h2>⑧ 交互规则（实现时的统一约定）</h2>
+
+  <table class="tbl">
+    <tr><th>场景</th><th>做法</th><th>理由</th></tr>
+    <tr>
+      <td>首屏加载</td>
+      <td>一次读全 10 组（并发），任一失败只让该组显示「读取失败 + 重试」，不整页报错</td>
+      <td>十组是十条独立端点，一组挂了不该拖死整页</td>
+    </tr>
+    <tr>
+      <td>开关</td>
+      <td>点击即保存；保存中用「禁用 + 轻微透明」，失败回弹并把原因挂在开关下方</td>
+      <td>开关停在错误位置（显示开了其实没开）比报错严重得多</td>
+    </tr>
+    <tr>
+      <td>数字</td>
+      <td>弹层编辑单项，本地校验范围，保存只提交这一项</td>
+      <td>内核是整单校验：一项越界整组不落盘，本地先挡能省一次往返</td>
+    </tr>
+    <tr>
+      <td>保存响应</td>
+      <td>直接用 PUT 响应回填界面，不再 GET 一次</td>
+      <td>内核契约就是「返回生效后的全量值」，多读一次只会引入时序差</td>
+    </tr>
+    <tr>
+      <td>折叠摘要</td>
+      <td>每组副标题显示内核读回来的当前值（不是写死文案）</td>
+      <td>设置页最高频的问题是「我现在是多少」</td>
+    </tr>
+    <tr>
+      <td>危险动作</td>
+      <td>清除 Key / 恢复备份 / 清空正文：二次确认，且<b>复述会丢什么</b>（带具体数字）</td>
+      <td>「不可撤销」四个字不构成信息，具体数字才构成</td>
+    </tr>
+    <tr>
+      <td>只读项</td>
+      <td>明确标 <code>只读</code> 并给一句「要改去哪」</td>
+      <td>可点的灰块与不可点的灰块必须能区分，否则用户会反复点</td>
+    </tr>
+    <tr>
+      <td>空态</td>
+      <td><code>available:false</code> 显示「库不可用」而不是一排 0</td>
+      <td>0 与「不知道」是两件事</td>
+    </tr>
+  </table>
+
+  <!-- ═══════════════ 9. 取舍 ═══════════════ -->
+  <h2>⑨ 取舍：v44 有、这一版不做</h2>
+
+  <table class="tbl">
+    <tr><th>v44 的项</th><th>不做 / 改做的理由</th></tr>
+    <tr>
+      <td>监听端口</td>
+      <td>端口在本壳由 <code>GatewayPrefs.port</code> + 前台服务持有，改它要重启服务；这一页放输入框会与「网关控制」页重复。留在网关控制页。</td>
+    </tr>
+    <tr>
+      <td>无 Key 调用 / 同时监听局域网</td>
+      <td>本壳是 loopback 免鉴权形态，局域网开关在网关控制页已有。放两份会造出两个真相。</td>
+    </tr>
+    <tr>
+      <td>零宽空格脱敏（补充层）</td>
+      <td><b>已改为要做（本轮实现）。</b>原先判断「八条端点已删除、没有端点就没有开关」只对了一半：
+        删掉的是<b>词表管理那一整套</b>（远程同步 / 作用角色 / 作用提供商 / 命中统计），
+        而「用户自定义词 + 零宽空格打断」这个能力本身是可以重做的 —— 它补的正是内置规则集的短板
+        （规则集封闭、随版本走；词表开放、随用户走）。<br><br>
+        实现：内核新增 <code>sanitizeZwspWords</code> 配置键 + <code>GET/PUT /api/zwsp</code>
+        + <code>core::sanitize</code> 里的 <code>insert_zwsp</code> 层（跑在规则集<b>之后</b>，
+        因为规则集的改写要求原文完整出现）；壳侧 <code>SettingsOps.zwspWords/saveZwspWords</code>
+        + 设置页「零宽空格脱敏」一组。<br><br>
+        两点保留：① 它对<b>纯数字串无效</b>（上游会归一化），数字类指纹仍归内置规则集做字面改写；
+        ② 已插入过零宽空格的位置不会重复插入 —— 否则多轮对话里每条历史消息每次出站都会多一个。</td>
+    </tr>
+    <tr>
+      <td>账号级限速（抖动 / 间隔）</td>
+      <td>内核无对应配置键。要做是内核改动，不在本页范围。</td>
+    </tr>
+    <tr>
+      <td>前台服务常驻 / 忽略电池优化 / 签到通知</td>
+      <td>属 Android 壳层能力，跟着「任务中心 → 定时签到」与系统设置走，不塞进网关设置。</td>
+    </tr>
+    <tr>
+      <td>跨端迁移（JSON 导入导出）</td>
+      <td>已有「备份与恢复（整库 SQL）」覆盖同一目标，且更完整。两套导入只会让用户分不清该用哪套。</td>
+    </tr>
+    <tr>
+      <td>升级前自动快照 / 数据结构升级</td>
+      <td>Android 无桌面端历史数据，<code>/api/upgrade</code> 恒为「无需升级」。做出来就是一个永远显示已完成的卡片。</td>
+    </tr>
+    <tr>
+      <td>检查更新 / beta 通道 / 更新间隔</td>
+      <td><code>/api/update/*</code> 取的是桌面二进制。Android 的更新走 CI 产出的 APK，需要另一条链路 —— 单独一期做，先不放假按钮。</td>
+    </tr>
+    <tr>
+      <td>关于 → 接入文档</td>
+      <td>本轮先给「复制配置示例」（BaseURL + Key 拼成一段可直接贴进客户端的 JSON），比跳外部网页更实用。</td>
+    </tr>
+  </table>
+
+  <h2>⑩ 数据层已就绪</h2>
+  <p class="note">
+    <code>SettingsOps.kt</code>（539 行）已写完并编译通过，界面只需调用。字段范围逐条对齐内核：
+  </p>
+  <ul class="kv">
+    <li>超时四项：<code>1–3600</code> 秒，默认 30 / 300 / 300 / 300</li>
+    <li>重试三项：次数 <code>0–10</code>（默认 3 / 5）、间隔 <code>0–300</code> 秒（默认 5）；状态码 <code>100–599</code>、最多 50 个</li>
+    <li>排队两项：次数 <code>0–10</code>（默认 2）、单次 <code>0–120</code> 秒（默认 0 = 跟随建议）</li>
+    <li>保留期三档：<code>1–99999</code> 天</li>
+    <li>续写轮数：<code>1–8</code>（默认 3）</li>
+    <li>API Key 最短 8 字符 <code>MIN_API_KEY_LENGTH</code></li>
+    <li>三态参数用 <code>Opt.Skip / Opt.Clear / Opt.Set</code> 区分「不动 / 清空 / 设值」——
+      用可空参数表达不了内核的三种语义（<code>键缺失</code> / <code>null</code> / <code>有值</code>）</li>
+  </ul>
+
+  <div class="hint" style="margin-top:22px;text-align:center;padding-bottom:10px">
+    确认这一版后开始写 <code>ui/settings/SettingsPage.kt</code> 并接到 <code>Routes.SETTINGS</code>
+  </div>
+
+</div>
+</body>
+</html>

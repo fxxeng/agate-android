@@ -478,7 +478,13 @@ fun AgateNavHost(
                     // AI 运维助手：端口 SSE 流式对话 + 8 只工具（改动类先弹确认卡）
                     dev.agate.android.ui.assistant.AssistantPage(onOpenDrawer = ::openDrawer)
                 }
-                composable(Routes.SETTINGS) { skeleton(it, navController, "设置", "M4", "手风琴分组：主题三档 / 传输 / 脱敏 / 备份与恢复中心。", ::openDrawer) }
+                composable(Routes.SETTINGS) {
+                    // 设置：脱敏分组（内置规则集开关 + 零宽空格词表），见该页模块头
+                    dev.agate.android.ui.settings.SanitizeSettingsPage(
+                        onOpenDrawer = ::openDrawer,
+                        onBack = { navController.popBackStack() },
+                    )
+                }
                 composable(Routes.KEYS) {
                     dev.agate.android.ui.keys.KeysPage(
                         onOpenDrawer = ::openDrawer,
