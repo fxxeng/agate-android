@@ -12,6 +12,8 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.navigationBarsPadding
@@ -114,11 +116,24 @@ fun AddProviderPage(onBack: () -> Unit, initialProviderId: String? = null) {
     var customProviders by remember { mutableStateOf<List<CustomProviderOps.Record>>(emptyList()) }
     var customLoaded by remember { mutableStateOf(false) }
 
+    /**
+     * 从「提供商 → 账号 → + 添加账号」带进来的 id 可能是**自定义家**（`custom-` 前缀）。
+     * 那种情况要直接落到「自定义」段的**加账号**表单 —— 走 Agent 段的话
+     * `PresetRegistry` 里查不到这家，界面停在「选择要添加的家」，看起来就是死路。
+     */
+    val wantCustomAdd = CustomProviderOps.isCustomProviderId(initialProviderId)
+    var initialCustomTarget by remember { mutableStateOf<CustomProviderOps.Record?>(null) }
+
     /** 拉一次自定义提供商目录（建/删/改之后都要重拉，界面据此重判「建过没」）。 */
     fun reloadCustom() {
         scope.launch {
-            customProviders = CustomProviderOps.Record.listOf(CustomProviderOps.list())
+            val list = CustomProviderOps.Record.listOf(CustomProviderOps.list())
+            customProviders = list
             customLoaded = true
+            // 带 id 进来的那家：记录到手后才谈得上「给谁加账号」
+            if (wantCustomAdd && initialCustomTarget == null) {
+                initialCustomTarget = list.firstOrNull { it.id == initialProviderId }
+            }
         }
     }
 
@@ -160,7 +175,7 @@ fun AddProviderPage(onBack: () -> Unit, initialProviderId: String? = null) {
                 .padding(bottom = 24.dp)
         ) {
             // ptabs：v44 胶囊页签（官方 / 中转 / 自定义），中转与自定义为占位
-            var tab by remember { mutableStateOf(0) }
+            var tab by remember { mutableStateOf(if (wantCustomAdd) 2 else 0) }
             Row(
                 modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -371,6 +386,7 @@ fun AddProviderPage(onBack: () -> Unit, initialProviderId: String? = null) {
                     2 -> CustomProviderTab(
                         custom = customProviders,
                         loaded = customLoaded,
+                        initialTarget = initialCustomTarget,
                         onDone = done,
                     )
                     else -> Unit
@@ -983,10 +999,16 @@ private fun PresetPickerSheet(
 private fun CustomProviderTab(
     custom: List<CustomProviderOps.Record>,
     loaded: Boolean,
+    /** 从详情页「+ 添加账号」带进来的那家（非空 = 直接进它的加账号表单）。 */
+    initialTarget: CustomProviderOps.Record?,
     onDone: (Boolean, String) -> Unit,
 ) {
     val C = agateColors()
-    var pendingExisting by remember { mutableStateOf<CustomProviderOps.Record?>(null) }
+    var pendingExisting by remember { mutableStateOf(initialTarget) }
+    // 记录是异步拉到的：晚到时补一次（用户此刻可能已经在看新建表单，那就不要抢）
+    LaunchedEffect(initialTarget) {
+        if (initialTarget != null && pendingExisting == null) pendingExisting = initialTarget
+    }
 
     val target = pendingExisting
     if (target != null) {
@@ -1273,10 +1295,27 @@ private fun ChipRow(options: List<String>, selected: Int, onSelect: (Int) -> Uni
     }
 }
 
+/**
+ * 协议三选一。
+ *
+ * ⚠️ 必须用 [FlowRow] 而不是 [Row]：三个标签都很长
+ * （`OpenAI - Chat Completions` / `OpenAI - Responses` / `Anthropic - Messages`），
+ * 一行放不下。用普通 Row 时第三个 chip 分到的宽度是 **0**，文字被逐字换行成一根
+ * 极细的竖条 —— 它被裁到屏幕外看不见，但把整行的高度撑到几百 dp，
+ * 表现就是「协议下面一大段空白」（2026-10-29 实测）。
+ *
+ * `softWrap = false` + `maxLines = 1` 是第二道保险：将来加更长的标签时，
+ * 宁可让 FlowRow 换行，也不要再出现「宽度 0 逐字折行」那种塌陷。
+ */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun ProtocolChips(selected: CustomProviderOps.Protocol, onSelect: (CustomProviderOps.Protocol) -> Unit) {
     val C = agateColors()
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    FlowRow(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
         CustomProviderOps.Protocol.entries.forEach { p ->
             val active = selected == p
             Text(
@@ -1284,6 +1323,8 @@ private fun ProtocolChips(selected: CustomProviderOps.Protocol, onSelect: (Custo
                 color = if (active) C.onAccent else C.textSub,
                 fontSize = 12.sp,
                 fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                softWrap = false,
                 modifier = Modifier
                     .background(if (active) C.accent else C.insetBg, RoundedCornerShape(999.dp))
                     .border(1.dp, if (active) Color.Transparent else C.border, RoundedCornerShape(999.dp))

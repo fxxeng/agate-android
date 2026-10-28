@@ -7,6 +7,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -1164,6 +1166,7 @@ private fun ClineHeadersCard() {
  * `anthropic` → `{base}/v1/messages`），所以两边的地址语义不同：Anthropic 要
  * 根地址，OpenAI 兼容要带 `/v1`。提示文案随所选协议换，别让人两头都填错。
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun CustomProviderCard(custom: CustomProviderOps.Record, onSaved: () -> Unit) {
     val C = agateColors()
@@ -1199,11 +1202,20 @@ private fun CustomProviderCard(custom: CustomProviderOps.Record, onSaved: () -> 
         Spacer(Modifier.height(10.dp))
         Text("协议", color = C.textSub, fontSize = 11.sp)
         Spacer(Modifier.height(5.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        // FlowRow 而非 Row：三个协议标签都很长，一行放不下时普通 Row 会给最后
+        // 一个 0 宽度 —— 文字逐字折行成一根看不见的竖条，把卡片撑出大片空白
+        //（新增提供商页踩过同一个坑，见那里 ProtocolChips 的注释）。
+        FlowRow(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
             CustomProviderOps.Protocol.entries.forEach { p ->
                 val active = p == protocol
                 Text(
                     p.label,
+                    maxLines = 1,
+                    softWrap = false,
                     color = if (active) C.onAccent else C.textSub,
                     fontSize = 11.sp,
                     modifier = Modifier
