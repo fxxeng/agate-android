@@ -187,7 +187,8 @@ internal data class ListView(
 @Composable
 fun ModelsPage(
     onOpenDrawer: () -> Unit = {},
-    onOpenSpeedtest: () -> Unit = {},
+    /** 跳测速页。[model] 非空时那一页只显示这一条（胶囊点进来的路径）。 */
+    onOpenSpeedtest: (provider: String?, model: String?) -> Unit = { _, _ -> },
     onOpenCaps: (String, String) -> Unit = { _, _ -> },
     onOpenMapping: () -> Unit = {},
     onOpenCatalog: () -> Unit = {},
@@ -309,6 +310,24 @@ fun ModelsPage(
     // 放在 `loadManage` 之后 —— 局部函数必须先声明后使用。
     LaunchedEffect(Unit) { loadManage() }
     LaunchedEffect(Unit) { loadCustom() }
+    // 事件驱动刷新：模型开关或自定义家清单变了，本页要重拉的是**三份派生数据**
+    // （管理视图的启停、客户端所见清单的推演计数、自定义家名字）。会话清单本身
+    // 由快照轮询带回，这里不重复拉。
+    LaunchedEffect(Unit) {
+        GatewayRepository.bus.collect { kind ->
+            when (kind) {
+                "models_changed" -> {
+                    loadManage()
+                    loadListView()
+                }
+                "providers_changed" -> {
+                    loadCustom()
+                    loadManage()
+                    loadListView()
+                }
+            }
+        }
+    }
 
     /** 批量启停的忙态（与单条 `toggling` 分开：批量期间不希望每行都变成「…」）。 */
     var batchBusy by remember { mutableStateOf(false) }
@@ -571,7 +590,8 @@ fun ModelsPage(
 
     Column(modifier = modifier.fillMaxSize().background(C.bg)) {
         AgatePageHeader(title = "模型", onOpenDrawer = onOpenDrawer) {
-            AgateHeaderAction("测速") { onOpenSpeedtest() }
+            // 页头这颗是「不指定模型，进测速页看全量」；指定模型从下面胶囊点进去
+            AgateHeaderAction("测速") { onOpenSpeedtest(null, null) }
             // 「映射」按 v44 放在**页头**而不是页面底部 —— 它是配置入口，
             // 与「测速」同级；放底部会与本页的「清单 + 模型列表」混在一起，
             // 且要滚到最下方才够得着。
@@ -600,6 +620,22 @@ fun ModelsPage(
                     val next = if (pid in listView.pins) listView.pins - pid else listView.pins + pid
                     saveListView(listView.mode, next)
                 },
+                // 胶囊右侧「N 号」小圆点要两份数据：裸模型名 → 承载它的家（取第一个，
+                // 与「按模型」合并口径一致），以及那家的**就绪账号数**。
+                // 账号数是**按家**而不是按模型的：内核没给「某个模型有哪几个账号可用」，
+                // 按家算是能拿到的最接近的读数 —— 所以图例里明说它是「该家就绪账号」。
+                modelProvider = remember(models) {
+                    buildMap {
+                        models.forEach { row -> putIfAbsent(row.id.substringAfter('/'), row.provider) }
+                    }
+                },
+                readyAccounts = remember(snap.accountList) {
+                    snap.accountList.orEmpty()
+                        .filter { it.enabled && it.hasCredentials }
+                        .groupingBy { it.provider }
+                        .eachCount()
+                },
+                onOpenSpeedtest = onOpenSpeedtest,
             )
 
             Spacer(Modifier.height(12.dp))
@@ -835,6 +871,11 @@ private fun XpCard(
     configuring: Boolean,
     onSetMode: (String) -> Unit,
     onTogglePin: (String) -> Unit,
+    /** 裸模型名 → 承载它的家（胶囊点进测速要这个）。 */
+    modelProvider: Map<String, String> = emptyMap(),
+    /** 家 → 就绪账号数（胶囊右侧小圆点的读数）。 */
+    readyAccounts: Map<String, Int> = emptyMap(),
+    onOpenSpeedtest: (provider: String?, model: String?) -> Unit = { _, _ -> },
 ) {
     val C = agateColors()
     var expanded by remember { mutableStateOf(false) }
@@ -861,7 +902,11 @@ private fun XpCard(
                 color = C.textMain,
                 modifier = Modifier.weight(1f),
             )
-            AgateBadge("GET /v1/models", BadgeTone.GRAY)
+            // 常驻读数：这个数字跟着模式切换与启停实时变（它就是客户端的答案）
+            AgateBadge(
+                "客户端可见 $count",
+                if (tooMany) BadgeTone.AMBER else BadgeTone.BLUE,
+            )
             Spacer(Modifier.width(6.dp))
             Text("⌄", color = C.textDim, fontSize = 14.sp, modifier = Modifier.rotate(if (expanded) 180f else 0f))
         }
@@ -890,10 +935,11 @@ private fun XpCard(
             if (tooMany) AgateBadge("偏多", BadgeTone.AMBER)
         }
 
-        if (!expanded) return@Column
-
-        // ── 展开：模式切换 ──
-        Spacer(Modifier.height(12.dp))
+        // ── 模式切换：常驻 ──────────────────────────────────────
+        // 这段原来只在展开后可点。之所以提上来：它是这一页最常用的开关
+        // （「客户端到底看到什么」），藏在一层折叠后面等于每次都要多点一次。
+        // 它不在标题行的 clickable 里，所以点滑块不会误触折叠。
+        Spacer(Modifier.height(10.dp))
         AgateSegmented(
             options = listOf("按模型", "按提供商", "混合"),
             selected = when (view.mode) {
@@ -903,6 +949,8 @@ private fun XpCard(
             },
             onSelect = { onSetMode(listOf("model", "provider", "hybrid")[it]) },
         )
+
+        if (!expanded) return@Column
 
         // ── 主读数 + 副行拆解 ──
         Spacer(Modifier.height(10.dp))
@@ -990,11 +1038,15 @@ private fun XpCard(
             Spacer(Modifier.height(10.dp))
             Text("预览客户端看到的清单", color = C.textSub, fontSize = 12.sp)
             Spacer(Modifier.height(6.dp))
-            FlowIds(view.ids.take(12))
-            if (view.ids.size > 12) {
-                Spacer(Modifier.height(4.dp))
-                Text("… 共 ${view.ids.size} 项", color = C.textDim, fontSize = 11.sp)
-            }
+            // 胶囊阵列：比一排只读的 id 徽章多两件事 —— 每个胶囊右侧的小圆点是
+            // 承载它的那家的**就绪账号数**（0 = 灰、1~2 = 琥珀、≥3 = 绿），
+            // 点一下直接带着这个模型去测速页。
+            ExposedPills(
+                ids = view.ids,
+                modelProvider = modelProvider,
+                readyAccounts = readyAccounts,
+                onOpen = onOpenSpeedtest,
+            )
         }
 
         Spacer(Modifier.height(9.dp))
@@ -1090,6 +1142,91 @@ private fun FlowIds(ids: List<String>) {
         }
     }
 }
+
+/**
+ * 暴露清单的胶囊阵列：每个胶囊 = 一项客户端会看到的 id。
+ *
+ * ── 比原来那排只读 id 徽章多什么 ────────────────────────────
+ *   · 右侧小圆点 = **承载它的那家的就绪账号数**（0 灰 / 1~2 琥珀 / ≥3 绿）。
+ *     这是「这个模型现在真能用吗」最快的读数 —— 一个模型挂在只有 0 个就绪账号
+ *     的家里，客户端点了必然失败，而原来的界面完全看不出来。
+ *   · 点一下直接带着它去测速页（少一次「先去测速页再找这个模型」）。
+ *
+ * ⚠️ 圆点读的是**按家**的账号数，不是按模型的：内核没有「某个模型有哪几个账号
+ * 可用」这个维度（模型清单与账号清单在两个不相交的端点）。所以胶囊上只写数字，
+ * 图例里明说它是「该家的就绪账号数」——不写成「3 号在线」那种会被理解成
+ * 「这个模型有 3 个账号」的说法。
+ *
+ * 只铺前 [EXPOSED_PILL_LIMIT] 项：80+ 项时全部铺开会把卡片撑得比内容还长，
+ * 而多出来的那些在下面「按范围」里本来就能逐家看。
+ */
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+@Composable
+private fun ExposedPills(
+    ids: List<String>,
+    modelProvider: Map<String, String>,
+    readyAccounts: Map<String, Int>,
+    onOpen: (provider: String?, model: String?) -> Unit,
+) {
+    val C = agateColors()
+    val shown = ids.take(EXPOSED_PILL_LIMIT)
+    Column {
+        androidx.compose.foundation.layout.FlowRow(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(5.dp),
+            verticalArrangement = Arrangement.spacedBy(5.dp),
+        ) {
+            shown.forEach { id ->
+                // `provider/model` 形态自带家；裸名要反查一次
+                val provider = if ('/' in id) id.substringBefore('/') else modelProvider[id]
+                val model = id.substringAfter('/')
+                val ready = provider?.let { readyAccounts[it] } ?: 0
+                val dot = when {
+                    ready >= 3 -> C.green
+                    ready >= 1 -> C.amber
+                    else -> C.textDim
+                }
+                Row(
+                    Modifier
+                        .background(C.insetBg, RoundedCornerShape(8.dp))
+                        .border(1.dp, C.border, RoundedCornerShape(8.dp))
+                        .clickable { onOpen(provider, model) }
+                        .padding(horizontal = 8.dp, vertical = 3.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        id,
+                        color = if ('/' in id) C.accent else C.textSub,
+                        fontSize = 10.sp,
+                        maxLines = 1,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                    )
+                    Spacer(Modifier.width(5.dp))
+                    Box(Modifier.size(5.dp).background(dot, androidx.compose.foundation.shape.CircleShape))
+                    Spacer(Modifier.width(3.dp))
+                    Text("$ready", color = C.textDim, fontSize = 9.sp)
+                }
+            }
+        }
+        if (ids.size > shown.size) {
+            Spacer(Modifier.height(5.dp))
+            Text(
+                "还有 ${ids.size - shown.size} 项未铺开（共 ${ids.size} 项）· 用上方范围逐家看",
+                color = C.textDim,
+                fontSize = 10.sp,
+            )
+        }
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "小圆点 = 承载该模型那家的就绪账号数（0 = 现在点了必然失败）· 点胶囊直接去测速",
+            color = C.textDim,
+            fontSize = 10.sp,
+        )
+    }
+}
+
+/** 胶囊最多铺几项。 */
+private const val EXPOSED_PILL_LIMIT = 40
 
 /**
  * 「拉取模型」弹层（v44 / 3.0.8 的目录刷新交互）。

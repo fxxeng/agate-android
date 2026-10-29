@@ -81,6 +81,7 @@ import dev.agate.android.ui.logs.RequestDetailPage
 import dev.agate.android.ui.models.ModelCapsFocus
 import dev.agate.android.ui.models.ModelCapsPage
 import dev.agate.android.ui.models.ModelMappingPage
+import dev.agate.android.ui.models.ModelSpeedtestFocus
 import dev.agate.android.ui.models.ModelSpeedtestPage
 import dev.agate.android.ui.models.ModelsPage
 import dev.agate.android.ui.routing.RoutingPage
@@ -412,7 +413,11 @@ fun AgateNavHost(
                 composable(Routes.MODELS) {
                     ModelsPage(
                         onOpenDrawer = { openDrawer() },
-                        onOpenSpeedtest = { navController.navigate(Routes.MODEL_SPEEDTEST) },
+                        onOpenSpeedtest = { _, model ->
+                            // 胶囊点进来时带上「只看这条」，页头那颗测速不带（null）
+                            if (!model.isNullOrBlank()) ModelSpeedtestFocus.set(model)
+                            navController.navigate(Routes.MODEL_SPEEDTEST)
+                        },
                         onOpenCaps = { providerId, modelId ->
                             // 带上上下文：能力位页打开就落在这一条上（见 ModelCapsFocus）
                             ModelCapsFocus.set(providerId, modelId)
@@ -468,7 +473,11 @@ fun AgateNavHost(
                 // 内核 `POST /api/models/test` 早已就绪（走生产转发链路、钉账号），
                 // 缺的一直只是这块界面。
                 composable(Routes.MODEL_SPEEDTEST) {
-                    ModelSpeedtestPage(onBack = { navController.popBackStack() })
+                    // 焦点一次性取走（见 ModelSpeedtestFocus 的说明）：取到就只看那一条
+                    ModelSpeedtestPage(
+                        onBack = { navController.popBackStack() },
+                        focus = ModelSpeedtestFocus.take(),
+                    )
                 }
                 composable(Routes.MODEL_MAPPING) { ModelMappingPage(onBack = { navController.popBackStack() }) }
                 composable(Routes.MODEL_CAPS) { ModelCapsPage(onBack = { navController.popBackStack() }) }

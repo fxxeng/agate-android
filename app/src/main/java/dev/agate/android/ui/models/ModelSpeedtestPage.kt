@@ -59,11 +59,20 @@ import kotlinx.coroutines.launch
  * 的模型跑，且并发 3 —— 并发再高会自己把自己的限流打出来，读数就不可信了。
  */
 @Composable
-fun ModelSpeedtestPage(onBack: () -> Unit) {
+fun ModelSpeedtestPage(onBack: () -> Unit, focus: String = "") {
     val C = agateColors()
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     var rows by remember { mutableStateOf<List<ModelOps.ManageModelRow>>(emptyList()) }
+    /**
+     * 只看某一个模型（从模型页的胶囊点进来时带过来）。
+     *
+     * 为什么是「过滤」而不是「滚到那一行并高亮」：本页是一长串按家分组的列表，
+     * 滚过去之后用户既不知道自己在哪、也不知道别的模型还在不在。过滤之后页面上
+     * 只剩它一条（外加一个「显示全部」的出口），意图最清楚。
+     * 空串 = 不聚焦（页头那颗「测速」走的就是这条）。
+     */
+    var focusModel by remember(focus) { mutableStateOf(focus) }
     var loading by remember { mutableStateOf(true) }
     var runningAll by remember { mutableStateOf(false) }
     val results by ModelTestStore.results.collectAsState()
@@ -132,6 +141,33 @@ fun ModelSpeedtestPage(onBack: () -> Unit) {
             Text("读取模型清单…", color = C.textDim, fontSize = 12.sp, modifier = Modifier.padding(horizontal = 16.dp))
             return@Column
         }
+        // 聚焦条：点胶囊进来时只显示那一条，给一个明确的出口
+        if (focusModel.isNotBlank()) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 4.dp)
+                    .background(C.insetBg, RoundedCornerShape(10.dp))
+                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    "只看 $focusModel",
+                    color = C.textMain,
+                    fontSize = 12.sp,
+                    modifier = Modifier.weight(1f),
+                )
+                Text(
+                    "显示全部",
+                    color = C.accent,
+                    fontSize = 12.sp,
+                    modifier = Modifier
+                        .clickable { focusModel = "" }
+                        .padding(horizontal = 6.dp, vertical = 2.dp),
+                )
+            }
+        }
+
         if (rows.isEmpty()) {
             Spacer(Modifier.height(12.dp))
             Text(
@@ -142,7 +178,20 @@ fun ModelSpeedtestPage(onBack: () -> Unit) {
             return@Column
         }
 
-        val byProvider = rows.groupBy { it.providerLabel }
+        // 聚焦时只留这一条。比较用 `equals(ignoreCase)`：胶囊上的 id 可能是
+        // `provider/model` 拆出来的裸名，大小写与登记时的写法不一定一致。
+        val shownRows = if (focusModel.isBlank()) rows
+        else rows.filter { it.id.equals(focusModel, ignoreCase = true) }
+        if (shownRows.isEmpty()) {
+            Spacer(Modifier.height(12.dp))
+            Text(
+                "这家没有已启用的「$focusModel」（可能刚被关掉）· 点上方「显示全部」看别的",
+                color = C.amber, fontSize = 12.sp,
+                modifier = Modifier.padding(horizontal = 16.dp),
+            )
+            return@Column
+        }
+        val byProvider = shownRows.groupBy { it.providerLabel }
         LazyColumn(
             Modifier.fillMaxSize().padding(horizontal = 16.dp),
             contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 10.dp),
