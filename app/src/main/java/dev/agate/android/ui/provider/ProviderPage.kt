@@ -76,6 +76,15 @@ internal data class ProviderGroupView(
     val label: String,
     val preset: ProviderPreset?,
     val accounts: List<AccountDto>,
+    /**
+     * 自定义家用户起的名字（内置家为空串）。
+     *
+     * 与 [label] 不是一回事：[label] 是**展示串**（自定义家填的是同一个名字，
+     * 但查不到时会回落成 id），而图标反查需要的是「用户当初填的原值」——
+     * 它与预置模板的名称做等值比较（`ProviderIcons.resOfCustomName`）。
+     * 分开两个字段是为了不让「展示兜底」污染「身份判定」。
+     */
+    val customName: String = "",
 ) {
     val hasWarn: Boolean get() = accounts.any { !it.enabled || !it.hasCredentials || it.lowBalance }
 }
@@ -225,7 +234,10 @@ fun ProviderPage(
         savedOrder.forEach { pid ->
             byProvider[pid]?.let { list ->
                 val preset = PresetRegistry.ALL.find { it.id == pid }
-                seq += ProviderGroupView(pid, preset?.label ?: labelOf(pid), preset, list)
+                seq += ProviderGroupView(
+                    pid, preset?.label ?: labelOf(pid), preset, list,
+                    customName = customNames[pid].orEmpty(),
+                )
                 seen += pid
             }
         }
@@ -238,7 +250,12 @@ fun ProviderPage(
             }
         }
         byProvider.forEach { (pid, list) ->
-            if (pid !in seen) seq += ProviderGroupView(pid, labelOf(pid), null, list)
+            if (pid !in seen) {
+                seq += ProviderGroupView(
+                    pid, labelOf(pid), null, list,
+                    customName = customNames[pid].orEmpty(),
+                )
+            }
         }
         seq
     }
@@ -504,7 +521,14 @@ private fun ProviderCard(
         //（旧版挤在一行，窄屏上名称会被截成「WorkBuddy...」）。
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box {
-                AgateProviderAvatar(providerId = g.providerId, label = g.label, size = 38.dp)
+                // `customName`：自定义家（`custom-xxxx`）按名字反查预置模板的 logo，
+                // 否则商汤日日新这类从模板建出来的家只剩两字母色块（见 ProviderIcons）
+                AgateProviderAvatar(
+                    providerId = g.providerId,
+                    label = g.label,
+                    size = 38.dp,
+                    customName = g.customName,
+                )
                 Box(
                     Modifier
                         .align(Alignment.BottomEnd)
@@ -1077,7 +1101,13 @@ private fun ReorderRow(g: ProviderGroupView) {
             .padding(horizontal = 12.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        AgateProviderAvatar(providerId = g.providerId, label = g.label, size = 32.dp, corner = 10.dp)
+        AgateProviderAvatar(
+            providerId = g.providerId,
+            label = g.label,
+            size = 32.dp,
+            corner = 10.dp,
+            customName = g.customName,
+        )
         Spacer(Modifier.width(10.dp))
         Text(g.label, color = C.textMain, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
         Text("${g.accounts.count { it.enabled }}/${g.accounts.size} 启用", color = C.textSub, fontSize = 12.sp)

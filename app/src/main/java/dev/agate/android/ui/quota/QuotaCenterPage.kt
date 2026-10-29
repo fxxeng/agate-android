@@ -34,11 +34,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.agate.android.data.AccountOps
+import dev.agate.android.data.CustomProviderOps
 import dev.agate.android.data.GatewayRepository
 import dev.agate.android.data.PresetRegistry
 import dev.agate.android.data.dto.AccountDto
 import dev.agate.android.ui.components.AgateBadge
 import dev.agate.android.ui.components.AgatePageHeader
+import dev.agate.android.ui.components.AgateProviderAvatar
 import dev.agate.android.ui.components.BadgeTone
 import dev.agate.android.ui.provider.AcctMetric
 import dev.agate.android.ui.provider.parseUsageMetric
@@ -90,6 +92,12 @@ fun QuotaCenterPage(
     var hint by remember { mutableStateOf<String?>(null) }
     var lastAt by remember { mutableStateOf<String?>(null) }
     var filter by remember { mutableStateOf(QuotaFilter.ALL) }
+    // ── 自定义提供商的真实名称 ──────────────────────────────────
+    // 这一页拿到的 provider 是 `custom-xxxx` 这种 id，`PresetRegistry.labelOf`
+    // 查不到就**原样回显 id** —— 截图里那句「custom-77605lb5fcd0」就是这么来的
+    // （用户建的那家明明有名字）。与「提供商」页同一条口径：拿一次列表、建一个
+    // id→name 的 map，展示名与图标反查都靠它。
+    var customNames by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
     // 展开状态（基线用 details 折叠，默认收起）
     var expanded by remember { mutableStateOf<Set<String>>(emptySet()) }
 
@@ -137,6 +145,13 @@ fun QuotaCenterPage(
     LaunchedEffect(Unit) {
         AccountOps.configure(GatewayPrefs.apiKey(ctx))
         refresh(force = false)
+    }
+
+    // 名字表只拉一次（自定义家的名称不是高频变动数据）；失败就留空 map，
+    // 退回「原样显示 id」的老行为 —— 少一个名字比让整页刷新失败更可接受。
+    LaunchedEffect(Unit) {
+        customNames = CustomProviderOps.Record.listOf(CustomProviderOps.list())
+            .associate { it.id to it.name }
     }
 
     Column(Modifier.fillMaxSize().background(C.bg)) {
@@ -251,6 +266,7 @@ fun QuotaCenterPage(
                     ProviderQuotaCard(
                         provider = provider,
                         accounts = visible,
+                        customNames = customNames,
                         metrics = metrics,
                         expiries = expiries,
                         raws = raws,
@@ -280,6 +296,7 @@ private enum class QuotaFilter(val label: String) {
 private fun ProviderQuotaCard(
     provider: String,
     accounts: List<AccountDto>,
+    customNames: Map<String, String>,
     metrics: Map<String, AcctMetric>,
     expiries: Map<String, Expiry>,
     raws: Map<String, String>,
@@ -290,7 +307,8 @@ private fun ProviderQuotaCard(
 ) {
     val C = agateColors()
     val ctx = LocalContext.current
-    val label = PresetRegistry.labelOf(provider)
+    // 先查自定义家的真名，再回落内置注册表 —— 顺序与「提供商」页一致
+    val label = customNames[provider] ?: PresetRegistry.labelOf(provider)
 
     // 家级读数：优先「最早到期」的账号，失败项排前
     val ranked = accounts.sortedWith(
@@ -330,12 +348,17 @@ private fun ProviderQuotaCard(
             Modifier.fillMaxWidth().clickable { onToggle() }.padding(14.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Box(
-                Modifier.size(34.dp).background(C.insetBg, RoundedCornerShape(11.dp)),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(label.take(2), color = C.textSub, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-            }
+            // 官方 logo（内置家走注册表，自定义家按名字反查预置模板），
+            // 都查不到才回落两字母色块 —— 与「提供商」页同一口径。
+            // 之前这里手写了一个 `Text(label.take(2))`，于是每一家都只有字母、
+            // 连 WorkBuddy / CodeArts 这些有 logo 的也一样（用户反馈的问题）。
+            AgateProviderAvatar(
+                providerId = provider,
+                label = label,
+                size = 34.dp,
+                corner = 11.dp,
+                customName = customNames[provider].orEmpty(),
+            )
             Spacer(Modifier.size(10.dp))
             Column(Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
