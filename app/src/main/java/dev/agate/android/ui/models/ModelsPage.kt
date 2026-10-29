@@ -39,6 +39,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -203,7 +204,17 @@ fun ModelsPage(
         onDispose { }
     }
 
-    var view by remember { mutableIntStateOf(1) }   // 0 按模型聚合 / 1 按提供商分组（默认分组）
+    /**
+     * 列表「范围」—— 替代原来的「两种视图」。
+     *
+     * `null` = 全部：跨家合并，回答「这个模型哪家最优、谁在出战」。
+     * 非空 = 某一家：这家的清单，回答「有哪些、开了哪些、哪条挂了」。
+     *
+     * 为什么不再用两个并列视图：同一个模型换个视图就少一半操作（能力位/测速
+     * 各只有一边有），用户要记两套。上游 3.0.8 也是「一个表格 + 左栏选范围」，
+     * 「全部」只是范围的一种，不是另一种渲染器。
+     */
+    var listScope by remember { mutableStateOf<String?>(null) }
     var query by remember { mutableStateOf("") }
     var refreshing by remember { mutableStateOf(false) }
     // 最近一次刷新的逐家结果（v44：卡片要能直接看到「哪家失败」，不必进子页）
@@ -386,7 +397,12 @@ fun ModelsPage(
             .map { it.toModelRow() }
         fromSession + extra
     }
-    val enabledCount = allRows.count { it.enabled }
+    // 范围内的行（计数与列表都以此为准，避免「全部 10/48」出现在单家页上）
+    val scopeRows = remember(allRows, listScope) {
+        val s0 = listScope
+        if (s0 == null) allRows else allRows.filter { it.provider == s0 }
+    }
+    val enabledCount = scopeRows.count { it.enabled }
 
     val filtered = allRows.filter {
         query.isBlank() ||
@@ -430,46 +446,63 @@ fun ModelsPage(
             Spacer(Modifier.height(12.dp))
             AgateSearchBar(value = query, onValueChange = { query = it }, hint = "搜索模型 / 提供商…")
             Spacer(Modifier.height(10.dp))
-            AgateSegmented(
-                options = listOf("按模型聚合", "按提供商分组"),
-                selected = view,
-                onSelect = { view = it },
-            )
+            // ── 范围 chips：全部 + 每家（只列真有模型的）──────────────
+            val scopes = remember(allRows) {
+                val order = PresetRegistry.ALL.map { it.id }
+                allRows.groupBy { it.provider }
+                    .map { (pid, list) ->
+                        pid to (list.firstOrNull()?.providerLabel ?: PresetRegistry.labelOf(pid))
+                    }
+                    .sortedBy { pair -> order.indexOf(pair.first).let { if (it < 0) Int.MAX_VALUE else it } }
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                RangeChip("全部", selected = listScope == null) { listScope = null }
+                scopes.forEach { (pid, label) ->
+                    RangeChip(label, selected = listScope == pid) {
+                        listScope = if (listScope == pid) null else pid
+                    }
+                }
+            }
             Spacer(Modifier.height(10.dp))
             // 「已启用 / 全部」放在分段控件下面一行：它是**读数**（客户端真会
             // 收到几个），不是筛选器 —— 关掉的模型仍然列在下面（置灰），
             // 所以这里不给第二个分段，避免用户以为是一种新的视图形态。
             if (allRows.isNotEmpty()) {
                 Text(
-                    "已启用 $enabledCount / ${allRows.size}" +
-                        if (enabledCount < allRows.size) " · 关掉的置灰，点开关可开回来" else "",
+                    "已启用 $enabledCount / ${scopeRows.size}" +
+                        if (enabledCount < scopeRows.size) " · 未启用/未显示的在卡片下方折叠" else "",
                     style = AgateType.Caption,
-                    color = if (enabledCount < allRows.size) C.textDim else C.textDim,
+                    color = C.textDim,
                 )
                 Spacer(Modifier.height(8.dp))
             }
 
             if (allRows.isEmpty()) {
                 EmptyHint(fetched = snap.fetchedAtMs > 0)
-            } else if (view == 1) {
-                // ── 按提供商分组（v44 #view-provider）──
-                val byProvider = filtered.groupBy { it.provider }
-                val order = PresetRegistry.ALL.map { it.id }
-                byProvider.entries
-                    .sortedBy { e -> order.indexOf(e.key).let { if (it < 0) Int.MAX_VALUE else it } }
-                    .forEach { (pid, list) ->
-                        ProviderModelGroup(
-                            providerId = pid,
-                            label = list.firstOrNull()?.providerLabel ?: PresetRegistry.labelOf(pid),
-                            models = list,
-                            toggling = toggling,
-                            onToggle = { toggle(it) },
-                            onToggleAll = { ids, enabled -> toggleAll(pid, ids, enabled) },
-                            batchBusy = batchBusy,
-                            onOpenCaps = { modelId -> onOpenCaps(pid, modelId) },
-                        )
-                        Spacer(Modifier.height(10.dp))
-                    }
+            } else if (listScope != null) {
+                // ── 单家范围：这家的完整清单（不折叠，一进来就是展开的）──
+                val pid = listScope!!
+                val list = filtered.filter { it.provider == pid }
+                if (list.isEmpty()) {
+                    Text("这家没有匹配的模型", color = C.textDim, fontSize = 12.sp)
+                } else {
+                    ProviderModelGroup(
+                        providerId = pid,
+                        label = list.firstOrNull()?.providerLabel ?: PresetRegistry.labelOf(pid),
+                        models = list,
+                        toggling = toggling,
+                        onToggle = { toggle(it) },
+                        onToggleAll = { ids, enabled -> toggleAll(pid, ids, enabled) },
+                        batchBusy = batchBusy,
+                        onOpenCaps = { modelId -> onOpenCaps(pid, modelId) },
+                        // 单家范围就是「看这家」，没有折叠的必要
+                        expandByDefault = true,
+                    )
+                }
             } else {
                 // ── 按模型聚合（v44 #view-model）──
                 val byId = filtered.groupBy { it.id }
@@ -1125,15 +1158,18 @@ private fun ProviderModelGroup(
     onToggleAll: (List<String>, Boolean) -> Unit,
     batchBusy: Boolean,
     onOpenCaps: (String) -> Unit,
+    /** 单家范围用：进来就展开、且不可折叠（这时卡片只是容器，不是手风琴）。 */
+    expandByDefault: Boolean = false,
 ) {
     val C = agateColors()
     var expanded by remember(providerId) { mutableStateOf(false) }
+    val open = expandByDefault || expanded
     Column(
         Modifier
             .fillMaxWidth()
             .agateCard().background(C.cardBg, RoundedCornerShape(20.dp))
             .border(1.dp, C.border, RoundedCornerShape(20.dp))
-            .clickable { expanded = !expanded }
+            .clickable(enabled = !expandByDefault) { expanded = !expanded }
             .padding(14.dp)
             .animateContentSize(),
     ) {
@@ -1148,15 +1184,12 @@ private fun ProviderModelGroup(
                 fontSize = 12.sp,
                 modifier = Modifier.weight(1f),
             )
-            Text("⌄", color = C.textDim, fontSize = 14.sp, modifier = Modifier.rotate(if (expanded) 180f else 0f))
+            if (!expandByDefault) {
+                Text("⌄", color = C.textDim, fontSize = 14.sp, modifier = Modifier.rotate(if (open) 180f else 0f))
+            }
         }
-        if (expanded) {
+        if (open) {
             Spacer(Modifier.height(10.dp))
-            // ── 已启用的直接列出，已关闭的收进折叠区 ──────────────────
-            // 一家 48 个模型、其中 38 个是关着的时候，全铺开的列表要滑好几屏，
-            // 而用户在这一屏要看的几乎只有「哪些在生效」。关掉的不是不重要
-            // （那里藏着「刚被对齐关掉的官方之外模型」），所以给一行可展开的
-            // 入口，而不是干脆不显示。
             // ── 批量：作用于**当前可见**的模型（已受搜索影响）──────────
             // 为什么不是「这家全部 48 个」：搜索后点「全部启用」却把看不见的也开
             // 了，属于看不见的误伤。要「一个不留全关」的话，清掉搜索框再点。
@@ -1310,6 +1343,31 @@ private fun ModelLine(
             onToggle = { onToggle(m) },
         )
     }
+}
+
+/** 范围选择用的胶囊（全部 / 某一家）。 */
+@Composable
+private fun RangeChip(text: String, selected: Boolean, onClick: () -> Unit) {
+    val C = agateColors()
+    Text(
+        text,
+        maxLines = 1,
+        color = if (selected) C.onAccent else C.textSub,
+        fontSize = 11.sp,
+        fontWeight = FontWeight.SemiBold,
+        modifier = Modifier
+            .background(
+                if (selected) C.accent else C.cardBg,
+                RoundedCornerShape(999.dp),
+            )
+            .border(
+                1.dp,
+                if (selected) Color.Transparent else C.border,
+                RoundedCornerShape(999.dp),
+            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 6.dp),
+    )
 }
 
 /** 卡片里的胶囊小按钮（批量启用/关闭用；本文件内自用）。 */
