@@ -326,7 +326,8 @@ fun AgateNavHost(
     // 这里同时也接管了原先控制台页那份 `Gateway.status()` 循环 —— 两处都探活
     // 会让 `started` 被反复置位、SSE 连两次。
     LaunchedEffect(Unit) {
-        GatewayRepository.configure(GatewayPrefs.apiKey(ctx))
+        // 端口必须一起灌进去：SSE 与探活都按它拼地址（见 configure 的说明）
+        GatewayRepository.configure(GatewayPrefs.apiKey(ctx), GatewayPrefs.port(ctx))
         GatewayRepository.startPolling()
         while (true) {
             GatewayRepository.syncGatewayRunning()

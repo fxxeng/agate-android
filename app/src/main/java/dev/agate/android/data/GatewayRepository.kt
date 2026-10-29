@@ -136,7 +136,15 @@ object GatewayRepository {
         val note: String? = null,
     )
 
-    private const val PORT = 8787
+    /**
+     * SSE 与探活用的端口 —— **必须跟设置走**，不能写死。
+     *
+     * 这里曾经是 `private const val PORT = 8787`：设置页允许改端口，
+     * 改了之后 SSE 会连到 8787（没人听）→ `link` 永远 RETRYING、控制台的
+     * 实时事件与降级轮询全废，而 UI 上只会显示「连接中」，看不出是端口对不上。
+     * 由 [configure] 从 `GatewayPrefs.port` 灌入；未灌入时按默认 8787。
+     */
+    @Volatile private var port: Int = 8787
     private const val MAX_EVENTS = 20
     private const val MAX_SSE_FAILURES = 4
     private const val SNAPSHOT_INTERVAL_MS = 5_000L
@@ -187,8 +195,14 @@ object GatewayRepository {
     @Volatile private var started = false
 
     /** 壳侧凭证：FGS 启动内核前把 GatewayPrefs 的 Key 同步进来。 */
-    fun configure(apiKey: String) {
+    /**
+     * 注入鉴权与端口。调用方是导航宿主（它手里有 `Context`）——
+     * 本对象是纯单例，不持 Context（否则要担心泄漏），所以端口只能由外部灌入。
+     * [port] 传 0/非法值 = 不改（默认 8787），保持既有调用点兼容。
+     */
+    fun configure(apiKey: String, port: Int = 0) {
         this.apiKey = apiKey
+        if (port in 1..65535) this.port = port
         CoreTransport.configure(apiKey)
     }
 
@@ -422,7 +436,7 @@ object GatewayRepository {
         pollJob?.cancel()
         pollJob = null
         _link.value = if (failures.get() == 0) LinkState.CONNECTING else LinkState.RETRYING
-        val builder = Request.Builder().url("http://127.0.0.1:$PORT/api/events")
+        val builder = Request.Builder().url("http://127.0.0.1:$port/api/events")
         if (apiKey.isNotBlank()) builder.header("Authorization", "Bearer $apiKey")
         eventSource?.cancel()
         eventSource = EventSources.createFactory(sseClient).newEventSource(
@@ -492,7 +506,7 @@ object GatewayRepository {
             while (isActive) {
                 val alive = try {
                     pollClient.newCall(
-                        Request.Builder().url("http://127.0.0.1:$PORT/health").build(),
+                        Request.Builder().url("http://127.0.0.1:$port/health").build(),
                     ).execute().use { it.isSuccessful }
                 } catch (_: Exception) {
                     false
