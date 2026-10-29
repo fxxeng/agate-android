@@ -116,7 +116,7 @@ object ProxyOps {
                 ip = it.optString("ip"),
                 durationMs = it.optLong("durationMs", 0L),
                 at = it.optLong("at", 0L),
-                error = it.optString("error").takeIf { e -> e.isNotBlank() },
+                error = (it.opt("error") as? String)?.takeIf { e -> e.isNotBlank() },
             )
         }
 
@@ -250,7 +250,7 @@ object ProxyOps {
                 success = data.optBoolean("success", false),
                 ip = data.optString("ip"),
                 durationMs = data.optLong("durationMs", 0L),
-                error = data.optString("error").takeIf { it.isNotBlank() },
+                error = (data.opt("error") as? String)?.takeIf { it.isNotBlank() },
                 // 写回失败时内核仍返回结论，只多一个 saveError ——
                 // 「测试跑完了」和「没记住这次结果」是两件事，不能混成一次失败
                 saveError = data.optString("saveError").takeIf { it.isNotBlank() },

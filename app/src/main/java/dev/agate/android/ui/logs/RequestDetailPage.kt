@@ -355,7 +355,21 @@ private fun AttemptsCard(entry: StatsOps.Entry) {
                                         text = attempt.account.ifBlank { "—" },
                                         fontSize = 12.5.sp,
                                         color = if (attempt.ok) C.green else C.textMain,
+                                        modifier = Modifier.weight(1f, fill = false),
                                     )
+                                    // 这一轮的状态码：内核一直记着（`AttemptDetail.status`，
+                                    // -1 表示没走到有状态码那一步），但界面此前只画了账号名 ——
+                                    // 「同一账号为什么换了下一轮」这件事只有状态码能回答
+                                    // （429 退避 / 5xx / 401）。
+                                    if (attempt.status > 0) {
+                                        Spacer(Modifier.width(6.dp))
+                                        Text(
+                                            attempt.status.toString(),
+                                            fontSize = 10.5.sp,
+                                            color = if (attempt.ok) C.green else C.red,
+                                            style = AgateType.Num,
+                                        )
+                                    }
                                     if (attempt.retryCount > 0) {
                                         Spacer(Modifier.width(6.dp))
                                         Text(
@@ -598,13 +612,11 @@ private fun RawCard(
                         style = AgateType.Num,
                     )
                 }
-                if (raw == null && rawError == null && !loading) {
-                    Text(
-                        "未开启「调试模式」时新请求不保存报文",
-                        fontSize = 11.sp,
-                        color = C.textDim,
-                    )
-                }
+                // 这里不再补一句「未开启调试模式」—— `raw == null` 时上面的正文框
+                // 已经显示 `rawError`，而那串文案本身就是
+                // 「这条请求没有保存报文（未开启调试模式时新请求不采集）」。
+                // 旧版把提示写成 `rawError == null` 才渲染，而 loadRaw 失败时
+                // rawError 必不为 null —— 那段是永远走不到的死代码。
             }
         }
     }

@@ -40,7 +40,12 @@ object StatsOps {
         val durationMs: Long = o.optLong("durationMs")
         val firstResponseMs: Long = o.optLong("firstResponseMs", -1L)
         val attempts: Long = o.optLong("attempts", 1L)
-        val error: String? = o.optString("error").takeIf { it.isNotBlank() }
+        // ⚠️ 不能写 `optString("error").takeIf { it.isNotBlank() }`：内核这一格是
+        // `Option<String>`，成功时序列化成 JSON `null`，而 org.json 的 `optString`
+        // 对 null 返回**字符串 "null"** —— `isNotBlank()` 拦不住它，界面上就多出
+        // 一行「null」（真机踩到过）。只有 `opt()` 才拿得到真正的 null。
+        // 同一坑在 `Attempt.error` / `Attempt.notice` 上各有一处，改要一起改。
+        val error: String? = (o.opt("error") as? String)?.takeIf { it.isNotBlank() }
         val promptTokens: Long = o.optLong("promptTokens")
         val completionTokens: Long = o.optLong("completionTokens")
         val totalTokens: Long = o.optLong("totalTokens")
@@ -91,10 +96,11 @@ object StatsOps {
         val account: String = o.optString("account")
         /** HTTP 状态码；-1 = 这轮没走到有状态码那一步（传输层失败或未定论）。 */
         val status: Long = o.optLong("status", -1L)
-        // 不用 `ifBlank { null }`：optString 返回非空串，ifBlank 的返回类型
-        // 会被推成 String，塞 null 直接编译不过。takeIf 才拿得到 String?
-        val error: String? = o.optString("error").takeIf { it.isNotBlank() }
-        val notice: String? = o.optString("notice").takeIf { it.isNotBlank() }
+        // 与 `Entry.error` 同一个坑（见那里的说明）：这两格都是 `Option<String>`，
+        // 成功时是 JSON null，`optString` 会把它变成字符串 "null"。
+        // 用 `opt()` 取原始值再判类型，才真的把「没有」和「内容叫 null」分开。
+        val error: String? = (o.opt("error") as? String)?.takeIf { it.isNotBlank() }
+        val notice: String? = (o.opt("notice") as? String)?.takeIf { it.isNotBlank() }
         /** 这一轮内部又退避重试了几次（不 0 值得在详情里点明）。 */
         val retryCount: Int = o.optJSONArray("retries")?.length() ?: 0
 

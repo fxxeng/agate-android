@@ -212,7 +212,11 @@ object ModelOps {
         return TestResult(
             ok = success,
             status = d.optInt("status", 0).takeIf { it > 0 },
-            error = d.optString("error").takeIf { it.isNotBlank() },
+            // ⚠️ 内核这格是 `Option<String>`，成功时序列化成 JSON null，而
+            // `optString` 会把 null 变成**字符串 "null"**，于是「测试成功」也会
+            // 带一句 error="null"。只有 `opt()` 拿得到真正的 null
+            // （同类坑见 `StatsOps.Entry.error` 的说明）。
+            error = (d.opt("error") as? String)?.takeIf { it.isNotBlank() },
             // `ttfb_ms` 可能是 JSON null（非流式 / 上游没给首字时间）
             ttfbMs = (d.opt("ttfb_ms") as? Number)?.toLong(),
             durationMs = (d.opt("duration_ms") as? Number)?.toLong(),
