@@ -428,8 +428,19 @@ pub(super) async fn forward_with_providers(
             .map(crate::server::core::key_scope::KeyScope::allowed_provider_ids)
             .unwrap_or_default()
     } else if let Some(provider) = locked_provider {
-        // 前缀已指明是哪一家：不再按模型名找承载家（同名模型可能多家都有）
-        vec![provider]
+        // 前缀已指明是哪一家：不再按模型名找承载家（同名模型可能多家都有）。
+        //
+        // 但**不能因此绕过启停**：这一家没开这个名字（或压根没这个模型）时，
+        // 照样给空链 —— 让下面的分支走「模型已在网关中关闭」那条 404。
+        // 否则「关了还能量到」会让模型管理页的开关变成摆设。
+        if crate::server::core::providers::catalog::forwarding_providers(&model)
+            .iter()
+            .any(|id| id.eq_ignore_ascii_case(&provider))
+        {
+            vec![provider]
+        } else {
+            Vec::new()
+        }
     } else {
         route_for_forward(&model)
     };
