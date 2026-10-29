@@ -21,6 +21,7 @@ use serde_json::{json, Value};
 
 use crate::server::core::account_store::sql;
 use crate::server::core::account_store::store::{AccountStore, AccountStoreError};
+use crate::server::events;
 
 impl AccountStore {
     /// 按给定顺序重排整条全局队列：`ids` 是新队列（从队首到队尾）。
@@ -80,6 +81,12 @@ impl AccountStore {
                 record.set_priority(index as i64);
             }
         }
+        // 顺序变了也是「账号变了」：界面上的位次、★ 队首标记、路由预演都依赖它
+        // （见 store_crud 里同一处广播的说明）
+        events::publish(
+            "accounts_changed",
+            serde_json::json!({ "changed": changed, "scope": "reorder" }),
+        );
         Ok(json!({
             "ok": true,
             "changed": changed,

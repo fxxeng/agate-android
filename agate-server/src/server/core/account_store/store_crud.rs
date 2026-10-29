@@ -53,6 +53,7 @@ use crate::server::core::limiter;
 use crate::server::core::providers::DEFAULT_PROVIDER_ID;
 use crate::server::core::proxies::describe_account_proxy;
 use crate::server::logging;
+use crate::server::events;
 
 /// 单账号并发上限的封顶值（0 = 不限）。界面输入框用的是同一个数
 /// （ui-islands 的 `CONC_MAX`）；两处要对得上，否则会「界面让填、接口回 400」。
@@ -666,6 +667,15 @@ impl AccountStore {
             drop(_guard);
             self.invalidate_catpaw_sessions(id, &provider);
         }
+        // 广播「账号变了」。发在 core 而不是 API handler 上：改账号的入口不止
+        // 一个（REST、AI 助手的工具调用、定时任务的凭证刷新），挂在 handler 上
+        // 必然漏 —— 而漏掉的那次，界面上就是「改了没反应」。
+        // 只带 id/provider 这类**标识**，不带整条记录：订阅者要的是「谁变了」，
+        // 自己再去拉权威版本，避免把事件通道做成一份会过期的影子数据。
+        events::publish(
+            "accounts_changed",
+            serde_json::json!({ "id": id, "provider": provider }),
+        );
         Ok((account, changes))
     }
 

@@ -82,6 +82,7 @@ use std::time::Duration;
 use serde_json::{json, Map, Value};
 
 use crate::server::config;
+use crate::server::events;
 use crate::server::core::account_store::AccountStore;
 use crate::server::core::capability;
 use crate::server::core::egress;
@@ -554,7 +555,21 @@ fn truncate_chars(text: &str, limit: usize) -> String {
 /// 与 `model_rules::save` 一样，落库失败由 `config::update_raw_field` 自己
 /// 打日志，这里只把布尔交给上层，不再重复记一条。
 fn write_items(items: &[Value]) -> bool {
-    config::update_raw_field(KEY_CUSTOM_PROVIDERS, Value::Array(items.to_vec()))
+    let ok = config::update_raw_field(KEY_CUSTOM_PROVIDERS, Value::Array(items.to_vec()));
+    if ok {
+        // 广播「自定义家变了」。挂在这一个写盘口上而不是 create/update/remove/
+        // set_models 各自返回前：它们**全部**收敛到这里，一处覆盖四条路径，
+        // 将来加第五条也不会漏。事件只带一个计数，订阅者自己去拉权威列表 ——
+        // 事件通道不该变成一份会过期的影子数据。
+        //
+        // 反过来（每条路径各发一次）的代价是：漏一处就有一个「改了没反应」的
+        // 空白，而这种漏在真机上只会表现为「有时候要切页面才更新」，极难报准。
+        events::publish(
+            "providers_changed",
+            serde_json::json!({ "count": items.len() }),
+        );
+    }
+    ok
 }
 
 /// 当前全部自定义提供商（按 createdAt 升序）。

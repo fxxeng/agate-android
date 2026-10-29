@@ -105,7 +105,8 @@
 
 use serde_json::{json, Map, Value};
 
-use crate::server::config;
+use crate::server::config;
+use crate::server::events;
 
 pub const KEY_MODEL_RULES: &str = "modelRules";
 
@@ -709,6 +710,12 @@ pub fn set_state(
     if !save(&rules) {
         return Err("模型开关保存失败".to_string());
     }
+    // 广播「模型开关变了」。发在 core：改开关的入口有 REST 与 AI 助手两条，
+    // 挂在 handler 上会漏掉后者（漏掉的那次在界面上就是「改了没反应」）。
+    events::publish(
+        "models_changed",
+        serde_json::json!({ "provider": provider, "id": id, "enabled": enabled }),
+    );
     Ok(rules)
 }
 
@@ -744,6 +751,11 @@ pub fn set_states(
     if !save(&rules) {
         return Err("模型开关保存失败".to_string());
     }
+    // 一次批量只广播一次（这个入口存在的理由就是「一次落盘、一次通知」）
+    events::publish(
+        "models_changed",
+        serde_json::json!({ "provider": provider, "count": changed, "enabled": enabled }),
+    );
     Ok(changed)
 }
 
