@@ -402,6 +402,18 @@ pub(super) async fn forward_with_providers(
     connections: &mut ConnectionGuard,
 ) -> Result<ForwardOutcome, GatewayError> {
     let model = model_of(ctx.body);
+    // 对外带前缀名（`provider/model`）：**锁定前缀那一家**，后续解析用裸名。
+    //
+    // 清单里的前缀写法本来就是这个语义（「provider/id 锁定这一家」），但此前只有
+    // 发送侧剥了名字，候选家仍按完整名去查 —— 查不到就回落默认家，于是
+    // 「名字对了、家可能错」。多提供商有同名模型时，这会静默打到别家去。
+    //
+    // `ignore_model_gate`（模型测试）不走这里：它本来就钉住了 provider，
+    // 且允许测未启用的模型。
+    let (model, locked_provider) = match crate::server::core::providers::catalog::split_provider_prefix(&model) {
+        Some((provider, bare)) if !ctx.ignore_model_gate => (bare, Some(provider)),
+        _ => (model, None),
+    };
     // 候选家来自 `route_for_forward`（目录里没有这个模型名时会回落成默认
     // provider 一家；模型有家承载但全被禁用时**不回落**，见那个函数）——
     // 本函数是唯一消费方，日志也打在这里。
@@ -415,6 +427,9 @@ pub(super) async fn forward_with_providers(
         ctx.key_scope
             .map(crate::server::core::key_scope::KeyScope::allowed_provider_ids)
             .unwrap_or_default()
+    } else if let Some(provider) = locked_provider {
+        // 前缀已指明是哪一家：不再按模型名找承载家（同名模型可能多家都有）
+        vec![provider]
     } else {
         route_for_forward(&model)
     };

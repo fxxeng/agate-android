@@ -21,7 +21,7 @@ use super::workbuddy::Region as WorkBuddyRegion;
 
 pub use routing::{
     default_model_catalog, default_model_usable, forwarding_providers, model_blocked_everywhere,
-    providers_for_model, wire_target_for_provider, WireTarget,
+    providers_for_model, split_provider_prefix, wire_target_for_provider, WireTarget,
 };
 pub use view::{
     advertised_manifest_contains, advertised_model_ids, has_available_providers, manage_view,

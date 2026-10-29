@@ -117,6 +117,27 @@ pub fn model_blocked_everywhere(model: &str) -> bool {
         })
 }
 
+/// 把对外带前缀名拆成 `(provider_id, 裸名)`。
+///
+/// 只认**已登记的 provider id**：`deepseek/deepseek-chat` 这类真实模型名不会命中
+/// （head 不是 provider id），所以可以放心在转发入口先用它试一次。
+///
+/// 这是清单里「`provider/model` 锁定这一家」那条语义的**请求侧**实现 ——
+/// 没有它，候选家只能拿完整名字去目录里查，一个也查不到，于是回落默认家：
+/// 名字对了、家却可能错（多提供商有同名模型时尤其危险）。
+pub fn split_provider_prefix(model: &str) -> Option<(String, String)> {
+    let text = model.trim();
+    let (head, rest) = text.split_once('/')?;
+    let rest = rest.trim();
+    if rest.is_empty() {
+        return None;
+    }
+    if kind_from_id(head).is_none() {
+        return None;
+    }
+    Some((head.to_string(), rest.to_string()))
+}
+
 pub fn wire_target_for_provider(model: &str, provider_id: &str, _account: Option<&Value>) -> WireTarget {
     let requested = model.trim();
     // 对外带前缀名（`provider/model`）：前缀是清单里的「锁家」写法，**上游不认识**
