@@ -3,6 +3,7 @@ package dev.agate.android
 import android.content.pm.PackageManager
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.compose.setContent
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -21,6 +22,15 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // 显式开启边到边，让各版本表现一致。
+        //
+        // targetSdk = 35 → Android 15 **本来就强制** edge-to-edge，而外壳已经
+        // 按这个前提写好了（`Scaffold(contentWindowInsets = 0)` + 页头
+        // statusBarsPadding + 底栏 navigationBarsPadding，见 AgateNavHost 的注释）。
+        // 不调用这个 API 的话，API 26~34 上是「系统帮忙让开」，35+ 是「自己让开」，
+        // 两套行为靠运气对齐 —— 一旦哪天在低版本上看到一个多出来的白边，很难判断
+        // 是布局写错还是系统版本差异。显式开启后只有一套行为。
+        enableEdgeToEdge()
         requestNotificationPermission()
         setContent {
             // F13：主题档持久化到 GatewayPrefs（冷启动读档；rememberSaveable
