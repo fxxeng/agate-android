@@ -57,6 +57,7 @@ import dev.agate.android.ui.theme.AgateColors
 import dev.agate.android.ui.theme.AgateThemeMode
 import dev.agate.android.ui.theme.AgateType
 import dev.agate.android.ui.theme.agateColors
+import dev.agate.core.AgateForegroundService
 import dev.agate.core.GatewayPrefs
 import kotlinx.coroutines.launch
 
@@ -1033,6 +1034,15 @@ fun SettingsPage(
                 var importPath by remember { mutableStateOf("") }
                 var confirmImport by remember { mutableStateOf(false) }
                 var busyBackup by remember { mutableStateOf(false) }
+                /**
+                 * 刚恢复完、内核内存态还是旧库 → 提示并给一键重启。
+                 *
+                 * 为什么不自动重启：恢复完成时进程里还有别的动作在跑（页面 reload、
+                 * 轮询协程），此刻强杀内核会把它们抛在半路，用户看到的是「恢复成功
+                 * 但整页报错」。让用户按一下、明确知道要中断，比替他抢一步更可靠。
+                 */
+                var needsRestart by remember { mutableStateOf(false) }
+                var restarting by remember { mutableStateOf(false) }
 
                 /**
                  * SAF 导出：内核只认「绝对路径 + .sql」，它不会往 content:// 写。
@@ -1184,6 +1194,49 @@ fun SettingsPage(
                         "内核只认自家格式。",
                     C,
                 )
+                if (needsRestart) {
+                    Spacer(Modifier.height(8.dp))
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .background(C.amber.copy(alpha = 0.10f), RoundedCornerShape(10.dp))
+                            .border(1.dp, C.amber.copy(alpha = 0.40f), RoundedCornerShape(10.dp))
+                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            "已换库，但内核内存里还是旧数据 —— 重启内核后新库才真正生效。",
+                            color = C.amber,
+                            fontSize = 11.sp,
+                            modifier = Modifier.weight(1f),
+                        )
+                        MiniButton(
+                            if (restarting) "重启中…" else "重启内核",
+                            enabled = !restarting,
+                        ) {
+                            if (restarting) return@MiniButton
+                            restarting = true
+                            scope.launch {
+                                // 走前台服务：它是网关的唯一载体（App 侧没有直接
+                                // Gateway.start 的入口，见 KeepaliveGroup 的说明）
+                                AgateForegroundService.stop(ctx)
+                                kotlinx.coroutines.delay(1_200L)
+                                val ok = AgateForegroundService.start(ctx)
+                                restarting = false
+                                if (ok) {
+                                    needsRestart = false
+                                    setNotice("备份", "内核已重启，新库已生效")
+                                    setError("备份", null)
+                                } else {
+                                    setError(
+                                        "备份",
+                                        "内核没能自动重启（系统限制了后台启动）—— 到「网关控制」手动启动",
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
                 SetFeedback("备份", errors, notices, C)
 
                 if (confirmImport) {
@@ -1205,6 +1258,7 @@ fun SettingsPage(
                                 if (r.ok) {
                                     setNotice("备份", r.data ?: "恢复完成")
                                     setError("备份", null)
+                                    needsRestart = true
                                     reload()
                                 } else {
                                     setError("备份", r.error)
