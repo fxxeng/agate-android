@@ -73,9 +73,23 @@ object ProviderIcons {
     fun resOfCustomName(name: String): Int? {
         val key = name.trim().lowercase()
         if (key.isEmpty()) return null
-        return PresetApiRegistry.ALL
-            .firstOrNull { it.name.trim().lowercase() == key }
-            ?.iconRes
+        return presetIconsByName[key]
+    }
+
+    /**
+     * 模板名 → 图标（归一化后的名字为键，见 [resOfCustomName]）。
+     *
+     * 预建一次而不是每次现扫 `PresetApiRegistry.ALL`：额度中心/提供商列表里
+     * 每一行都会问一次，24 条的线性扫虽然不贵，但没必要。
+     * 同名模板只取第一条（当前目录没有重名；真有重名时取先出现的那个，
+     * 与「顺序即上游数组顺序」的约定一致）。
+     */
+    private val presetIconsByName: Map<String, Int> by lazy {
+        val out = LinkedHashMap<String, Int>(PresetApiRegistry.ALL.size)
+        PresetApiRegistry.ALL.forEach { preset ->
+            out.putIfAbsent(preset.name.trim().lowercase(), preset.iconRes)
+        }
+        out
     }
 }
 
