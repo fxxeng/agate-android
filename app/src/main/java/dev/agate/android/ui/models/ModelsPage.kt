@@ -521,6 +521,17 @@ fun ModelsPage(
                         onOpenCaps = { modelId -> onOpenCaps(pid, modelId) },
                         // 单家范围就是「看这家」，没有折叠的必要
                         expandByDefault = true,
+                        hybrid = listView.mode == "hybrid",
+                        pins = listView.pins,
+                        onToggleEntry = { provider, model ->
+                            // 单条 pin 与整家 pin 共用一个数组：`provider` = 整家，
+                            // `provider/model` = 单条（内核按同一个字符串判）。
+                            val key = "$provider/$model"
+                            val next =
+                                if (key in listView.pins) listView.pins - key
+                                else listView.pins + key
+                            saveListView("hybrid", next)
+                        },
                     )
                 }
             } else {
@@ -736,6 +747,19 @@ private fun XpCard(
                     isOn = { index -> view.providers[index].first in view.pins },
                     onClick = { index -> onTogglePin(view.providers[index].first) },
                     enabled = !configuring,
+                )
+            }
+            // 单条暴露（`provider/model`）：在家级芯片下面列出来，否则用户勾完
+            // 只看到「带前缀 N 项」，不知道是哪几条、也无从取消。
+            val entries = view.pins.filter { '/' in it }
+            if (entries.isNotEmpty()) {
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "已单独暴露 ${entries.size} 条：" +
+                        entries.take(4).joinToString("、") +
+                        if (entries.size > 4) " 等" else "",
+                    color = C.accent,
+                    fontSize = 10.sp,
                 )
             }
         }
@@ -1204,6 +1228,12 @@ private fun ProviderModelGroup(
     onOpenCaps: (String) -> Unit,
     /** 单家范围用：进来就展开、且不可折叠（这时卡片只是容器，不是手风琴）。 */
     expandByDefault: Boolean = false,
+    /** 当前清单形态是不是混合（只有混合下「前缀」才有意义）。 */
+    hybrid: Boolean = false,
+    /** 混合模式当前的 pin 列表（元素是家 id 或 `provider/model`）。 */
+    pins: List<String> = emptyList(),
+    /** 切换某一条的前缀暴露。 */
+    onToggleEntry: (String, String) -> Unit = { _, _ -> },
 ) {
     val C = agateColors()
     var expanded by remember(providerId) { mutableStateOf(false) }
@@ -1252,6 +1282,14 @@ private fun ProviderModelGroup(
                 SmallPill("全部启用", enabled = !batchBusy) { onToggleAll(visibleIds, true) }
                 SmallPill("全部关闭", enabled = !batchBusy) { onToggleAll(visibleIds, false) }
             }
+            if (hybrid && providerId !in pins) {
+                Text(
+                    "混合模式 · 点每行的「前缀」可只把这一条加进客户端清单（整家暴露在卡片「额外展开」里勾）",
+                    color = C.textDim,
+                    fontSize = 10.sp,
+                    modifier = Modifier.padding(bottom = 6.dp),
+                )
+            }
 
             // ── 正列：已启用且桌面端也列出的 ──────────────────────────
             // 「桌面端未列」（official=false）的模型即使开着也收进折叠区：这一页
@@ -1260,8 +1298,18 @@ private fun ProviderModelGroup(
             val offRows = models.filterNot { it.enabled && it.official != false }
             var showOff by remember(providerId) { mutableStateOf(false) }
 
+            // 整家已勾选时，行内不再给「前缀」开关（每一条本来就带前缀，见 ModelLine 的说明）
+            val homePinned = providerId in pins
             onRows.forEach { m ->
-                ModelLine(m, toggling, onToggle, onOpenCaps)
+                val bare = if ('/' in m.id) m.id.substringAfterLast('/') else m.id
+                ModelLine(
+                    m = m,
+                    toggling = toggling,
+                    onToggle = onToggle,
+                    onOpenCaps = onOpenCaps,
+                    entryOn = if (!hybrid || homePinned) null else ("$providerId/$bare" in pins),
+                    onToggleEntry = { onToggleEntry(providerId, bare) },
+                )
                 Box(Modifier.fillMaxWidth().height(1.dp).background(C.border.copy(alpha = 0.4f)))
             }
             if (offRows.isNotEmpty()) {
@@ -1289,7 +1337,15 @@ private fun ProviderModelGroup(
                 if (showOff) {
                     offRows.forEach { m ->
                         Box(Modifier.fillMaxWidth().height(1.dp).background(C.border.copy(alpha = 0.4f)))
-                        ModelLine(m, toggling, onToggle, onOpenCaps)
+                        val bare = if ('/' in m.id) m.id.substringAfterLast('/') else m.id
+                        ModelLine(
+                            m = m,
+                            toggling = toggling,
+                            onToggle = onToggle,
+                            onOpenCaps = onOpenCaps,
+                            entryOn = if (!hybrid || homePinned) null else ("$providerId/$bare" in pins),
+                            onToggleEntry = { onToggleEntry(providerId, bare) },
+                        )
                     }
                 }
             }
@@ -1309,6 +1365,13 @@ private fun ModelLine(
     toggling: String?,
     onToggle: (GatewayRepository.ModelRow) -> Unit,
     onOpenCaps: (String) -> Unit,
+    /**
+     * 「这一条也带前缀暴露」的状态：
+     * `null` = 不显示（非混合模式，或这家已整家勾选 —— 那时每一条本来就带前缀）；
+     * `false/true` = 未暴露 / 已暴露。
+     */
+    entryOn: Boolean? = null,
+    onToggleEntry: () -> Unit = {},
 ) {
     val C = agateColors()
     val scope = rememberCoroutineScope()
@@ -1339,6 +1402,24 @@ private fun ModelLine(
                     maxLines = 1,
                 )
             }
+        }
+        // 「前缀」：把这一条单独加进混合模式的带前缀清单（写 pins 的 `provider/model`）。
+        // 整家已勾选时传 null 不显示 —— 那时每一条都带前缀，再给开关会让人以为可以单独关掉。
+        entryOn?.let { on ->
+            Text(
+                if (on) "前缀 ✓" else "前缀",
+                color = if (on) C.onAccent else C.accent,
+                fontSize = 9.sp,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier
+                    .padding(end = 6.dp)
+                    .background(
+                        if (on) C.accent else C.accent.copy(alpha = 0.10f),
+                        RoundedCornerShape(7.dp),
+                    )
+                    .clickable { onToggleEntry() }
+                    .padding(horizontal = 7.dp, vertical = 3.dp),
+            )
         }
         // 「能力位」：带 (provider, model) 上下文跳到编辑器并直接落到这一条。
         // 之前只能在聚合卡里跳一次「全量列表」，找不到刚点的那条。

@@ -61,16 +61,23 @@ fn public_builtin_items(
             pin.eq_ignore_ascii_case(provider) || pin.eq_ignore_ascii_case(&label)
         })
     };
+
+    // 单条 pin：`provider/对外名`。写法与对外 id 完全一致 —— 用户在清单里
+    // 看到的那串字符串可以直接填进来，不需要记另一套语法。
+    //
+    // 与整家 pin 的关系：**整家优先**。某家在 `pins` 里出现时，这家所有模型都
+    // 带前缀，此时单条条目即使还在也只是冗余（不会被重复推送）。
+    let entry_pinned = |provider: &str, name: &str| {
+        let key = format!("{provider}/{name}");
+        pins.iter().any(|pin| pin.eq_ignore_ascii_case(&key))
+    };
     for (kind, manifest) in active {
         let provider = kind_id(*kind);
         let names = advertised_names(&rules, provider, manifest);
         // 这一家要不要额外带前缀：`provider` 模式全带；`hybrid` 只带被 pin 的；
         // `model` 模式不带（同名只留一条，用哪家由路由队列决定）。
-        let prefixed = match mode {
-            ListMode::Provider => true,
-            ListMode::Hybrid => pinned(provider),
-            ListMode::Model => false,
-        };
+        // 整家是否被 pin（Hybrid 下「这家全部带前缀」的快捷方式）
+        let home_pinned = pinned(provider);
         for name in names {
             let Some(wire) = builtin_target(&rules, *kind, manifest, &name) else { continue };
             let Some(upstream) = manifest.iter().find(|item| model_id(item) == wire.model) else { continue };
@@ -89,7 +96,12 @@ fn public_builtin_items(
             //   Provider → 只出带前缀（每家的每个模型各一条，同名不合并）
             //   Hybrid   → 出裸名（去重）+ 被 pin 的家另出带前缀（不参与去重）
             let bare_wanted = mode != ListMode::Provider;
-            let prefix_wanted = prefixed;
+            // 逐条决定：整家 pin 或这一条自己被 pin
+            let prefix_wanted = match mode {
+                ListMode::Provider => true,
+                ListMode::Hybrid => home_pinned || entry_pinned(provider, &name),
+                ListMode::Model => false,
+            };
 
             if bare_wanted {
                 // `insert` 的返回值顺便完成去重：同名只有第一家能出裸名
