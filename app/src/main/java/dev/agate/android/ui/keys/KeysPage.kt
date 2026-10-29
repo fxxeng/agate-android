@@ -42,6 +42,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.agate.android.data.GatewayRepository
 import dev.agate.android.data.KeyOps
+import dev.agate.android.data.LanAddress
 import dev.agate.android.ui.components.AgateBadge
 import dev.agate.android.ui.components.AgatePageHeader
 import dev.agate.android.ui.components.BadgeTone
@@ -83,6 +84,11 @@ fun KeysPage(
     // 本机时 Key 列表为空 → 鉴权走免鉴权分支。文案必须跟着说清楚，否则用户会
     // 以为「必须填」而卡在这一步（这正是之前的实际反馈）。
     val lanMode = remember { GatewayPrefs.bindLan(ctx) }
+    // 局域网地址只在真的开了监听时才算：没开时内核只绑 127.0.0.1，
+    // 给出一个 192.168.x.x 的地址会让人复制到一个连不上的端口。
+    val lanUrl = remember(lanMode) {
+        if (!lanMode) null else LanAddress.ipv4()?.let { "http://$it:$port/v1" }
+    }
 
     var rows by remember { mutableStateOf<List<KeyOps.KeyRow>>(emptyList()) }
     // 两张候选表由后端拼整（`providers` 含注册表 + 自定义家，`modelsByProvider`
@@ -137,13 +143,19 @@ fun KeysPage(
             CopyCard(
                 title = "客户端连接信息",
                 rows = if (lanMode) {
-                    listOf("Base URL" to baseUrl, "API Key" to localKey)
+                    buildList {
+                        add("Base URL" to baseUrl)
+                        // 同网段的电脑/平板要用的就是这一条（本机那条它们连不上）
+                        lanUrl?.let { add("局域网 Base URL" to it) }
+                        add("API Key" to localKey)
+                    }
                 } else {
                     // 本机不需要 Key：只给地址，别让用户去填一个用不上的字段
                     listOf("Base URL" to baseUrl)
                 },
                 hint = if (lanMode) {
-                    "已开局域网监听，客户端必须带 Key（不匹配会拿到 401 invalid or missing API key）"
+                    "已开局域网监听，客户端必须带 Key（不匹配会拿到 401 invalid or missing API key）" +
+                            if (lanUrl == null) "\n（没取到局域网 IP：确认手机已连 Wi-Fi）" else ""
                 } else {
                     "本机访问**无需填 Key**：端口只监听 127.0.0.1，客户端只填 Base URL 即可。" +
                         "开启「局域网监听」后才需要 Key"
@@ -153,8 +165,19 @@ fun KeysPage(
                     toast("已复制")
                 },
                 onCopyAll = {
-                    clipboard.setText(AnnotatedString("Base URL: $baseUrl\nAPI Key: $localKey"))
-                    toast("已复制 Base URL 与 Key")
+                    // 复制的内容按「对方能不能直接用」组织：开了局域网监听时
+                    // 优先给局域网地址，并附上终端可直接粘贴的两行 export ——
+                    // 电脑上接网关基本都要手打这两个变量，抄地址再抄 Key 很容易错。
+                    val target = lanUrl ?: baseUrl
+                    val text = if (lanMode) {
+                        "Base URL: $target\nAPI Key: $localKey\n\n" +
+                            "export ANTHROPIC_BASE_URL=$target\n" +
+                            "export ANTHROPIC_API_KEY=$localKey"
+                    } else {
+                        "Base URL: $baseUrl\nAPI Key: $localKey"
+                    }
+                    clipboard.setText(AnnotatedString(text))
+                    toast(if (lanMode) "已复制局域网地址与启动命令" else "已复制 Base URL 与 Key")
                 },
             )
 
