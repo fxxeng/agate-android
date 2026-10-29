@@ -52,10 +52,14 @@ import dev.agate.android.data.dto.AccountDto
 import dev.agate.android.ui.models.parseMultiplier
 import dev.agate.core.GatewayPrefs
 import dev.agate.android.ui.components.AgateProviderAvatar
+import dev.agate.android.ui.components.PinToTopButton
+import dev.agate.android.ui.components.ReorderState
+import dev.agate.android.ui.components.ReorderableColumn
+import dev.agate.android.ui.components.ReorderableLazyColumn
+import dev.agate.android.ui.components.dragHandle
 import dev.agate.android.ui.components.agateCard
 import dev.agate.android.ui.components.AgateAvatar
 import dev.agate.android.ui.components.AgateBadge
-import dev.agate.android.ui.components.AgateDragList
 import dev.agate.android.ui.components.AgateHeaderAction
 import dev.agate.android.ui.components.AgatePageHeader
 import dev.agate.android.ui.components.AgatePrimaryAction
@@ -113,9 +117,13 @@ internal data class AcctMetric(
 /**
  * 提供商页（M3-3R，对齐 v44 Tab 2）：
  * - 页头三动作：⇅ 排序 / + 添加；搜索框 + 三档筛选（全部/有异常/正常）
- * - 折叠卡：两字母渐变头像 + 右下状态点 / 名称 + N 个账号 · 登录方式 / 「管理」→ 详情子页
+ * - 折叠卡：官方 logo + 右下状态点 / 名称 + N 个账号 · 登录方式 / 「管理」→ 详情子页
  * - collapsed 显示摘要行（N 就绪 / N 停用徽标 + 启用占比细条）；展开显示 acct 块
- * - 排序模式：amber 虚线横幅 + AgateDragList 拖拽 + 5s 无操作自动退出；顺序存壳层偏好
+ * - 排序：**长按卡片直接拖**（不需先进排序模式），松手单次提交；排序编辑态下
+ *   非首项右侧出现「置顶」圆按钮，点卡片任意处即退出。两层各自独立：
+ *   · 提供商层写 `GatewayPrefs.providerOrder`（**只影响显示顺序**）
+ *   · 账号层写内核 priority（`/api/accounts/reorder`，**这才是出战顺序**）
+ *   状态机与动画规格移植自参考实现 `Android-AI-gateway` 的 `Reorderable.kt`。
  */
 @Composable
 fun ProviderPage(
@@ -226,8 +234,11 @@ fun ProviderPage(
         { pid: String -> customNames[pid] ?: PresetRegistry.labelOf(pid) }
     }
     // ── 分组：有账号的家按「偏好顺序 → PresetRegistry 顺序」；无账号家不出现 ──
-    val savedOrder = remember { GatewayPrefs.providerOrder(ctx) }
-    val groups = remember(snap.accountList, customNames) {
+    // ⚠️ 必须是 state 而不是 remember 只读一次：拖拽提交后要立刻让 `groups`
+    // 按新顺序重算。只读一次的写法在「提交 → 快照刷新 → groups 重建」时会
+    // 用旧顺序覆盖 orderState，表现为「拖完过一会儿自己弹回去」。
+    var savedOrder by remember { mutableStateOf(GatewayPrefs.providerOrder(ctx)) }
+    val groups = remember(snap.accountList, customNames, savedOrder) {
         val byProvider = snap.accountList?.groupBy { it.provider } ?: emptyMap()
         val seq = ArrayList<ProviderGroupView>(byProvider.size)
         val seen = HashSet<String>()
@@ -262,21 +273,65 @@ fun ProviderPage(
 
     var query by remember { mutableStateOf("") }
     var filter by remember { mutableStateOf(0) }
-    var reordering by remember { mutableStateOf(false) }
+    // 顺序的唯一事实源（列表渲染、筛选、落盘都读它）
     val orderState = remember { mutableStateListOf<ProviderGroupView>().also { l -> l.addAll(groups) } }
-    LaunchedEffect(groups) { if (!reordering) { orderState.clear(); orderState.addAll(groups) } }
+    // 拖拽状态机（移植自参考实现 Android-AI-gateway 的 Reorderable.kt）：
+    // 长按起拖 → 排序编辑态（5s 无操作自动退出）→ 松手单次提交。
+    val reorderState = remember { ReorderState() }
+    LaunchedEffect(groups) {
+        if (reorderState.draggingKey == null && !reorderState.isSortingMode) {
+            orderState.clear()
+            orderState.addAll(groups)
+        }
+    }
 
-    // 排序模式 5s 无操作自动退出（v44 语义）
-    var lastTouch by remember { mutableStateOf(0L) }
-    LaunchedEffect(reordering, lastTouch) {
-        if (reordering) {
-            val deadline = lastTouch + 5_000L
-            while (isActive && System.currentTimeMillis() < deadline) {
-                delay(500L)
-            }
-            if (isActive && reordering) {
-                reordering = false
-                GatewayPrefs.setProviderOrder(ctx, orderState.map { it.providerId })
+    /**
+     * 拖拽/置顶共用的**唯一提交入口**：把 [key] 挪到 [to] 并落盘。
+     *
+     * 只写「显示顺序」（`GatewayPrefs.providerOrder`）—— 它不影响转发选路，
+     * 选路按各账号的 priority（见账号卡的置顶，那条才是真的出战顺序）。
+     * 这一点必须说清：两个层级的「置顶」语义不同，混起来会让人以为
+     * 「把某家拖到第一个就会优先走它」。
+     */
+    fun commitProviderOrder(key: String, to: Int) {
+        val from = orderState.indexOfFirst { it.providerId == key }
+        if (from < 0 || to !in orderState.indices || from == to) return
+        orderState.add(to, orderState.removeAt(from))
+        val ids = orderState.map { it.providerId }
+        savedOrder = ids            // 让 groups 按新顺序重建（见 savedOrder 的说明）
+        GatewayPrefs.setProviderOrder(ctx, ids)
+    }
+
+    /** 一键置顶（提供商）：挪到显示顺序第一位。只影响展示，不影响选路。 */
+    fun pinProvider(providerId: String) {
+        commitProviderOrder(providerId, 0)
+    }
+
+    /**
+     * 账号拖拽/置顶的提交入口。
+     *
+     * ── 为什么要把「本家新序」摊回**全局队列** ──────────────────
+     * 内核 `/api/accounts/reorder` 要的是**全部账号的一个排列**（队列是全局一条
+     * 按 priority 升序的链，分组只是展示口径）。所以只交本家那几个 id 会被
+     * 400 拒（「队列不完整」）。做法是：保持别家账号在队列里的**位置不动**，
+     * 把本家账号按新顺序填回它原本占的那些槽位 —— 跨家交错关系因此不被打乱。
+     */
+    fun commitAccountOrder(key: String, to: Int, current: List<AccountDto>) {
+        val local = current.map { it.id }.toMutableList()
+        val from = local.indexOf(key)
+        if (from < 0 || to !in local.indices || from == to) return
+        local.add(to, local.removeAt(from))
+        val all = snap.accountList?.map { it.id } ?: return
+        val localSet = local.toSet()
+        if (all.count { it in localSet } != local.size) return
+        val iter = local.iterator()
+        val queue = all.map { if (it in localSet) iter.next() else it }
+        scope.launch {
+            val r = AccountOps.reorder(queue)
+            if (r.ok) {
+                GatewayRepository.refreshOnce()
+            } else {
+                Toast.makeText(ctx, r.error ?: "排序保存失败", Toast.LENGTH_SHORT).show()
             }
         }
     }
@@ -289,26 +344,25 @@ fun ProviderPage(
                 else -> true
             }
     }
+    // 排序中必须显示**全部**家：拖拽的落点下标是相对真实顺序算的，
+    // 拿筛选后的子集去拖，松手会落到一个「看起来对、实际错」的位置。
+    val listItems = if (reorderState.isSortingMode) orderState else visible
     val warnCount = orderState.count { it.hasWarn }
     val okCount = orderState.size - warnCount
 
     Column(Modifier.fillMaxSize().background(C.bg)) {
         // ── 页头（v44 .header-bar：菜单 + 标题 + 排序/添加）──
         AgatePageHeader(title = "提供商", onOpenDrawer = onOpenDrawer) {
-            AgateHeaderAction(if (reordering) "保存" else "⇅ 排序") {
-                if (reordering) {
-                    // 手动退出同样落盘（与 5s 自动退出同一条保存路径）
-                    reordering = false
-                    GatewayPrefs.setProviderOrder(ctx, orderState.map { it.providerId })
-                } else {
-                    lastTouch = System.currentTimeMillis()
-                    reordering = true
-                }
+            AgateHeaderAction(if (reorderState.isSortingMode) "完成" else "⇅ 排序") {
+                // 进入 / 退出排序编辑态。顺序本来就在每次提交时落盘了，这里
+                // 不需要「保存」这一步 —— 按钮只是显式的开关（长按卡片同样能进入）。
+                if (reorderState.isSortingMode) reorderState.exitSortingMode()
+                else reorderState.enterSortingMode()
             }
             AgatePrimaryAction("+ 添加") { onOpenAdd() }
         }
 
-        if (reordering) {
+        if (reorderState.isSortingMode) {
             // v44 .reorder-banner：amber 虚线横幅
             Row(
                 Modifier
@@ -322,7 +376,7 @@ fun ProviderPage(
             ) {
                 Box(Modifier.size(4.dp).background(C.amber, CircleShape))
                 Text(
-                    "排序中 · 拖动卡片调整显示顺序 · 松手即保存 · 5 秒无操作自动退出",
+                    "排序中 · 长按卡片拖动 · 松手即保存 · 5 秒无操作自动退出",
                     color = C.amber,
                     fontSize = 12.sp,
                 )
@@ -366,40 +420,43 @@ fun ProviderPage(
                         .padding(horizontal = 16.dp, vertical = 10.dp),
                 )
             }
-        } else if (reordering) {
-            AgateDragList(
-                items = orderState,
-                onMove = { from, to ->
-                    lastTouch = System.currentTimeMillis()
-                    val item = orderState.removeAt(from)
-                    orderState.add(to, item)
-                },
-                modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
-                reorderHint = "拖动调整显示顺序 · 5 秒无操作自动保存退出",
-            ) { g, _, _ ->
-                ReorderRow(g)
-                Spacer(Modifier.height(8.dp))
-            }
         } else {
-            LazyColumn(
-                Modifier.fillMaxSize().padding(horizontal = 16.dp),
+            // 拖拽排序（移植自参考实现）：长按卡片起拖、松手单次提交，
+            // 排序编辑态下非首项右侧出现「置顶」圆按钮。
+            // 与旧实现（页头进入排序模式 + 压成单行的 AgateDragList）的差别：
+            // 拖的是**卡片本身**，不用先切形态，视觉上下文也不会跳。
+            ReorderableLazyColumn(
+                items = listItems,
+                keyOf = { it.providerId },
+                state = reorderState,
+                onCommit = { key, toIndex -> commitProviderOrder(key, toIndex) },
+                modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
                 contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 10.dp),
-            ) {
-                items(visible, key = { it.providerId }) { g ->
-                    ProviderCard(
-                        g = g,
-                        heads = snap.currentAccountIds,
-                        metrics = metrics,
-                        inflight = inflight,
-                        mult = multByProvider[g.providerId],
-                        checkinSupported = g.providerId in checkinProviders,
-                        usageCapableProviders = snap.providerUsage,
-                        onOpenDetail = { onOpenDetail(g.providerId) },
-                        onOpenQuotaCenter = onOpenQuotaCenter,
-                        onOpenLimiter = onOpenLimiter,
-                    )
-                    Spacer(Modifier.height(10.dp))
-                }
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) { g ->
+                val idx = orderState.indexOfFirst { it.providerId == g.providerId }
+                ProviderCard(
+                    g = g,
+                    heads = snap.currentAccountIds,
+                    metrics = metrics,
+                    inflight = inflight,
+                    mult = multByProvider[g.providerId],
+                    checkinSupported = g.providerId in checkinProviders,
+                    usageCapableProviders = snap.providerUsage,
+                    dragState = reorderState,
+                    isFirst = idx <= 0,
+                    onPinToTop = {
+                        pinProvider(g.providerId)
+                        // 置顶完成 = 一次排序操作结束 → 自动退出编辑态
+                        reorderState.exitSortingMode()
+                    },
+                    onCommitAccountOrder = { key, to ->
+                        commitAccountOrder(key, to, g.accounts)
+                    },
+                    onOpenDetail = { onOpenDetail(g.providerId) },
+                    onOpenQuotaCenter = onOpenQuotaCenter,
+                    onOpenLimiter = onOpenLimiter,
+                )
             }
         }
     }
@@ -443,12 +500,23 @@ private fun ProviderCard(
     checkinSupported: Boolean,
     /** provider id → 该家是否支持余额查询（内核能力投影）。 */
     usageCapableProviders: Map<String, Boolean>,
+    /** 拖拽状态机（长按卡片起拖；排序编辑态下显示置顶按钮）。 */
+    dragState: ReorderState? = null,
+    /** 是否已经是显示顺序的第一个（是则不显示置顶按钮）。 */
+    isFirst: Boolean = true,
+    onPinToTop: () -> Unit = {},
+    /** 账号拖拽落点提交（providerId 由调用方闭包带）。 */
+    onCommitAccountOrder: (key: String, toIndex: Int) -> Unit = { _, _ -> },
     onOpenDetail: () -> Unit,
     onOpenQuotaCenter: () -> Unit = {},
     onOpenLimiter: (AccountDto) -> Unit = {},
 ) {
     val C = agateColors()
     var expanded by remember(g.providerId) { mutableStateOf(false) }
+    // 账号层的拖拽状态：一家一个（各家顺序互不影响，共用一份会让两家的 key 串台）
+    val accountState = remember(g.providerId) { ReorderState() }
+    // 排序编辑态的位次（读拖拽状态机的本地乐观序，换位时实时变化）
+    val orderRank = dragState?.keys?.indexOf(g.providerId)?.takeIf { it >= 0 } ?: 0
     // 这一家有没有余额能力（决定要不要显示「额度限设」入口）
     val usageCapable = usageCapableProviders[g.providerId] ?: false
     // ── 就绪数 vs 账号总数 ────────────────────────────────────
@@ -512,7 +580,29 @@ private fun ProviderCard(
                 if (g.hasWarn) C.amber.copy(alpha = 0.45f) else C.border,
                 RoundedCornerShape(20.dp),
             )
-            .clickable { expanded = !expanded }
+            // 长按起拖（与参考实现同款：挂在卡片根上，长按成立前不消费 down，
+            // 因此卡内的「管理」「明细」等 clickable 照常可用）。
+            // 展开态不挂 —— 展开区里有账号卡，长按该由账号卡自己接管。
+            .then(
+                if (dragState != null && !expanded) {
+                    Modifier.dragHandle(
+                        key = g.providerId,
+                        state = dragState,
+                        onStart = { dragState.startLazy(g.providerId) },
+                    )
+                } else {
+                    Modifier
+                },
+            )
+            .clickable {
+                // 拖拽抬手后 350ms 内的点击是手势残留，必须吞掉，
+                // 否则「长按排序」会顺手把卡片展开/收起
+                if (dragState?.shouldIgnoreClick() == true) return@clickable
+                // 排序编辑态下点卡片 = 退出排序（此时不该展开，
+                // 也不能什么都不做 —— 那会让人不知道怎么退出去）
+                if (dragState?.isSortingMode == true) dragState.exitSortingMode()
+                else expanded = !expanded
+            }
             .padding(14.dp)
             .animateContentSize(),
     ) {
@@ -538,6 +628,24 @@ private fun ProviderCard(
                 )
             }
             Spacer(Modifier.width(9.dp))
+            // 排序编辑态的位次角标：这个数字就是**拖动后的最终顺序**，
+            // 让用户看得见「拖完会变成第几」。
+            if (dragState?.isSortingMode == true) {
+                Box(
+                    Modifier
+                        .size(22.dp)
+                        .background(C.accent, CircleShape),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        "${orderRank + 1}",
+                        color = C.onAccent,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                    )
+                }
+                Spacer(Modifier.width(8.dp))
+            }
             Text(
                 g.label,
                 color = C.textMain,
@@ -566,6 +674,13 @@ private fun ProviderCard(
                 }
             }
             Spacer(Modifier.weight(1f))
+            // 一键置顶：只在排序编辑态、且不是第一个时出现（第一个再「置顶」没有意义）。
+            // 语义说明：这一层改的是**显示顺序**（不影响转发选路）；真正的出战顺序
+            // 在账号卡上（那里改的是 priority）。
+            if (dragState?.isSortingMode == true && !isFirst) {
+                PinToTopButton(onClick = onPinToTop, dragState = dragState)
+                Spacer(Modifier.width(6.dp))
+            }
             Text(
                 "管理",
                 color = C.accent,
@@ -652,20 +767,34 @@ private fun ProviderCard(
                 )
             }
         } else {
-            // v44 .acct 块
+            // v44 .acct 块 —— 账号层同样可拖拽排序。
+            // 顺序 = 内核 priority 升序 = **选号队列位次**，所以这里的「置顶」
+            // 是真的「优先出战」（与提供商层那个只管显示顺序的置顶不同）。
             Spacer(Modifier.height(10.dp))
-            g.accounts.forEachIndexed { i, acc ->
+            ReorderableColumn(
+                items = g.accounts,
+                keyOf = { it.id },
+                state = accountState,
+                onCommit = { key, to -> onCommitAccountOrder(key, to) },
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) { acc, index, isTarget ->
                 AcctBlock(
                     acc = acc,
-                    rank = i + 1,
+                    rank = index + 1,
                     isHead = heads[g.providerId] == acc.id,
                     metric = metrics[acc.id],
                     inflight = inflight[acc.id] ?: 0,
                     usageCapable = usageCapable,
+                    dragState = accountState,
+                    isFirst = index == 0,
+                    isTarget = isTarget,
+                    onPinToTop = {
+                        onCommitAccountOrder(acc.id, 0)
+                        accountState.exitSortingMode()
+                    },
                     onOpenQuotaCenter = onOpenQuotaCenter,
                     onOpenLimiter = onOpenLimiter,
                 )
-                Spacer(Modifier.height(8.dp))
             }
         }
     }
@@ -680,6 +809,12 @@ private fun AcctBlock(
     metric: AcctMetric?,
     inflight: Int,
     usageCapable: Boolean,
+    /** 拖拽状态机（账号层）。null = 不可拖（本页所有账号卡都传，留默认值便于预览）。 */
+    dragState: ReorderState? = null,
+    isFirst: Boolean = true,
+    /** 是否被拖拽项选为落点（高亮描边）。 */
+    isTarget: Boolean = false,
+    onPinToTop: () -> Unit = {},
     onOpenQuotaCenter: () -> Unit = {},
     onOpenLimiter: (AccountDto) -> Unit = {},
 ) {
@@ -689,10 +824,47 @@ private fun AcctBlock(
         Modifier
             .fillMaxWidth()
             .background(C.insetBg, RoundedCornerShape(12.dp))
+            // 落点高亮：拖拽中目标卡描边，让「会落到哪」一眼可见
+            .then(
+                if (isTarget) {
+                    Modifier.border(1.5.dp, C.accent, RoundedCornerShape(12.dp))
+                } else {
+                    Modifier
+                },
+            )
+            // 长按整张账号卡起拖。账号卡没有自己的点击动作，所以不必像
+            // 提供商卡那样区分「点击 vs 长按」；页面是 LazyColumn，
+            // 这里用 Column 变体（startColumn + 无页面级自动滚动）。
+            .then(
+                if (dragState != null) {
+                    Modifier.dragHandle(
+                        key = acc.id,
+                        state = dragState,
+                        onStart = { dragState.startColumn(acc.id, 0f) },
+                    )
+                } else {
+                    Modifier
+                },
+            )
             .padding(horizontal = 12.dp, vertical = 10.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("#$rank", color = C.textDim, fontSize = 12.sp)
+            // 排序编辑态下位次反白显示：这个数字就是拖动后的最终队列位次
+            if (dragState?.isSortingMode == true) {
+                Box(
+                    Modifier.size(20.dp).background(C.accent, CircleShape),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        "$rank",
+                        color = C.onAccent,
+                        fontSize = 10.5.sp,
+                        fontWeight = FontWeight.Bold,
+                    )
+                }
+            } else {
+                Text("#$rank", color = C.textDim, fontSize = 12.sp)
+            }
             Spacer(Modifier.width(8.dp))
             Text(
                 (if (isHead) "★ " else "") + acc.displayName,
@@ -701,6 +873,11 @@ private fun AcctBlock(
                 fontWeight = FontWeight.SemiBold,
                 modifier = Modifier.weight(1f),
             )
+            // 一键置顶（账号层）= 优先出战：改的是内核 priority，不只是显示顺序
+            if (dragState?.isSortingMode == true && !isFirst) {
+                PinToTopButton(onClick = onPinToTop, dragState = dragState)
+                Spacer(Modifier.width(6.dp))
+            }
             when {
                 !acc.enabled -> AgateBadge("停用", BadgeTone.GRAY)
                 !acc.hasCredentials -> AgateBadge("缺凭证", BadgeTone.RED)
@@ -1089,27 +1266,3 @@ private fun fmtNum(v: Double): String =
     if (v >= 1000) String.format("%,.0f", v)
     else String.format("%.2f", v).trimEnd('0').trimEnd('.')
 
-/* 排序模式单行（v44 .reordering：收成单行便于跨家拖动） */
-@Composable
-private fun ReorderRow(g: ProviderGroupView) {
-    val C = agateColors()
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .background(C.cardBg, RoundedCornerShape(14.dp))
-            .border(1.dp, C.border, RoundedCornerShape(14.dp))
-            .padding(horizontal = 12.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        AgateProviderAvatar(
-            providerId = g.providerId,
-            label = g.label,
-            size = 32.dp,
-            corner = 10.dp,
-            customName = g.customName,
-        )
-        Spacer(Modifier.width(10.dp))
-        Text(g.label, color = C.textMain, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
-        Text("${g.accounts.count { it.enabled }}/${g.accounts.size} 启用", color = C.textSub, fontSize = 12.sp)
-    }
-}

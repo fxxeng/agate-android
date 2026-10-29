@@ -140,6 +140,24 @@ object AccountOps {
         post("/api/accounts/" + java.net.URLEncoder.encode(id, "UTF-8") + "/move",
             JSONObject().put("direction", if (up) "up" else "down"))
 
+    /**
+     * `POST /api/accounts/reorder` —— 整队重排（拖拽用）。
+     *
+     * ── 为什么不用上面那条 `/move` 逐次相邻交换 ───────────────────
+     * `/move` 一次只换相邻两行，而拖拽一次可能跨好几格 —— 连打 N 次要 N 次落盘，
+     * 中途失败就留下改了一半的顺序。内核这条按给定队列把全局 `priority` 一次编成
+     * 0..n-1（`store_order::reorder_accounts`），一次请求、一次落盘。
+     *
+     * ⚠️ `queue` 必须是**全部账号的一个排列**（内核校验），不能只交某一家 ——
+     * 队列语义是「全局一条按优先级的队列」，分组只是展示口径。所以调用方要拿
+     * `/api/session` 里的全量账号列表去拼。
+     */
+    suspend fun reorder(queue: List<String>): OpResult {
+        val arr = org.json.JSONArray()
+        queue.forEach { arr.put(it) }
+        return post("/api/accounts/reorder", JSONObject().put("queue", arr))
+    }
+
     /** POST /api/accounts/refresh {id}：刷新单个账号 token（不支持的家会明确报错）。 */
     suspend fun refreshAccount(id: String): OpResult =
         post("/api/accounts/refresh", JSONObject().put("id", id))
