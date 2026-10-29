@@ -73,26 +73,49 @@ fn public_builtin_items(
         };
         for name in names {
             let Some(wire) = builtin_target(&rules, *kind, manifest, &name) else { continue };
-            // 未去重：所有模式都按「对外名」去重 —— 同名模型只该出现一次，
-            // 除非这一家要求带前缀（前缀形态天然不与裸名冲突，所以两种都出）。
-            if !claimed.insert(name.to_lowercase()) && !prefixed {
-                continue;
-            }
             let Some(upstream) = manifest.iter().find(|item| model_id(item) == wire.model) else { continue };
-            let mut item = list_item(upstream, provider);
-            let wire_name = if prefixed {
-                format!("{provider}/{name}")
-            } else {
-                name.clone()
-            };
-            if let Some(object) = item.as_object_mut() {
-                object.insert("id".to_string(), Value::String(wire_name.clone()));
-                if !wire_name.eq_ignore_ascii_case(&wire.model) {
+
+            // ── 裸名与带前缀是**两条**，不是二选一（2026-10-29 修）──────
+            // 旧写法用 `wire_name = if prefixed { 前缀 } else { 裸名 }` —— 于是
+            // 被 pin 的家**只出带前缀那一条**，同名裸名被它顶掉。症状很迷惑：
+            // 勾 ZCode 一切正常（它的模型先被别家出了裸名），勾 WorkBuddy 就
+            // 「裸名全变成 workbuddy/xxx」，因为裸名正是这家自己出的。
+            //
+            // 混合模式的语义就是「平时的合并清单 + 勾选那几家再各加一份带前缀」
+            // —— 两份都要在。
+            //
+            // 三种模式各自要出什么：
+            //   Model    → 只出裸名（同名跨家去重）
+            //   Provider → 只出带前缀（每家的每个模型各一条，同名不合并）
+            //   Hybrid   → 出裸名（去重）+ 被 pin 的家另出带前缀（不参与去重）
+            let bare_wanted = mode != ListMode::Provider;
+            let prefix_wanted = prefixed;
+
+            if bare_wanted {
+                // `insert` 的返回值顺便完成去重：同名只有第一家能出裸名
+                if claimed.insert(name.to_lowercase()) {
+                    let mut item = list_item(upstream, provider);
+                    if let Some(object) = item.as_object_mut() {
+                        object.insert("id".to_string(), Value::String(name.clone()));
+                        if !name.eq_ignore_ascii_case(&wire.model) {
+                            object.insert("name".to_string(), Value::String(name.clone()));
+                            object.insert("is_default".to_string(), Value::Bool(false));
+                        }
+                    }
+                    result.push((provider.to_string(), item));
+                }
+            }
+
+            if prefix_wanted {
+                let wire_name = format!("{provider}/{name}");
+                let mut item = list_item(upstream, provider);
+                if let Some(object) = item.as_object_mut() {
+                    object.insert("id".to_string(), Value::String(wire_name.clone()));
                     object.insert("name".to_string(), Value::String(wire_name));
                     object.insert("is_default".to_string(), Value::Bool(false));
                 }
+                result.push((provider.to_string(), item));
             }
-            result.push((provider.to_string(), item));
         }
     }
     result
