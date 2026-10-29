@@ -1,6 +1,12 @@
 package dev.agate.android.ui.components
 
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.graphics.Color
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
@@ -91,6 +97,32 @@ object ProviderIcons {
         }
         out
     }
+
+    /**
+     * 这张 logo 的**透明像素占比**（0~1）；未知返回 null（按满底处理）。
+     *
+     * 为什么要这张表：`drawable-nodpi/` 里的 PNG 是各家官方图，形态不统一 ——
+     * 有的是满底色块（zcode / accio：透明仅 2~4%），有的是透明底 + 单色字形
+     * （antigravity 80.7% 透明且近白像素 0% = 深色字形；trae 近白 63% = 白色字形）。
+     * 后一类在某一模式的卡片底色上会**看不清**，需要衬一层中性底座（见
+     * `AgateProviderAvatar` 里的用法）。
+     *
+     * 值是在构建时逐张量出来写死在这里的（`Image` 解码后取像素统计），不是拍的：
+     * 运行时去解码 20 多张 256×256 只为算一个比例，不值得。新增图标时若不确
+     * 定，先在本地量一次再决定是否加进来；漏了不会出错，只是少一层底座。
+     */
+    private val transparency: Map<String, Float> = mapOf(
+        "antigravity" to 0.807f,
+        "monkeycode" to 0.510f,
+        "workbuddy" to 0.380f,
+        "catpaw" to 0.366f,
+        "autoclaw" to 0.291f,
+        "trae" to 0.229f,
+        "loomy" to 0.209f,
+    )
+
+    fun transparencyOf(providerId: String): Float? =
+        transparency[normalize(providerId)] ?: transparency[providerId]
 }
 
 /**
@@ -119,11 +151,39 @@ fun AgateProviderAvatar(
             null
         }
     if (res != null) {
-        Image(
-            painter = painterResource(res),
-            contentDescription = label,
-            modifier = Modifier.size(size).clip(RoundedCornerShape(corner)),
-        )
+        // ── 透底图标的柔光底座 ──────────────────────────────────
+        // 有些官方 logo 是**透明底 + 单色字形**，字色与某一模式撞车：
+        //   · antigravity：80.7% 透明、近白像素 0% → 深色字形，深色模式几乎看不见
+        //   · trae：22.9% 透明、近白 63% → 白色字形，**浅色**模式下糊成一片
+        // （比例是逐张量出来的，不是猜的；满底图标如 zcode/accio 只有 2~4% 透明，
+        //  完全不受影响，所以只给「明显透底」的那些衬一层底座。）
+        //
+        // 底座用中性薄色而不是品牌色：品牌色会把白描边图标压成一块色斑，
+        // 中性色对「深色字形」与「白色字形」两边都成立。深色模式下用略亮的
+        // 白叠层，浅色模式下用略暗的黑叠层 —— 两种模式都给字形挣出对比度。
+        val alpha = ProviderIcons.transparencyOf(providerId)
+        if (alpha != null && alpha > 0.25f) {
+            Box(
+                modifier = Modifier
+                    .size(size)
+                    .background(plateColor(), RoundedCornerShape(corner))
+                    .border(1.dp, plateBorderColor(), RoundedCornerShape(corner)),
+                contentAlignment = Alignment.Center,
+            ) {
+                // 内缩 12%：底座要露出来才叫底座，图标顶到边就成了一张满底色块
+                Image(
+                    painter = painterResource(res),
+                    contentDescription = label,
+                    modifier = Modifier.size(size * 0.76f),
+                )
+            }
+        } else {
+            Image(
+                painter = painterResource(res),
+                contentDescription = label,
+                modifier = Modifier.size(size).clip(RoundedCornerShape(corner)),
+            )
+        }
     } else {
         AgateAvatar(
             name = label,
@@ -133,6 +193,16 @@ fun AgateProviderAvatar(
         )
     }
 }
+
+/** 底座底色：浅色模式压暗、深色模式提亮，都是极薄的一层。 */
+@Composable
+private fun plateColor(): Color =
+    if (isSystemInDarkTheme()) Color.White.copy(alpha = 0.10f) else Color.Black.copy(alpha = 0.05f)
+
+/** 底座的 1dp 亮边：让底座在卡片底色上「立」起来，而不是像一块污渍。 */
+@Composable
+private fun plateBorderColor(): Color =
+    if (isSystemInDarkTheme()) Color.White.copy(alpha = 0.14f) else Color.Black.copy(alpha = 0.06f)
 
 /** 名称 → 两字母（供无 logo 的兜底使用）。 */
 internal fun initialsOfLabel(label: String): String {
