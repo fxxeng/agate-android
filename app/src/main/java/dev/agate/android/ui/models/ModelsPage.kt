@@ -274,13 +274,30 @@ fun ModelsPage(
         if (configuring) return
         configuring = true
         scope.launch {
-            val r = ModelOps.setListView(mode, pins)
-            configuring = false
-            val parsed = ListView.parse(r.data)
-            if (r.ok) {
-                listView = parsed.copy(providers = providers)
-            } else {
-                Toast.makeText(ctx, r.error ?: "保存失败", Toast.LENGTH_SHORT).show()
+            // `finally` 复位而不是顺序复位：中途抛异常（内核通道断开会抛）时，
+            // 顺序复位永远走不到，`configuring` 卡在 true —— 之后所有模式切换与
+            // pin 点击都会被自己挡住，界面看起来就是「点了没反应」。
+            try {
+                val r = ModelOps.setListView(mode, pins)
+                val parsed = ListView.parse(r.data)
+                if (r.ok) {
+                    listView = parsed.copy(providers = providers)
+                    // 回包里没有刚提交的 pin = 服务端没接受。以前这种情况是
+                    // **静默弹回去**（芯片不亮、计数不变，用户以为点坏了），
+                    // 现在明说 —— 混合模式的 bug 就是靠这条提示才能一眼定位。
+                    val lost = pins.filterNot { want -> parsed.pins.any { it.equals(want, true) } }
+                    if (lost.isNotEmpty()) {
+                        Toast.makeText(
+                            ctx,
+                            "已保存模式，但提供商前缀未生效：${lost.joinToString("、")}",
+                            Toast.LENGTH_LONG,
+                        ).show()
+                    }
+                } else {
+                    Toast.makeText(ctx, r.error ?: "保存失败", Toast.LENGTH_SHORT).show()
+                }
+            } finally {
+                configuring = false
             }
         }
     }
@@ -1100,42 +1117,94 @@ private fun ProviderModelGroup(
         }
         if (expanded) {
             Spacer(Modifier.height(10.dp))
-            models.forEachIndexed { i, m ->
-                val bareId = if ('/' in m.id) m.id.substringAfter('/') else m.id
-                val busy = toggling == "${m.provider}|$bareId"
+            // ── 已启用的直接列出，已关闭的收进折叠区 ──────────────────
+            // 一家 48 个模型、其中 38 个是关着的时候，全铺开的列表要滑好几屏，
+            // 而用户在这一屏要看的几乎只有「哪些在生效」。关掉的不是不重要
+            // （那里藏着「刚被对齐关掉的官方之外模型」），所以给一行可展开的
+            // 入口，而不是干脆不显示。
+            val onRows = models.filter { it.enabled }
+            val offRows = models.filterNot { it.enabled }
+            var showOff by remember(providerId) { mutableStateOf(false) }
+
+            onRows.forEach { m ->
+                ModelLine(m, toggling, onToggle)
+                Box(Modifier.fillMaxWidth().height(1.dp).background(C.border.copy(alpha = 0.4f)))
+            }
+            if (offRows.isNotEmpty()) {
                 Row(
-                    Modifier.fillMaxWidth().padding(vertical = 3.dp),
+                    Modifier
+                        .fillMaxWidth()
+                        .clickable { showOff = !showOff }
+                        .padding(vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    // 关掉的用 textDim：一眼能分出「在列但没开」
                     Text(
-                        "↳ ${m.id}",
-                        color = if (m.enabled) C.textSub else C.textDim,
-                        fontSize = 12.sp,
+                        (if (showOff) "⌃ " else "⌄ ") + "已关闭 ${offRows.size} 个",
+                        color = C.textDim,
+                        fontSize = 11.sp,
                         modifier = Modifier.weight(1f),
                     )
-                    if (m.official == false) {
-                        Text(
-                            "桌面端未列",
-                            color = C.textDim,
-                            fontSize = 9.sp,
-                            modifier = Modifier
-                                .padding(end = 6.dp)
-                                .border(1.dp, C.border, RoundedCornerShape(6.dp))
-                                .padding(horizontal = 4.dp, vertical = 1.dp),
-                        )
-                    }
-                    m.credits?.let { CreditsTag(it) }
-                    Spacer(Modifier.width(6.dp))
-                    ModelToggle(
-                        enabled = m.enabled,
-                        busy = busy,
-                        onToggle = { onToggle(m) },
+                    Text(
+                        if (showOff) "收起" else "点开查看",
+                        color = C.accent,
+                        fontSize = 11.sp,
                     )
                 }
-                if (i < models.size - 1) Box(Modifier.fillMaxWidth().height(1.dp).background(C.border.copy(alpha = 0.4f)))
+                if (showOff) {
+                    offRows.forEach { m ->
+                        Box(Modifier.fillMaxWidth().height(1.dp).background(C.border.copy(alpha = 0.4f)))
+                        ModelLine(m, toggling, onToggle)
+                    }
+                }
             }
         }
+    }
+}
+
+/**
+ * 一行模型：名称 + 可选标记 + 倍率 + 启停开关。
+ *
+ * 抽出来是因为「已启用」与「已关闭」两段要画同样的行（见上面折叠区的说明），
+ * 复制一份会让两处样式慢慢走偏。
+ */
+@Composable
+private fun ModelLine(
+    m: GatewayRepository.ModelRow,
+    toggling: String?,
+    onToggle: (GatewayRepository.ModelRow) -> Unit,
+) {
+    val C = agateColors()
+    val bareId = if ('/' in m.id) m.id.substringAfter('/') else m.id
+    val busy = toggling == "${m.provider}|$bareId"
+    Row(
+        Modifier.fillMaxWidth().padding(vertical = 3.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        // 关掉的用 textDim：一眼能分出「在列但没开」
+        Text(
+            "↳ ${m.id}",
+            color = if (m.enabled) C.textSub else C.textDim,
+            fontSize = 12.sp,
+            modifier = Modifier.weight(1f),
+        )
+        if (m.official == false) {
+            Text(
+                "桌面端未列",
+                color = C.textDim,
+                fontSize = 9.sp,
+                modifier = Modifier
+                    .padding(end = 6.dp)
+                    .border(1.dp, C.border, RoundedCornerShape(6.dp))
+                    .padding(horizontal = 4.dp, vertical = 1.dp),
+            )
+        }
+        m.credits?.let { CreditsTag(it) }
+        Spacer(Modifier.width(6.dp))
+        ModelToggle(
+            enabled = m.enabled,
+            busy = busy,
+            onToggle = { onToggle(m) },
+        )
     }
 }
 

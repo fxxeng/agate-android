@@ -48,8 +48,18 @@ fn public_builtin_items(
     let rules = model_rules::current();
     let mut claimed = HashSet::new();
     let mut result = Vec::new();
+    // pin 同时认 **provider id** 与**展示名**。
+    //
+    // 只认 id 时，任何把「界面上的家名」当成 pin 存下来的路径（历史配置、
+    // 手改 config.json、别的客户端）都会静默失效：芯片点不亮、`hybrid` 计数
+    // 与 `model` 一样、清单里一个带前缀的条目都没有 —— 正是「混合模式没生效」
+    // 那个现象。多认一个 label 不会有歧义（展示名在同一时刻是唯一的），
+    // 却能把这一类「存了但认不出」的输入救回来。
     let pinned = |provider: &str| {
-        pins.iter().any(|pin| pin.eq_ignore_ascii_case(provider))
+        let label = crate::server::core::providers::label_of(provider);
+        pins.iter().any(|pin| {
+            pin.eq_ignore_ascii_case(provider) || pin.eq_ignore_ascii_case(&label)
+        })
     };
     for (kind, manifest) in active {
         let provider = kind_id(*kind);
