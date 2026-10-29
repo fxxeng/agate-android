@@ -87,6 +87,22 @@ fun ModelCapsPage(
             loading = false
             if (r.ok) {
                 view = r.data
+                // 从模型卡带着上下文进来：直接落到那一条的编辑器上（一次性，取完即清）
+                ModelCapsFocus.take()?.let { (focusProvider, focusModel) ->
+                    query = focusModel
+                    val arr = r.data?.optJSONArray("models")
+                    if (arr != null) {
+                        for (i in 0 until arr.length()) {
+                            val m = arr.optJSONObject(i) ?: continue
+                            if (m.optString("id").equals(focusModel, true) &&
+                                m.optString("provider").equals(focusProvider, true)
+                            ) {
+                                picked = m
+                                break
+                            }
+                        }
+                    }
+                }
                 // 就地更新选中行（保存后响应里的 capabilities 已是最新）
                 picked?.let { p ->
                     val id = p.optString("id"); val pv = p.optString("provider")

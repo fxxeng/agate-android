@@ -78,6 +78,7 @@ import dev.agate.android.ui.home.ConsolePage
 import dev.agate.android.ui.logs.AppLogPage
 import dev.agate.android.ui.logs.CallLogPage
 import dev.agate.android.ui.logs.RequestDetailPage
+import dev.agate.android.ui.models.ModelCapsFocus
 import dev.agate.android.ui.models.ModelCapsPage
 import dev.agate.android.ui.models.ModelMappingPage
 import dev.agate.android.ui.models.ModelSpeedtestPage
@@ -411,7 +412,11 @@ fun AgateNavHost(
                     ModelsPage(
                         onOpenDrawer = { openDrawer() },
                         onOpenSpeedtest = { navController.navigate(Routes.MODEL_SPEEDTEST) },
-                        onOpenCaps = { navController.navigate(Routes.MODEL_CAPS) },
+                        onOpenCaps = { providerId, modelId ->
+                            // 带上上下文：能力位页打开就落在这一条上（见 ModelCapsFocus）
+                            ModelCapsFocus.set(providerId, modelId)
+                            navController.navigate(Routes.MODEL_CAPS)
+                        },
                         onOpenMapping = { navController.navigate(Routes.MODEL_MAPPING) },
                     )
                 }

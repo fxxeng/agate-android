@@ -2,6 +2,7 @@ package dev.agate.android.ui.models
 
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -185,7 +186,7 @@ internal data class ListView(
 fun ModelsPage(
     onOpenDrawer: () -> Unit = {},
     onOpenSpeedtest: () -> Unit = {},
-    onOpenCaps: () -> Unit = {},
+    onOpenCaps: (String, String) -> Unit = { _, _ -> },
     onOpenMapping: () -> Unit = {},
     onOpenCatalog: () -> Unit = {},
     modifier: Modifier = Modifier,
@@ -237,6 +238,35 @@ fun ModelsPage(
     // 管理视图进页面拉一次：启停状态与「桌面端是否列出」只有它给得出。
     // 放在 `loadManage` 之后 —— 局部函数必须先声明后使用。
     LaunchedEffect(Unit) { loadManage() }
+
+    /** 批量启停的忙态（与单条 `toggling` 分开：批量期间不希望每行都变成「…」）。 */
+    var batchBusy by remember { mutableStateOf(false) }
+
+    /**
+     * 整家批量启停：**一次请求、一次落盘**。
+     *
+     * 内核新增的 `POST /api/models/state/batch` 在同一把锁内改完再写一次盘。
+     * 逐条打单条接口的话，一家 48 个模型 = 48 次序列化+写盘，中途失败还会留下
+     * 改了一半的状态。
+     */
+    fun toggleAll(providerId: String, ids: List<String>, enabled: Boolean) {
+        if (ids.isEmpty() || batchBusy) return
+        batchBusy = true
+        scope.launch {
+            try {
+                val r = ModelOps.setStates(providerId, ids, enabled)
+                if (r.ok) {
+                    loadManage()
+                    loadListView()
+                    GatewayRepository.refreshOnce()
+                } else {
+                    Toast.makeText(ctx, r.error ?: "批量保存失败", Toast.LENGTH_SHORT).show()
+                }
+            } finally {
+                batchBusy = false
+            }
+        }
+    }
 
     /**
      * 启停一条（提供商 × 模型 id）。
@@ -434,7 +464,9 @@ fun ModelsPage(
                             models = list,
                             toggling = toggling,
                             onToggle = { toggle(it) },
-                            onOpenCaps = onOpenCaps,
+                            onToggleAll = { ids, enabled -> toggleAll(pid, ids, enabled) },
+                            batchBusy = batchBusy,
+                            onOpenCaps = { modelId -> onOpenCaps(pid, modelId) },
                         )
                         Spacer(Modifier.height(10.dp))
                     }
@@ -1089,7 +1121,10 @@ private fun ProviderModelGroup(
     models: List<GatewayRepository.ModelRow>,
     toggling: String?,
     onToggle: (GatewayRepository.ModelRow) -> Unit,
-    onOpenCaps: () -> Unit,
+    /** 整家批量启停（作用于**当前可见**的模型，见下面批量行的说明）。 */
+    onToggleAll: (List<String>, Boolean) -> Unit,
+    batchBusy: Boolean,
+    onOpenCaps: (String) -> Unit,
 ) {
     val C = agateColors()
     var expanded by remember(providerId) { mutableStateOf(false) }
@@ -1108,7 +1143,7 @@ private fun ProviderModelGroup(
             Text(label, color = C.textMain, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.width(8.dp))
             Text(
-                "${models.size} 个模型 · ${models.count { it.enabled }} 启用",
+                "${models.count { it.enabled }} / ${models.size} 启用",
                 color = C.textSub,
                 fontSize = 12.sp,
                 modifier = Modifier.weight(1f),
@@ -1122,15 +1157,38 @@ private fun ProviderModelGroup(
             // 而用户在这一屏要看的几乎只有「哪些在生效」。关掉的不是不重要
             // （那里藏着「刚被对齐关掉的官方之外模型」），所以给一行可展开的
             // 入口，而不是干脆不显示。
-            val onRows = models.filter { it.enabled }
-            val offRows = models.filterNot { it.enabled }
+            // ── 批量：作用于**当前可见**的模型（已受搜索影响）──────────
+            // 为什么不是「这家全部 48 个」：搜索后点「全部启用」却把看不见的也开
+            // 了，属于看不见的误伤。要「一个不留全关」的话，清掉搜索框再点。
+            Row(
+                Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    if (batchBusy) "批量保存中…" else "批量",
+                    color = C.textDim,
+                    fontSize = 11.sp,
+                    modifier = Modifier.weight(1f),
+                )
+                val visibleIds = models.map { m -> if ('/' in m.id) m.id.substringAfter('/') else m.id }
+                SmallPill("全部启用", enabled = !batchBusy) { onToggleAll(visibleIds, true) }
+                SmallPill("全部关闭", enabled = !batchBusy) { onToggleAll(visibleIds, false) }
+            }
+
+            // ── 正列：已启用且桌面端也列出的 ──────────────────────────
+            // 「桌面端未列」（official=false）的模型即使开着也收进折叠区：这一页
+            // 的读数是「和桌面端一致」，把官方清单之外的混在正列里会让对齐失真。
+            val onRows = models.filter { it.enabled && it.official != false }
+            val offRows = models.filterNot { it.enabled && it.official != false }
             var showOff by remember(providerId) { mutableStateOf(false) }
 
             onRows.forEach { m ->
-                ModelLine(m, toggling, onToggle)
+                ModelLine(m, toggling, onToggle, onOpenCaps)
                 Box(Modifier.fillMaxWidth().height(1.dp).background(C.border.copy(alpha = 0.4f)))
             }
             if (offRows.isNotEmpty()) {
+                val offEnabled = offRows.count { it.enabled }
                 Row(
                     Modifier
                         .fillMaxWidth()
@@ -1139,7 +1197,8 @@ private fun ProviderModelGroup(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text(
-                        (if (showOff) "⌃ " else "⌄ ") + "已关闭 ${offRows.size} 个",
+                        (if (showOff) "⌃ " else "⌄ ") + "未显示 ${offRows.size} 个" +
+                            if (offEnabled > 0) "（其中 $offEnabled 个开着）" else "",
                         color = C.textDim,
                         fontSize = 11.sp,
                         modifier = Modifier.weight(1f),
@@ -1153,7 +1212,7 @@ private fun ProviderModelGroup(
                 if (showOff) {
                     offRows.forEach { m ->
                         Box(Modifier.fillMaxWidth().height(1.dp).background(C.border.copy(alpha = 0.4f)))
-                        ModelLine(m, toggling, onToggle)
+                        ModelLine(m, toggling, onToggle, onOpenCaps)
                     }
                 }
             }
@@ -1172,6 +1231,7 @@ private fun ModelLine(
     m: GatewayRepository.ModelRow,
     toggling: String?,
     onToggle: (GatewayRepository.ModelRow) -> Unit,
+    onOpenCaps: (String) -> Unit,
 ) {
     val C = agateColors()
     val scope = rememberCoroutineScope()
@@ -1203,6 +1263,19 @@ private fun ModelLine(
                 )
             }
         }
+        // 「能力位」：带 (provider, model) 上下文跳到编辑器并直接落到这一条。
+        // 之前只能在聚合卡里跳一次「全量列表」，找不到刚点的那条。
+        Text(
+            "能力位",
+            color = C.accent,
+            fontSize = 9.sp,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier
+                .padding(end = 6.dp)
+                .background(C.accent.copy(alpha = 0.10f), RoundedCornerShape(7.dp))
+                .clickable { onOpenCaps(bareId) }
+                .padding(horizontal = 7.dp, vertical = 3.dp),
+        )
         // 「测速」：单条真实请求（会花额度），所以只在行上给一颗小按钮，
         // 不自动跑 —— 用户点哪条测哪条。
         Text(
@@ -1237,6 +1310,22 @@ private fun ModelLine(
             onToggle = { onToggle(m) },
         )
     }
+}
+
+/** 卡片里的胶囊小按钮（批量启用/关闭用；本文件内自用）。 */
+@Composable
+private fun SmallPill(text: String, enabled: Boolean, onClick: () -> Unit) {
+    val C = agateColors()
+    Text(
+        text,
+        color = if (enabled) C.accent else C.textDim,
+        fontSize = 10.sp,
+        fontWeight = FontWeight.SemiBold,
+        modifier = Modifier
+            .background(C.accent.copy(alpha = if (enabled) 0.10f else 0.04f), RoundedCornerShape(7.dp))
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(horizontal = 8.dp, vertical = 4.dp),
+    )
 }
 
 /**
@@ -1288,9 +1377,13 @@ private fun ModelAggregateCard(
     providers: List<GatewayRepository.ModelRow>,
     toggling: String?,
     onToggle: (GatewayRepository.ModelRow) -> Unit,
-    onOpenCaps: () -> Unit,
+    onOpenCaps: (String, String) -> Unit,
 ) {
     val C = agateColors()
+    val scope = rememberCoroutineScope()
+    // 行内测速：与分组卡、测速页共用同一份（ModelTestStore）
+    val testResults by ModelTestStore.results.collectAsState()
+    val testing by ModelTestStore.running.collectAsState()
     // 倍率升序：最便宜的排第一（`null` 视为最差，排最后）。
     // **已启用的排在前面**：关掉的家仍然是候选（可以随时开回来），但不该
     // 占着「最优」的位置 —— 一个关着的家再便宜也用不上。
@@ -1366,6 +1459,21 @@ private fun ModelAggregateCard(
                             .padding(horizontal = 4.dp, vertical = 1.dp),
                     )
                 }
+                // 测速：聚合卡的价值就是「对比各家」，能在这一屏直接测才有意义
+                val testKey = ModelTestStore.key(m.provider, bareId)
+                Text(
+                    if (testKey in testing) "…" else "测速",
+                    color = if (testKey in testing) C.textDim else C.accent,
+                    fontSize = 9.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier
+                        .padding(end = 6.dp)
+                        .background(C.accent.copy(alpha = 0.10f), RoundedCornerShape(7.dp))
+                        .clickable(enabled = testKey !in testing) {
+                            scope.launch { ModelTestStore.run(m.provider, bareId) }
+                        }
+                        .padding(horizontal = 7.dp, vertical = 3.dp),
+                )
                 m.credits?.let { CreditsTag(it) }
                 Spacer(Modifier.width(6.dp))
                 ModelToggle(enabled = m.enabled, busy = busy, onToggle = { onToggle(m) })
@@ -1390,18 +1498,18 @@ private fun ModelAggregateCard(
         }
 
         Spacer(Modifier.height(9.dp))
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("能力位", color = C.textDim, fontSize = 12.sp, modifier = Modifier.weight(1f))
-            Text(
-                "编辑 ❯",
-                color = C.accent,
-                fontSize = 12.sp,
-                fontWeight = FontWeight.SemiBold,
-                modifier = Modifier
-                    .background(C.accent.copy(alpha = 0.10f), RoundedCornerShape(9.dp))
-                    .clickable(onClick = onOpenCaps)
-                    .padding(horizontal = 10.dp, vertical = 5.dp),
-            )
+        // 能力位按 **(provider, model)** 存：聚合卡里一行可能对应多家，所以这里
+        // 必须逐家给入口 —— 一颗「编辑」跳过去，编辑器根本不知道该改谁。
+        Row(
+            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("能力位", color = C.textDim, fontSize = 12.sp, modifier = Modifier.padding(end = 8.dp))
+            ranked.forEach { m ->
+                val bare = if ('/' in m.id) m.id.substringAfter('/') else m.id
+                SmallPill(m.providerLabel, true) { onOpenCaps(m.provider, bare) }
+                Spacer(Modifier.width(6.dp))
+            }
         }
     }
 }

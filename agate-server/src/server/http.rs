@@ -471,6 +471,8 @@ pub fn panel_router(state: ServerState) -> Router {
         .route("/api/models/list-view", get(api::model_manage::get_list_view))
         .route("/api/models/list-view", post(api::model_manage::set_list_view))
         .route("/api/models/state", post(api::model_manage::set_state))
+        // 批量启停（「这家全部启用/关闭」）：同一把锁内改完只写一次盘
+        .route("/api/models/state/batch", post(api::model_manage::set_states))
         .route("/api/models/mappings", post(api::model_manage::add_mapping))
         .route("/api/models/mappings/remove", post(api::model_manage::remove_mapping))
         // 自定义模型（手动登记上游目录里没有的模型）

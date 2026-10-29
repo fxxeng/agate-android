@@ -705,6 +705,56 @@ pub fn set_state(
     other_providers: &[String],
 ) -> Result<ModelRules, String> {
     let mut rules = current();
+    apply_state(&mut rules, provider, id, enabled, other_providers);
+    if !save(&rules) {
+        return Err("模型开关保存失败".to_string());
+    }
+    Ok(rules)
+}
+
+/// 批量启停（一次改多条的**同一个**开关值），只落盘一次。
+///
+/// ── 为什么要一个批量入口（2026-10-29）───────────────────────
+/// UI 里「这家全部启用 / 全部关闭」原来只能逐条打 `set_state`：一家 48 个模型
+/// 就是 48 次请求、48 次 `save()`。每次 save 都要序列化整份规则并写盘，48 次
+/// 是纯浪费；中途失败还会留下「改了一半」的状态，用户看不出停在哪。
+///
+/// ── `other_providers` 为什么恒为空 ───────────────────────────
+/// 单条启用时会把旧版的「全局关闭」展开成「其余各家关闭」，那是为了一次点击
+/// 只影响一家。批量场景（整家开/关）本来就是按家操作，再展开到别家反而会
+/// 误伤 —— 所以这里显式不做那一步。
+pub fn set_states(
+    provider: Option<&str>,
+    ids: &[String],
+    enabled: Option<bool>,
+) -> Result<usize, String> {
+    let mut rules = current();
+    let mut changed = 0usize;
+    for id in ids {
+        let id = id.trim();
+        if id.is_empty() {
+            continue;
+        }
+        apply_state(&mut rules, provider, id, enabled, &[]);
+        changed += 1;
+    }
+    if changed == 0 {
+        return Ok(0);
+    }
+    if !save(&rules) {
+        return Err("模型开关保存失败".to_string());
+    }
+    Ok(changed)
+}
+
+/// 单条启停的实质（批量与单条共用，避免两处规则走偏）。
+fn apply_state(
+    rules: &mut ModelRules,
+    provider: Option<&str>,
+    id: &str,
+    enabled: Option<bool>,
+    other_providers: &[String],
+) {
     if let Some(enabled) = enabled {
         if enabled {
             match provider {
@@ -735,11 +785,8 @@ pub fn set_state(
             }
         }
     }
-    if !save(&rules) {
-        return Err("模型开关保存失败".to_string());
-    }
-    Ok(rules)
 }
+
 
 /// 把 `(provider, id)` 的**禁用**落到列表上（幂等；provider=None = 全局）
 fn set_membership(list: &mut Vec<RuleEntry>, provider: Option<&str>, id: &str, present: bool) {

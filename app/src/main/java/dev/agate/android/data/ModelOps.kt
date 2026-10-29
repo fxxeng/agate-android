@@ -168,6 +168,20 @@ object ModelOps {
     }
 
     /**
+     * 批量启停（`POST /api/models/state/batch`）：一次改多条的同一个开关值。
+     *
+     * 内核在同一把锁内改完再写一次盘。逐条打 [setState] 的话，一家 48 个模型就是
+     * 48 次「序列化整份规则 + 写盘」；中途失败还会留下改了一半的状态，而界面
+     * 并不知道停在哪条。
+     */
+    suspend fun setStates(provider: String?, ids: List<String>, enabled: Boolean): OpResult {
+        val body = JSONObject().put("enabled", enabled)
+        body.put("ids", org.json.JSONArray(ids))
+        provider?.takeIf { it.isNotBlank() }?.let { body.put("provider", it) }
+        return post("/api/models/state/batch", body)
+    }
+
+    /**
      * 单模型测速（`POST /api/models/test`）—— **真实打一次上游**，会消耗额度。
      *
      * 内核那条接口走的是生产转发链路（`UpstreamService::forward`），并额外做了

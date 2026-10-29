@@ -191,6 +191,55 @@ fn list_view(store: &AccountStore, mode: &str, pins: &[String]) -> Value {
     })
 }
 
+/// POST /api/models/state/batch —— 一次改多条的同一个开关值。
+///
+/// body：`{provider?, ids: [..], enabled}`。`provider` 与单条那条同义
+/// （给了就按「提供商 × 模型」粒度记，缺省走旧版全局语义）。
+///
+/// ── 为什么不让前端并发打单条接口 ───────────────────────────
+/// 单条每次都 `save()` 整份规则并写盘，48 条就是 48 次；中途失败会留下「改了
+/// 一半」的状态，而前端并不知道停在哪条。批量在**同一把锁内**改完再写一次盘，
+/// 要么全成、要么全不成（见 `model_rules::set_states`）。
+///
+/// `other_providers` 不展开：整家开/关是按家操作，展开到别家会误伤。
+pub async fn set_states(State(_state): State<ServerState>, body: Bytes) -> Response {
+    let object = match body_object(&body) {
+        Ok(object) => object,
+        Err(response) => return response,
+    };
+    let enabled = match object.get("enabled") {
+        None => return errors::management_error(400, "缺少 enabled 字段"),
+        Some(Value::Bool(value)) => Some(*value),
+        Some(_) => return errors::management_error(400, "enabled 必须是布尔值"),
+    };
+    let ids: Vec<String> = object
+        .get("ids")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    if ids.is_empty() {
+        return errors::management_error(400, "ids 不能为空");
+    }
+    let provider = text_field(&object, "provider");
+    let provider_opt = if provider.is_empty() { None } else { Some(provider.as_str()) };
+    if let Some(provider) = provider_opt {
+        if crate::server::core::providers::kind_from_id(provider).is_none() {
+            return errors::management_error(400, format!("未知的内置提供商: {provider}"));
+        }
+    }
+    match model_rules::set_states(provider_opt, &ids, enabled) {
+        Ok(count) => ok_json(json!({ "updated": count })),
+        Err(error) => errors::management_error(500, error),
+    }
+}
+
 /// POST /api/models/state
 pub async fn set_state(State(state): State<ServerState>, body: Bytes) -> Response {
     let object = match body_object(&body) {
