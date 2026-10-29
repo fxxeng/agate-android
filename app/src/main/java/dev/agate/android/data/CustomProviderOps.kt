@@ -4,6 +4,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
+import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
@@ -54,6 +55,8 @@ object CustomProviderOps {
         val urlSuffix: String,
         /** 额外静态头（只用于展示「有几个」；编辑走元数据继承，不在界面改）。 */
         val headerCount: Int,
+        /** 已登记的模型条数（含被关掉的）。「拉取模型」弹层用它显示「已登记 N 个」。 */
+        val modelCount: Int,
     ) {
         companion object {
             fun of(o: JSONObject?): Record? {
@@ -71,6 +74,7 @@ object CustomProviderOps {
                     clientEmulation = obj.optString("clientEmulation"),
                     urlSuffix = obj.optString("urlSuffix"),
                     headerCount = obj.optJSONObject("headers")?.length() ?: 0,
+                    modelCount = obj.optJSONArray("models")?.length() ?: 0,
                 )
             }
 
@@ -237,6 +241,43 @@ object CustomProviderOps {
 
     suspend fun fetchModels(providerId: String): OpResult =
         post("/api/custom-providers/fetch-models", JSONObject().put("providerId", providerId))
+
+    /**
+     * `POST /api/custom-providers/models` —— 整表替换这家的模型登记（含映射）。
+     *
+     * 内核是**整表替换**语义（`custom_providers::set_models`），所以调用方要先
+     * 把「既有条目 + 新拉到的」合成一份再交上来；只交增量会把用户的启停状态
+     * 和手填的能力位一起抹掉。
+     */
+    suspend fun saveModels(
+        providerId: String,
+        models: JSONArray,
+        mappings: JSONArray = JSONArray(),
+    ): OpResult = post(
+        "/api/custom-providers/models",
+        JSONObject()
+            .put("providerId", providerId)
+            .put("models", models)
+            .put("mappings", mappings),
+    )
+
+    /**
+     * 读出一家已登记的模型与映射（原样 JSON）。
+     *
+     * 给「拉取模型」用：它要拿既有条目做合并基线。返回 `null` = 这家不存在或
+     * 列表拉不下来 —— 调用方按「没有基线」处理即可（不当成错误：
+     * 此时用新拉到的清单覆盖也不会丢用户数据，因为本来就没有）。
+     */
+    suspend fun registeredModels(providerId: String): Pair<JSONArray, JSONArray>? {
+        val arr = get("/api/custom-providers")?.optJSONArray("providers") ?: return null
+        for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i) ?: continue
+            if (o.optString("id") != providerId) continue
+            return (o.optJSONArray("models") ?: JSONArray()) to
+                (o.optJSONArray("mappings") ?: JSONArray())
+        }
+        return null
+    }
 
     // P2：经 CoreTransport 内核直调（不经端口，Core 态可用）
     private suspend fun get(path: String): JSONObject? {

@@ -47,6 +47,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import android.widget.Toast
 import kotlinx.coroutines.launch
+import dev.agate.android.data.CustomProviderOps
 import dev.agate.android.data.GatewayRepository
 import dev.agate.android.data.ModelOps
 import dev.agate.android.data.PresetRegistry
@@ -227,6 +228,16 @@ fun ModelsPage(
     // 管理视图（含已禁用条目 + 官方可见性）。`snap.models` 只有「已启用」，
     // 光靠它画不出开关，也画不出被关掉的那些（它们已从清单里消失）。
     var manage by remember { mutableStateOf<List<ModelOps.ManageModelRow>>(emptyList()) }
+    /**
+     * 自定义 / 预置 API 建出来的家。
+     *
+     * 「拉取模型」必须覆盖它们：内核的 `/api/models/refresh` 只遍历**内置**适配器
+     * （`implemented_kinds()`），`custom-xxxx` 那条路走的是另一个端点
+     * （`/api/custom-providers/fetch-models`）。不并进这份列表的话，从「预置 API」
+     * 卡片建出来的家（商汤日日新、OpenAI…）在弹层里根本不出现 —— 用户看到的就是
+     * 「预置 API 不能拉取模型」。
+     */
+    var customProviders by remember { mutableStateOf<List<CustomProviderOps.Record>>(emptyList()) }
     /** 正在切换的条目键（provider|id），用来禁掉重复点击。 */
     var toggling by remember { mutableStateOf<String?>(null) }
 
@@ -249,6 +260,37 @@ fun ModelsPage(
         scope.launch { listView = ListView.parse(ModelOps.fetchListView().data) }
     }
 
+    fun loadCustom() {
+        scope.launch { customProviders = CustomProviderOps.Record.listOf(CustomProviderOps.list()) }
+    }
+
+    /**
+     * 「拉取模型」弹层的候选家：内置 ∪ 自定义。
+     *
+     * 与 [providers]（混合模式的 pin 芯片）**刻意不同**：pin 的是「客户端能见到的
+     * 模型属于谁」，一家还没有任何模型时 pin 它毫无意义；而拉取恰恰是**为了让
+     * 它有模型**，所以这里必须包含「零模型」的自定义家 —— 否则就变成
+     * 「要有模型才能拉模型」的死循环（用户反馈的形态）。
+     */
+    val pullProviders = remember(providers, customProviders) {
+        val customIds = customProviders.map { it.id }.toSet()
+        val built = providers.filter { it.first !in customIds }
+        (built + customProviders.map { it.id to it.name })
+            .distinctBy { it.first }
+            .sortedBy { it.second }
+    }
+
+    /**
+     * 自定义家「已登记几个模型」—— 弹层里给尚未拉取的行一个真实读数。
+     *
+     * 没有它，尚未拉取的自定义家只会显示「尚未拉取」，用户无从判断
+     * 「这家到底登记过没有」（预置 API 建出来的家常常已经有一条）。内置家不在此表，
+     * 它们的条数由内核 `results.count` 给。
+     */
+    val customModelCounts = remember(customProviders) {
+        customProviders.associate { it.id to it.modelCount }
+    }
+
     fun loadManage() {
         scope.launch { manage = ModelOps.ManageModelRow.parse(ModelOps.fetchManage().data) }
     }
@@ -256,6 +298,7 @@ fun ModelsPage(
     // 管理视图进页面拉一次：启停状态与「桌面端是否列出」只有它给得出。
     // 放在 `loadManage` 之后 —— 局部函数必须先声明后使用。
     LaunchedEffect(Unit) { loadManage() }
+    LaunchedEffect(Unit) { loadCustom() }
 
     /** 批量启停的忙态（与单条 `toggling` 分开：批量期间不希望每行都变成「…」）。 */
     var batchBusy by remember { mutableStateOf(false) }
@@ -373,29 +416,110 @@ fun ModelsPage(
         loadListView()
     }
 
-    fun doRefresh() {
+    /**
+     * 拉取一家**自定义 / 预置 API** 的模型清单。
+     *
+     * ── 与内置家的差别（为什么不复用 `/api/models/refresh`）──────────
+     * 内置家的清单由适配器给（远程目录 + 静态表），刷新就是重拉目录；自定义家的
+     * 清单是**用户登记的那份运行期数据**，内核有专门的端点：
+     *   `POST /api/custom-providers/fetch-models` 拉上游（**不落盘**）
+     *   `POST /api/custom-providers/models`       整表保存
+     * 两步式是刻意的（见内核模块头）：拉回来的清单要让用户确认后再存。但这里是
+     * 「拉取模型」按钮，用户的预期就是「拉进来」—— 所以做**合并保存**：
+     * 上游有、本地没有的追加；本地已登记的原样保留（启停状态 / 手填能力位不动）。
+     * 不做「上游没有就删」：那会把用户手工登记的模型和它们的启停状态一起抹掉，
+     * 而上游清单里某个模型暂时消失（改期、灰度）并不等于用户不想再要它。
+     */
+    suspend fun pullCustom(pid: String): RefreshRow {
+        val label = customProviders.firstOrNull { it.id == pid }?.name ?: pid
+        val fetched = CustomProviderOps.fetchModels(pid)
+        if (!fetched.ok) {
+            return RefreshRow(
+                provider = pid, label = label, status = "failed", count = 0,
+                message = fetched.error ?: "拉取失败",
+            )
+        }
+        val upstream = fetched.data?.optJSONArray("models") ?: org.json.JSONArray()
+        // 基线：已登记的条目 + 映射。拉不到（家被删了）就当空的 —— 此时覆盖也不会
+        // 丢用户数据，因为本来就没有。
+        val baseline = CustomProviderOps.registeredModels(pid)
+        val existing = baseline?.first ?: org.json.JSONArray()
+        val mappings = baseline?.second ?: org.json.JSONArray()
+        val known = LinkedHashSet<String>()
+        for (i in 0 until existing.length()) {
+            existing.optJSONObject(i)?.optString("id")?.takeIf { it.isNotBlank() }?.let { known += it }
+        }
+        val merged = org.json.JSONArray()
+        // 既有条目原样搬过来（保持用户的 enabled / reasoning / capabilities）
+        for (i in 0 until existing.length()) {
+            existing.optJSONObject(i)?.let { merged.put(it) }
+        }
+        var added = 0
+        for (i in 0 until upstream.length()) {
+            // fetch-models 回的是字符串数组；容错一下对象形态（未来可能带元数据）
+            val id = upstream.optJSONObject(i)?.optString("id")?.takeIf { it.isNotBlank() }
+                ?: upstream.optString(i).takeIf { it.isNotBlank() }
+                ?: continue
+            if (id in known) continue
+            known += id
+            merged.put(org.json.JSONObject().put("id", id).put("enabled", true))
+            added++
+        }
+        val saved = CustomProviderOps.saveModels(pid, merged, mappings)
+        if (!saved.ok) {
+            return RefreshRow(
+                provider = pid, label = label, status = "failed", count = 0,
+                message = saved.error ?: "保存失败",
+            )
+        }
+        return RefreshRow(
+            provider = pid, label = label, status = "refreshed", count = merged.length(),
+            message = if (added > 0) "新增 $added 个 · 共 ${merged.length()} 个" else "已是最新（${merged.length()} 个）",
+            refreshedAt = System.currentTimeMillis(),
+        )
+    }
+
+    /**
+     * 「全部拉取」：内置家一次批量 + 自定义家逐个 fetch→合并保存。
+     *
+     * ── 为什么两段串在**同一个忙态**里 ──────────────────────────
+     * 两条链路是不同端点（内置 `/api/models/refresh` 一次遍历所有适配器；
+     * 自定义 `/api/custom-providers/fetch-models` 一家一请求）。若各自管
+     * 自己的 `refreshing`，内置那段一结束按钮就恢复可点，用户能对着仍在
+     * 跑的自定义家再点一次 —— 同一家并发拉两遍，结论互相覆盖。
+     */
+    fun refreshAll() {
         if (refreshing) return
         refreshing = true
         scope.launch {
-            val r = ModelOps.refresh()
-            refreshing = false
-            // 逐家结论落到状态（卡上直接显示失败的家，见 RefreshCard）——
-            // toast 只给一句话，细节必须留在界面上，否则用户错过就没了
-            RefreshRow.parseAll(r.data).let { rows ->
-                if (rows.isNotEmpty()) {
-                    refreshRows = rows
-                    refreshAt = System.currentTimeMillis()
+            try {
+                // 1) 内置家：一次批量，逐家结论落到状态（卡上直接显示失败的家）
+                val r = ModelOps.refresh()
+                RefreshRow.parseAll(r.data).let { rows ->
+                    if (rows.isNotEmpty()) {
+                        refreshRows = rows
+                        refreshAt = System.currentTimeMillis()
+                    }
                 }
+                // 2) 自定义家：逐个走「拉上游 + 合并保存」
+                val customs = customProviders.map { it.id }
+                if (customs.isNotEmpty()) {
+                    val rows = customs.map { pullCustom(it) }
+                    refreshRows = refreshRows.filterNot { it.provider in customs } + rows
+                }
+                Toast.makeText(
+                    ctx,
+                    if (r.ok) "已刷新模型清单" else "刷新失败：${r.error ?: "未知"}",
+                    Toast.LENGTH_SHORT,
+                ).show()
+                if (r.ok) GatewayRepository.refreshOnce()
+                // 新拉到（或下架）的模型要立刻反映在开关列表里：manage 是全量的那份，
+                // 不重拉的话「刚拉的模型」不在页面上，用户会以为没拉成功。
+                if (r.ok) loadManage()
+                loadCustom()
+            } finally {
+                refreshing = false
             }
-            Toast.makeText(
-                ctx,
-                if (r.ok) "已刷新模型清单" else "刷新失败：${r.error ?: "未知"}",
-                Toast.LENGTH_SHORT,
-            ).show()
-            if (r.ok) GatewayRepository.refreshOnce()
-            // 新拉到（或下架）的模型要立刻反映在开关列表里：manage 是全量的那份，
-            // 不重拉的话「刚拉的模型」不在页面上，用户会以为没拉成功。
-            if (r.ok) loadManage()
         }
     }
 
@@ -569,15 +693,32 @@ fun ModelsPage(
     // ── 拉取模型弹层（v44/3.0.8：全量 or 按家）──────────────────
     if (showPull) {
         PullModelsDialog(
-            providers = providers,
+            providers = pullProviders,
             rows = refreshRows,
+            customModelCounts = customModelCounts,
             refreshing = refreshing,
             onDismiss = { if (!refreshing) showPull = false },
-            onPullAll = { doRefresh() },
+            onPullAll = { refreshAll() },
             onPullOne = { pid ->
                 if (!refreshing) {
                     refreshing = true
                     scope.launch {
+                        // 自定义家：另一个端点（拉上游 + 合并保存），见 pullCustom
+                        if (CustomProviderOps.isCustomProviderId(pid)) {
+                            val row = pullCustom(pid)
+                            refreshing = false
+                            refreshRows = refreshRows.filterNot { it.provider == pid } + row
+                            refreshAt = System.currentTimeMillis()
+                            if (!row.failed) {
+                                GatewayRepository.refreshOnce()
+                                loadManage()
+                                loadCustom()
+                            }
+                            if (row.failed) {
+                                Toast.makeText(ctx, row.message ?: "拉取失败", Toast.LENGTH_SHORT).show()
+                            }
+                            return@launch
+                        }
                         val r = ModelOps.refresh(providers = listOf(pid))
                         refreshing = false
                         RefreshRow.parseAll(r.data).takeIf { it.isNotEmpty() }?.let { fresh ->
@@ -892,6 +1033,8 @@ private fun FlowIds(ids: List<String>) {
 private fun PullModelsDialog(
     providers: List<Pair<String, String>>,
     rows: List<RefreshRow>,
+    /** 自定义家「已登记几个模型」；内置家不在表里（条数由 [rows] 给）。 */
+    customModelCounts: Map<String, Int> = emptyMap(),
     refreshing: Boolean,
     onDismiss: () -> Unit,
     onPullAll: () -> Unit,
@@ -994,9 +1137,19 @@ private fun PullModelsDialog(
                             }
                             Text(
                                 when {
-                                    row == null -> "尚未拉取"
+                                    row == null -> {
+                                        // 自定义家：已登记过就给真实条数（预置 API 建出来的
+                                        // 常常已经有一条），没有记录才是「尚未拉取」。
+                                        // 内置家没有这张表，保持原文案。
+                                        val known = customModelCounts[pid]
+                                        if (known != null) "已登记 $known 个 · 尚未拉取"
+                                        else "尚未拉取"
+                                    }
                                     row.skipped -> row.message ?: "该家没有远程目录"
                                     row.failed -> row.message?.take(30) ?: "拉取失败"
+                                    // 自定义家的 message 是「新增 N 个 · 共 M 个」，比条数更有信息
+                                    row.message != null && row.provider in customModelCounts ->
+                                        "${row.count} 个模型 · ${row.message}"
                                     else -> "${row.count} 个模型 · ${agoLabel(row.refreshedAt.takeIf { it > 0 } ?: refreshAtFallback())}"
                                 },
                                 color = when {

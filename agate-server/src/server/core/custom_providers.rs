@@ -960,7 +960,16 @@ pub async fn fetch_upstream_models(
         return Err("该提供商没有配置 baseUrl，无法拉取模型清单".to_string());
     }
     let url = if protocol == PROTOCOL_ANTHROPIC {
-        format!("{base_url}/v1/models")
+        // `anthropic` 的惯例是 baseUrl **不带 /v1**（`https://api.anthropic.com`），
+        // 但用户从各家「Chat Completions 兼容端点」页面抄地址时常常把 `/v1` 一起
+        // 粘进来 —— 那样直接拼会得到 `/v1/v1/models`，上游稳定 404。
+        // baseUrl 落盘时已去掉末尾斜杠（见模块头第 2 条约束），这里再按是否已带
+        // `/v1` 决定拼法：两种写法都能拉到，不必让用户为「拉模型」单独改一次地址。
+        if base_url.ends_with("/v1") {
+            format!("{base_url}/models")
+        } else {
+            format!("{base_url}/v1/models")
+        }
     } else {
         format!("{base_url}/models")
     };
