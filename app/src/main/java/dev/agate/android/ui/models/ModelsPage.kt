@@ -230,9 +230,16 @@ fun ModelsPage(
     /** 正在切换的条目键（provider|id），用来禁掉重复点击。 */
     var toggling by remember { mutableStateOf<String?>(null) }
 
-    // 提供商 (id, label) 列表：混合模式的 pin 选择要用（模型行里带 providerLabel）
-    val providers = remember(models) {
-        models.map { it.provider to it.providerLabel }
+    /**
+     * 提供商 (id, label) 列表：混合模式的 pin 选择要用。
+     *
+     * ⚠️ 必须 **manage ∪ session** 两处取并集。只从 `models`（`/api/session`）
+     * 取的话，那份暂时为空时（内核刚起、会话还没拉到、或本次请求失败）pin 的
+     * 芯片会**一个都不显示**，而页面其余部分照常（它们读的是 manage）—— 用户
+     * 看到的就是「混合模式没有可勾的提供商」，而且没有任何报错。
+     */
+    val providers = remember(models, manage) {
+        (manage.map { it.provider to it.providerLabel } + models.map { it.provider to it.providerLabel })
             .filter { it.first.isNotBlank() }
             .distinctBy { it.first }
             .sortedBy { it.second }
@@ -715,12 +722,22 @@ private fun XpCard(
             Spacer(Modifier.height(10.dp))
             Text("额外展开带前缀条目的提供商（可多选）", color = C.textSub, fontSize = 12.sp)
             Spacer(Modifier.height(6.dp))
-            FlowChips(
-                labels = view.providers.map { it.second },
-                isOn = { index -> view.providers[index].first in view.pins },
-                onClick = { index -> onTogglePin(view.providers[index].first) },
-                enabled = !configuring,
-            )
+            if (view.providers.isEmpty()) {
+                // 取不到提供商时**说出来**。以前这里渲染一个空列表，界面上一片
+                // 空白、没有任何解释，看起来就像「混合模式没有可勾的东西」。
+                Text(
+                    "还没取到提供商列表 · 点右上「拉取模型」后重试",
+                    color = C.amber,
+                    fontSize = 11.sp,
+                )
+            } else {
+                FlowChips(
+                    labels = view.providers.map { it.second },
+                    isOn = { index -> view.providers[index].first in view.pins },
+                    onClick = { index -> onTogglePin(view.providers[index].first) },
+                    enabled = !configuring,
+                )
+            }
         }
 
         // ── 清单预览 ──
