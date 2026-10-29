@@ -569,6 +569,9 @@ pub fn panel_router(state: ServerState) -> Router {
             "/api/zwsp",
             get(api::zwsp::get_zwsp).put(api::zwsp::put_zwsp),
         )
+        // 预览：拿一段样例文本问「词表会把它改成什么样」。只读、不落盘，
+        // 与 PUT 同级挂 protected（它读的是同一份敏感词表，且要接受候选词表）。
+        .route("/api/zwsp/preview", post(api::zwsp::preview_zwsp))
         // ── 开发者角色兼容开关 ──
         // 与 /api/sanitize 同形的单开关端点（GET 读 / PUT 写），挂 protected：
         // 它决定出站请求里 developer 角色消息要不要归一成 system（改的是发给

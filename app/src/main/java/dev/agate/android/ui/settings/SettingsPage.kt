@@ -36,6 +36,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
@@ -1032,6 +1034,83 @@ fun SettingsPage(
                 var confirmImport by remember { mutableStateOf(false) }
                 var busyBackup by remember { mutableStateOf(false) }
 
+                /**
+                 * SAF 导出：内核只认「绝对路径 + .sql」，它不会往 content:// 写。
+                 * 所以流程是「内核写到缓存文件 → 我们把字节拷进用户选的位置 → 删缓存」。
+                 * 中间那份缓存是必要的：备份由后端直读写（大文件不过 HTTP），
+                 * 让它在 SAF Uri 上写是不行的。
+                 */
+                val exportToFile = rememberLauncherForActivityResult(
+                    ActivityResultContracts.CreateDocument("application/sql"),
+                ) { uri ->
+                    if (uri == null) return@rememberLauncherForActivityResult
+                    busyBackup = true
+                    scope.launch {
+                        val tmp = java.io.File(ctx.cacheDir, "agate-export.sql")
+                        val r = SettingsOps.exportBackup(tmp.absolutePath, includeLogs)
+                        if (!r.ok) {
+                            setError("备份", r.error)
+                            busyBackup = false
+                            return@launch
+                        }
+                        val written = runCatching {
+                            val out = ctx.contentResolver.openOutputStream(uri)
+                                ?: error("无法写入所选位置")
+                            out.use { sink -> tmp.inputStream().use { it.copyTo(sink) } }
+                        }
+                        tmp.delete()
+                        if (written.isSuccess) {
+                            setNotice("备份", "已保存到所选位置 · ${humanBytes(r.data?.bytes ?: 0)}")
+                            setError("备份", null)
+                        } else {
+                            setError("备份", "写入失败：${written.exceptionOrNull()?.message ?: "未知"}")
+                        }
+                        busyBackup = false
+                    }
+                }
+
+                /**
+                 * SAF 导入：同样要落成本地文件再说 —— 内核按路径读。
+                 * 读完**不直接恢复**：仍然走下面那条「覆盖式恢复」确认弹层，
+                 * 选完文件就静默覆盖是不可接受的。
+                 */
+                val importFromFile = rememberLauncherForActivityResult(
+                    ActivityResultContracts.OpenDocument(),
+                ) { uri ->
+                    if (uri == null) return@rememberLauncherForActivityResult
+                    busyBackup = true
+                    scope.launch {
+                        val tmp = java.io.File(ctx.cacheDir, "agate-import.sql")
+                        val copied = runCatching {
+                            val inp = ctx.contentResolver.openInputStream(uri)
+                                ?: error("无法读取所选文件")
+                            inp.use { src -> tmp.outputStream().use { src.copyTo(it) } }
+                        }
+                        busyBackup = false
+                        if (copied.isSuccess) {
+                            importPath = tmp.absolutePath
+                            confirmImport = true
+                        } else {
+                            setError("备份", "读取失败：${copied.exceptionOrNull()?.message ?: "未知"}")
+                        }
+                    }
+                }
+
+                // 首选入口：存到用户能拿到的地方。下面那条「填路径」留给进阶用法
+                // （导出到内核可写的任意绝对路径 / 从已知路径恢复）。
+                ItemRow(
+                    label = "导出到文件",
+                    desc = "选手机里的位置（下载目录、网盘等）· 也可之后用系统分享发出",
+                ) {
+                    MiniButton(if (busyBackup) "导出中…" else "选择位置", enabled = !busyBackup) {
+                        if (!busyBackup) {
+                            val stamp = java.text.SimpleDateFormat("yyyyMMdd-HHmm", java.util.Locale.US)
+                                .format(java.util.Date())
+                            exportToFile.launch("agate-backup-$stamp.sql")
+                        }
+                    }
+                }
+                Spacer(Modifier.height(10.dp))
                 ItemRow(
                     label = "导出整库",
                     desc = "SQL 文本落到指定路径 · 路径由后端直读写，大文件不过 HTTP",
@@ -1083,8 +1162,13 @@ fun SettingsPage(
                     label = "从备份恢复",
                     desc = "整体覆盖主库 · 账号、Key、设置全部被替换 · 进行中的请求会断开",
                 ) {
-                    MiniButton("恢复", enabled = importPath.isNotBlank()) {
-                        confirmImport = true
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        MiniButton("选择文件", enabled = !busyBackup) {
+                            if (!busyBackup) importFromFile.launch(arrayOf("application/sql", "*/*"))
+                        }
+                        MiniButton("恢复", enabled = importPath.isNotBlank()) {
+                            confirmImport = true
+                        }
                     }
                 }
                 Spacer(Modifier.height(8.dp))
@@ -1360,6 +1444,112 @@ private fun ZwspBlock(
     notice?.let {
         Spacer(Modifier.height(8.dp))
         Text(it, style = AgateType.Caption, color = C.green)
+    }
+
+    // ── 效果预览 ────────────────────────────────────────────
+    // 词表生效与否在界面上原本完全不可见：用户加完词只能「发一条请求祈祷它生效」。
+    // 这里给一段样例文本、把内核算出来的结果摊开 —— 尤其是**把不可见字符显式
+    // 画出来**（⟨ZW⟩），否则前后两段看起来一模一样，反而更像没生效。
+    Spacer(Modifier.height(14.dp))
+    Divider(C)
+    Spacer(Modifier.height(12.dp))
+    ZwspPreviewBlock(savedWords = words, busy = busy)
+}
+
+/**
+ * 词表效果预览：输入一句样例，看内核把它改成什么样。
+ *
+ * ── 三个刻意的决定 ──────────────────────────────────────────
+ *  1. **由内核算**（`POST /api/zwsp/preview`），不在界面里做字符串替换。
+ *     插零宽空格有两处容易做错且做错后看不出来（已打断的位置不重复插、
+ *     多词按顺序叠加），界面自己实现一份就会与实际出站分叉，而预览的全部
+ *     意义是「所见即所发」。
+ *  2. **把不可见字符画出来**（⟨ZW⟩）：不这么做，改前改后两段文本看起来
+ *     完全一样，用户会以为没生效。
+ *  3. **字数与字节数都给**：U+200B 是「1 字符 / 3 字节」，两个增量不同 ——
+ *     否则「只多了一个字符怎么大了 3 字节」会被当成 bug 报上来。
+ */
+@Composable
+private fun ZwspPreviewBlock(savedWords: List<String>, busy: Boolean) {
+    val C = agateColors()
+    val scope = rememberCoroutineScope()
+    var sample by remember { mutableStateOf("") }
+    var result by remember { mutableStateOf<SettingsOps.ZwspPreview?>(null) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var running by remember { mutableStateOf(false) }
+
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            "效果预览",
+            style = AgateType.Body,
+            fontWeight = FontWeight.SemiBold,
+            color = C.textMain,
+            modifier = Modifier.weight(1f),
+        )
+        AgateBadge(
+            text = if (savedWords.isEmpty()) "无词可预览" else "按当前 ${savedWords.size} 个词",
+            tone = BadgeTone.GRAY,
+        )
+    }
+    Spacer(Modifier.height(6.dp))
+    AgateFormInput(
+        value = sample,
+        onValueChange = { sample = it; error = null; result = null },
+        hint = "输入一句样例文本（最多 4000 字）",
+        singleLine = false,
+        minLines = 2,
+    )
+    Spacer(Modifier.height(8.dp))
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        MiniButton(if (running) "计算中…" else "预览", enabled = !busy && !running && sample.isNotBlank()) {
+            running = true
+            scope.launch {
+                // 带上当前词表：预览的就是「已保存的这套规则」，不掺未提交的草稿
+                val r = SettingsOps.previewZwsp(sample, savedWords)
+                running = false
+                if (r.ok) {
+                    result = r.data
+                    error = null
+                } else {
+                    error = r.error
+                    result = null
+                }
+            }
+        }
+    }
+    error?.let {
+        Spacer(Modifier.height(6.dp))
+        Text(it, style = AgateType.Caption, color = C.red)
+    }
+    result?.let { p ->
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "命中 ${p.inserted} 处 · 字数 ${p.charsBefore}→${p.charsAfter} · " +
+                "字节 ${p.bytesBefore}→${p.bytesAfter}",
+            style = AgateType.Caption,
+            color = if (p.inserted > 0) C.green else C.amber,
+        )
+        Spacer(Modifier.height(6.dp))
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .background(C.insetBg, RoundedCornerShape(10.dp))
+                .border(1.dp, C.border, RoundedCornerShape(10.dp))
+                .padding(10.dp),
+        ) {
+            Text(
+                // 把零宽空格替换成可见标记：真发出去时它是不可见的
+                text = p.transformed.replace(SettingsOps.ZWSP, "⟨ZW⟩"),
+                style = AgateType.BodyS,
+                color = C.textSub,
+            )
+        }
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "⟨ZW⟩ = 零宽空格（U+200B）。它真的会被插进发往上游的文本里，只是肉眼看不见。",
+            style = AgateType.Caption,
+            color = C.textDim,
+        )
     }
 }
 

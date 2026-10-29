@@ -177,6 +177,33 @@ fn insert_zwsp(text: &str, words: &[String], hits: &mut Hits) -> Option<String> 
     out
 }
 
+/// 词表打断层的**只读预览**：同样走 [`break_word`]，因此结果与真实出站逐字一致。
+///
+/// ── 为什么要单独暴露一个入口，而不是让界面自己模拟 ──────────
+/// 「插零宽空格」听起来简单（`replace(word, word + ZWSP)`），但真实实现里有两处
+/// 容易做错、且做错后**看不出来**的细节：
+///   1. 已经跟着 ZWSP 的位置不再插（否则多轮对话会一轮一个地累积）；
+///   2. 多个词按用户给的顺序**依次**处理，后一个词在前一个词的结果上匹配。
+/// 界面若自己实现一份，预览就会与实际行为分叉 —— 而预览的全部价值就是
+/// 「所见即所发」，分叉后它比没有更糟。所以这里复用同一个 `break_word`。
+///
+/// 与 [`insert_zwsp`] 的差别只有两点：不写 `Hits`（预览不算统计）、返回总插入数。
+pub(crate) fn preview_zwsp(text: &str, words: &[String]) -> (String, usize) {
+    let mut current = text.to_string();
+    let mut total = 0usize;
+    for word in words {
+        if word.is_empty() || !current.contains(word.as_str()) {
+            continue;
+        }
+        let (next, inserted) = break_word(&current, word, ZWSP);
+        total += inserted;
+        if next != current {
+            current = next;
+        }
+    }
+    (current, total)
+}
+
 // ─── 正则（惰性编译一次）────────────────────────────────────
 //
 // `\s` 写成显式的 `[\t\n\f\r ]`、`\b` 用 `(?-u:...)` 关掉 Unicode 模式：

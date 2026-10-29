@@ -74,6 +74,62 @@ pub async fn put_zwsp(State(_state): State<ServerState>, body: Bytes) -> Respons
     ok_json(state_json())
 }
 
+/// POST /api/zwsp/preview —— body `{text, sanitizeZwspWords?}`
+///
+/// 返回「这句话经过词表层之后长什么样」。**不是**另写一套实现：直接调
+/// `core::sanitize::preview_zwsp`，它内部走的是转发层同一个 `break_word`，
+/// 所以预览与真实出站逐字一致（理由见那个函数的文档）。
+///
+/// `sanitizeZwspWords` 省略时用**当前已保存**的词表 —— 界面有两种用法：
+///   · 编辑中实时预览没保存的候选词 → 带上候选；
+///   · 只想确认「现在这套规则会怎么处理这句话」→ 不带。
+///
+/// 文本长度有上限（[`PREVIEW_MAX_CHARS`]）：这个端点只用于给人看的短样本，
+/// 没有理由接受整篇文档；超限明确 400，不静默截断（截断后预览就骗人了）。
+pub async fn preview_zwsp(_state: State<ServerState>, body: Bytes) -> Response {
+    let payload = match parse_body(&body) {
+        Ok(value) => value,
+        Err(error) => return errors::management_error(400, error.message),
+    };
+    let Some(object) = payload.as_object() else {
+        return errors::management_error(400, "请求体必须是 JSON 对象");
+    };
+    let Some(text) = object.get("text").and_then(Value::as_str) else {
+        return errors::management_error(400, "缺少 text");
+    };
+    if text.chars().count() > PREVIEW_MAX_CHARS {
+        return errors::management_error(
+            400,
+            format!("预览文本过长（上限 {PREVIEW_MAX_CHARS} 字符）"),
+        );
+    }
+    // 候选词表要走与 PUT 同一套校验 —— 否则界面可以用一份「保存会失败」的
+    // 词表看到漂亮的预览，然后保存时被 400 打回来。
+    let words = match object.get(KEY_SANITIZE_ZWSP_WORDS) {
+        Some(value) => match validated_words(value) {
+            Ok(words) => words,
+            Err(message) => return errors::management_error(400, message),
+        },
+        None => config::current().sanitize_zwsp_words().to_vec(),
+    };
+    let (transformed, inserted) = crate::server::core::sanitize::preview_zwsp(text, &words);
+    ok_json(json!({
+        "original": text,
+        "transformed": transformed,
+        "inserted": inserted,
+        // 字数与字节数都给：零宽空格是 3 字节/1 字符，两个数字的变化量不同，
+        // 「我以为只多了一个字符怎么大了 3 字节」这类疑问看一眼就明白。
+        "charsBefore": text.chars().count(),
+        "charsAfter": transformed.chars().count(),
+        "bytesBefore": text.len(),
+        "bytesAfter": transformed.len(),
+        "words": words,
+    }))
+}
+
+/// 预览文本的字符上限。够放下几段真实对话样本，又不至于让人拿它跑整篇文档。
+const PREVIEW_MAX_CHARS: usize = 4000;
+
 /// 词表的校验与规整（`Err` 的文本就是 400 的文案）。
 ///
 /// ── 为什么抽成纯函数 ────────────────────────────────────────

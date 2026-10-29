@@ -457,6 +457,58 @@ object SettingsOps {
     }
 
     /**
+     * 词表效果预览（`POST /api/zwsp/preview`）。
+     *
+     * ── 为什么由内核算，而不是界面自己 replace ──────────────────
+     * 「插零宽空格」有两处容易做错且做错后看不出来：已经跟着 ZWSP 的位置不再插、
+     * 多个词按用户顺序依次处理。界面自己实现一份，预览就会和实际出站分叉 ——
+     * 而预览的全部价值就是「所见即所发」。内核那条端点复用的正是转发层的
+     * `break_word`（见 `core::sanitize::preview_zwsp` 的文档）。
+     *
+     * [words] 传 null = 用内核当前已保存的词表（「现在这套规则会怎么处理」）。
+     * 传列表 = 预览未保存的候选词（编辑中实时看效果）。
+     */
+    suspend fun previewZwsp(text: String, words: List<String>? = null): OpResult<ZwspPreview> =
+        withContext(Dispatchers.IO) {
+            val body = JSONObject().put("text", text)
+            words?.let { list ->
+                val array = JSONArray()
+                list.forEach { array.put(it) }
+                body.put("sanitizeZwspWords", array)
+            }
+            val reply = CoreTransport.call("POST", "/api/zwsp/preview", body.toString())
+            val failure = failureOf(reply)
+            if (failure != null) return@withContext OpResult<ZwspPreview>(false, null, failure)
+            val data = parseData(reply)
+                ?: return@withContext OpResult<ZwspPreview>(false, null, "内核返回了空结果")
+            OpResult(
+                true,
+                ZwspPreview(
+                    transformed = data.optString("transformed"),
+                    inserted = data.optInt("inserted", 0),
+                    charsBefore = data.optInt("charsBefore", 0),
+                    charsAfter = data.optInt("charsAfter", 0),
+                    bytesBefore = data.optInt("bytesBefore", 0),
+                    bytesAfter = data.optInt("bytesAfter", 0),
+                ),
+                null,
+            )
+        }
+
+    /**
+     * 预览结果。字数与字节数都给：零宽空格是「1 字符 / 3 字节」，两个增量不同，
+     * 否则「只多了一个字符怎么大了 3 字节」会被当成 bug 报上来。
+     */
+    class ZwspPreview(
+        val transformed: String,
+        val inserted: Int,
+        val charsBefore: Int,
+        val charsAfter: Int,
+        val bytesBefore: Int,
+        val bytesAfter: Int,
+    )
+
+    /**
      * 把一个词条规整成可以发给内核的形态，返回 `null` 表示这一条不能收。
      *
      * 判据与内核 `validated_words` 逐条对齐（**内核是最终裁决**，这里只是
