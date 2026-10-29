@@ -1174,18 +1174,49 @@ private fun ModelLine(
     onToggle: (GatewayRepository.ModelRow) -> Unit,
 ) {
     val C = agateColors()
+    val scope = rememberCoroutineScope()
     val bareId = if ('/' in m.id) m.id.substringAfter('/') else m.id
     val busy = toggling == "${m.provider}|$bareId"
+    // 行内测速：结果与「模型测速」页共用一份（见 ModelTestStore 的说明）
+    val testResults by ModelTestStore.results.collectAsState()
+    val testing by ModelTestStore.running.collectAsState()
+    val testKey = ModelTestStore.key(m.provider, bareId)
+    val testBusy = testKey in testing
+    val testResult = testResults[testKey]
     Row(
         Modifier.fillMaxWidth().padding(vertical = 3.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         // 关掉的用 textDim：一眼能分出「在列但没开」
+        Column(Modifier.weight(1f)) {
+            Text(
+                "↳ ${m.id}",
+                color = if (m.enabled) C.textSub else C.textDim,
+                fontSize = 12.sp,
+            )
+            if (testResult != null) {
+                Text(
+                    testResult.summary(),
+                    color = if (testResult.ok) C.green else C.red,
+                    fontSize = 9.sp,
+                    maxLines = 1,
+                )
+            }
+        }
+        // 「测速」：单条真实请求（会花额度），所以只在行上给一颗小按钮，
+        // 不自动跑 —— 用户点哪条测哪条。
         Text(
-            "↳ ${m.id}",
-            color = if (m.enabled) C.textSub else C.textDim,
-            fontSize = 12.sp,
-            modifier = Modifier.weight(1f),
+            if (testBusy) "…" else "测速",
+            color = if (testBusy) C.textDim else C.accent,
+            fontSize = 9.sp,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier
+                .padding(end = 6.dp)
+                .background(C.accent.copy(alpha = 0.10f), RoundedCornerShape(7.dp))
+                .clickable(enabled = !testBusy) {
+                    scope.launch { ModelTestStore.run(m.provider, bareId) }
+                }
+                .padding(horizontal = 7.dp, vertical = 3.dp),
         )
         if (m.official == false) {
             Text(

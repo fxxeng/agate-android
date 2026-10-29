@@ -167,6 +167,70 @@ object ModelOps {
         return post("/api/models/state", body)
     }
 
+    /**
+     * 单模型测速（`POST /api/models/test`）—— **真实打一次上游**，会消耗额度。
+     *
+     * 内核那条接口走的是生产转发链路（`UpstreamService::forward`），并额外做了
+     * 三件只对测试有意义的事（见 `api/model_test.rs` 模块头）：钉住这一家
+     * （`provider`）、钉住这一个账号（`accountId`，不顺延换号）、跳过启停门禁
+     * （关着的模型也能测）。因此结论与真实请求同源，不是另开一条内部通道。
+     *
+     * 响应**永远是 200**，失败结论在 `data.success=false` + `status`/`error` 里，
+     * 所以这里不能只看 [OpResult.ok]。
+     */
+    suspend fun test(
+        provider: String,
+        model: String,
+        accountId: String? = null,
+        stream: Boolean = true,
+    ): TestResult {
+        val body = JSONObject()
+            .put("provider", provider)
+            .put("model", model)
+            .put("stream", stream)
+        accountId?.takeIf { it.isNotBlank() }?.let { body.put("account_id", it) }
+        val r = post("/api/models/test", body)
+        val d = r.data
+        if (!r.ok || d == null) {
+            return TestResult(false, null, r.error ?: "测试失败", null, null, null, null, null, null)
+        }
+        val success = d.optBoolean("success", false)
+        return TestResult(
+            ok = success,
+            status = d.optInt("status", 0).takeIf { it > 0 },
+            error = d.optString("error").takeIf { it.isNotBlank() },
+            // `ttfb_ms` 可能是 JSON null（非流式 / 上游没给首字时间）
+            ttfbMs = (d.opt("ttfb_ms") as? Number)?.toLong(),
+            durationMs = (d.opt("duration_ms") as? Number)?.toLong(),
+            completionTokens = d.optInt("completion_tokens", 0).takeIf { it > 0 },
+            totalTokens = d.optInt("total_tokens", 0).takeIf { it > 0 },
+            reply = d.optString("reply").takeIf { it.isNotBlank() },
+            accountName = d.optString("account_name").takeIf { it.isNotBlank() },
+            attempts = d.optInt("attempts", 0).takeIf { it > 0 },
+        )
+    }
+
+    /**
+     * 一次测速的结论。
+     *
+     * `ok=false` 时 [error] 一定有值（内核把上游的报文摘进去了）；`ok=true` 时
+     * 看 `ttfbMs` / `durationMs` / `completionTokens` —— 吞吐（tok/s）不在这里算，
+     * 界面自己按 `completionTokens / (durationMs - ttfbMs)` 算，因为「首字之后
+     * 的生成速度」才是模型本身的速度，把首字等待算进去会让结论随网络抖动。
+     */
+    data class TestResult(
+        val ok: Boolean,
+        val status: Int?,
+        val error: String?,
+        val ttfbMs: Long?,
+        val durationMs: Long?,
+        val completionTokens: Int?,
+        val totalTokens: Int?,
+        val reply: String?,
+        val accountName: String? = null,
+        val attempts: Int? = null,
+    )
+
     /** 拉管理视图（GET，无请求体）。 */
     suspend fun fetchManage(): OpResult = get("/api/models/manage")
 

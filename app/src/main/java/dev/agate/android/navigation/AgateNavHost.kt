@@ -80,6 +80,7 @@ import dev.agate.android.ui.logs.CallLogPage
 import dev.agate.android.ui.logs.RequestDetailPage
 import dev.agate.android.ui.models.ModelCapsPage
 import dev.agate.android.ui.models.ModelMappingPage
+import dev.agate.android.ui.models.ModelSpeedtestPage
 import dev.agate.android.ui.models.ModelsPage
 import dev.agate.android.ui.routing.RoutingPage
 import dev.agate.android.ui.pages.GatewayControlPage
@@ -457,7 +458,12 @@ fun AgateNavHost(
                         onBack = { navController.popBackStack() },
                     )
                 }
-                composable(Routes.MODEL_SPEEDTEST) { skeleton(it, navController, "模型测速", "M3", "并发测速（SSE 流式）、思考等级、多账号同测。", ::openDrawer) }
+                // 模型测速：原先指向骨架页（「占位区块」），现在接真实页面。
+                // 内核 `POST /api/models/test` 早已就绪（走生产转发链路、钉账号），
+                // 缺的一直只是这块界面。
+                composable(Routes.MODEL_SPEEDTEST) {
+                    ModelSpeedtestPage(onBack = { navController.popBackStack() })
+                }
                 composable(Routes.MODEL_MAPPING) { ModelMappingPage(onBack = { navController.popBackStack() }) }
                 composable(Routes.MODEL_CAPS) { ModelCapsPage(onBack = { navController.popBackStack() }) }
                 composable(Routes.TASK_CHECKIN) {
