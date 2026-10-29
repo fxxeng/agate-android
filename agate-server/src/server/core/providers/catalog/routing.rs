@@ -119,6 +119,16 @@ pub fn model_blocked_everywhere(model: &str) -> bool {
 
 pub fn wire_target_for_provider(model: &str, provider_id: &str, _account: Option<&Value>) -> WireTarget {
     let requested = model.trim();
+    // 对外带前缀名（`provider/model`）：前缀是清单里的「锁家」写法，**上游不认识**
+    // —— 原样发出去会被上游拒。实测：`workbuddy/glm-5.3-flash` →
+    // 上游 400 `model [workbuddy/glm-5.3-flash] service info not found`。
+    //
+    // 只在 head **与目标提供商一致** 时剥：真实模型名里也可能带 `/`
+    // （OpenRouter 的 `deepseek/deepseek-chat`），见斜杠就切会把它们切坏。
+    let requested = match requested.split_once('/') {
+        Some((head, rest)) if !rest.is_empty() && head.eq_ignore_ascii_case(provider_id) => rest,
+        _ => requested,
+    };
     // 自定义提供商在自己的转发模块解析一次，避免把别名提前改写后丢失其等级绑定。
     let resolved = kind_from_id(provider_id).and_then(|kind| {
         builtin_target(&model_rules::current(), kind, &manifest_for(kind), requested)

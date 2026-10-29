@@ -363,9 +363,14 @@ fun ModelsPage(
         listViewSaves.trySend(mode to pins)
     }
 
-    // 首次进入与模型清单变化时拉一次（清单变了计数就该重算）
+    // 首次进入与模型清单变化时各拉一次。
+    //
+    // ⚠️ 不能再加 `if (models.isNotEmpty())`：清单形态（三种模式 + 计数）**不依赖**
+    // 模型清单，模型那份还没到时也该把「按模型 / 3 项」这类读数显示出来。
+    // 覆盖安装后第一次进页面显示「0 项会下发」、切一下模式才正常，就是这个条件
+    // 把首拉吞掉了 —— 切模式会走 `saveListView`，它自己会带回一份最新形态。
     androidx.compose.runtime.LaunchedEffect(models.size) {
-        if (models.isNotEmpty()) loadListView()
+        loadListView()
     }
 
     fun doRefresh() {
