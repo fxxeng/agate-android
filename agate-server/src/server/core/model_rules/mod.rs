@@ -658,8 +658,23 @@ pub fn current() -> ModelRules {
     ModelRules::from_raw(config::current().raw())
 }
 
+/// 落盘模型规则，并广播「模型规则变了」。
+///
+/// ── 为什么广播放在这里（而不是各写入函数各发一次）──────────────
+/// 改规则的入口有 7 个（单条/批量启停、能力位、加/删映射、加/删自定义模型），
+/// 将来还会加。逐个发必然漏 —— 漏掉的那次在真机上只表现为「改了没反应，
+/// 切一下页面才对」，是最难报准的一类问题。这里一处覆盖全部，
+/// 且天然是「写成功之后」的语义。
+///
+/// 事件不带细节（谁、哪条、开关值）：订阅者拿到的是「模型规则变了，重拉一次」。
+/// 要带细节就得让每个调用方各自发，那正是上面要避免的写法。细则由订阅者
+/// 从 `/api/models/manage` 与 `/api/models/list-view` 读权威版本。
 fn save(rules: &ModelRules) -> bool {
-    config::update_raw_field(KEY_MODEL_RULES, rules.to_value())
+    let ok = config::update_raw_field(KEY_MODEL_RULES, rules.to_value());
+    if ok {
+        events::publish("models_changed", serde_json::json!({ "reason": "model_rules" }));
+    }
+    ok
 }
 
 /// 把 `(provider, id)` 的**启用**落到列表上。
@@ -710,12 +725,6 @@ pub fn set_state(
     if !save(&rules) {
         return Err("模型开关保存失败".to_string());
     }
-    // 广播「模型开关变了」。发在 core：改开关的入口有 REST 与 AI 助手两条，
-    // 挂在 handler 上会漏掉后者（漏掉的那次在界面上就是「改了没反应」）。
-    events::publish(
-        "models_changed",
-        serde_json::json!({ "provider": provider, "id": id, "enabled": enabled }),
-    );
     Ok(rules)
 }
 
@@ -751,11 +760,6 @@ pub fn set_states(
     if !save(&rules) {
         return Err("模型开关保存失败".to_string());
     }
-    // 一次批量只广播一次（这个入口存在的理由就是「一次落盘、一次通知」）
-    events::publish(
-        "models_changed",
-        serde_json::json!({ "provider": provider, "count": changed, "enabled": enabled }),
-    );
     Ok(changed)
 }
 

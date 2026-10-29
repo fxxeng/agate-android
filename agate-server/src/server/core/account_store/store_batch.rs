@@ -21,6 +21,7 @@ use crate::server::core::account_store::state::StoredAccount;
 use crate::server::core::account_store::store::{AccountStore, AccountStoreError};
 use crate::server::core::account_store::store_crud::normalize_max_concurrent;
 use crate::server::core::account_store::store_util::truncate_chars;
+use crate::server::events;
 use crate::server::core::proxies::describe_account_proxy;
 use crate::server::logging;
 
@@ -186,6 +187,16 @@ impl AccountStore {
                     format!("，失败 {} 个", failed.len())
                 }
             ),
+        );
+        // 批量也是一次「账号变了」：只发一条（逐条发会让 20 个账号的批量
+        // 触发 20 次拉取，而结果完全一样）
+        events::publish(
+            "accounts_changed",
+            serde_json::json!({
+                "reason": "batch",
+                "changed": changed_count,
+                "failed": failed.len(),
+            }),
         );
         Ok(json!({ "ok": ok, "failed": failed, "list": snapshot }))
     }

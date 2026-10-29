@@ -143,6 +143,12 @@ pub async fn set_list_view(State(state): State<ServerState>, body: Bytes) -> Res
     if !config::set_models_list(&mode, &pins) {
         return errors::management_error(400, "清单形态必须是 model / provider / hybrid 之一");
     }
+    // 形态/pins 变了，`/v1/models` 的内容就变了 —— 这也是「模型规则变了」。
+    // 订阅它的页面（模型页的推演计数、混合模式的 pin 芯片）要跟着重拉。
+    crate::server::events::publish(
+        "models_changed",
+        serde_json::json!({ "reason": "list_view", "mode": mode, "pins": pins }),
+    );
     let saved = config::current();
     ok_json(list_view(
         state.store(),

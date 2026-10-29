@@ -412,6 +412,12 @@ impl AccountStore {
                 priority
             ),
         );
+        // 广播放在**落库之后**：事务没提交就发出，订阅者立刻来拉会读到旧库，
+        // 然后因为「已经拉过一次」而不再重试 —— 界面就永远停在旧状态。
+        events::publish(
+            "accounts_changed",
+            serde_json::json!({ "id": self.public_account(&saved).get("id"), "reason": "add" }),
+        );
         Ok(self.public_account(&saved))
     }
 
@@ -471,6 +477,10 @@ impl AccountStore {
         // 两者不必（也不该）嵌套（见 `invalidate_catpaw_sessions` 的说明）
         drop(_guard);
         self.invalidate_catpaw_sessions(id, &provider);
+        events::publish(
+            "accounts_changed",
+            serde_json::json!({ "id": id, "provider": provider, "reason": "remove" }),
+        );
         Ok(())
     }
 
@@ -608,6 +618,10 @@ impl AccountStore {
         if let Some(object) = result.as_object_mut() {
             object.insert("list".to_string(), self.snapshot(&state));
         }
+        events::publish(
+            "accounts_changed",
+            serde_json::json!({ "id": id, "reason": "promote" }),
+        );
         Ok(result)
     }
 
@@ -1086,6 +1100,10 @@ impl AccountStore {
         logging::log(
             "[Accounts]",
             &format!("↕️  优先级交换: {mine_name}(P{mine}) ⇄ {theirs_name}(P{theirs})"),
+        );
+        events::publish(
+            "accounts_changed",
+            serde_json::json!({ "id": id, "reason": "move" }),
         );
         Ok(json!({
             "moved": true,
