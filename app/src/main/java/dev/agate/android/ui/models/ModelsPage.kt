@@ -248,8 +248,9 @@ fun ModelsPage(
      * （`/api/models/manage` 的启停才是它们该用的开关）。
      */
     var registryTarget by remember { mutableStateOf<String?>(null) }
-    /** 登记弹层的基线（打开时读一次，避免边改边被重算覆盖）。 */
+    /** 登记弹层的基线（打开时读一次，避免边改边被重算覆盖）。models 与 mappings 各一份。 */
     var registryBaseline by remember { mutableStateOf(org.json.JSONArray()) }
+    var registryMappings by remember { mutableStateOf(org.json.JSONArray()) }
     var registrySaving by remember { mutableStateOf(false) }
 
     /**
@@ -620,14 +621,14 @@ fun ModelsPage(
                     val next = if (pid in listView.pins) listView.pins - pid else listView.pins + pid
                     saveListView(listView.mode, next)
                 },
-                // 胶囊右侧「N 号」小圆点要两份数据：裸模型名 → 承载它的家（取第一个，
-                // 与「按模型」合并口径一致），以及那家的**就绪账号数**。
-                // 账号数是**按家**而不是按模型的：内核没给「某个模型有哪几个账号可用」，
-                // 按家算是能拿到的最接近的读数 —— 所以图例里明说它是「该家就绪账号」。
-                modelProvider = remember(models) {
-                    buildMap {
-                        models.forEach { row -> putIfAbsent(row.id.substringAfter('/'), row.provider) }
-                    }
+                // 胶囊右侧的「N」要两份数据：裸模型名 → **全部**承载它的家，
+                // 以及每家的就绪账号数。取「全部」而不是「第一个」：
+                // 同名模型常常被好几家提供（正是「按模型」合并要解决的情形），
+                // 只取第一家会把可用账号数算少 —— 一个模型在 A 家有 3 个号、
+                // B 家有 2 个，胶囊上写 3 就是错的。
+                modelProviders = remember(models) {
+                    models.groupBy({ it.id.substringAfter('/') }) { it.provider }
+                        .mapValues { (_, list) -> list.distinct() }
                 },
                 readyAccounts = remember(snap.accountList) {
                     snap.accountList.orEmpty()
@@ -705,8 +706,15 @@ fun ModelsPage(
                             modifier = Modifier
                                 .clickable {
                                     scope.launch {
-                                        registryBaseline = CustomProviderOps.registeredModels(pid)?.first
-                                            ?: org.json.JSONArray()
+                                        // 两份基线一起取：保存是整表替换，漏一份就会把
+                                        // 用户已有的别名映射抹掉
+                                        CustomProviderOps.registeredModels(pid)?.let { (models, maps) ->
+                                            registryBaseline = models
+                                            registryMappings = maps
+                                        } ?: run {
+                                            registryBaseline = org.json.JSONArray()
+                                            registryMappings = org.json.JSONArray()
+                                        }
                                         registryTarget = pid
                                     }
                                 }
@@ -775,19 +783,21 @@ fun ModelsPage(
         ModelRegistryDialog(
             providerLabel = customProviders.firstOrNull { it.id == pid }?.name ?: pid,
             baseline = registryBaseline,
+            mappingsBaseline = registryMappings,
             saving = registrySaving,
             onDismiss = { if (!registrySaving) registryTarget = null },
-            onSave = { models ->
+            onSave = { models, mappings ->
                 registrySaving = true
                 scope.launch {
-                    // mappings 原样带回：这个接口是整表替换，漏交就把别名映射抹了
-                    val mappings = CustomProviderOps.registeredModels(pid)?.second
-                        ?: org.json.JSONArray()
                     val r = CustomProviderOps.saveModels(pid, models, mappings)
                     registrySaving = false
                     if (r.ok) {
                         registryTarget = null
-                        Toast.makeText(ctx, "已保存 ${models.length()} 个模型", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(
+                            ctx,
+                            "已保存 ${models.length()} 个模型 · ${mappings.length()} 条映射",
+                            Toast.LENGTH_SHORT,
+                        ).show()
                         // 清单变了：会话清单 / 管理视图 / 计数全都得重拉
                         GatewayRepository.refreshOnce()
                         loadManage()
@@ -871,8 +881,8 @@ private fun XpCard(
     configuring: Boolean,
     onSetMode: (String) -> Unit,
     onTogglePin: (String) -> Unit,
-    /** 裸模型名 → 承载它的家（胶囊点进测速要这个）。 */
-    modelProvider: Map<String, String> = emptyMap(),
+    /** 裸模型名 → 承载它的**全部**家（测速定位取第一个，账号数按全部求和）。 */
+    modelProviders: Map<String, List<String>> = emptyMap(),
     /** 家 → 就绪账号数（胶囊右侧小圆点的读数）。 */
     readyAccounts: Map<String, Int> = emptyMap(),
     onOpenSpeedtest: (provider: String?, model: String?) -> Unit = { _, _ -> },
@@ -1043,7 +1053,7 @@ private fun XpCard(
             // 点一下直接带着这个模型去测速页。
             ExposedPills(
                 ids = view.ids,
-                modelProvider = modelProvider,
+                modelProviders = modelProviders,
                 readyAccounts = readyAccounts,
                 onOpen = onOpenSpeedtest,
             )
@@ -1118,31 +1128,6 @@ private fun FlowChips(
     }
 }
 
-@Composable
-private fun FlowIds(ids: List<String>) {
-    val C = agateColors()
-    Column {
-        ids.chunked(2).forEach { row ->
-            Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-                row.forEach { id ->
-                    Text(
-                        id,
-                        color = if (id.contains('/')) C.accent else C.textSub,
-                        fontSize = 10.sp,
-                        maxLines = 1,
-                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                        modifier = Modifier
-                            .weight(1f, fill = false)
-                            .background(C.insetBg, RoundedCornerShape(6.dp))
-                            .border(1.dp, C.border, RoundedCornerShape(6.dp))
-                            .padding(horizontal = 7.dp, vertical = 2.dp),
-                    )
-                }
-            }
-        }
-    }
-}
-
 /**
  * 暴露清单的胶囊阵列：每个胶囊 = 一项客户端会看到的 id。
  *
@@ -1164,7 +1149,7 @@ private fun FlowIds(ids: List<String>) {
 @Composable
 private fun ExposedPills(
     ids: List<String>,
-    modelProvider: Map<String, String>,
+    modelProviders: Map<String, List<String>>,
     readyAccounts: Map<String, Int>,
     onOpen: (provider: String?, model: String?) -> Unit,
 ) {
@@ -1178,9 +1163,14 @@ private fun ExposedPills(
         ) {
             shown.forEach { id ->
                 // `provider/model` 形态自带家；裸名要反查一次
-                val provider = if ('/' in id) id.substringBefore('/') else modelProvider[id]
+                // `provider/model` 形态自带家（就是那一家）；裸名要反查**全部**承载家
+                val carriers = if ('/' in id) listOf(id.substringBefore('/'))
+                else modelProviders[id.substringAfter('/')].orEmpty()
                 val model = id.substringAfter('/')
-                val ready = provider?.let { readyAccounts[it] } ?: 0
+                // 测速定位只需要一家（跳过去那一页会列出该模型的全部可用账号）
+                val provider = carriers.firstOrNull()
+                // 账号数按**全部承载家求和**：同名模型常被多家提供，只看第一家会算少
+                val ready = carriers.sumOf { readyAccounts[it] ?: 0 }
                 val dot = when {
                     ready >= 3 -> C.green
                     ready >= 1 -> C.amber
@@ -1218,7 +1208,7 @@ private fun ExposedPills(
         }
         Spacer(Modifier.height(4.dp))
         Text(
-            "小圆点 = 承载该模型那家的就绪账号数（0 = 现在点了必然失败）· 点胶囊直接去测速",
+            "小圆点 = 提供该模型各家的就绪账号合计（0 = 现在点了必然失败；不含冷却/熔断等实时状态）· 点胶囊去测速",
             color = C.textDim,
             fontSize = 10.sp,
         )

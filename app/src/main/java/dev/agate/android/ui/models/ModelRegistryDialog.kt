@@ -35,29 +35,37 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /**
- * 自定义提供商的**模型清单登记器**。
+ * 自定义提供商的**模型清单 + 别名映射**登记器。
  *
  * ── 为什么需要它（不只是"锦上添花"）──
- * 内置家的清单由适配器给；自定义家的清单是**用户登记的那份运行期数据**，
- * 内核按它回答「这个模型名谁承载」。而在此之前客户端只有「拉取」一条路：
- * 上游不提供 `GET /models`（或暂时挂了、或那家根本不给）时，这一家就永远
- * 零模型 —— 加进来也没法用，且界面上没有任何说得出原因的提示。
+ * 内置家的清单由适配器给；自定义家的清单是**用户登记的运行期数据**，内核按它
+ * 回答「这个模型名谁承载」。而在此之前客户端只有「拉取」一条路：上游不提供
+ * `GET /models`（或暂时挂了、或那家根本不给）时，这一家就永远零模型 ——
+ * 加进来也没法用，且界面上说不出原因。
  *
- * ── 为什么保留 `enabled` 而不是全删重建 ──────────────────────
- * 内核 `/api/custom-providers/models` 是**整表替换**，所以这里交上去的是完整
- * 清单。既有条目一律**原地保留**（连同它的 enabled 与将来可能出现的额外字段），
- * 只做三件用户明确要求的动作：改启停、移除、追加。这样保存一次不会把用户的
- * 其他设置悄悄抹掉。
+ * ── 别名映射为什么必须放在一起 ──────────────────────────────
+ * 内核的 `mappings`（对外别名 → 上游真名）**只有自定义家有**：内置家的映射走
+ * `model_rules`，那里已有独立页面。而自定义家的这条链此前在整个 App 里没有入口
+ * —— 能建家、能登记模型，却没法把「客户端要用的名字」映射到「上游认的名字」，
+ * 而这是中转类上游最常见的诉求（同一模型各家叫法不同）。
+ * 两个清单本来就存在同一条记录的同一份写入里，所以放在同一个弹层。
+ *
+ * ── 保存是整表替换，因此**必须在既有条目上改** ────────────────
+ * 内核 `POST /api/custom-providers/models` 拿到的 models/mappings 会整体覆盖。
+ * 这里保留每个对象的原始字段（`enabled`、`reasoning`、能力位、映射的 enabled…），
+ * 只做用户明确要求的动作：改启停、移除、追加。否则保存一次就把其他设置抹了。
  */
 @Composable
 internal fun ModelRegistryDialog(
     providerLabel: String,
     /** 基线：`models` 数组原样（每个对象至少含 `id`、`enabled`）。 */
     baseline: JSONArray,
+    /** 基线：`mappings` 数组原样（每个对象含 `alias`、`target`）。 */
+    mappingsBaseline: JSONArray,
     /** 保存中（按钮转圈 + 防重复点击）。 */
     saving: Boolean,
     onDismiss: () -> Unit,
-    onSave: (JSONArray) -> Unit,
+    onSave: (models: JSONArray, mappings: JSONArray) -> Unit,
 ) {
     val C = agateColors()
     // 编辑副本：对话框关掉即丢弃，不做"边改边存"—— 整表替换的接口不适合那样用
@@ -68,14 +76,24 @@ internal fun ModelRegistryDialog(
             }
         )
     }
+    var mappings by remember(mappingsBaseline) {
+        mutableStateOf(
+            (0 until mappingsBaseline.length()).mapNotNull { i ->
+                mappingsBaseline.optJSONObject(i)?.takeIf { it.optString("alias").isNotBlank() }
+            }
+        )
+    }
     var draft by remember { mutableStateOf("") }
+    var aliasDraft by remember { mutableStateOf("") }
+    var targetDraft by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
+    var aliasError by remember { mutableStateOf<String?>(null) }
 
-    fun add() {
+    fun addModel() {
         val id = draft.trim()
         if (id.isEmpty()) return
-        if (id.length > 200) {
-            error = "模型名过长（上限 200 字符）"
+        if (id.length > NAME_MAX) {
+            error = "模型名过长（上限 $NAME_MAX 字符）"
             return
         }
         if (entries.any { it.optString("id").equals(id, ignoreCase = true) }) {
@@ -87,6 +105,32 @@ internal fun ModelRegistryDialog(
         error = null
     }
 
+    fun addMapping() {
+        val alias = aliasDraft.trim()
+        val target = targetDraft.trim()
+        when {
+            alias.isEmpty() -> { aliasError = "映射名不能为空"; return }
+            target.isEmpty() -> { aliasError = "要填目标上游模型名"; return }
+            alias.length > NAME_MAX || target.length > NAME_MAX -> {
+                aliasError = "名字过长（上限 $NAME_MAX 字符）"
+                return
+            }
+            mappings.any {
+                it.optString("alias").equals(alias, ignoreCase = true) &&
+                    it.optString("target").equals(target, ignoreCase = true)
+            } -> { aliasError = "这条映射已经存在"; return }
+        }
+        mappings = mappings + JSONObject()
+            .put("alias", alias)
+            .put("target", target)
+            .put("enabled", true)
+        aliasDraft = ""
+        targetDraft = ""
+        aliasError = null
+    }
+
+    val knownIds = entries.map { it.optString("id") }.toSet()
+
     Dialog(onDismissRequest = { if (!saving) onDismiss() }) {
         Column(
             Modifier
@@ -96,20 +140,22 @@ internal fun ModelRegistryDialog(
                 .padding(16.dp),
         ) {
             Text(
-                "登记模型",
+                "登记模型与别名",
                 color = C.textMain,
                 fontSize = 15.sp,
                 fontWeight = FontWeight.SemiBold,
             )
             Spacer(Modifier.height(3.dp))
             Text(
-                "$providerLabel · 这里登记的模型名就是客户端要用的名字（登记后需启用才能下发）",
+                "$providerLabel · 这里填的名字就是客户端要用的名字（登记后需启用才会下发）",
                 color = C.textDim,
                 fontSize = 11.sp,
             )
-            Spacer(Modifier.height(12.dp))
 
-            // 已有条目
+            // ── 模型清单 ──
+            Spacer(Modifier.height(12.dp))
+            Text("模型清单（${entries.size}）", color = C.textSub, fontSize = 12.sp)
+            Spacer(Modifier.height(6.dp))
             if (entries.isEmpty()) {
                 Text(
                     "还没有登记任何模型。可以在下面手填，或回到「拉取模型」从上游拉一份。",
@@ -120,14 +166,14 @@ internal fun ModelRegistryDialog(
                 Column(
                     Modifier
                         .fillMaxWidth()
-                        .heightIn(max = 280.dp)
+                        .heightIn(max = 190.dp)
                         .verticalScroll(rememberScrollState()),
                 ) {
                     entries.forEachIndexed { index, entry ->
                         val id = entry.optString("id")
                         val enabled = entry.optBoolean("enabled", true)
                         Row(
-                            Modifier.fillMaxWidth().padding(vertical = 5.dp),
+                            Modifier.fillMaxWidth().padding(vertical = 4.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             Column(Modifier.weight(1f)) {
@@ -137,7 +183,11 @@ internal fun ModelRegistryDialog(
                                     fontSize = 12.5.sp,
                                 )
                                 if (!enabled) {
-                                    Text("已停用 · 不会下发给客户端", color = C.textDim, fontSize = 10.sp)
+                                    Text(
+                                        "已停用 · 不会下发给客户端",
+                                        color = C.textDim,
+                                        fontSize = 10.sp,
+                                    )
                                 }
                             }
                             Switch(
@@ -165,8 +215,7 @@ internal fun ModelRegistryDialog(
                     }
                 }
             }
-
-            Spacer(Modifier.height(10.dp))
+            Spacer(Modifier.height(6.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     AgateFormInput(
@@ -187,12 +236,104 @@ internal fun ModelRegistryDialog(
                     fontSize = 12.5.sp,
                     fontWeight = FontWeight.SemiBold,
                     modifier = Modifier
-                        .clickable(enabled = draft.isNotBlank() && !saving) { add() }
+                        .clickable(enabled = draft.isNotBlank() && !saving) { addModel() }
                         .padding(horizontal = 8.dp, vertical = 6.dp),
                 )
             }
             error?.let {
-                Spacer(Modifier.height(6.dp))
+                Spacer(Modifier.height(4.dp))
+                Text(it, color = C.red, fontSize = 11.sp)
+            }
+
+            // ── 别名映射 ──
+            Spacer(Modifier.height(14.dp))
+            Text("别名映射（${mappings.size}）", color = C.textSub, fontSize = 12.sp)
+            Spacer(Modifier.height(2.dp))
+            Text(
+                "客户端请求「别名」时，网关改成向上游要「目标模型」。中转类上游各家叫法不同时用它。",
+                color = C.textDim,
+                fontSize = 10.5.sp,
+            )
+            Spacer(Modifier.height(6.dp))
+            if (mappings.isNotEmpty()) {
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 130.dp)
+                        .verticalScroll(rememberScrollState()),
+                ) {
+                    mappings.forEachIndexed { index, entry ->
+                        val alias = entry.optString("alias")
+                        val target = entry.optString("target")
+                        val targetKnown = target in knownIds
+                        Row(
+                            Modifier.fillMaxWidth().padding(vertical = 3.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text("$alias → $target", color = C.textMain, fontSize = 12.sp)
+                                if (!targetKnown) {
+                                    // 不拦：可以先把映射建好、之后补模型；但必须提示，
+                                    // 否则他只会在客户端报错时一脸茫然
+                                    Text(
+                                        "目标模型还没在清单里登记，这条现在不会生效",
+                                        color = C.amber,
+                                        fontSize = 10.sp,
+                                    )
+                                }
+                            }
+                            Text(
+                                "移除",
+                                color = C.red,
+                                fontSize = 11.sp,
+                                modifier = Modifier
+                                    .clickable(enabled = !saving) {
+                                        mappings = mappings.filterIndexed { i, _ -> i != index }
+                                    }
+                                    .padding(horizontal = 4.dp, vertical = 4.dp),
+                            )
+                        }
+                    }
+                }
+            }
+            Spacer(Modifier.height(6.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    AgateFormInput(
+                        value = aliasDraft,
+                        onValueChange = { aliasDraft = it; aliasError = null },
+                        hint = "别名",
+                        singleLine = true,
+                        minLines = 1,
+                    )
+                }
+                Spacer(Modifier.width(6.dp))
+                Column(Modifier.weight(1f)) {
+                    AgateFormInput(
+                        value = targetDraft,
+                        onValueChange = { targetDraft = it; aliasError = null },
+                        hint = "目标模型",
+                        singleLine = true,
+                        minLines = 1,
+                    )
+                }
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    "添加",
+                    color = if (aliasDraft.isBlank() || targetDraft.isBlank() || saving) C.textDim
+                    else C.accent,
+                    fontSize = 12.5.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier
+                        .clickable(
+                            enabled = aliasDraft.isNotBlank() &&
+                                targetDraft.isNotBlank() && !saving,
+                        ) { addMapping() }
+                        .padding(horizontal = 6.dp, vertical = 6.dp),
+                )
+            }
+            aliasError?.let {
+                Spacer(Modifier.height(4.dp))
                 Text(it, color = C.red, fontSize = 11.sp)
             }
 
@@ -218,9 +359,11 @@ internal fun ModelRegistryDialog(
                             RoundedCornerShape(10.dp),
                         )
                         .clickable(enabled = !saving) {
-                            val out = JSONArray()
-                            entries.forEach { out.put(it) }
-                            onSave(out)
+                            val outModels = JSONArray()
+                            entries.forEach { outModels.put(it) }
+                            val outMappings = JSONArray()
+                            mappings.forEach { outMappings.put(it) }
+                            onSave(outModels, outMappings)
                         }
                         .padding(horizontal = 14.dp, vertical = 8.dp),
                 )
@@ -228,3 +371,6 @@ internal fun ModelRegistryDialog(
         }
     }
 }
+
+/** 与内核 `MAX_MODEL_ID_CHARS` / `MAX_ALIAS_CHARS` 一致（都是 128）。 */
+private const val NAME_MAX = 128
