@@ -139,7 +139,7 @@ fun AddProviderPage(onBack: () -> Unit, initialProviderId: String? = null) {
 
     LaunchedEffect(Unit) {
         while (isActive) {
-            val up = KernelOps.isUp()
+            val up = KernelOps.isUp(ctx)
             kernelUp = up
             if (up) break
             delay(2_000L)

@@ -1,5 +1,7 @@
 package dev.agate.android.data
 
+import android.content.Context
+import dev.agate.core.GatewayPrefs
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -16,8 +18,6 @@ import java.util.concurrent.TimeUnit
  */
 object KernelOps {
 
-    private const val PORT = 8787
-
     private val client by lazy {
         OkHttpClient.Builder()
             .connectTimeout(1500, TimeUnit.MILLISECONDS)
@@ -25,9 +25,22 @@ object KernelOps {
             .build()
     }
 
-    suspend fun isUp(): Boolean = withContext(Dispatchers.IO) {
+    /**
+     * 网关端口活性探测。
+     *
+     * ⚠️ 端口**取自设置**（`GatewayPrefs.port`），不能写死 8787：设置页允许改端口，
+     * 写死会让改了端口的用户永远得到「网关未运行」——界面据此弹「先运行网关」，
+     * 而他明明已经跑着，点了又「启动成功」，从头到尾没有一句真话。
+     *
+     * [port] 显式传入优先（调用方手里已有值时省一次 SharedPreferences 读）；
+     * 传 0 表示「按设置取」。
+     */
+    suspend fun isUp(ctx: Context?, port: Int = 0): Boolean = withContext(Dispatchers.IO) {
+        val actual = port.takeIf { it in 1..65535 }
+            ?: ctx?.let { GatewayPrefs.port(it) }
+            ?: 8787
         try {
-            val req = Request.Builder().url("http://127.0.0.1:$PORT/health").get().build()
+            val req = Request.Builder().url("http://127.0.0.1:$actual/health").get().build()
             client.newCall(req).execute().use { it.isSuccessful }
         } catch (_: Exception) {
             false
