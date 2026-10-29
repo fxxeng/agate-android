@@ -311,21 +311,30 @@ fun ModelsPage(
     }
 
     /** 切模式 / 改 pin：一起提交（两者表达同一件事，见内核 set_models_list 的说明）。 */
-    fun saveListView(mode: String, pins: List<String>) {
-        if (configuring) return
-        configuring = true
-        scope.launch {
-            // `finally` 复位而不是顺序复位：中途抛异常（内核通道断开会抛）时，
-            // 顺序复位永远走不到，`configuring` 卡在 true —— 之后所有模式切换与
-            // pin 点击都会被自己挡住，界面看起来就是「点了没反应」。
+    // ── 清单形态的写入：串行化，**不丢最后一次意图** ─────────────
+    //
+    // 旧写法是 `if (configuring) return` —— 前一次保存还没回来时的点击会被
+    // **静默丢掉**（连 toast 都没有）。而用户的操作恰恰是「先点模式、紧接着点
+    // 提供商芯片」：第一次请求在飞，第二次被吞 → 芯片不亮、计数不变，看上去
+    // 就是「混合模式没生效」。这条 bug 之所以难查，是因为它不留任何痕迹。
+    //
+    // 现在用一条容量 1 的管道（CONFLATED）：期间连点只保留最后一次意图，
+    // 前一次完成立即执行最新那次 —— 既不并发写配置，也不丢动作。
+    val listViewSaves = remember {
+        kotlinx.coroutines.channels.Channel<Pair<String, List<String>>>(
+            kotlinx.coroutines.channels.Channel.CONFLATED
+        )
+    }
+    androidx.compose.runtime.LaunchedEffect(Unit) {
+        for ((mode, pins) in listViewSaves) {
+            configuring = true
             try {
                 val r = ModelOps.setListView(mode, pins)
                 val parsed = ListView.parse(r.data)
                 if (r.ok) {
                     listView = parsed.copy(providers = providers)
-                    // 回包里没有刚提交的 pin = 服务端没接受。以前这种情况是
-                    // **静默弹回去**（芯片不亮、计数不变，用户以为点坏了），
-                    // 现在明说 —— 混合模式的 bug 就是靠这条提示才能一眼定位。
+                    // 回包里没有刚提交的 pin = 服务端没接受。静默弹回去最难查，
+                    // 所以这里明说。
                     val lost = pins.filterNot { want -> parsed.pins.any { it.equals(want, true) } }
                     if (lost.isNotEmpty()) {
                         Toast.makeText(
@@ -341,6 +350,10 @@ fun ModelsPage(
                 configuring = false
             }
         }
+    }
+
+    fun saveListView(mode: String, pins: List<String>) {
+        listViewSaves.trySend(mode to pins)
     }
 
     // 首次进入与模型清单变化时拉一次（清单变了计数就该重算）
@@ -668,6 +681,20 @@ private fun XpCard(
             Spacer(Modifier.height(3.dp))
             Text(it, color = C.textSub, fontSize = 11.sp)
         }
+        // ── 三种模式与下方「范围」的对应关系 ──────────────────────
+        // 用户的原话：三个模式应该对应下面的模型管理。确实该对应 —— 只是两边
+        // 的口径不同（这里按「客户端收到几个」去重，下面按「本机开了几条」数），
+        // 所以不写清就会觉得数字对不上。
+        Spacer(Modifier.height(4.dp))
+        Text(
+            when (view.mode) {
+                "provider" -> "= 下方各家里启用的模型，每家各列一条并带「提供商/」前缀"
+                "hybrid" -> "= 下方的「全部」（同名合并）+ 你勾的那几家再各加一份带前缀条目"
+                else -> "= 下方「全部」里启用的模型（同名跨家合并成一条，多家可用时按路由队列选）"
+            },
+            color = C.textDim,
+            fontSize = 10.sp,
+        )
 
         // ── 模式说明 ──
         Spacer(Modifier.height(5.dp))
