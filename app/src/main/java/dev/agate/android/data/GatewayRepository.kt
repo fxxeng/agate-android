@@ -8,7 +8,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -159,6 +162,29 @@ object GatewayRepository {
 
     private val _snapshot = MutableStateFlow(ConsoleSnapshot())
     val snapshot: StateFlow<ConsoleSnapshot> = _snapshot
+
+    /**
+     * 领域事件总线：内核 SSE 的业务事件按**种类**转发给页面。
+     *
+     * ── 解决什么（与 5s 快照轮询的分工）────────────────────────
+     * 快照 `SNAPSHOT_INTERVAL_MS = 5s` 是「兜底轮询」：它在跑，但一次改动最多
+     * 要等 5 秒才反映到界面。而这个仓库只持有控制台那一份快照 ——
+     * 账号列表、模型清单、自定义家名字表分别在各自的页面里，它们连「有东西变了」
+     * 都不知道，只能靠进页面时拉一次。
+     *
+     * 所以：内核在 **core 的变更点**广播事件（见 Rust 侧 `events::publish`），
+     * 这里只做「种类转发」，页面各自决定要重拉什么。刻意不在这里做「事件 → 数据」
+     * 的解释：那等于让仓库持有所有页面的数据，一处过期就全局不一致。
+     *
+     * `extraBufferCapacity` 给一点余量 + `DROP_OLDEST`：事件只是「去重拉一次」的
+     * 提示，丢掉中间几条不会丢状态（拉的是权威版本）。
+     */
+    private val _bus = MutableSharedFlow<String>(
+        replay = 0,
+        extraBufferCapacity = 32,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST,
+    )
+    val bus: SharedFlow<String> = _bus
 
     /** 快照整体拉取失败的原因（网络层失败，非字段缺失）；成功后清空。 */
     private val _snapshotError = MutableStateFlow<String?>(null)
@@ -448,6 +474,19 @@ object GatewayRepository {
                 }
 
                 override fun onEvent(eventSource: EventSource, id: String?, type: String?, data: String) {
+                    // 业务事件先上总线（页面按需局部刷新），再走下面原有的
+                    // 「进最近事件列表 / 触发快照」逻辑。顺序无关但都在主线程外，
+                    // 所以只 tryEmit（满缓冲就丢，见 _bus 的说明）。
+                    if (type != null) {
+                        when (type) {
+                            "accounts_changed",
+                            "models_changed",
+                            "providers_changed",
+                            "checkin_done",
+                            "request_done",
+                            -> _bus.tryEmit(type)
+                        }
+                    }
                     when (type) {
                         // ping 是心跳；lagged 提示全量刷新（M3-2 控制台接入），不进列表
                         "ping" -> return

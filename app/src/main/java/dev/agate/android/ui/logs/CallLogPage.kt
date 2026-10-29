@@ -121,6 +121,15 @@ fun CallLogPage(
     }
     LaunchedEffect(Unit) { reload() }
 
+    // 事件驱动：一条请求收尾（内核 `request_done`）就立刻重拉，而不是等下一轮
+    // 轮询（空闲时是 15s）。轮询保留为兜底 —— 事件丢了也不会一直陈旧。
+    // 收尾很密时（流式并发）由走廊里的 reload 自身节流（在途去重）。
+    LaunchedEffect(Unit) {
+        GatewayRepository.bus.collect { kind ->
+            if (kind == "request_done") reload()
+        }
+    }
+
     // 停留本页自动刷新：进行中有请求时 3s 一轮，否则 15s —— 界面不动时省电，
     // 有在途请求时才跟得紧。离开页面（DisposableEffect onDispose）即停。
     LaunchedEffect(status, provider, model) {

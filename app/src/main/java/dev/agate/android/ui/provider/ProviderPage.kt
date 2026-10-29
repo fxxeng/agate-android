@@ -230,6 +230,21 @@ fun ProviderPage(
         customNames = CustomProviderOps.Record.listOf(CustomProviderOps.list())
             .associate { it.id to it.name }
     }
+    // 事件驱动刷新：内核在 core 的变更点广播（账号改动 / 自定义家改动），
+    // 这里只重拉**本页要的两份**（快照 + 自定义家名字表），不做全局刷新。
+    // 与 5s 兜底轮询并存：事件快、轮询保证「事件丢了也不会一直陈旧」。
+    LaunchedEffect(Unit) {
+        GatewayRepository.bus.collect { kind ->
+            when (kind) {
+                "accounts_changed" -> GatewayRepository.refreshOnce()
+                "providers_changed" -> {
+                    customNames = CustomProviderOps.Record.listOf(CustomProviderOps.list())
+                        .associate { it.id to it.name }
+                    GatewayRepository.refreshOnce()
+                }
+            }
+        }
+    }
     val labelOf = remember(customNames) {
         { pid: String -> customNames[pid] ?: PresetRegistry.labelOf(pid) }
     }
