@@ -240,6 +240,16 @@ fun ModelsPage(
     var customProviders by remember { mutableStateOf<List<CustomProviderOps.Record>>(emptyList()) }
     /** 正在切换的条目键（provider|id），用来禁掉重复点击。 */
     var toggling by remember { mutableStateOf<String?>(null) }
+    /**
+     * 「登记模型」弹层的目标家（null = 不显示）。
+     *
+     * 只对自定义家开放：内置家的清单来自适配器，用户登记进去也不会生效
+     * （`/api/models/manage` 的启停才是它们该用的开关）。
+     */
+    var registryTarget by remember { mutableStateOf<String?>(null) }
+    /** 登记弹层的基线（打开时读一次，避免边改边被重算覆盖）。 */
+    var registryBaseline by remember { mutableStateOf(org.json.JSONArray()) }
+    var registrySaving by remember { mutableStateOf(false) }
 
     /**
      * 提供商 (id, label) 列表：混合模式的 pin 选择要用。
@@ -635,6 +645,40 @@ fun ModelsPage(
             } else if (listScope != null) {
                 // ── 单家范围：这家的完整清单（不折叠，一进来就是展开的）──
                 val pid = listScope!!
+                // 自定义家：清单是用户登记的，给一个直接编辑的入口 ——
+                // 上游不提供 /models 时这是唯一能把模型加进来的路（见弹层说明）。
+                if (CustomProviderOps.isCustomProviderId(pid)) {
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .background(C.insetBg, RoundedCornerShape(10.dp))
+                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            "这家是自定义提供商 · 模型清单由你登记",
+                            color = C.textSub,
+                            fontSize = 11.5.sp,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Text(
+                            "登记模型",
+                            color = C.accent,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier
+                                .clickable {
+                                    scope.launch {
+                                        registryBaseline = CustomProviderOps.registeredModels(pid)?.first
+                                            ?: org.json.JSONArray()
+                                        registryTarget = pid
+                                    }
+                                }
+                                .padding(horizontal = 6.dp, vertical = 4.dp),
+                        )
+                    }
+                    Spacer(Modifier.height(8.dp))
+                }
                 val list = filtered.filter { it.provider == pid }
                 if (list.isEmpty()) {
                     Text("这家没有匹配的模型", color = C.textDim, fontSize = 12.sp)
@@ -688,6 +732,37 @@ fun ModelsPage(
             )
             Spacer(Modifier.height(28.dp))
         }
+    }
+
+    // ── 登记模型弹层（自定义家专用）──────────────────────────
+    registryTarget?.let { pid ->
+        ModelRegistryDialog(
+            providerLabel = customProviders.firstOrNull { it.id == pid }?.name ?: pid,
+            baseline = registryBaseline,
+            saving = registrySaving,
+            onDismiss = { if (!registrySaving) registryTarget = null },
+            onSave = { models ->
+                registrySaving = true
+                scope.launch {
+                    // mappings 原样带回：这个接口是整表替换，漏交就把别名映射抹了
+                    val mappings = CustomProviderOps.registeredModels(pid)?.second
+                        ?: org.json.JSONArray()
+                    val r = CustomProviderOps.saveModels(pid, models, mappings)
+                    registrySaving = false
+                    if (r.ok) {
+                        registryTarget = null
+                        Toast.makeText(ctx, "已保存 ${models.length()} 个模型", Toast.LENGTH_SHORT).show()
+                        // 清单变了：会话清单 / 管理视图 / 计数全都得重拉
+                        GatewayRepository.refreshOnce()
+                        loadManage()
+                        loadListView()
+                        loadCustom()
+                    } else {
+                        Toast.makeText(ctx, r.error ?: "保存失败", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            },
+        )
     }
 
     // ── 拉取模型弹层（v44/3.0.8：全量 or 按家）──────────────────
