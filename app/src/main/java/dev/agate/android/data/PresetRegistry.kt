@@ -55,6 +55,22 @@ data class ProviderPreset(
      * 客户端的 genflowengine.dll，Android 无从加载 → 入口置灰，已有账号不动。
      */
     val disabledNote: String? = null,
+    /**
+     * 「浏览器」通道是否需要内核换一支授权地址（只有小浣熊与 CatPaw 为 true）。
+     *
+     * ── 为什么要有这个标记，而不是「有 EXTERNAL 就发 mode」──────────
+     * 通道列表里带 EXTERNAL 的家很多（accio / codearts / antigravity / workbuddy /
+     * zcode / trae …），它们的内嵌窗与系统浏览器打开的是**同一个授权地址**，
+     * 内核收到 `mode:"browser"` 会明确拒绝（那是刻意设计：不让调用方以为这个
+     * 参数对所有家都有效）。若按「选了浏览器通道就发 mode」实现，那些家会全部
+     * 变成 400 —— 一条本该无害的分支把十几个能用的家打坏。
+     *
+     * 因此「这家有没有第二支授权地址」必须由注册表回答，客户端不猜。
+     * 小浣熊为 true 的理由见它自己那条注释（自定义协议 vs redirect）；
+     * CatPaw 为 true 只是因为浏览器形态要顺带把网关端口占起来（loopback 回调
+     * 需要有人接），授权地址其实与前一条相同。
+     */
+    val browserLogin: Boolean = false,
 )
 
 object PresetRegistry {
@@ -87,16 +103,24 @@ object PresetRegistry {
             pasteHint = "粘贴 auth.json 内容（含 auth.accessToken / account.uid）",
             pasteMultiline = true, supportsCheckin = true,
         ),
-        // 小浣熊：自定义协议回调，只能内嵌；可导入文本 JSON
+        // 小浣熊：两条通道**走的是两支不同的授权地址**（内核
+        // `raccoon::oauth` 的 build_authorize_url / build_browser_authorize_url）：
+        //   · 内嵌 —— 带 `login_source=desktop`，官方页跳自定义协议
+        //     `office-raccoon://auth/callback`，由 WebView 拦下转交内核；
+        //   · 浏览器 —— 改带 `redirect=<本机 http>`，官方页把 `?authorization_code=`
+        //     回推到我们自己的端口（手机上自定义协议没人接，这条才是稳的）。
         ProviderPreset(
             "raccoon", "小浣熊", "JWT 凭证网页登录", LoginKind.WEBVIEW,
-            listOf(AuthChannel.EMBEDDED, AuthChannel.IMPORT_FILE),
-            supportsCheckin = true,
+            listOf(AuthChannel.EMBEDDED, AuthChannel.EXTERNAL, AuthChannel.IMPORT_FILE),
+            supportsCheckin = true, browserLogin = true,
         ),
-        // CatPaw：回调由壳提交，只能内嵌；可导入文本 JSON
+        // CatPaw：内嵌与浏览器是**同一套上游流程**（passport 登录后 loopback 回调 +
+        // poll-token 兜底），差别只在登录页在哪渲染 —— 与 raccoon 相反，它不需要换
+        // 授权地址。有 poll-token 兜底，所以不需要网关在跑（needsGateway 仍为 false）。
         ProviderPreset(
             "catpaw", "CatPaw", "美团 · 网页登录", LoginKind.WEBVIEW,
-            listOf(AuthChannel.EMBEDDED, AuthChannel.IMPORT_FILE),
+            listOf(AuthChannel.EMBEDDED, AuthChannel.EXTERNAL, AuthChannel.IMPORT_FILE),
+            browserLogin = true,
         ),
         // AutoClaw 国内：手机验证码
         ProviderPreset(

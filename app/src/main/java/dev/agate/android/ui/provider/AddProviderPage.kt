@@ -348,7 +348,18 @@ fun AddProviderPage(onBack: () -> Unit, initialProviderId: String? = null) {
                                 }
                             })
                             AuthChannel.EXTERNAL, AuthChannel.DEVICE_CODE ->
-                                ExternalLoginForm(preset = picked, onDone = onAdded)
+                                // browserMode：这家在「浏览器」通道下要走另一支授权
+                                // 地址（小浣熊），交给内核按 mode 分流 —— 客户端不
+                                // 拼授权地址，那是 provider 知识。
+                                ExternalLoginForm(
+                                    preset = picked,
+                                    // 只有注册表标了 browserLogin 的家才换授权地址；
+                                    // 其余家的 EXTERNAL 只是「同一个 URL 换到系统浏览器打开」，
+                                    // 给内核发 mode 会被明确拒绝（见该字段的注释）。
+                                    browserMode = channel == AuthChannel.EXTERNAL &&
+                                        picked.browserLogin,
+                                    onDone = onAdded,
+                                )
                             AuthChannel.SMS -> SmsLoginForm(preset = picked, onDone = onAdded)
                             AuthChannel.PASTE -> PasteLoginForm(preset = picked, onDone = onAdded)
                             AuthChannel.IMPORT_FILE -> ImportFileForm(preset = picked, onDone = onAdded)
@@ -1412,9 +1423,20 @@ private fun ChannelChips(
     }
 }
 
-/* ── 浏览器登录（含设备码类）：跳系统浏览器 + 轮询 + 取消 ── */
+/**
+ * 浏览器登录（含设备码类）：跳系统浏览器 + 轮询 + 取消。
+ *
+ * [browserMode] 表示这次走的是「浏览器」通道（而不是内嵌 WebView）。它只对
+ * **小浣熊**有实际差别 —— 那家的两支授权地址不一样（见 `PresetRegistry` 里
+ * raccoon 的说明）。其余家它只是一个透传标记，内核会忽略；CatPaw 会顺带把
+ * 网关端口占起来（loopback 回调需要有人接）。
+ */
 @Composable
-private fun ExternalLoginForm(preset: ProviderPreset, onDone: (Boolean, String) -> Unit) {
+private fun ExternalLoginForm(
+    preset: ProviderPreset,
+    browserMode: Boolean = false,
+    onDone: (Boolean, String) -> Unit,
+) {
     val C = agateColors()
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -1464,9 +1486,15 @@ private fun ExternalLoginForm(preset: ProviderPreset, onDone: (Boolean, String) 
     }
 
     Text(
-        if (preset.channels.contains(AuthChannel.DEVICE_CODE))
-            "在浏览器完成设备授权（授权页会显示设备码，可复制到官网确认）"
-        else "在系统浏览器完成授权 · 回到 App 自动继续",
+        when {
+            preset.channels.contains(AuthChannel.DEVICE_CODE) ->
+                "在浏览器完成设备授权（授权页会显示设备码，可复制到官网确认）"
+            // 浏览器通道：回调落在本机 http 端口，需要网关在跑（内嵌通道不需要）
+            browserMode && preset.needsGateway ->
+                "在系统浏览器完成登录 · 回调落在本机端口（需网关运行）· 回到 App 自动继续"
+            browserMode -> "在系统浏览器完成登录 · 回到 App 自动继续"
+            else -> "在系统浏览器完成授权 · 回到 App 自动继续"
+        },
         color = C.textSub, fontSize = 12.sp,
     )
     Spacer(Modifier.height(12.dp))
@@ -1497,7 +1525,8 @@ private fun ExternalLoginForm(preset: ProviderPreset, onDone: (Boolean, String) 
             onClick = {
                 hint = null
                 scope.launch {
-                    when (val r = LoginClient.start(preset.id)) {
+                    val mode = if (browserMode) "browser" else null
+                    when (val r = LoginClient.start(preset.id, mode)) {
                         is LoginClient.StartResult.Started -> {
                             state = r.state
                             authUrl = r.authUrl

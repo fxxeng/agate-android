@@ -123,7 +123,8 @@ fun AuthWebViewSheet(
                 authUrl = session.authUrl,
                 onPageHint = { status = it },
                 onSchemeCallback = { url ->
-                    scope.launch { LoginClient.forwardCallback(url) }
+                    // state 来自本次登录会话：内核靠它认任务（缺了必 400）
+                    scope.launch { LoginClient.forwardCallback(session.state, url) }
                 },
             )
             Spacer(Modifier.height(12.dp))

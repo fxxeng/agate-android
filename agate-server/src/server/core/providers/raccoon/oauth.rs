@@ -112,6 +112,63 @@ pub fn build_authorize_url(state: &str) -> String {
     url.to_string()
 }
 
+/// 「浏览器登录」的回调路径前缀（`redirect` 的落点，见 [`browser_callback_url`]）。
+///
+/// ── 为什么 state 放在**路径**里，而不是查询串 ──────────────────
+/// 官方授权页把 `?authorization_code=…` **追加**到 `redirect` 之后回来。若 redirect
+/// 自己已经带了 `?state=…`，追加就会拼出 `?state=….?authorization_code=…` 这种畸形
+/// 查询串 —— 有的实现是简单字符串拼接，有的是 `searchParams.set`，行为不可控。
+/// 放进路径段则两种实现都能正确带回：state 我们从路径读，授权码照样是查询串里的
+/// 第一个参数，两边都不依赖对方的拼接方式。
+pub const BROWSER_CALLBACK_PREFIX: &str = "/api/session/login/raccoon-callback";
+
+/// 拼浏览器登录的 `redirect`：`{base}/api/session/login/raccoon-callback/{state}`。
+///
+/// `base` 是本机监听基址（`http://127.0.0.1:<端口>`，由调用方按网关端口给出）。
+/// state 是 [`new_login_state`] 生成的 uuid 形态串（十六进制 + 连字符），不含任何
+/// 路径保留字符，**刻意不做百分号编码** —— 多编一次会让回调里的值与任务表的键
+/// 对不上（任务表按原始 state 索引）。
+pub fn browser_callback_url(base: &str, state: &str) -> String {
+    format!(
+        "{}{BROWSER_CALLBACK_PREFIX}/{}",
+        base.trim().trim_end_matches('/'),
+        state.trim()
+    )
+}
+
+/// 构造**浏览器登录**的授权地址（源实现 `buildRaccoonAuthorizeUrl` 的另一支）。
+///
+/// ── 与 [`build_authorize_url`] 的差别（这条是整条通道成立的关键）────
+/// 桌面端那一支带 `login_source=desktop`，官方页据此把授权码交给自定义协议
+/// `office-raccoon://auth/callback`。Android 上没有应用登记这个协议，系统浏览器
+/// 只会停在一个「无法打开链接」的失败页，登录到此为止。
+///
+/// **不带 `login_source`、改带 `redirect=<本机 http 地址>`** 时，官方页走的是
+/// 「网页登录」分支：登录成功后把 `?authorization_code=…` 直接回推到我们给的那个
+/// http 地址上。依据是次要参考项目 `Android-AI-gateway` 的
+/// `RaccoonProvider.beginWebLogin`，其注释明确要求「不要带 login_source=desktop」。
+///
+/// `state` 仍随授权请求上行（官方页会原样带回）；同时它也被写进 redirect 的路径里，
+/// 因此回调侧**不依赖**它出现在查询串中。
+///
+/// `appname` 是中文，必须由 `url::Url` 做百分号编码 —— 手拼一个 `&` 或空格就会让
+/// 官方页拿到半个参数（与 [`build_authorize_url`] 同一条理由）。
+pub fn build_browser_authorize_url(state: &str, redirect: &str) -> String {
+    let origin = main_origin();
+    let Ok(mut url) = url::Url::parse(&origin) else {
+        // origin 不可解析时退化成字符串拼接（同 build_authorize_url 的处置）
+        return format!(
+            "{origin}{AUTHORIZE_PATH}?appname={APP_NAME}&state={state}&redirect={redirect}"
+        );
+    };
+    url.set_path(AUTHORIZE_PATH);
+    url.query_pairs_mut()
+        .append_pair("appname", APP_NAME)
+        .append_pair("state", state)
+        .append_pair("redirect", redirect);
+    url.to_string()
+}
+
 /// 生成一次登录的 `state`（不可预测的 uuid v4 串，理由见模块头）。
 pub fn new_login_state() -> String {
     crate::server::core::upstream::request::new_request_id()

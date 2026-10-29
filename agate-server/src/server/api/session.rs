@@ -206,6 +206,16 @@ pub async fn login_start(State(state): State<ServerState>, body: Bytes) -> Respo
         .and_then(|payload| payload.get("provider").and_then(Value::as_str))
         .map(str::trim)
         .unwrap_or("");
+    // 登录形态：缺省 `embedded`（内嵌登录窗，历史行为），`browser` = 系统浏览器
+    // ＋ 本机 http 回调。**只有明确要走浏览器的那几家读它**，其余家忽略 ——
+    // 把「形态」做成通用入参会让二十几家都得回答自己支不支持，而实际上只有
+    // 小浣熊有两条真正不同的授权地址（见下面两个分支的说明）。
+    let browser_mode = payload
+        .as_ref()
+        .and_then(|payload| payload.get("mode").and_then(Value::as_str))
+        .map(str::trim)
+        .map(|mode| mode.eq_ignore_ascii_case("browser"))
+        .unwrap_or(false);
     // 注册表是 provider 白名单的唯一事实来源（见 providers::kind_from_id 的说明）
     let kind = match provider {
         "" => crate::server::core::providers::ProviderKind::WorkBuddy,
@@ -230,6 +240,52 @@ pub async fn login_start(State(state): State<ServerState>, body: Bytes) -> Respo
         }
     }
 
+    // ── 系统浏览器登录（`mode:"browser"`）────────────────────────
+    // 两家需要它，但**原因完全不同**：
+    //   · 小浣熊：内嵌通道拦到的是自定义协议 `office-raccoon://`，Android 上没有
+    //     应用登记它；系统浏览器那条要换一支授权地址（不带 login_source、带
+    //     redirect），官方页才会把授权码回推到本机 http 上。见
+    //     `LoginService::start_raccoon_browser_login`。
+    //   · CatPaw：内嵌与浏览器**共用同一条上游流程**（login-config → passport →
+    //     回调/poll-token），差别只在登录页在哪渲染。这里不换地址，只做一件必须
+    //     的事：把网关端口占起来 —— 它的 loopback 回调（PNA 跨源 POST）要有人接，
+    //     而 Core 态不监听端口（见 `core::login_listener`）。
+    if browser_mode {
+        match kind {
+            crate::server::core::providers::ProviderKind::Raccoon => {
+                if let Err(reason) = crate::server::core::login_listener::ensure(&state) {
+                    return management_error(400, reason);
+                }
+                let callback_base = format!("http://127.0.0.1:{}", state.port);
+                let handle = match state.login().start_raccoon_browser_login(&callback_base) {
+                    Ok(handle) => handle,
+                    Err(error) => return management_error(400, error),
+                };
+                let task = handle.snapshot();
+                return ok_json(json!({ "state": task.state, "authUrl": task.auth_url,
+                    "edition": task.edition, "provider": "raccoon" }));
+            }
+            crate::server::core::providers::ProviderKind::CatPaw => {
+                // ★ 这里**刻意不 return**：CatPaw 的两种形态走的是同一条上游流程
+                // （login-config → passport → loopback 回调 / poll-token），差别只在
+                // 登录页在哪渲染。落到下面那个通用分支即可 —— 它已把网关端口占起来，
+                // 内嵌与浏览器两种形态都因此受益。重复一份发起代码只会让两条路
+                // 慢慢分叉（例如某天给 loopback 加校验，只改了一处）。
+            }
+            _ => {
+                // 其余家没有「换成浏览器」这一说：它们的授权地址与回调落点都是固定的，
+                // 内嵌窗与系统浏览器打开的是同一个 URL，回调也落在同一处 ——
+                // 明说一句，不要让调用方以为这个参数对所有家都有效。
+                return management_error(
+                    400,
+                    format!(
+                        "{}不支持切换登录形态（内嵌与浏览器打开的是同一个授权地址）",
+                        crate::server::core::providers::meta(kind).label
+                    ),
+                );
+            }
+        }
+    }
     // Qoder：设备授权，两站同构。拆家后界面上是两张卡片（`qoder` /
     // `qoder-intl`），点哪张就发哪个 provider id —— 地区由 **provider id**
     // 反查（与下面 ZCode 同一条理由：`edition` 是前端回显字段，拿它定地区
@@ -369,6 +425,11 @@ pub async fn login_start(State(state): State<ServerState>, body: Bytes) -> Respo
     // 所以这里除了发起还要把回调基址告诉它 —— 那必须是本网关自己的监听地址，
     // 而上游的 redirect 白名单只放行 127.0.0.1 / localhost（实测）。
     if kind == crate::server::core::providers::ProviderKind::CatPaw {
+        // 内嵌通道同样要把端口占起来：redirect 指向本机，PNA 那条 POST 需要一个
+        // 真在监听的端口（Core 态不监听，见 `core::login_listener`）。
+        if let Err(reason) = crate::server::core::login_listener::ensure(&state) {
+            return management_error(400, reason);
+        }
         let callback_base = format!("http://127.0.0.1:{}", state.port);
         let handle = match state.login().start_catpaw_login(&callback_base).await {
             Ok(handle) => handle,
@@ -592,6 +653,61 @@ fn raccoon_callback_url(code: &str, state: &str) -> String {
     query.append_pair("code", code);
     query.append_pair("state", state);
     format!("office-raccoon://auth/callback?{}", query.finish())
+}
+
+// ─── GET /api/session/login/raccoon-callback/{state} ───────
+
+/// 小浣熊**浏览器登录**的回调（系统浏览器 + 本机 http，查询串带
+/// `authorization_code`）。
+///
+/// ── 与上面那条 `/raccoon-callback`（查询串形态）的分工 ────────
+/// 那条服务的是**远程面板 / Docker** 场景：网页 shim 用官方页的 redirect 分支，
+/// 把 `?state=&authorization_code=` 以查询串带回面板。这条服务的是**手机**：
+/// 授权页把 `?authorization_code=…` 追加到我们给的本机地址后面回来，而 state
+/// 在**路径段**里（见 `raccoon::oauth::browser_callback_url` 的说明 —— 官方页的
+/// 追加方式不保证与已有查询串正确合并）。
+///
+/// 两条最终都汇到同一个 `submit_login_callback`：任务校验、state 逐字比对、
+/// 授权码一次性换证、落账号、写回 `/wait` 全部复用，不另写一份。
+///
+/// ── 为什么免鉴权 ────────────────────────────────────────────
+/// 调用方是**用户的浏览器**（授权页 302 过来），它没有我们的 API Key。
+/// 安全性由一次性 `state` 承担（逐字比对，猜不中就拿不到任何东西）。
+pub async fn login_raccoon_browser_callback(
+    State(state): State<ServerState>,
+    axum::extract::Path(task_state): axum::extract::Path<String>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    if let Some(error) = params.get("error").filter(|value| !value.trim().is_empty()) {
+        return oauth_callback_page(400, &format!("登录失败：授权被拒绝（{error}）"));
+    }
+    let code = params
+        .get("authorization_code")
+        .or_else(|| params.get("code"))
+        .cloned()
+        .unwrap_or_default();
+    if task_state.trim().is_empty() || code.trim().is_empty() {
+        return oauth_callback_page(
+            400,
+            "登录失败：回调缺少 state 或授权码，请重新发起浏览器登录。",
+        );
+    }
+    let callback_url = raccoon_callback_url(&code, &task_state);
+    match state
+        .login()
+        .submit_login_callback(&task_state, &callback_url)
+        .await
+    {
+        Ok(crate::server::core::login::LoginCallbackSubmission::Completed(_)) => {
+            oauth_callback_page(200, "登录成功，已返回 Agate，可以关闭此页面。")
+        }
+        Ok(crate::server::core::login::LoginCallbackSubmission::ContinueTo(_)) => {
+            oauth_callback_page(400, "登录回调仍需继续，请重新发起浏览器登录。")
+        }
+        Err(error) => {
+            oauth_callback_page(error.status_code, &format!("登录失败：{}", error.message))
+        }
+    }
 }
 
 // ─── POST /api/session/login/catpaw-callback ────────────────

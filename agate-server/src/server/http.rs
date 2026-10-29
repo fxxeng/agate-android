@@ -130,6 +130,14 @@ pub fn panel_router(state: ServerState) -> Router {
             "/api/session/login/raccoon-callback",
             get(api::session::login_raccoon_callback),
         )
+        // 小浣熊**浏览器登录**的回调（手机形态）：授权页把 `?authorization_code=…`
+        // 追加到 `redirect` 后面回来，state 在路径段里 —— 与上一条查询串形态
+        // 是同一件事的两种投递方式，收尾共用 `submit_login_callback`。
+        // 免鉴权的理由同上：调用方是用户的浏览器。
+        .route(
+            "/api/session/login/raccoon-callback/{state}",
+            get(api::session::login_raccoon_browser_callback),
+        )
         // KukuAI 短信登录收尾（百度通行证）：壳侧在登录窗口跳转 success.html
         // 后读取 WebView2 Cookie 存储（BDUSS 是 HttpOnly，页面脚本读不到），
         // 把 state + 登录态 Cookie 一并 POST 交到这里。**免鉴权**：调用方是

@@ -411,6 +411,54 @@ impl LoginService {
         Ok(handle)
     }
 
+    /// 发起一次**浏览器登录**（系统浏览器 + 本机 http 回调）—— 小浣熊的第二条通道。
+    ///
+    /// ── 与 [`Self::start_web_login`] 的差别只有一处，但是决定性的 ────
+    /// **授权地址的回调落点**。那一条用的是桌面端授权地址（`login_source=desktop`），
+    /// 官方页把授权码交给自定义协议 `office-raccoon://auth/callback`；Android 上没有
+    /// 应用登记该协议，系统浏览器只能给一个失败页。这条改带 `redirect=<本机 http>`，
+    /// 官方页就会把 `?authorization_code=…` 回推到我们自己的监听端口上
+    /// （依据见 `raccoon::oauth::build_browser_authorize_url` 的说明）。
+    ///
+    /// ── 为什么不起后台任务、不轮询 ──────────────────────────────
+    /// 与 [`Self::start_web_login`] 一样：授权地址是**本地拼**的，拿到回调里的 code
+    /// 之前没有任何网络动作。任务登记进表后就等 `submit_login_callback` 来收尾
+    ///（或等用户取消）。**调用方必须先把监听端口确保起来**
+    ///（`core::login_listener::ensure`），否则回调打到没人听的端口上。
+    ///
+    /// `callback_base` 是本机监听基址（`http://127.0.0.1:<端口>`）：这个模块拿不到
+    /// 监听端口（它在 `ServerState` 上），与 `start_catpaw_login` 同一取舍。
+    pub fn start_raccoon_browser_login(
+        &self,
+        callback_base: &str,
+    ) -> Result<LoginTaskHandle, String> {
+        let kind = ProviderKind::Raccoon;
+        let label = crate::server::core::providers::meta(kind).label;
+        let state = crate::server::core::providers::raccoon::oauth::new_login_state();
+        let redirect = crate::server::core::providers::raccoon::oauth::browser_callback_url(
+            callback_base,
+            &state,
+        );
+        let auth_url =
+            crate::server::core::providers::raccoon::oauth::build_browser_authorize_url(
+                &state, &redirect,
+            );
+        let info = resolve_edition(Some(DEFAULT_EDITION));
+        let handle = self.new_handle_for_provider(info, kind_id(kind));
+        handle.update(|task| {
+            task.state = Some(state.clone());
+            task.auth_url = Some(auth_url);
+        });
+        self.tasks.register(&state, handle.clone());
+        // 日志只打「回调落在哪个前缀」：URL 里的 state 是一次性凭据，
+        // 进日志等于把它抄进磁盘（与各家 token 的处理口径一致）。
+        logging::log(
+            "[Login]",
+            &format!("发起{label}浏览器登录（回调落在本机 {callback_base}）"),
+        );
+        Ok(handle)
+    }
+
     /// KukuAI 网页登录收尾：校验任务 → 从登录态 Cookie 提取凭证 → 落账号。
     ///
     /// ── 与其它网页登录回调的差别（为什么单独一个入口）────────────

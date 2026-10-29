@@ -44,9 +44,18 @@ object LoginClient {
         data class Failed(val reason: String) : WaitResult()
     }
 
-    /** POST /api/session/login/start {provider} → {state, authUrl, edition, provider} */
-    suspend fun start(provider: String): StartResult = withContext(Dispatchers.IO) {
-        val resp = when (val r = postJson("/api/session/login/start", JSONObject().put("provider", provider))) {
+    /**
+     * POST /api/session/login/start {provider, mode?} → {state, authUrl, edition, provider}
+     *
+     * [mode] 只有两家读：小浣熊与 CatPaw 的 `"browser"` 表示「在系统浏览器里登录、
+     * 回调落本机 http」。其余家传了会被内核明确拒绝（它们内嵌与浏览器打开的是
+     * 同一个授权地址，没有第二种形态）—— 因此这里默认 null（= 内嵌），
+     * 不让每一家都去回答一次「你支不支持」。
+     */
+    suspend fun start(provider: String, mode: String? = null): StartResult = withContext(Dispatchers.IO) {
+        val body = JSONObject().put("provider", provider)
+        if (!mode.isNullOrBlank()) body.put("mode", mode)
+        val resp = when (val r = postJson("/api/session/login/start", body)) {
             is HttpResult.Ok -> r.json
             else -> return@withContext StartResult.Failed(describe(r))
         }
@@ -82,18 +91,27 @@ object LoginClient {
     }
 
     /**
-     * 壳侧回调转发：zcode:// 等自定义 scheme 的回跳 WebView 加载不了，
-     * 拦下后把完整 URL POST 给内核统一回调端点，由它决定下一跳。
+     * 壳侧回调转发：`office-raccoon://` 等自定义 scheme 的回跳 WebView 加载不了，
+     * 拦下后把完整 URL POST 给内核统一回调端点，由它校验并换凭证。
+     *
+     * ── 两个字段名必须与内核逐字一致（曾经错在这里）──────────────
+     * 内核 `api::session::login_callback` 读的是 **`state`** 与 **`callbackUrl`**
+     *（驼峰）。早前这里发的是 `callback_url`（下划线）且**没带 state**，内核第一步
+     * 就报 400「缺少 state」—— 表现为小浣熊内嵌登录「点了、页面走完了、却什么都没发生」。
+     * 改字段名是不够的，state 必须由调用方（登录会话）给出：内核靠它把这次回调
+     * 认到一个**进行中**的任务上，缺了它任何回跳都无主。
      */
-    suspend fun forwardCallback(callbackUrl: String): Boolean = withContext(Dispatchers.IO) {
+    suspend fun forwardCallback(state: String, callbackUrl: String): Boolean = withContext(Dispatchers.IO) {
         val resp = when (val r = postJson(
             "/api/session/login/callback",
-            JSONObject().put("callback_url", callbackUrl),
+            JSONObject().put("state", state).put("callbackUrl", callbackUrl),
         )) {
             is HttpResult.Ok -> r.json
             else -> return@withContext false
         }
-        resp.optBoolean("success")
+        // 成功响应是 `{accountId}`（没有 success 字段）；这里只关心「内核收下了」——
+        // 真正的登录结果仍由 /wait 轮询给出（与所有家的口径一致）。
+        resp.has("accountId") || resp.optBoolean("success") || resp.optBoolean("continue")
     }
 
     // P2：经 CoreTransport 内核直调（不经端口，Core 态可用）
