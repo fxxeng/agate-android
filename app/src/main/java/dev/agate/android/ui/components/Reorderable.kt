@@ -1134,55 +1134,6 @@ private fun ProvideDragHandleViewConfig(content: @Composable () -> Unit) {
 }
 
 /**
- * 排序手柄（↑↓ 箭头 + 长按拖拽），三处列表共用：供应商列表、内置供应商账号列表、
- * 自定义供应商账号列表。结构原本逐字重复三遍，长按阈值与触控热区宽度在此一处收敛。
- *
- * 手势三分流同 [Modifier.dragHandle]；拖拽中 [state.draggingKey] 非空，箭头置灰且不响应点击。
- */
-@Composable
-fun ReorderHandle(
-    key: String,
-    state: ReorderState,
-    isFirst: Boolean,
-    isLast: Boolean,
-    onStart: () -> Unit,
-    onMove: (delta: Int) -> Unit,
-) {
-    ProvideDragHandleViewConfig {
-        Column(
-            horizontalAlignment = Alignment.CenterHorizontally,
-            modifier = Modifier
-                .dragHandle(key, state, onStart)
-                // 触控热区：两个 24dp 图标叠起来纵向够（约 60dp），但横向原本只有
-                // 36dp，低于 48dp 标准，手指容易按空 —— 这里补足下限。
-                .widthIn(min = 48.dp)
-                .padding(horizontal = 4.dp, vertical = 2.dp),
-        ) {
-            val C = agateColors()
-            val locked = state.draggingKey != null
-            val dimmed = C.textDim
-            val active = C.accent
-            Icon(
-                Icons.Filled.KeyboardArrowUp,
-                contentDescription = "上移",
-                tint = if (isFirst || locked) dimmed else active,
-                modifier = Modifier
-                    .then(if (isFirst || locked) Modifier else Modifier.clickable { onMove(-1) })
-                    .padding(2.dp),
-            )
-            Icon(
-                Icons.Filled.KeyboardArrowDown,
-                contentDescription = "下移",
-                tint = if (isLast || locked) dimmed else active,
-                modifier = Modifier
-                    .then(if (isLast || locked) Modifier else Modifier.clickable { onMove(1) })
-                    .padding(2.dp),
-            )
-        }
-    }
-}
-
-/**
  * 可拖拽排序的 LazyColumn（供应商列表，方案 v1 §4.2 / v2 P1–P3）。
  *
  * - 渲染顺序由 [ReorderState.keys] 驱动，拖拽中实时重排，`animateItem` 自动让位；
