@@ -36,12 +36,25 @@ class AgateForegroundService : Service() {
         const val ACTION_TICK = "dev.agate.core.action.TICK"
         private const val CHANNEL_ID = "agate_gateway"
         private const val NOTIFICATION_ID = 1001
+        /** 后台受限降级通知（与网关常驻通知分开，见 [notifyBlocked]）。 */
+        private const val CHANNEL_BLOCKED_ID = "agate_blocked"
+        private const val NOTIFICATION_ID_BLOCKED = 1002
 
-        fun start(context: Context) {
-            context.startForegroundService(
-                Intent(context, AgateForegroundService::class.java).setAction(ACTION_START)
-            )
-        }
+        /**
+         * 拉起前台服务；**后台受限时不抛**，返回 false 由调用方决定下一步。
+         *
+         * ── 为什么必须自己吞这个异常 ────────────────────────────
+         * Android 12+ 禁止「从后台启动前台服务」，违规直接抛
+         * `ForegroundServiceStartNotAllowedException`。这个服务有两个**后台**
+         * 入口（闹钟 tick、开机自启），闹钟那一路原来没有 try —— 系统在待机
+         * 白名单收紧时会把它变成一次崩溃，而用户看到的是「App 莫名其妙闪退」，
+         * 与「签到没跑」这件真事对不上。开机那一路包了 runCatching，但那只是
+         * 把崩溃挪到了调用方，仍然没有降级动作（用户不知道要去点一下）。
+         *
+         * 降级方式：发一条普通通知让用户自己点进来恢复（不静默失败）。
+         * 通知本身就是「用户手动点 → 前台 Activity → 启动服务」的合法路径。
+         */
+        fun start(context: Context): Boolean = launch(context, ACTION_START)
 
         fun stop(context: Context) {
             context.startService(
@@ -50,10 +63,57 @@ class AgateForegroundService : Service() {
         }
 
         /** 闹钟入口：借助 exact-while-idle 广播的 FGS 豁免窗口，深睡里也能拉起。 */
-        fun tick(context: Context) {
-            context.startForegroundService(
-                Intent(context, AgateForegroundService::class.java).setAction(ACTION_TICK)
-            )
+        fun tick(context: Context): Boolean = launch(context, ACTION_TICK)
+
+        /**
+         * 统一的启动实现（两个入口共用）。返回 false = 被系统拒绝，已发降级通知。
+         */
+        private fun launch(context: Context, action: String): Boolean {
+            val intent = Intent(context, AgateForegroundService::class.java).setAction(action)
+            return try {
+                context.startForegroundService(intent)
+                true
+            } catch (_: Exception) {
+                // 这里刻意捕 Exception 而不是只捕
+                // ForegroundServiceStartNotAllowedException：那个类只在 API 31+
+                // 存在，直接写类型会让 minSdk 较低的构建在类加载期就炸；而且
+                // 某些 ROM 抛的是 IllegalStateException（同一原因，不同壳）。
+                notifyBlocked(context)
+                false
+            }
+        }
+
+        /**
+         * 降级通知：告诉用户「保活没起来，点一下恢复」。
+         *
+         * 用独立的渠道与 id —— 不能复用网关常驻通知（那条不存在，服务都没起来），
+         * 也不该在用户点掉之后还留着（点「恢复」会进 App，由那边重新拉起）。
+         */
+        private fun notifyBlocked(context: Context) {
+            runCatching {
+                val nm = context.getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+                nm.createNotificationChannel(
+                    NotificationChannel(
+                        CHANNEL_BLOCKED_ID,
+                        "Agate 后台受限提醒",
+                        NotificationManager.IMPORTANCE_DEFAULT,
+                    )
+                )
+                val open = context.packageManager.getLaunchIntentForPackage(context.packageName)
+                val pending = open?.let {
+                    PendingIntent.getActivity(
+                        context, 2, it,
+                        PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+                    )
+                }
+                val builder = Notification.Builder(context, CHANNEL_BLOCKED_ID)
+                    .setContentTitle("后台保活被系统限制")
+                    .setContentText("点此打开 Agate 恢复网关与定时任务")
+                    .setSmallIcon(android.R.drawable.stat_notify_sync)
+                    .setAutoCancel(true)
+                pending?.let { builder.setContentIntent(it) }
+                nm.notify(NOTIFICATION_ID_BLOCKED, builder.build())
+            }
         }
     }
 
