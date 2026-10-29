@@ -47,7 +47,9 @@ import dev.agate.android.ui.components.agateCard
 import dev.agate.android.ui.theme.AgateType
 import dev.agate.android.ui.theme.agateColors
 import dev.agate.core.GatewayPrefs
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * 请求详情页（调用记录的下钻）—— 对齐 v44 `sub-reqdetail`。
@@ -177,11 +179,19 @@ fun RequestDetailPage(
                 // 两者都靠 StatsOps.raw(id) 那一次请求，所以只在这里解析一次、
                 // 传下去。让两个卡片各发一次请求既浪费又会出现「一个加载完、
                 // 另一个还在转」的错位。
-                val trace = remember(raw) {
-                    raw?.let {
-                        ChatTraceOps.parse(it.requestBody, it.responseBody, it.truncated)
+                // ⚠️ 解析必须离开主线程：单条报文内核上限 128KB，里面是逐帧 SSE
+                // JSON，全部在主线程解析（`remember` 的 lambda 是同步执行的）会让
+                // 进页面时明显卡一下；带 Base64 图片的多模态请求尤其慢。
+                // 用 traceState 承接后台结果，解析中先不渲染这张卡（它本来也只在
+                // 有内容时才出现）。
+                var traceState by remember(raw) { mutableStateOf<ChatTraceOps.Trace?>(null) }
+                LaunchedEffect(raw) {
+                    val body = raw ?: return@LaunchedEffect
+                    traceState = withContext(Dispatchers.Default) {
+                        ChatTraceOps.parse(body.requestBody, body.responseBody, body.truncated)
                     }
                 }
+                val trace = traceState
                 // 只有真的有东西可看时才占位；trace 为 null（还没拉 raw）时
                 // 不显示 —— 拉取动作由「报文原文」那张卡的点击触发
                 trace?.takeIf { !it.isEmpty }?.let { t ->
@@ -446,15 +456,21 @@ private fun TraceCard(trace: ChatTraceOps.Trace) {
         }
         if (trace.toolCalls.isNotEmpty()) {
             if (trace.reasoning.isNotBlank()) Spacer(Modifier.height(8.dp))
+            // `prettyJson` 会把参数整段重新缩进格式化 —— 工具参数动辄几 KB
+            // （整份文件内容、搜索结果），每次重组都算一遍纯属浪费。
+            // 按 trace 缓存：这条轨迹不变就不重算。
+            val callsBody = remember(trace) {
+                trace.toolCalls.joinToString("\n\n") { call ->
+                    // 工具名单独一行、参数缩进，比把两者挤在一行好读
+                    "${call.name.ifBlank { "（未命名）" }}(${call.id})\n" +
+                        ChatTraceOps.prettyJson(call.arguments)
+                }
+            }
             TraceSection(
                 title = "调用工具",
                 open = openCalls,
                 onToggle = { openCalls = !openCalls },
-                body = trace.toolCalls.joinToString("\n\n") { call ->
-                    // 工具名单独一行、参数缩进，比把两者挤在一行好读
-                    "${call.name.ifBlank { "（未命名）" }}(${call.id})\n" +
-                        ChatTraceOps.prettyJson(call.arguments)
-                },
+                body = callsBody,
                 tone = C.accent,
             )
         }
@@ -462,13 +478,16 @@ private fun TraceCard(trace: ChatTraceOps.Trace) {
             if (trace.reasoning.isNotBlank() || trace.toolCalls.isNotEmpty()) {
                 Spacer(Modifier.height(8.dp))
             }
+            val resultsBody = remember(trace) {
+                trace.toolResults.joinToString("\n\n") { r ->
+                    "${r.name.ifBlank { r.callId }.ifBlank { "（未知工具）" }}\n${r.content}"
+                }
+            }
             TraceSection(
                 title = "工具结果",
                 open = openResults,
                 onToggle = { openResults = !openResults },
-                body = trace.toolResults.joinToString("\n\n") { r ->
-                    "${r.name.ifBlank { r.callId }.ifBlank { "（未知工具）" }}\n${r.content}"
-                },
+                body = resultsBody,
                 tone = C.green,
             )
         }
@@ -526,6 +545,14 @@ private fun TraceSection(
     }
 }
 
+/**
+ * 报文正文的渲染上限（字符数 ≈ 字节数，正文是 JSON/SSE 文本）。
+ *
+ * 64KB 是「够看清一条真实请求、又不至于让排版卡住」的折中：内核单侧上限是
+ * 128KB，超过这里就截断显示 + 给「显示全部」，不静默吞掉。
+ */
+private const val RAW_RENDER_LIMIT = 64 * 1024
+
 /** ④ 报文原文：按需拉取，折叠展示。 */
 @Composable
 private fun RawCard(
@@ -538,6 +565,8 @@ private fun RawCard(
     val C = agateColors()
     var open by remember { mutableStateOf(false) }
     var section by remember { mutableStateOf(0) }   // 0 请求 / 1 响应
+    // 是否已展开超长正文（见下面 RAW_RENDER_LIMIT 的说明）
+    var showAllRaw by remember { mutableStateOf(false) }
 
     Column(
         Modifier
@@ -590,11 +619,18 @@ private fun RawCard(
                     }
                 }
                 Spacer(Modifier.height(8.dp))
-                val text = when {
+                val full = when {
                     raw == null -> rawError ?: if (loading) "正在加载…" else "没有报文"
                     section == 0 -> raw!!.requestBody
                     else -> raw!!.responseBody
                 }
+                // 渲染上限：内核单侧正文截到 128KB，整段塞给一个 Text 时
+                // Compose 要把全部字符排版/断行一遍（还带等宽字体度量），
+                // 130KB 的体在多模态请求上够让这一屏明显卡一下。
+                // 默认只渲染前 [RAW_RENDER_LIMIT] 个字符，**明说被截了**
+                // 并给「显示全部」—— 静默截断比慢更糟：用户会以为自己看的是全文。
+                val overflow = full.length > RAW_RENDER_LIMIT && !showAllRaw
+                val text = if (overflow) full.take(RAW_RENDER_LIMIT) else full
                 Box(
                     Modifier
                         .fillMaxWidth()
@@ -611,6 +647,27 @@ private fun RawCard(
                         lineHeight = 15.sp,
                         style = AgateType.Num,
                     )
+                }
+                if (overflow) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(top = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            "只显示前 ${RAW_RENDER_LIMIT / 1024} KB（共 ${full.length / 1024} KB）",
+                            fontSize = 11.sp,
+                            color = C.amber,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Text(
+                            "显示全部",
+                            fontSize = 11.5.sp,
+                            color = C.accent,
+                            modifier = Modifier
+                                .clickable { showAllRaw = true }
+                                .padding(horizontal = 6.dp, vertical = 4.dp),
+                        )
+                    }
                 }
                 // 这里不再补一句「未开启调试模式」—— `raw == null` 时上面的正文框
                 // 已经显示 `rawError`，而那串文案本身就是
