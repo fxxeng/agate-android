@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -383,10 +384,25 @@ fun AgateNavHost(
                 }
             },
         ) { padding ->
+            // 底部安全区在这里统一补一次，而不是让 20 多个页面各自记得加。
+            //
+            // 一级 Tab 有底栏，底栏自己吃掉了 navigationBars；**二级页没有底栏**，
+            // 内容会一直画到手势条下面（边到边从 targetSdk 35 起是强制的）。
+            // 逐个页面加 `navigationBarsPadding()` 是可行的，但那是 15 个文件 ×
+            // 一个「以后新页面别忘了加」的约定 —— 而漏掉的表现只是「最后一行被
+            // 压住一点」，没人会为此报 bug。放在这里一处，新页面天然正确。
+            //
+            // `imePadding()` 同理：API 30+ 的 `adjustResize` 在边到边下不再自动
+            // 避让键盘，软键盘弹出时整个导航区跟着抬高，页面里的输入框与底部
+            // 按钮都不会被盖住（表单页额外加的那几处是给「页面自己滚」的场景）。
             NavHost(
                 navController = navController,
                 startDestination = Routes.HOME,
-                modifier = Modifier.fillMaxSize().padding(padding),
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(padding)
+                    .then(if (currentRoute in TopLevelRoutes) Modifier else Modifier.navigationBarsPadding())
+                    .imePadding(),
             ) {
                 composable(Routes.HOME) {
                     ConsolePage(

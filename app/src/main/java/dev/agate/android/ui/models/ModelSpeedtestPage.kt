@@ -11,7 +11,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -103,7 +102,8 @@ fun ModelSpeedtestPage(onBack: () -> Unit, focus: String = "") {
         }
     }
 
-    Column(Modifier.fillMaxSize().background(C.bg).statusBarsPadding().navigationBarsPadding()) {
+    // 底部安全区由 AgateNavHost 统一加（见那里的说明），这里只管状态栏
+    Column(Modifier.fillMaxSize().background(C.bg).statusBarsPadding()) {
         Row(
             Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 2.dp),
             verticalAlignment = Alignment.CenterVertically,

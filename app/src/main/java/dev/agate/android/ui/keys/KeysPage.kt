@@ -11,7 +11,6 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -119,9 +118,8 @@ fun KeysPage(
     }
     LaunchedEffect(Unit) { reload() }
 
-    // imePadding：新建 Key 表单在页面下部，边到边之后键盘会盖住它（同
-    // AddProviderPage 的说明：targetSdk 35 起 adjustResize 不再让开键盘）。
-    Column(modifier = modifier.fillMaxSize().background(C.bg).imePadding()) {
+    // 键盘避让由 `AgateNavHost` 统一处理（见那里的说明），页面不再各加一层
+    Column(modifier = modifier.fillMaxSize().background(C.bg)) {
         AgatePageHeader(title = "访问密钥", onOpenDrawer = onOpenDrawer, onBack = onBack) {
             Text(
                 "刷新",

@@ -16,8 +16,6 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.layout.imePadding
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -156,16 +154,13 @@ fun AddProviderPage(onBack: () -> Unit, initialProviderId: String? = null) {
     // 自定义提供商目录：进页面拉一次（预置/自定义两段都要用它判「建过没」）
     LaunchedEffect(Unit) { reloadCustom() }
 
-    // imePadding：targetSdk 35 起（Android 15）边到边是强制的，`windowSoftInputMode
-    // = adjustResize` 不再自动把内容让开软键盘 —— 不加这一层，底部的
-    // 「保存 / 测试连接」会被输入法直接盖住。表单页都必须有。
+    // 底部安全区与键盘避让由 `AgateNavHost` 统一加（见那里的说明）——
+    // 这里只留状态栏：本页没有用 AgatePageHeader，自己顶到屏幕最上沿。
     Column(
         Modifier
             .fillMaxSize()
             .background(C.bg)
-            .statusBarsPadding()
-            .navigationBarsPadding()
-            .imePadding(),
+            .statusBarsPadding(),
     ) {
         // 顶栏（v44 .header-bar）：返回 + 标题
         Row(
