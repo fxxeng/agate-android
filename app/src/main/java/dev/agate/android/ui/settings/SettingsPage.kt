@@ -1080,6 +1080,68 @@ fun SettingsPage(
                 }
 
                 /**
+                 * 分享备份：导出到 `cache/backup/` → FileProvider → 系统分享面板。
+                 *
+                 * 与「导出到文件」的分工：那个是**存到本机某个位置**；这个是
+                 * **直接发给另一台设备/人**（微信、邮件、隔空投送、网盘）。换机时
+                 * 走分享比「先存再找」少两步。
+                 *
+                 * 只写 FileProvider 声明的那个子目录（见 res/xml/file_paths.xml）：
+                 * 备份是全库明文，能分享的范围越小越好。分享完就删本地副本 ——
+                 * 留在 cache 里等于多一份可被其它 App 读到的明文凭证。
+                 */
+                fun shareBackup() {
+                    if (busyBackup) return
+                    busyBackup = true
+                    scope.launch {
+                        val dir = java.io.File(ctx.cacheDir, "backup").apply { mkdirs() }
+                        val stamp = java.text.SimpleDateFormat(
+                            "yyyyMMdd-HHmm",
+                            java.util.Locale.US,
+                        ).format(java.util.Date())
+                        val file = java.io.File(dir, "agate-backup-$stamp.sql")
+                        val r = SettingsOps.exportBackup(file.absolutePath, includeLogs)
+                        busyBackup = false
+                        if (!r.ok) {
+                            setError("备份", r.error)
+                            return@launch
+                        }
+                        val shared = runCatching {
+                            val uri = androidx.core.content.FileProvider.getUriForFile(
+                                ctx,
+                                "${ctx.packageName}.fileprovider",
+                                file,
+                            )
+                            val intent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                                type = "application/sql"
+                                putExtra(android.content.Intent.EXTRA_STREAM, uri)
+                                putExtra(
+                                    android.content.Intent.EXTRA_SUBJECT,
+                                    "Agate 备份 ${humanBytes(r.data?.bytes ?: 0)}",
+                                )
+                                addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                            }
+                            ctx.startActivity(
+                                android.content.Intent.createChooser(intent, "分享备份文件"),
+                            )
+                        }
+                        // 无论系统面板是否打开成功，本地副本都删掉：它是明文全库。
+                        // 分享面板读到的是 FileProvider 的 fd，删除后已打开的那份
+                        // 仍可读（Linux 语义），不必担心「刚分享就没了」。
+                        file.delete()
+                        if (shared.isSuccess) {
+                            setNotice("备份", "已交给系统分享 · ${humanBytes(r.data?.bytes ?: 0)}")
+                            setError("备份", null)
+                        } else {
+                            setError(
+                                "备份",
+                                "调起分享失败：${shared.exceptionOrNull()?.message ?: "未知"}",
+                            )
+                        }
+                    }
+                }
+
+                /**
                  * SAF 导入：同样要落成本地文件再说 —— 内核按路径读。
                  * 读完**不直接恢复**：仍然走下面那条「覆盖式恢复」确认弹层，
                  * 选完文件就静默覆盖是不可接受的。
@@ -1112,12 +1174,17 @@ fun SettingsPage(
                     label = "导出到文件",
                     desc = "选手机里的位置（下载目录、网盘等）· 也可之后用系统分享发出",
                 ) {
-                    MiniButton(if (busyBackup) "导出中…" else "选择位置", enabled = !busyBackup) {
-                        if (!busyBackup) {
-                            val stamp = java.text.SimpleDateFormat("yyyyMMdd-HHmm", java.util.Locale.US)
-                                .format(java.util.Date())
-                            exportToFile.launch("agate-backup-$stamp.sql")
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        MiniButton(if (busyBackup) "导出中…" else "选择位置", enabled = !busyBackup) {
+                            if (!busyBackup) {
+                                val stamp = java.text.SimpleDateFormat(
+                                    "yyyyMMdd-HHmm",
+                                    java.util.Locale.US,
+                                ).format(java.util.Date())
+                                exportToFile.launch("agate-backup-$stamp.sql")
+                            }
                         }
+                        MiniButton("分享", enabled = !busyBackup) { shareBackup() }
                     }
                 }
                 Spacer(Modifier.height(10.dp))

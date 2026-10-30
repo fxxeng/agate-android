@@ -31,6 +31,17 @@
             </intent-filter>
         </activity>
         <!-- AgateForegroundService / BootReceiver / AlarmReceiver 声明在 core-gateway 模块，合并进来 -->
+        <!-- 备份分享：把 cache/backup/ 下的备份文件以 content:// 交给系统分享。
+             只开放这一个子目录（见 res/xml/file_paths.xml）。-->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
     </application>
 
 </manifest>

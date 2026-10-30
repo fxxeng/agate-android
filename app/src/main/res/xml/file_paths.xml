@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  FileProvider 可分享的路径。
+
+  只开放 `cache/backup/` 一个子目录，不是整个 cacheDir：
+  备份文件里是**全库明文**（账号凭证、Key、设置），能分享出去的范围要尽可能小。
+  写入点见 SettingsPage 的分享动作 —— 那边也只往这个目录写，用完即删。
+-->
+<paths>
+    <cache-path name="backup" path="backup/" />
+</paths>
