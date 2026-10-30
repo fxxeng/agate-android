@@ -50,6 +50,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.agate.android.data.AccountOps
+import dev.agate.android.data.activeRateLimits
+import dev.agate.android.data.rateCountdown
+import dev.agate.android.data.rateRecoverAt
 import dev.agate.android.data.CustomProviderOps
 import dev.agate.android.data.ProviderIdentityOps
 import dev.agate.android.data.GatewayRepository
@@ -63,6 +66,7 @@ import dev.agate.android.ui.components.AgateSegmented
 import dev.agate.android.ui.components.BadgeTone
 import dev.agate.android.ui.theme.AgateType
 import dev.agate.android.ui.theme.agateColors
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
@@ -80,10 +84,10 @@ import org.json.JSONObject
  * 所以把能改的两项并进「设置」（它本来就是设置语义），其余删掉 —— 队列位置
  * 改成账号 tab 底部一行指路，提供商 ID 降级成设置页脚注。
  *
- * 真实数据源：/api/session.accounts（列表）、/api/accounts/usage（余额/积分）、
- * /api/accounts/batch（启停/删除）、PATCH /api/accounts/{id}（改备注名）、
- * /api/accounts/{id}/move（调序）。倍率/续期/限流明细等依赖内核暂未暴露的端点，
- * 本页不臆造，统一在底部说明。
+ * 真实数据源：/api/session.accounts（列表，含 rateLimits 限流标记）、
+ * /api/accounts/usage（余额/积分）、/api/accounts/batch（启停/删除）、
+ * PATCH /api/accounts/{id}（改备注名）、/api/accounts/{id}/move（调序）、
+ * /api/accounts/{id}/rate-limits/clear（清除限流标记）。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -289,9 +293,41 @@ fun ProviderDetailPage(
             }
         }
 
+        // 倒计时的本地时钟（30s 一跳，与「提供商」页同款）：限流恢复精确到分钟，
+        // 逐秒重算整棵树只为改一个「还有 7 小时 20 分」，不值。
+        var nowMs by remember { mutableStateOf(System.currentTimeMillis()) }
+        LaunchedEffect(Unit) {
+            while (true) {
+                delay(30_000L)
+                nowMs = System.currentTimeMillis()
+            }
+        }
+        // 清除限流标记：单模型（model 非空）或整账号（null）。内核口径：
+        // 这只是「让本机立刻重新尝试」，清掉后仍被限流会再次被标记 —— 安全，
+        // 不需要二次确认（与上游「清除」按钮同语义）。
+        val clearRateLimits: (AccountDto, String?) -> Unit = { acc, model ->
+            if (!busy) {
+                busy = true
+                scope.launch {
+                    val r = AccountOps.clearRateLimits(acc.id, model)
+                    busy = false
+                    toast(
+                        if (r.ok) {
+                            if (model == null) "已清除全部限流标记" else "已清除 ${acc.displayName} 的限流标记"
+                        } else {
+                            r.error ?: "清除失败"
+                        },
+                    )
+                    if (r.ok) GatewayRepository.refreshOnce()
+                }
+            }
+        }
+
         when (tab) {
             TAB_ACCOUNTS -> AccountsTab(
                 accounts = accounts,
+                nowMs = nowMs,
+                onClearRateLimits = clearRateLimits,
                 usageLabel = usageLabel,
                 busy = busy,
                 usageCapable = usageCapable,
@@ -653,6 +689,10 @@ fun ProviderDetailPage(
 @Composable
 private fun AccountsTab(
     accounts: List<AccountDto>,
+    /** 本地时钟（30s 一跳）：限流倒计时用它算 */
+    nowMs: Long,
+    /** 清除限流标记（model=null = 整账号全清） */
+    onClearRateLimits: (AccountDto, String?) -> Unit,
     usageLabel: Map<String, String>,
     busy: Boolean,
     /** 该家是否支持余额查询（透传到账号卡，决定「额度设限」入口是否渲染）。 */
@@ -717,6 +757,8 @@ private fun AccountsTab(
                         acc = acc,
                         rank = i + 1,
                         usage = usageLabel[acc.id],
+                        nowMs = nowMs,
+                        onClearRateLimits = onClearRateLimits,
                         usageCapable = usageCapable,
                         onOpenLimiter = onOpenLimiter,
                         busy = busy,
@@ -760,6 +802,10 @@ private fun AccountBlock(
     acc: AccountDto,
     rank: Int,
     usage: String?,
+    /** 本地时钟（30s 一跳）：限流倒计时用它算 */
+    nowMs: Long,
+    /** 清除限流标记（model=null = 整账号全清） */
+    onClearRateLimits: (AccountDto, String?) -> Unit,
     busy: Boolean,
     /** 该家是否支持余额查询（决定要不要显示「额度设限」入口）。 */
     usageCapable: Boolean,
@@ -787,6 +833,11 @@ private fun AccountBlock(
                 acc.lowBalance -> AgateBadge("余额低", BadgeTone.AMBER)
                 else -> AgateBadge("就绪", BadgeTone.GREEN)
             }
+            // 与资格判定**并存**：一个就绪账号可以同时在限流中（见列表页同款注释）
+            if (activeRateLimits(acc.raw, nowMs).isNotEmpty()) {
+                Spacer(Modifier.width(4.dp))
+                AgateBadge("限流", BadgeTone.AMBER)
+            }
         }
         Spacer(Modifier.height(4.dp))
         Text(
@@ -794,6 +845,77 @@ private fun AccountBlock(
             color = if (usage?.startsWith("查询失败") == true) C.red else C.textSub,
             fontSize = 12.sp,
         )
+        // ── 限流明细 + 清除（用户定的分工：清除动作只在详情页）──────
+        // 列表页账号卡只展示不操作；这里信息密度足够、动作离数据最近，
+        // 与上游 3.0.8 的「限流明细」面板同构（每行清除 + 全部清除）。
+        activeRateLimits(acc.raw, nowMs).takeIf { it.isNotEmpty() }?.let { limits ->
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(top = 8.dp)
+                    .background(C.amber.copy(alpha = 0.08f), RoundedCornerShape(9.dp))
+                    .padding(horizontal = 9.dp, vertical = 7.dp),
+            ) {
+                limits.forEach { entry ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            entry.model,
+                            color = C.textMain,
+                            fontSize = 11.5.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.weight(1f),
+                            maxLines = 1,
+                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                        )
+                        Text(
+                            rateCountdown(entry.resetAt, nowMs),
+                            color = C.amber,
+                            fontSize = 11.sp,
+                        )
+                        Text(
+                            "清除",
+                            color = C.accent,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier
+                                .clickable(enabled = !busy) { onClearRateLimits(acc, entry.model) }
+                                .padding(start = 8.dp),
+                        )
+                    }
+                    Text(
+                        "${rateRecoverAt(entry.resetAt, nowMs)} 恢复 · ${entry.message}".trimEnd('·', ' '),
+                        color = C.textSub,
+                        fontSize = 10.5.sp,
+                        maxLines = 1,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(top = 2.dp),
+                    )
+                }
+                Row(
+                    Modifier.fillMaxWidth().padding(top = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        "${limits.size} 个模型限流中 · 到恢复时间自动解除",
+                        color = C.textDim,
+                        fontSize = 10.5.sp,
+                        modifier = Modifier.weight(1f),
+                    )
+                    if (limits.size > 1) {
+                        Text(
+                            "全部清除",
+                            color = C.accent,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier
+                                .clickable(enabled = !busy) { onClearRateLimits(acc, null) }
+                                .padding(horizontal = 2.dp),
+                        )
+                    }
+                }
+            }
+        }
+
         // 凭证（与列表页账号卡同口径：双字段 + 秒毫秒归一 + 统一到期文案）
         credentialExpiryMs(acc)?.let { at ->
             ExpiryLine(at)

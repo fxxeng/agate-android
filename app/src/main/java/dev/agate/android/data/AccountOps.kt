@@ -141,6 +141,22 @@ object AccountOps {
             JSONObject().put("direction", if (up) "up" else "down"))
 
     /**
+     * `POST /api/accounts/{id}/rate-limits/clear` —— 清除账号的限流标记。
+     *
+     * [model] 非空只清那一个模型，null / 空 = 全清。语义只是「让本机立刻
+     * 重新尝试」：标记是本机从上游 429 推断的冷却期，清掉后下一次请求若
+     * 仍被限流会再次被标记 —— 内核注释明确这个动作安全、无需二次确认。
+     */
+    suspend fun clearRateLimits(id: String, model: String? = null): OpResult {
+        val body = JSONObject()
+        if (!model.isNullOrBlank()) body.put("model", model)
+        return post(
+            "/api/accounts/" + java.net.URLEncoder.encode(id, "UTF-8") + "/rate-limits/clear",
+            body,
+        )
+    }
+
+    /**
      * `POST /api/accounts/reorder` —— 整队重排（拖拽用）。
      *
      * ── 为什么不用上面那条 `/move` 逐次相邻交换 ───────────────────

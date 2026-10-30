@@ -43,6 +43,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.agate.android.data.AccountOps
+import dev.agate.android.data.activeRateLimits
+import dev.agate.android.data.rateCountdown
+import dev.agate.android.data.rateRecoverAt
 import dev.agate.android.data.CustomProviderOps
 import dev.agate.android.data.GatewayRepository
 import dev.agate.android.data.ProviderPreset
@@ -144,6 +147,15 @@ fun ProviderPage(
     val scope = rememberCoroutineScope()
 
     var metrics by remember { mutableStateOf<Map<String, AcctMetric>>(emptyMap()) }
+    // 倒计时的本地时钟：限流恢复时间精确到分钟，30s 重算一次足够 —— 逐秒
+    // 刷新会让整棵卡片树每秒重组，只为改一个「还有 7 小时 20 分」。
+    var nowMs by remember { mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(30_000L)
+            nowMs = System.currentTimeMillis()
+        }
+    }
     // 「额度设限」的编辑目标（null = 弹窗关闭）
     var limiterTarget by remember { mutableStateOf<AccountDto?>(null) }
     var inflight by remember { mutableStateOf<Map<String, Int>>(emptyMap()) }
@@ -621,6 +633,7 @@ fun ProviderPage(
                     g = g,
                     heads = snap.currentAccountIds,
                     metrics = metrics,
+                    nowMs = nowMs,
                     inflight = inflight,
                     mult = multByProvider[g.providerId],
                     checkinSupported = g.providerId in checkinProviders,
@@ -677,6 +690,8 @@ private fun ProviderCard(
     g: ProviderGroupView,
     heads: Map<String, String>,
     metrics: Map<String, AcctMetric>,
+    /** 本地时钟（30s 一跳）：限流倒计时与「最早恢复」用它算 */
+    nowMs: Long,
     inflight: Map<String, Int>,
     mult: Pair<Double, Double>?,
     checkinSupported: Boolean,
@@ -735,7 +750,20 @@ private fun ProviderCard(
 
     // 3) 副行：常态「N 个账号 · 最低 ×倍率」；有问题时整行换成待办
     val minMult = mult?.first
+    // ── 限流（对齐上游 3.0.8 的「限流」列）────────────────────
+    // 内核按账号落盘 rateLimits（模型 → {resetAt, message}），随快照透出，
+    // 就地解析（activeRateLimits 已过滤过期条目）。折叠态给一个汇总读数：
+    // 几个账号在限流、最早什么时候恢复 —— 与「N 个查询失败」同一行待办，
+    // 有问题时这行本来就会变 amber。
+    val perAccountLimits = g.accounts.map { activeRateLimits(it.raw, nowMs) }
+    val limitedAccounts = perAccountLimits.count { it.isNotEmpty() }
+    val earliestReset = perAccountLimits.flatten().minOfOrNull { it.resetAt }
     val pending = buildList {
+        if (limitedAccounts > 0) {
+            add(
+                "$limitedAccounts 个限流中 · 最早 ${rateRecoverAt(earliestReset!!, nowMs)} 恢复",
+            )
+        }
         if (failedCount > 0) add("$failedCount 个查询失败")
         val lowCount = g.accounts.count { it.lowBalance }
         if (lowCount > 0) add("$lowCount 个余额低")
@@ -965,6 +993,7 @@ private fun ProviderCard(
                     rank = index + 1,
                     isHead = heads[g.providerId] == acc.id,
                     metric = metrics[acc.id],
+                    nowMs = nowMs,
                     inflight = inflight[acc.id] ?: 0,
                     usageCapable = usageCapable,
                     dragState = accountState,
@@ -989,6 +1018,8 @@ private fun AcctBlock(
     rank: Int,
     isHead: Boolean,
     metric: AcctMetric?,
+    /** 本地时钟（30s 一跳）：限流倒计时用它算 */
+    nowMs: Long,
     inflight: Int,
     usageCapable: Boolean,
     /** 拖拽状态机（账号层）。null = 不可拖（本页所有账号卡都传，留默认值便于预览）。 */
@@ -1066,6 +1097,13 @@ private fun AcctBlock(
                 acc.lowBalance -> AgateBadge("余额低", BadgeTone.AMBER)
                 else -> AgateBadge("就绪", BadgeTone.GREEN)
             }
+            // 限流徽章与上面**并存**而不是并进 when：限流是「账号暂时性被上游
+            // 拒绝」，跟启用/缺凭证那种资格判定不是一回事 —— 一个就绪账号
+            // 完全可以同时在限流中（别的模型照常出战，被限的那个等恢复）。
+            if (activeRateLimits(acc.raw, nowMs).isNotEmpty()) {
+                Spacer(Modifier.width(4.dp))
+                AgateBadge("限流", BadgeTone.AMBER)
+            }
         }
 
         Spacer(Modifier.height(6.dp))
@@ -1099,6 +1137,53 @@ private fun AcctBlock(
                     .clickable { onOpenQuotaCenter() }
                     .padding(horizontal = 2.dp, vertical = 2.dp),
             )
+        }
+
+        // ── 限流明细（纯展示；清除入口在「提供商详情页」的账号卡上）──
+        // 上游 3.0.8 的限流明细同款信息：模型 + 倒计时 + 上游原因。第二行把
+        // 「今天 23:22 恢复」这个绝对时刻与上游原文拼在一起 —— 倒计时回答
+        // 「还要等多久」，绝对时刻回答「几点能用」，两个都有人才不用换算。
+        activeRateLimits(acc.raw, nowMs).takeIf { it.isNotEmpty() }?.let { limits ->
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(top = 8.dp)
+                    .background(C.amber.copy(alpha = 0.08f), RoundedCornerShape(9.dp))
+                    .padding(horizontal = 9.dp, vertical = 7.dp),
+            ) {
+                limits.forEach { entry ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            entry.model,
+                            color = C.textMain,
+                            fontSize = 11.5.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.weight(1f),
+                            maxLines = 1,
+                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                        )
+                        Text(
+                            rateCountdown(entry.resetAt, nowMs),
+                            color = C.amber,
+                            fontSize = 11.sp,
+                        )
+                    }
+                    Text(
+                        "${rateRecoverAt(entry.resetAt, nowMs)} 恢复 · ${entry.message}".trimEnd('·', ' '),
+                        color = C.textSub,
+                        fontSize = 10.5.sp,
+                        maxLines = 1,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(top = 2.dp),
+                    )
+                }
+                Text(
+                    "${limits.size} 个模型限流中 · 到恢复时间自动解除",
+                    color = C.textDim,
+                    fontSize = 10.5.sp,
+                    modifier = Modifier.padding(top = 4.dp),
+                )
+            }
         }
 
         // ── 凭证：有效期与自动刷新合并一行 ──
