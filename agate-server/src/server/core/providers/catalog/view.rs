@@ -411,15 +411,16 @@ pub fn manage_view(store: &AccountStore) -> Value {
             }
             model_meta::apply(&mut item);
             let enabled = entry.get("enabled").and_then(Value::as_bool).unwrap_or(true);
-            // 默认绑定：对外名 → 它自己的原始 id（自定义家的默认绑定就是
-            // 「这个登记名指向它自己」，与内置家的 `isDefault` 同形）。
-            mappings.push(json!({
-                "alias": id.as_str(), "target": id.as_str(), "provider": provider,
-                "enabled": enabled,
-                "reasoning": entry.get("reasoning"),
-                "isDefault": true, "dangling": false, "carried": true,
-            }));
             // 别名：登记在这家、且指向这条模型的映射（对外名 → 原始 id）。
+            //
+            // ⚠️ 这些映射**不进** `mappings[]`（那是内置家的映射视图，写入口
+            // `POST /api/models/mappings` 只认内置家）。自定义家的映射由
+            // 「登记模型」弹层管理（它走整表保存接口，与那家的启停 / 能力位
+            // 同一处存储）。写进 `mappings[]` 只会让映射页出现**点不动的死行**
+            // —— 开关一拨就报「未知的内置提供商」。
+            //
+            // 别名名单本身仍如实填进模型的 `aliases`（这是模型的事实，不是
+            // 配置视图）。
             let mut aliases = Vec::new();
             for mapping in registered_mappings {
                 let Some(alias) = mapping.get("alias").and_then(Value::as_str) else { continue; };
@@ -429,12 +430,6 @@ pub fn manage_view(store: &AccountStore) -> Value {
                     || aliases.iter().any(|name: &String| name.eq_ignore_ascii_case(alias))
                 { continue; }
                 aliases.push(alias.to_string());
-                mappings.push(json!({
-                    "alias": alias, "target": id.as_str(), "provider": provider,
-                    "enabled": mapping.get("enabled").and_then(Value::as_bool).unwrap_or(true),
-                    "reasoning": mapping.get("reasoning"),
-                    "isDefault": false, "dangling": false, "carried": true,
-                }));
             }
             // 能力位覆盖：登记条目上用户手填的那几项（`capabilities` 稀疏表）。
             let cap_overrides: Vec<String> = entry

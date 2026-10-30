@@ -1060,6 +1060,99 @@ pub fn set_models_enabled(id: &str, ids: &[String], enabled: bool) -> Result<usi
     Ok(changed)
 }
 
+/// 改这家某个已登记模型的**能力位覆盖**（`models[].capabilities` 稀疏表）。
+///
+/// `patch` 的语义与内置家那条接口**逐字一致**（`api::model_manage::
+/// set_capabilities`）：只提交改动键；值 `null` = **清除该键的覆盖**（回落
+/// 上游/未声明），其余是新的覆盖值。值校验在调用方做（与内置家同一套
+/// `capability::normalize_value`）。
+///
+/// 返回是否真的改了（`false` = 提交的值与现状一致，不必写盘）。
+///
+/// ── 为什么需要它 ────────────────────────────────────────────────
+/// 能力位覆盖对内置家存在 `modelRules.capabilities`，对自定义家存在提供商
+/// 记录的 `models[].capabilities` 里 —— **两份存储共用同一套判定**
+/// （见 `core::model_rules` 模块头）。管理视图纳入自定义家后，能力页会列出
+/// 自定义家的模型；若写入口不放开，界面上就出现一个**点不动的死开关**。
+///
+/// 与 [`set_models_enabled`] 同一取向：**就地改一个字段**，不碰别的条目、
+/// 不碰顺序、不碰启停状态。
+pub fn set_model_capabilities(
+    id: &str,
+    model_id: &str,
+    patch: &Map<String, Value>,
+) -> Result<bool, String> {
+    let id = id.trim();
+    if id.is_empty() {
+        return Err("缺少提供商 id".to_string());
+    }
+    let model_id = model_id.trim();
+    if model_id.is_empty() {
+        return Err("缺少模型 id".to_string());
+    }
+    let mut items = read_items();
+    let Some(index) = items
+        .iter()
+        .position(|item| item.get("id").and_then(Value::as_str) == Some(id))
+    else {
+        return Err(format!("自定义提供商不存在: {id}"));
+    };
+    let mut entries = match items[index].get("models").and_then(Value::as_array) {
+        Some(list) => list.clone(),
+        None => Vec::new(),
+    };
+    let Some(entry) = entries.iter_mut().find(|entry| {
+        entry
+            .get("id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .is_some_and(|name| name.eq_ignore_ascii_case(model_id))
+    }) else {
+        return Err(format!("这家没有登记这个模型: {model_id}"));
+    };
+    let Some(object) = entry.as_object_mut() else {
+        return Err("模型条目格式不对".to_string());
+    };
+    // 覆盖表是**稀疏表**：只存被覆盖的键。空表不落键（老记录读回再写不会
+    // 凭空多出一个 `"capabilities": {}`）—— 与既有读侧归一同一取向。
+    let mut values = match object.get("capabilities").and_then(Value::as_object) {
+        Some(map) => map.clone(),
+        None => Map::new(),
+    };
+    let mut changed = false;
+    for (key, value) in patch {
+        if value.is_null() {
+            // `null` = 清除该键的覆盖（回落上游/未声明）
+            if values.remove(key).is_some() {
+                changed = true;
+            }
+        } else {
+            let normalized = capability::normalize_value(key, value)
+                .ok_or_else(|| format!("能力字段 {key} 取值非法"))?;
+            if values.get(key) != Some(&normalized) {
+                values.insert(key.clone(), normalized);
+                changed = true;
+            }
+        }
+    }
+    if !changed {
+        return Ok(false);
+    }
+    if values.is_empty() {
+        object.remove("capabilities");
+    } else {
+        object.insert("capabilities".to_string(), Value::Object(values));
+    }
+    // 从既有记录的键表出发整体写回：除 models 外的键原样保留
+    let mut merged = items[index].as_object().cloned().unwrap_or_default();
+    merged.insert("models".to_string(), Value::Array(entries));
+    items[index] = Value::Object(merged);
+    if !write_items(&items) {
+        return Err("保存失败：配置写入未成功（请检查磁盘空间与配置目录权限）".to_string());
+    }
+    Ok(true)
+}
+
 /// 「这个名字由哪些自定义家提供」（`catalog::providers_for_model` 的自定义段）。
 ///
 /// 判据（三条同时成立才算承载）：该家 `enabled=true`，且存在一条 **enabled**

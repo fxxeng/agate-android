@@ -51,8 +51,10 @@ import org.json.JSONObject
  * user=用户改；缺键=未声明）与 capOverrides（已覆盖键列表）。
  *
  * 编辑走 POST /api/models/capabilities，patch 语义（model_manage.rs）：
- * 只提交改动键；值 null = 恢复上游值；token 键 1~1 亿正整数、开关键布尔；
- * 仅内置提供商（自定义提供商本端点 400，列表里直接排除）。
+ * 只提交改动键；值 null = 恢复上游值；token 键 1~1 亿正整数、开关键布尔。
+ * 内置家与自定义家都能编辑 —— 内核按「覆盖实际存在哪」分派：内置家写
+ * `modelRules.capabilities`，自定义家写它自己记录里的 `models[].capabilities`
+ * （两份存储共用同一套判定）。
  * 覆盖只影响对外声明（/v1/models、Anthropic 列表与管理页），不改路由/启停/转发。
  */
 private val CAP_KEYS = listOf(
@@ -158,7 +160,7 @@ fun ModelCapsPage(
         ) {
             Spacer(Modifier.height(10.dp))
             Text(
-                "覆盖只改「对下游怎么声明」（/v1/models 与管理页），不动路由、启停与转发行为；仅内置提供商可覆盖",
+                "覆盖只改「对下游怎么声明」（/v1/models 与管理页），不动路由、启停与转发行为",
                 style = AgateType.Caption, color = C.textDim,
             )
             Spacer(Modifier.height(10.dp))

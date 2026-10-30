@@ -572,12 +572,22 @@ pub async fn remove_custom(State(state): State<ServerState>, body: Bytes) -> Res
 /// 管理页弹窗保存时六个键一次全给（「全量提交」最不容易出歧义）；
 /// 只给一个键的单字段路径也支持，留给以后的行内编辑。
 ///
-/// ── 只服务内置家 ────────────────────────────────────────────
-/// 自定义家的能力覆盖存在**提供商记录**的 `models[].capabilities` 里
-/// （与那家的启停 / 等级同一处存储），写入口是整表保存
-/// `POST /api/custom-providers/models`。这里对 `custom-` id 明确报 400 而不是
-/// 静默写进 modelRules —— 后者会得到一个**永远读不回来**的覆盖（自定义家的
-/// 出口压根不查 modelRules），是最难排查的一类静默失效。
+/// ── 内置家与自定义家各走各的存储（2026-10-30 改）───────────────
+/// 能力覆盖对内置家存在 `modelRules.capabilities`，对自定义家存在**提供商
+/// 记录**的 `models[].capabilities` 里（与那家的启停 / 等级同一处存储）——
+/// 两份存储共用同一套判定（见 `core::model_rules` 模块头）。
+///
+/// 原先这里对 `custom-` id 明确报 400（让前端走整表保存接口）。但管理
+/// 视图纳入自定义家后，能力页会列出自定义家的模型 —— 界面上会出现一个
+/// **点不动的死开关**（点下去报「自定义提供商的能力走整表保存接口」，而
+/// 那个整表弹窗在能力页里根本不在）。
+///
+/// 现在按数据归属地分派：内置家走 `modelRules`，自定义家走
+/// `custom_providers::set_model_capabilities`（就地改一个字段，不碰别的
+/// 条目、不碰顺序、不碰启停状态）。
+///
+/// 判据用「这家是不是已注册的自定义提供商」（前缀 + 存储里确实有），不是
+/// 「id 长得像不像内置家」。
 pub async fn set_capabilities(State(state): State<ServerState>, body: Bytes) -> Response {
     let object = match body_object(&body) {
         Ok(object) => object,
@@ -587,12 +597,6 @@ pub async fn set_capabilities(State(state): State<ServerState>, body: Bytes) -> 
     let id = text_field(&object, "id");
     if provider.is_empty() || id.is_empty() {
         return errors::management_error(400, "缺少提供商或模型 id");
-    }
-    if crate::server::core::providers::kind_from_id(&provider).is_none() {
-        return errors::management_error(
-            400,
-            format!("未知的内置提供商: {provider}（自定义提供商的能力走整表保存接口）"),
-        );
     }
     let patch = match object.get("capabilities") {
         None => return errors::management_error(400, "缺少 capabilities 字段"),
@@ -611,6 +615,32 @@ pub async fn set_capabilities(State(state): State<ServerState>, body: Bytes) -> 
                 format!("能力字段 {key} 取值非法（token 键要 1~1 亿的正整数，能力开关要布尔）"),
             );
         }
+    }
+    // ── 按「覆盖实际存在哪」分派 ────────────────────────────────
+    if crate::server::core::custom_providers::is_custom_provider_id(&provider) {
+        return match crate::server::core::custom_providers::set_model_capabilities(
+            &provider,
+            &id,
+            &patch,
+        ) {
+            Ok(_) => {
+                let summary = capability::KEYS
+                    .iter()
+                    .filter_map(|key| patch.get(*key).map(|value| (key, value)))
+                    .map(|(key, value)| match value {
+                        Value::Null => format!("{key}=恢复"),
+                        other => format!("{key}={other}"),
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                logging::log("[Models]", &format!("保存模型能力 [{provider}] {id}: {summary}"));
+                ok_json(catalog::manage_view(state.store()))
+            }
+            Err(error) => errors::management_error(400, error),
+        };
+    }
+    if crate::server::core::providers::kind_from_id(&provider).is_none() {
+        return errors::management_error(400, format!("未知的提供商: {provider}"));
     }
     if let Err(error) = model_rules::set_capabilities(&provider, &id, &patch) {
         return errors::management_error(500, error);
