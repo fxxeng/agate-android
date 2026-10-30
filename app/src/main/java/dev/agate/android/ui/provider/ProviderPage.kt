@@ -317,9 +317,16 @@ fun ProviderPage(
         GatewayPrefs.setProviderOrder(ctx, ids)
     }
 
-    /** 一键置顶（提供商）：挪到显示顺序第一位。只影响展示，不影响选路。 */
+    /**
+     * 一键置顶（提供商）：挪到显示顺序第一位。只影响展示，不影响选路。
+     *
+     * ⚠ 提交完**必须**再让列表滚到该项。只改顺序的话 `LazyListState` 会继续
+     * 钉住「原来那个第一个可见项」，被置顶的卡落到视口**上方**——用户看到的
+     * 第一张还是排序前那张，非得手动滑一下才看得到刚置顶的卡（用户报的第 3 条）。
+     */
     fun pinProvider(providerId: String) {
         commitProviderOrder(providerId, 0)
+        reorderState.requestScrollToTop(providerId)
     }
 
     /**
@@ -377,40 +384,64 @@ fun ProviderPage(
             AgatePrimaryAction("+ 添加") { onOpenAdd() }
         }
 
-        if (reorderState.isSortingMode) {
-            // v44 .reorder-banner：amber 虚线横幅
+        // ── 头部区块：**高度恒定**，排序态只替换最后一行的文案 ──────────────
+        // ⚠ 这里原本是 `if (排序态) 横幅 else 搜索栏+筛选栏`，两个分支高度差 80dp
+        // 左右。排序态一开（长按起拖那一刻就开），列表整体被顶上去，而被拖卡片的
+        // 跟手位移是按「列表内容坐标」算的 —— 列表自己在屏幕上动了，内容坐标里
+        // 槽位却没变，补偿量算成 0，卡片就留在原地、内容上移，观感是
+        // 「按住的卡片往上一跳、不跟手」（用户报的第 2 条）。
+        // 现在搜索栏与筛选栏**常驻**，只把底部那行提示换成排序态文案，
+        // 行高一致 → 列表不重排 → 卡片天然跟手；跟手位移另有一层屏幕坐标补偿
+        // （ReorderState.lazyTranslationY 的 listTopDelta），双保险。
+        Column(Modifier.padding(horizontal = 16.dp)) {
+            Spacer(Modifier.height(6.dp))
+            AgateSearchBar(value = query, onValueChange = { query = it }, hint = "搜索提供商")
+            Spacer(Modifier.height(8.dp))
+            AgateSegmented(
+                options = listOf("全部 · ${orderState.size}", "有异常 · $warnCount", "正常 · $okCount"),
+                selected = filter,
+                onSelect = { filter = it },
+            )
+            Spacer(Modifier.height(6.dp))
+            // ★ 两种状态**共用同一套布局骨架**，只换文字、颜色与「底/边」的绘制。
+            //   关键：`Modifier.background` 与 `Modifier.border` **不参与测量**，
+            //   所以排序态的琥珀底 + 描边不会改变这一行的高度；padding、圆点、
+            //   间距两种状态完全一致 → 这一行高度恒定 → 列表不会重排。
+            //   （此前是 if/else 两个结构不同的分支，光靠「字号调小」凑等高是
+            //   靠不住的：字体缩放、文案换行任何一处变化都会重新引入跳动。）
             Row(
                 Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 6.dp)
-                    .background(C.amber.copy(alpha = 0.08f), RoundedCornerShape(10.dp))
-                    .border(1.dp, C.amber.copy(alpha = 0.4f), RoundedCornerShape(10.dp))
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                    .then(
+                        if (reorderState.isSortingMode) {
+                            // v44 .reorder-banner：amber 虚线横幅（纯绘制，零布局影响）
+                            Modifier
+                                .background(C.amber.copy(alpha = 0.08f), RoundedCornerShape(10.dp))
+                                .border(1.dp, C.amber.copy(alpha = 0.4f), RoundedCornerShape(10.dp))
+                        } else {
+                            Modifier
+                        },
+                    )
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                Box(Modifier.size(4.dp).background(C.amber, CircleShape))
-                Text(
-                    "排序中 · 长按卡片拖动 · 松手即保存 · 5 秒无操作自动退出",
-                    color = C.amber,
-                    fontSize = 12.sp,
+                // 圆点在两种状态都占位（4dp < 行高，不影响行高），普通态只是暗色小点
+                Box(
+                    Modifier
+                        .size(4.dp)
+                        .background(if (reorderState.isSortingMode) C.amber else C.textSub.copy(alpha = 0.45f), CircleShape),
                 )
-            }
-        } else {
-            Column(Modifier.padding(horizontal = 16.dp)) {
-                Spacer(Modifier.height(6.dp))
-                AgateSearchBar(value = query, onValueChange = { query = it }, hint = "搜索提供商")
-                Spacer(Modifier.height(8.dp))
-                AgateSegmented(
-                    options = listOf("全部 · ${orderState.size}", "有异常 · $warnCount", "正常 · $okCount"),
-                    selected = filter,
-                    onSelect = { filter = it },
-                )
-                Spacer(Modifier.height(6.dp))
                 Text(
-                    "点头部展开账号 · 长按卡片或点「⇅ 排序」调整顺序 · 「管理」进详情",
-                    color = C.textSub,
-                    fontSize = 12.sp,
+                    text = if (reorderState.isSortingMode) {
+                        "排序中 · 拖动卡片 · 松手即保存 · 5 秒无操作自动退出"
+                    } else {
+                        "点头部展开账号 · 长按卡片或点「⇅ 排序」调整顺序 · 「管理」进详情"
+                    },
+                    color = if (reorderState.isSortingMode) C.amber else C.textSub,
+                    fontSize = 11.sp,
+                    maxLines = 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
                 )
             }
         }
