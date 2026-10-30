@@ -319,6 +319,12 @@ pub fn panel_router(state: ServerState) -> Router {
             get(api::routing_api::get_routing).put(api::routing_api::put_routing),
         )
         .route("/api/routing/queue", get(api::routing_api::get_routing_queue))
+        // 逐模型的**可用账号数**（胶囊上的读数）。POST 而不是 GET：模型名可能
+        // 带逗号/斜杠，塞进查询串要双重转义，而这里要点名的是一批模型。
+        .route(
+            "/api/routing/availability",
+            post(api::routing_api::post_routing_availability),
+        )
         // ── 调试模式（设置页「通用 → 调试模式」）──
         // GET/PUT 开关；traffic 是按 id 取原始报文的详情端点（列表接口不返回
         // 报文，见 debug_api 的模块头）。挂 protected：报文含上游 URL 与请求体。
