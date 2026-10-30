@@ -246,7 +246,7 @@ pub(crate) async fn forward(
     //      与「这家不要凭证」的语义正好相反；
     //   ② 伪装头（OpenCode 两个面，按端点分派）：免费档面补齐官方客户端的头
     //      与匿名凭证 `public`；Go 面只补会话头与产品 UA（见方法说明）；
-    //   ③ 记录上的静态额外头（`quirks.apply_to`）：用户手写的最优先。
+    //   ③ 记录上的静态额外头（`quirks.apply_headers`）：用户手写的最优先。
     let api_key = credential.api_key.trim();
     let mut headers = vec![("Content-Type".to_string(), "application/json".to_string())];
     if !api_key.is_empty() {
@@ -256,7 +256,7 @@ pub(crate) async fn forward(
         ));
     }
     quirks.apply_emulation_headers(&mut headers, api_key, &outbound, &base_url);
-    quirks.apply_to(&mut headers);
+    quirks.apply_headers(&mut headers);
 
     logging::verbose(
         "[CustomProvider]",
@@ -351,76 +351,36 @@ impl OutboundKind {
 /// GLM / MiniMax 的 `?beta=true` 与 `Anthropic-Beta`、OpenRouter 的来源头、
 /// MiniMax 的工具 type 补齐），手写的家没有这几个键 —— 提取时缺省即「无特判」，
 /// 旧记录不用迁移。
-struct ProviderQuirks {
-    /// 原样追加到出站 URL 末尾的查询串（如 `?beta=true`）
-    url_suffix: String,
-    /// 合并到默认头上的静态额外头（同名覆盖默认头）
-    headers: Vec<(String, String)>,
-    /// 发 anthropic 上游时给每个工具补 `type: "custom"`（MiniMax 拒绝无 type 工具）
-    tool_type_custom: bool,
-    /// 是否按 **OpenCode 官方 CLI 的形状**补齐出站请求（`clientEmulation`，
-    /// 见 [`emulation`]）：无 key 用匿名凭证 `public`、补官方会话头、请求体补
-    /// 两个桩工具 —— OpenCode Zen 的免费档只有这个形状才放行。**会改写请求体**，
-    /// 所以只在记录显式声明时生效。
-    emulate_opencode: bool,
-}
+///
+/// ── 它现在只是 [`custom_providers::OutboundQuirks`] 的一层壳 ────────
+/// 那四项是**记录字段**，归属地是 `core::custom_providers`（读侧归一与写侧
+/// 校验都在那边）。原先本模块自己抄了一份提取逻辑，而拉取上游清单那条路
+/// （`custom_providers::fetch_upstream_models`，同模块）又抄了另一份 —— 两份
+/// 抄件在「拉取」那条路上漏掉了预置静态头与旧端点迁移，于是转发能通、拉取
+/// 401/403。
+///
+/// 现在提取逻辑**只有一份**（`custom_providers::OutboundQuirks`），两边共用：
+/// 下次新增预置卡或改字段口径，转发与拉取必然同时生效。
+type ProviderQuirks = custom_providers::OutboundQuirks;
 
-impl ProviderQuirks {
-    fn from_provider(provider: &Value) -> Self {
-        // 盘上数据已经过读侧归一（custom_providers::item_of），这里只做防
-        // 御性提取：类型不对的值按缺省跳过，绝不让特判把转发拖成 panic
-        let headers = provider
-            .get("headers")
-            .and_then(Value::as_object)
-            .map(|object| {
-                object
-                    .iter()
-                    .filter_map(|(key, value)| {
-                        value.as_str().map(|text| (key.clone(), text.to_string()))
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        Self {
-            url_suffix: provider
-                .get("urlSuffix")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string(),
-            headers,
-            tool_type_custom: provider
-                .get("anthropicToolType")
-                .and_then(Value::as_str)
-                .is_some_and(|text| {
-                    text.eq_ignore_ascii_case(custom_providers::TOOL_TYPE_CUSTOM)
-                }),
-            emulate_opencode: provider
-                .get("clientEmulation")
-                .and_then(Value::as_str)
-                .is_some_and(|text| {
-                    text.eq_ignore_ascii_case(custom_providers::CLIENT_EMULATION_OPENCODE)
-                }),
-        }
-    }
-
-    /// 把特判头按名合并进默认头：同名（ASCII 不区分大小写）的默认头被覆盖，
-    /// 其余追加在后面。覆盖默认凭证头（Authorization / x-api-key）意味着换一种
-    /// 鉴权方式 —— 那是记录持有者的选择，这里只负责如实执行。
-    fn apply_to(&self, headers: &mut Vec<(String, String)>) {
-        for (key, value) in &self.headers {
-            match headers.iter_mut().find(|(name, _)| name.eq_ignore_ascii_case(key)) {
-                Some(slot) => slot.1 = value.clone(),
-                None => headers.push((key.clone(), value.clone())),
-            }
-        }
-    }
-
+/// 伪装相关的两个动作（**只属于转发**）：请求头伪装与请求体补形。
+///
+/// 为什么它们不与「读记录字段」放在一起：伪装要依赖 [`emulation`] 模块
+/// （会话 id、桩工具），而那套东西**只服务对话请求**（它改写请求体，
+/// `/models` 那种没有请求体的管理动作用不上 —— 见
+/// `custom_providers::fetch_upstream_models` 的说明）。
+///
+/// 所以分工是：记录字段的**读取**在 `custom_providers::OutboundQuirks`
+/// （转发与拉取共用一份），而**伪装的执行**留在这里（只有转发会做）。
+/// `apply_headers`（静态额外头）也在 `OutboundQuirks` 上 —— 那是纯记录字段，
+/// 两边都要用。
+trait ProviderQuirksExt {
     /// 伪装头与匿名凭证（只在 `clientEmulation: "opencode"` 时动手）。
     ///
     /// `api_key` 为空时用匿名凭证 `public` —— 这正是「不填 Key 也能用 OpenCode
     /// Zen 免费档」的落点；填了 key 就用 key（付费模型必须）。
     ///
-    /// **调用顺序**：默认头 → 本函数 → `apply_to`（静态额外头）。放在 `apply_to`
+    /// **调用顺序**：默认头 → 本函数 → `apply_headers`（静态额外头）。放在它
     /// 之前是刻意的：手写在记录上的头优先级最高，伪装不该盖掉用户的显式选择。
     ///
     /// ── 两个面（按 `base_url` 分派，判据见 `custom_providers::is_opencode_go_endpoint`）──
@@ -430,6 +390,23 @@ impl ProviderQuirks {
     ///     Go 面该发的会话头照发、该走自己的 Key 照走；
     ///   - **免费档面**（其余端点）：四会话头 + 匿名/账号凭证的完整伪装，
     ///     仍然只在开关打开时生效。
+    fn apply_emulation_headers(
+        &self,
+        headers: &mut Vec<(String, String)>,
+        api_key: &str,
+        body: &Value,
+        base_url: &str,
+    );
+
+    /// 请求体补成「智能体形态」（`stream: true` + `bash` / `read` 桩工具）。
+    /// 未开启伪装时**一个字节都不动** —— 透传是自定义家的默认语义。
+    ///
+    /// **Go 面同样一个字节都不动**：它拒绝被塞桩工具的请求（社区实测
+    /// #44300/#44382），那条桩工具逻辑只属于免费档面。
+    fn apply_emulation_to_body(&self, body: &mut Value, base_url: &str);
+}
+
+impl ProviderQuirksExt for ProviderQuirks {
     fn apply_emulation_headers(
         &self,
         headers: &mut Vec<(String, String)>,
@@ -448,11 +425,6 @@ impl ProviderQuirks {
         emulation::apply_headers(headers, api_key, &session);
     }
 
-    /// 请求体补成「智能体形态」（`stream: true` + `bash` / `read` 桩工具）。
-    /// 未开启伪装时**一个字节都不动** —— 透传是自定义家的默认语义。
-    ///
-    /// **Go 面同样一个字节都不动**：它拒绝被塞桩工具的请求（社区实测
-    /// #44300/#44382），那条桩工具逻辑只属于免费档面。
     fn apply_emulation_to_body(&self, body: &mut Value, base_url: &str) {
         if !self.emulate_opencode || custom_providers::is_opencode_go_endpoint(base_url) {
             return;
@@ -530,7 +502,7 @@ async fn forward_translated(
                 headers.push(("Authorization".to_string(), format!("Bearer {api_key}")));
             }
             quirks.apply_emulation_headers(&mut headers, api_key, &outbound_chat, base_url);
-            quirks.apply_to(&mut headers);
+            quirks.apply_headers(&mut headers);
             (url, headers, payload)
         }
         OutboundKind::Anthropic => {
@@ -578,7 +550,7 @@ async fn forward_translated(
                 headers.push(("x-api-key".to_string(), api_key.to_string()));
             }
             quirks.apply_emulation_headers(&mut headers, api_key, &outbound_chat, base_url);
-            quirks.apply_to(&mut headers);
+            quirks.apply_headers(&mut headers);
             (url, headers, payload)
         }
     };

@@ -354,6 +354,114 @@ pub fn manage_view(store: &AccountStore) -> Value {
             }));
         }
     }
+    // ── 自定义家（含「预置 API」建出来的那些）────────────────────
+    //
+    // 管理视图此前只遍历 `active_manifests` —— 那是**纯内置适配器**（`all_kinds`
+    // 来自 `PROVIDERS` 表）。自定义家（`custom-xxxx`）没有 `ProviderKind`，
+    // 于是**永远进不了这个视图**。
+    //
+    // 后果是模型页的【全部】筛选行少了一整类家：那个筛选行按「清单里有哪些家」
+    // 派生（`allRows` = 会话清单 ∪ 管理视图），而自定义家只可能从会话清单进来
+    // —— 那条路要求这家**已有模型**。于是「刚建好、还没登记模型」的自定义家
+    // 在模型页彻底不出现：用户建完家去模型页找它，什么都没有，也没有任何
+    // 报错能解释它去哪儿了。
+    //
+    // 这里把自定义家并进来。**它家自己的记录就是事实来源**（不走 `model_rules`
+    // —— 那个是内置家的启停与映射存储）：启停状态、别名映射、能力位覆盖都
+    // 读自定义家自己的字段。
+    //
+    // ── 数据源取「登记条目」而不是 `public_models` ────────────────
+    // `public_models` 走的是 `bindings::resolve`，而 `resolve` 会把**已禁用**
+    // 的模型过滤掉 —— 那是给对外清单用的（禁用的不该广告给客户端）。但管理
+    // 视图的职责恰恰相反：**关掉的模型要留在页面上（置灰），用户才能重新
+    // 打开它**。用 `public_models` 当数据源，被关掉的自定义模型会从管理视图
+    // 里消失，用户再也找不到它、也再也打不开它。
+    //
+    // 所以这里直接读这家登记的 `models[]`（原始形态，不过滤启停），能力位
+    // 按与内置家同一套判定合成（`capability::effective` + `model_meta::apply`），
+    // 保证两边看到的能力值同源。
+    for (provider, _) in super::super::custom::catalog_providers(store) {
+        // 登记条目（原始形态，含用户登记的 enabled / capabilities / reasoning）
+        let registered = crate::server::core::custom_providers::get(&provider);
+        let Some(registered) = registered else { continue; };
+        let registered_models = registered
+            .get("models")
+            .and_then(Value::as_array)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        let registered_mappings = registered
+            .get("mappings")
+            .and_then(Value::as_array)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        for entry in registered_models {
+            let id = model_id(entry);
+            if id.is_empty() { continue; }
+            if !claimed.insert((provider.to_string(), id.to_lowercase())) {
+                continue; // 同家同 id 的重复条目（与内置家同一道去重）
+            }
+            // 能力位生效值：登记的那份 + models.dev 补齐（与内置家同一套判定 ——
+            // 用户登记的值 > models.dev > 未声明）。
+            // `id` 在下面还要用（映射的 alias/target），所以这里用引用构造，
+            // 不把它 move 走。
+            let mut item = json!({ "id": id.as_str() });
+            if let Some(capabilities) = entry.get("capabilities") {
+                let normalized = capability::normalize_object(Some(capabilities));
+                capability::apply_overrides(&mut item, &normalized);
+            }
+            model_meta::apply(&mut item);
+            let enabled = entry.get("enabled").and_then(Value::as_bool).unwrap_or(true);
+            // 默认绑定：对外名 → 它自己的原始 id（自定义家的默认绑定就是
+            // 「这个登记名指向它自己」，与内置家的 `isDefault` 同形）。
+            mappings.push(json!({
+                "alias": id.as_str(), "target": id.as_str(), "provider": provider,
+                "enabled": enabled,
+                "reasoning": entry.get("reasoning"),
+                "isDefault": true, "dangling": false, "carried": true,
+            }));
+            // 别名：登记在这家、且指向这条模型的映射（对外名 → 原始 id）。
+            let mut aliases = Vec::new();
+            for mapping in registered_mappings {
+                let Some(alias) = mapping.get("alias").and_then(Value::as_str) else { continue; };
+                let Some(mapped) = mapping.get("target").and_then(Value::as_str) else { continue; };
+                if !mapped.eq_ignore_ascii_case(&id) { continue; }
+                if alias.eq_ignore_ascii_case(&id)
+                    || aliases.iter().any(|name: &String| name.eq_ignore_ascii_case(alias))
+                { continue; }
+                aliases.push(alias.to_string());
+                mappings.push(json!({
+                    "alias": alias, "target": id.as_str(), "provider": provider,
+                    "enabled": mapping.get("enabled").and_then(Value::as_bool).unwrap_or(true),
+                    "reasoning": mapping.get("reasoning"),
+                    "isDefault": false, "dangling": false, "carried": true,
+                }));
+            }
+            // 能力位覆盖：登记条目上用户手填的那几项（`capabilities` 稀疏表）。
+            let cap_overrides: Vec<String> = entry
+                .get("capabilities")
+                .and_then(Value::as_object)
+                .map(|map| capability::overridden_keys(map))
+                .unwrap_or_default();
+            models.push(json!({
+                "id": id.as_str(), "name": item.get("name"), "credits": item.get("credits"),
+                "isDefault": false,
+                "provider": provider, "providerLabel": super::super::label_of(&provider),
+                // 自定义家的模型全是**用户登记**的 —— 与内置家的
+                // `builtin` / `remote` 不同源，标成 `manual`（映射页据它
+                // 区分「用户手工登记的模型」）。
+                "source": "manual", "enabled": enabled, "aliases": aliases,
+                "capabilities": capability::effective(&item),
+                "capOverrides": cap_overrides,
+                "visibility": Value::Null,
+                "capSources": item.get("capSources"),
+                "reasoningLevels": item.get("reasoningLevels"),
+                "reasoningDefaultLevel": item.get("reasoningDefaultLevel"),
+                // 自定义家没有「远程目录」这回事（清单是登记的，不是拉的）——
+                // 0 = 从未成功拉过（与内置家同一语义）。
+                "refreshedAt": 0,
+            }));
+        }
+    }
     for (index, mapping) in rules.mappings.iter().enumerate() {
         if attached.contains(&index) { continue; }
         let carried = match mapping.provider.as_deref() {

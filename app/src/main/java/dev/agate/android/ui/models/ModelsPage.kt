@@ -653,14 +653,39 @@ fun ModelsPage(
             Spacer(Modifier.height(12.dp))
             AgateSearchBar(value = query, onValueChange = { query = it }, hint = "搜索模型 / 提供商…")
             Spacer(Modifier.height(10.dp))
-            // ── 范围 chips：全部 + 每家（只列真有模型的）──────────────
-            val scopes = remember(allRows) {
+            // ── 范围 chips：全部 + 每家 ─────────────────────────────
+            //
+            // ⚠️ 家列表**不能只从模型行派生**（2026-10-30 修）
+            //
+            // 旧写法是 `allRows.groupBy { it.provider }` —— 只列「真有模型」的
+            // 家。于是「刚建好、还没登记模型」的自定义家（预置 API 建出来的那批
+            // 正是如此）在模型页**连一颗芯片都没有**：用户建完家去模型页找它，
+            // 什么也没有，而界面上没有任何报错能解释它去哪儿了。
+            //
+            // 它与「拉取模型」构成死循环：拉取弹层的候选要「零模型也列出」才
+            // 能拉第一家，而第一家拉不到模型就永远进不了这个筛选行。
+            //
+            // 现在芯片表 = 「有模型的家」∪「**已登记存在的自定义家**」——
+            // 后者来自 `customProviders`（内核的 `/api/custom-providers`，
+            // 列出全部自定义家，与有没有模型无关）。点进去看到「这家没有匹配
+            // 的模型」是**诚实**的读数：这家确实还没登记模型，而「登记模型」
+            // 的入口就在那个视图里（见下面的自定义家段落）。
+            val scopes = remember(allRows, customProviders) {
                 val order = PresetRegistry.ALL.map { it.id }
-                allRows.groupBy { it.provider }
+                val fromRows = allRows.groupBy { it.provider }
                     .map { (pid, list) ->
                         pid to (list.firstOrNull()?.providerLabel ?: PresetRegistry.labelOf(pid))
                     }
-                    .sortedBy { pair -> order.indexOf(pair.first).let { if (it < 0) Int.MAX_VALUE else it } }
+                // 零模型的自定义家也要有芯片（见上）。名字取自定义家自己的
+                // `name`（`providerLabel` 那份来自模型行，零模型时压根没有行）。
+                val fromCustoms = customProviders.map { it.id to it.name }
+                (fromRows + fromCustoms)
+                    .distinctBy { it.first }
+                    .sortedBy { pair ->
+                        // 注册表内的家按注册表顺序排，自定义家排在最后
+                        val idx = order.indexOf(pair.first)
+                        if (idx < 0) Int.MAX_VALUE else idx
+                    }
             }
             Row(
                 modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
@@ -688,9 +713,12 @@ fun ModelsPage(
                 Spacer(Modifier.height(8.dp))
             }
 
-            if (allRows.isEmpty()) {
-                EmptyHint(fetched = snap.fetchedAtMs > 0)
-            } else if (listScope != null) {
+            // ⚠️ 判断顺序：**先看有没有选中某家**，再看「全局是不是空的」
+            // （2026-10-30 修）。旧写法是 `allRows.isEmpty()` 在前，于是
+            // 「只有零模型的自定义家」时 —— 用户明明点了那颗芯片，页面却给
+            // 一句「还没有模型」的全局空态，那家的视图根本出不来，「登记模型」
+            // 的入口也就够不着了。
+            if (listScope != null) {
                 // ── 单家范围：这家的完整清单（不折叠，一进来就是展开的）──
                 val pid = listScope!!
                 // 自定义家：清单是用户登记的，给一个直接编辑的入口 ——
@@ -762,6 +790,11 @@ fun ModelsPage(
                         },
                     )
                 }
+            } else if (allRows.isEmpty()) {
+                // 全局没有任何模型行时的空态（选中了某家时走上面那条分支，
+                // 哪怕这一家是零模型 —— 那家的视图里有「登记模型」的入口，
+                // 空态提示反而会把它盖住）。
+                EmptyHint(fetched = snap.fetchedAtMs > 0)
             } else {
                 // ── 按模型聚合（v44 #view-model）──
                 val byId = filtered.groupBy { it.id }

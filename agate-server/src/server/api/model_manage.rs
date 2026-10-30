@@ -235,9 +235,28 @@ pub async fn set_states(State(_state): State<ServerState>, body: Bytes) -> Respo
     }
     let provider = text_field(&object, "provider");
     let provider_opt = if provider.is_empty() { None } else { Some(provider.as_str()) };
+    // ── 按「启停状态实际存在哪」分派 ──────────────────────────────
+    // 内置家的启停存在 `modelRules`；自定义家存在它自己记录的
+    // `models[].enabled` 里（转发侧读的就是那里）。两家两套存储，所以
+    // 端点要**按数据归属地路由** —— 不能一律写 `modelRules`（那样自定义家
+    // 的开关点了没反应），也不能一律拒（那样自定义家一点开关就 400）。
+    //
+    // 判据用「这家是不是已注册的自定义提供商」（`custom_providers::
+    // is_custom_provider_id`：前缀 + 存储里确实有），而不是「id 长得像不像
+    // 内置家」—— 后者会把一条不存在的手改 id 误判成自定义家。
     if let Some(provider) = provider_opt {
+        if crate::server::core::custom_providers::is_custom_provider_id(provider) {
+            return match crate::server::core::custom_providers::set_models_enabled(
+                provider,
+                &ids,
+                enabled.unwrap_or(true),
+            ) {
+                Ok(updated) => ok_json(json!({ "updated": updated })),
+                Err(error) => errors::management_error(400, error),
+            };
+        }
         if crate::server::core::providers::kind_from_id(provider).is_none() {
-            return errors::management_error(400, format!("未知的内置提供商: {provider}"));
+            return errors::management_error(400, format!("未知的提供商: {provider}"));
         }
     }
     match model_rules::set_states(provider_opt, &ids, enabled) {
@@ -285,8 +304,27 @@ pub async fn set_state(State(state): State<ServerState>, body: Bytes) -> Respons
         Vec::new()
     };
     if let Some(provider) = provider_opt {
+        // ── 自定义家：启停状态存在它自己的记录里 ──────────────────
+        // 与批量那条同一口径（见 `set_states` 的说明）：按「状态实际存在哪」
+        // 分派，不按 id 长相猜。自定义家不写 `modelRules`（那是内置家的存储），
+        // 也不该被 400 拒掉 —— 模型页里的自定义模型要能开关。
+        if crate::server::core::custom_providers::is_custom_provider_id(provider) {
+            return match crate::server::core::custom_providers::set_models_enabled(
+                provider,
+                std::slice::from_ref(&id),
+                enabled.unwrap_or(true),
+            ) {
+                Ok(updated) => {
+                    let what = if enabled == Some(true) { "已启用" } else { "已禁用" };
+                    logging::log("[Models]", &format!("模型 [{provider}] {id} {what}"));
+                    let _ = updated;
+                    ok_json(catalog::manage_view(state.store()))
+                }
+                Err(error) => errors::management_error(400, error),
+            };
+        }
         if crate::server::core::providers::kind_from_id(provider).is_none() {
-            return errors::management_error(400, format!("未知的内置提供商: {provider}"));
+            return errors::management_error(400, format!("未知的提供商: {provider}"));
         }
     }
     if let Err(error) = model_rules::set_state(provider_opt, &id, enabled, &others) {

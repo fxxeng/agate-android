@@ -466,6 +466,103 @@ fn client_emulation_of(value: Option<&Value>) -> String {
     }
 }
 
+// ── 出站特判（urlSuffix / 静态头 / 工具 type / 客户端伪装）─────────
+//
+// ── 为什么这一段被抽到「记录归属地」而不是留在转发模块里 ────────────
+//
+// 这四项是**提供商记录上的字段**（读侧归一在 `custom_providers`，写侧校验
+// 也在这里），而**出站要用它们的地方有两处**：转发（`providers::custom`）
+// 与拉取上游模型清单（`fetch_upstream_models`，就在本模块里）。
+//
+// 拉取那一处原先是**转发的一份独立复刻**，复刻时漏掉了这四项 —— 于是
+// 预置卡带来的上游修正（GLM/MiniMax 的 `?beta=true` + `Anthropic-Beta`、
+// OpenCode 免费档的客户端伪装）在「拉模型」这条路上完全没生效：转发能通、
+// 拉取却 401/404。复刻两份实现必然漂移，下一张预置卡还会再漏一次。
+//
+// 所以这里给出**唯一一份读取口径**：转发与拉取都从这里取，两边不可能再分叉。
+// 取值口径与本模块既有的读侧归一函数（`url_suffix_of` / `headers_of` /
+// `tool_type_of` / `client_emulation_of`）**逐字一致** —— 同一个字段只有
+// 一种读法。
+pub struct OutboundQuirks {
+    /// 原样追加到出站 URL 末尾的查询串（如 `?beta=true`）
+    pub url_suffix: String,
+    /// 合并到默认头上的静态额外头（同名覆盖默认头）
+    pub headers: Vec<(String, String)>,
+    /// 发 anthropic 上游时给每个工具补 `type: "custom"`（MiniMax 拒绝无 type 工具）
+    pub tool_type_custom: bool,
+    /// 是否按 OpenCode 官方 CLI 的形状补齐出站请求（见 `providers::custom::emulation`）
+    pub emulate_opencode: bool,
+}
+
+impl OutboundQuirks {
+    /// 从提供商记录读出这四项（盘上数据已经过读侧归一，这里只做防御性提取：
+    /// 类型不对的值按缺省跳过，绝不让特判把出站拖成 panic）。
+    pub fn from_provider(provider: &Value) -> Self {
+        let headers = provider
+            .get("headers")
+            .and_then(Value::as_object)
+            .map(|object| {
+                object
+                    .iter()
+                    .filter_map(|(key, value)| {
+                        value.as_str().map(|text| (key.clone(), text.to_string()))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        Self {
+            url_suffix: provider
+                .get("urlSuffix")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+            headers,
+            tool_type_custom: provider
+                .get("anthropicToolType")
+                .and_then(Value::as_str)
+                .is_some_and(|text| text.eq_ignore_ascii_case(TOOL_TYPE_CUSTOM)),
+            emulate_opencode: provider
+                .get("clientEmulation")
+                .and_then(Value::as_str)
+                .is_some_and(|text| text.eq_ignore_ascii_case(CLIENT_EMULATION_OPENCODE)),
+        }
+    }
+
+    /// 把特判头按名合并进默认头：同名（ASCII 不区分大小写）的默认头被覆盖，
+    /// 其余追加在后面。覆盖默认凭证头（Authorization / x-api-key）意味着换一种
+    /// 鉴权方式 —— 那是记录持有者的选择，这里只负责如实执行。
+    pub fn apply_headers(&self, headers: &mut Vec<(String, String)>) {
+        for (key, value) in &self.headers {
+            match headers.iter_mut().find(|(name, _)| name.eq_ignore_ascii_case(key)) {
+                Some(slot) => slot.1 = value.clone(),
+                None => headers.push((key.clone(), value.clone())),
+            }
+        }
+    }
+}
+
+/// 出站基址：账号级覆盖优先，provider 兜底；两者都空则返回空串。
+///
+/// 口径与转发路径**逐字一致**（`providers::custom::forward` 的基址解析）：
+/// 账号上的 `baseUrl` 是覆盖项，缺省才回落到提供商的配置。拉取上游清单
+/// 原先只读 provider 的那份 —— 用户改过账号地址时，拉取会打到旧地址，
+/// 表现为「转发好好的，拉模型却 404」。
+pub fn resolve_base_url(provider: &Value, account_override: Option<&str>) -> String {
+    account_override
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            provider
+                .get("baseUrl")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|text| !text.is_empty())
+                .map(str::to_string)
+        })
+        .unwrap_or_default()
+}
+
 /// 读取容错：`models` 数组 → 归一后的条目列表（非数组 / 坏条目一律丢弃）。
 ///
 /// 丢弃的判据与 `read_items` 同一取向：**不是带非空 id 的对象**就不要 ——
@@ -878,6 +975,91 @@ pub fn set_models(id: &str, models: Value, mappings: Value) -> Result<Value, Str
     Ok(updated)
 }
 
+/// 批量改这家**已登记模型**的启停状态（`enabled`），其余字段原样保留。
+///
+/// 返回改动的条数（`ids` 里有几条真的存在于这家）。
+///
+/// ── 为什么需要它（而不是让前端走整表保存）────────────────────
+/// 模型页的开关走的是 `POST /api/models/state`（`api::model_manage`）。那个
+/// 端点把启停状态存在 `modelRules` 里 —— 那是**内置家**的存储。自定义家的
+/// 启停状态存在它自己记录的 `models[].enabled` 里（转发侧读的就是那里，
+/// 见 `bindings::resolve`）。两套存储两个地方。
+///
+/// 于是端点原先只能接受内置家（`kind_from_id` 判非内置即 400）—— 模型页
+/// 里的自定义模型一点开关就报错「未知的内置提供商」。本函数给端点一条
+/// 正确的出路：自定义家走这里。
+///
+/// 与整表保存（[`set_models`]）的分工：整表保存是「编辑一份副本再存」，
+/// 会把调用方手里的整张表写回去；本函数是**就地改一个字段**，不碰别的条目、
+/// 不碰顺序、不碰能力位 —— 适合「点一个开关」这种单点动作。
+pub fn set_models_enabled(id: &str, ids: &[String], enabled: bool) -> Result<usize, String> {
+    let id = id.trim();
+    if id.is_empty() {
+        return Err("缺少提供商 id".to_string());
+    }
+    let mut items = read_items();
+    let Some(index) = items
+        .iter()
+        .position(|item| item.get("id").and_then(Value::as_str) == Some(id))
+    else {
+        return Err(format!("自定义提供商不存在: {id}"));
+    };
+    // 既有条目整份取出，只改命中的那几条的 `enabled`
+    let mut entries = match items[index].get("models").and_then(Value::as_array) {
+        Some(list) => list.clone(),
+        None => Vec::new(),
+    };
+    let mut changed = 0usize;
+    for entry in entries.iter_mut() {
+        let Some(object) = entry.as_object_mut() else { continue; };
+        let current_id = object
+            .get("id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or("");
+        if current_id.is_empty() { continue; }
+        // 名字比较忽略大小写（与全仓的模型名匹配口径一致）
+        if !ids
+            .iter()
+            .any(|wanted| wanted.trim().eq_ignore_ascii_case(current_id))
+        {
+            continue;
+        }
+        let already = object
+            .get("enabled")
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
+        if already == enabled { continue; }
+        object.insert("enabled".to_string(), Value::Bool(enabled));
+        changed += 1;
+    }
+    if changed == 0 {
+        // 一条都没改：可能 ids 里的模型这家没有，也可能状态本来就是目标值。
+        // 两种都不该写盘（写了只是无谓扰动配置），但「一条都不存在」要报错 ——
+        // 那说明调用方说的模型这家压根没有。
+        let known: Vec<String> = entries.iter().filter_map(|entry| {
+            entry.get("id").and_then(Value::as_str).map(str::trim).map(str::to_string)
+        }).filter(|name| !name.is_empty()).collect();
+        let hit = ids.iter().any(|wanted| {
+            let wanted = wanted.trim();
+            !wanted.is_empty()
+                && known.iter().any(|name| name.eq_ignore_ascii_case(wanted))
+        });
+        if !hit {
+            return Err(format!("这家没有登记这些模型: {}", ids.join(", ")));
+        }
+        return Ok(0);
+    }
+    // 从既有记录的键表出发整体写回：除 models 外的键原样保留
+    let mut merged = items[index].as_object().cloned().unwrap_or_default();
+    merged.insert("models".to_string(), Value::Array(entries));
+    items[index] = Value::Object(merged);
+    if !write_items(&items) {
+        return Err("保存失败：配置写入未成功（请检查磁盘空间与配置目录权限）".to_string());
+    }
+    Ok(changed)
+}
+
 /// 「这个名字由哪些自定义家提供」（`catalog::providers_for_model` 的自定义段）。
 ///
 /// 判据（三条同时成立才算承载）：该家 `enabled=true`，且存在一条 **enabled**
@@ -944,13 +1126,29 @@ pub fn wire_model_for(provider_id: &str, requested_name: &str) -> (String, Optio
 /// 「队首优先」同口径）；一个都没有时报「请先添加账号」。账号配了出网代理就
 /// 带上（`ResolvedProxy`），没有则直连。
 ///
+/// ── 与转发路径**共用出网规则**（2026-10-30 修）──────────────────
+/// 拉取原先是转发的一份**独立复刻**，复刻时漏掉了转发出站规则的一半：
+///
+///   · **基址**：转发认「账号级 `baseUrl` 覆盖优先、provider 兜底」，
+///     拉取只读 provider 的那份 —— 用户改过账号地址时，拉取打到旧地址；
+///   · **预置静态头**（`Anthropic-Beta` 等）：转发一律带上，拉取全丢 ——
+///     GLM / MiniMax 这类端点缺它直接 401/400；
+///   · **旧端点迁移**（OpenCode 免费档的 `/zen/v1` → `/inference/v1`）：
+///     转发过这道迁移，拉取没过 —— 打旧端点恒 403。
+///
+/// 三条都指向同一个根因：**「怎么跟这家上游说话」有两份实现**。修法不是把
+/// 这三条逐条抄过去（下一张预置卡还会再漏一次），而是把「预置特判」的读取
+/// 收敛到**记录归属地**（本模块的 [`OutboundQuirks`]），转发与拉取都从那里取。
+/// 转发侧那份 `ProviderQuirks` 随即改为读同一个来源。
+///
 /// ── 凭证为空时**不发鉴权头**（2026-09 修）──────────────────────
 /// 无需鉴权的上游（本地 Ollama、OpenCode Zen 的免费档）在 `/models` 上
 /// 本来就不校验凭证。旧实现在这里无条件拼 `Authorization: Bearer `（空）或
 /// `x-api-key: `，严格的上游会直接 401 —— 而这条路径以前根本走不到（空 key
 /// 的账号被 `first_custom_credential` 过滤掉了，见那个函数的说明）。
 /// **有意不套 `clientEmulation` 的伪装头**：`/models` 实测无需伪装即可 200，
-/// 多套一层只会让这条管理动作也跟着上游的形态校验一起坏掉。
+/// 多套一层只会让这条管理动作也跟着上游的形态校验一起坏掉（伪装头是给
+/// **对话**请求准备的，依赖请求体形状，`/models` 没有请求体）。
 ///
 /// 响应解析：OpenAI 与 anthropic 的清单形态相同（`{data: [{id}]}`），
 /// 取每个条目的非空 `id`。**不落盘** —— 清单拉回来给前端确认后再调
@@ -966,34 +1164,41 @@ pub async fn fetch_upstream_models(
         .and_then(Value::as_str)
         .unwrap_or(PROTOCOL_CHAT_COMPLETIONS)
         .to_string();
-    let base_url = provider
-        .get("baseUrl")
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .to_string();
-    if base_url.is_empty() {
-        return Err("该提供商没有配置 baseUrl，无法拉取模型清单".to_string());
-    }
-    let url = if protocol == PROTOCOL_ANTHROPIC {
-        // `anthropic` 的惯例是 baseUrl **不带 /v1**（`https://api.anthropic.com`），
-        // 但用户从各家「Chat Completions 兼容端点」页面抄地址时常常把 `/v1` 一起
-        // 粘进来 —— 那样直接拼会得到 `/v1/v1/models`，上游稳定 404。
-        // baseUrl 落盘时已去掉末尾斜杠（见模块头第 2 条约束），这里再按是否已带
-        // `/v1` 决定拼法：两种写法都能拉到，不必让用户为「拉模型」单独改一次地址。
-        if base_url.ends_with("/v1") {
-            format!("{base_url}/models")
-        } else {
-            format!("{base_url}/v1/models")
-        }
-    } else {
-        format!("{base_url}/models")
-    };
     let credential = store
         .first_custom_credential(provider_id)
         .ok_or_else(|| {
             "请先添加账号：拉取模型清单需要一条启用且可用（填了 apiKey，或声明了无需鉴权）的账号"
                 .to_string()
         })?;
+    // 基址：账号级覆盖优先、provider 兜底（与转发路径同口径，见
+    // [`resolve_base_url`] 的说明）。原先这里只读 provider 的那份 ——
+    // 用户改过账号地址时，拉取会打到旧地址。
+    let base_url = resolve_base_url(
+        &provider,
+        credential.base_url_override.as_deref(),
+    );
+    if base_url.is_empty() {
+        return Err("该提供商没有配置 baseUrl，无法拉取模型清单".to_string());
+    }
+    // 存量记录里可能还写着 OpenCode 免费档的**旧端点**（`/zen/v1`）——
+    // 与转发路径同一道读侧迁移（否则拉取打旧端点恒 403）。
+    let quirks = OutboundQuirks::from_provider(&provider);
+    let base_url = migrate_base_url(&base_url, quirks.emulate_opencode);
+    let url = if protocol == PROTOCOL_ANTHROPIC {
+        // `anthropic` 的惯例是 baseUrl **不带 /v1**（`https://api.anthropic.com`），
+        // 但用户从各家「Chat Completions 兼容端点」页面抄地址时常常把 `/v1` 一起
+        // 粘进来 —— 那样直接拼会得到 `/v1/v1/models`，上游稳定 404。
+        // baseUrl 落盘时已去掉末尾斜杠（见模块头第 2 条约束），这里再按是否已带
+        // `/v1` 决定拼法：两种写法都能拉到，不必让用户为「拉模型」单独改一次地址。
+        let base = base_url.trim_end_matches('/');
+        if base.ends_with("/v1") {
+            format!("{base}/models")
+        } else {
+            format!("{base}/v1/models")
+        }
+    } else {
+        format!("{}/models", base_url.trim_end_matches('/'))
+    };
     let client = egress::client_for(credential.proxy.as_ref());
     let mut builder = client
         .get(&url)
@@ -1009,6 +1214,14 @@ pub async fn fetch_upstream_models(
         } else {
             builder.header("Authorization", format!("Bearer {api_key}"))
         };
+    }
+    // 预置卡带来的**静态额外头**（如 `Anthropic-Beta`）：转发侧一律带上，
+    // 拉取侧原先漏了 —— GLM / MiniMax 这类端点缺它会直接 401/400。
+    // 与转发侧同一份读取口径（[`OutboundQuirks`]），两边不可能再分叉。
+    let mut extra_headers: Vec<(String, String)> = Vec::new();
+    quirks.apply_headers(&mut extra_headers);
+    for (name, value) in &extra_headers {
+        builder = builder.header(name.as_str(), value.as_str());
     }
     let response = builder.send().await.map_err(|error| {
         format!("上游请求失败: {}", egress::describe_error_detail(&error))
