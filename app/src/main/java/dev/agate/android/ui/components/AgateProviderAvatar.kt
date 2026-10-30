@@ -67,19 +67,37 @@ object ProviderIcons {
      * 两字母色块。模板的图标其实一直在手边（`PresetApiRegistry.ALL[].iconRes`），
      * 缺的只是「名称 → 图标」这一跳。
      *
-     * ── 为什么按名称而不是新增字段 ───────────────────────────────
-     * 「已建过」的判据本来就是**名称相等**（上游 `matchesPresetName` 的口径，
-     * 见 `PresetApiRegistry` 的模块头）。用户改名后那家就与模板脱钩 —— 这是
-     * 刻意的语义，图标也跟着脱落才是对的（它已经不再是「那家」了）。
-     * 在提供商记录里加一个 iconKey 字段会引入第三种状态：改了名、图标还留着
-     * 旧模板的，看起来比现在更乱。
+     * ── 名称反查已降级为**回落**（2026-10-30）──────────────────
+     * 这个函数曾是唯一反查路径，按「名称精确匹配」判身份 —— 理由是「改名
+     * 即脱钩」的语义。但名称解析链有兜底层（账号备注名）且可能损坏，反查
+     * 输入一旦不是模板名，图标就跟着掉（实际发生过两次）。现在身份优先走
+     * 创建时固化的 `presetKey`（见 [resOfCustomIdentity]），名称匹配只服务
+     * presetKey 之前的存量家。
      *
-     * 匹配**忽略大小写与多余空白**：用户手打「openai」也该认出来。
+     * 匹配**忽略大小写**：用户手打「openai」也该认出来。
      */
     fun resOfCustomName(name: String): Int? {
         val key = name.trim().lowercase()
         if (key.isEmpty()) return null
         return presetIconsByName[key]
+    }
+
+    /**
+     * 自定义提供商图标的**身份版**反查：优先用创建时固化的 `presetKey`
+     * （slug，与改名无关），没有再回落名称精确匹配 —— 兼容 presetKey 之前
+     * 建的存量家。
+     *
+     * ── 为什么不能再只靠名称（2026-10-30 修）──────────────────
+     * 名称是可变的展示串，且它的解析链有兜底层（账号备注名）：名称链一旦
+     * 出问题，反查输入就不再是模板名，图标跟着掉 —— 已被实际故障验证过
+     * 两次。presetKey 随创建固化在提供商记录里（`custom_providers::create`
+     * 的 `presetKey` 字段），与名称、账号、快照全链解耦。
+     */
+    fun resOfCustomIdentity(presetKey: String, name: String): Int? {
+        if (presetKey.isNotBlank()) {
+            PresetApiRegistry.findByKey(presetKey)?.let { return it.iconRes }
+        }
+        return resOfCustomName(name)
     }
 
     /**
@@ -140,13 +158,15 @@ fun AgateProviderAvatar(
     size: Dp,
     corner: Dp = 13.dp,
     customName: String = "",
+    /** 预置模板 slug（创建时固化）；空 = 无身份记录，按名反查 */
+    customPresetKey: String = "",
 ) {
     // 顺序不能颠倒：内置 id 优先（`workbuddy` 这类永远走 map）；只有**自定义家**
     // （`custom-xxxx`）才拿名字去撞预置模板 —— 内置家没图标就是没图标，不该
     // 因为名字碰巧像某张模板而借用别人的 logo。
     val res = ProviderIcons.resOf(providerId)
         ?: if (CustomProviderOps.isCustomProviderId(providerId)) {
-            ProviderIcons.resOfCustomName(customName.ifBlank { label })
+            ProviderIcons.resOfCustomIdentity(customPresetKey, customName.ifBlank { label })
         } else {
             null
         }

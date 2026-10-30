@@ -231,7 +231,16 @@ fun ProviderDetailPage(
             // 自定义家的名字在 `customRecord` 里（注册表没有它）：不接这一层的话
             // 标题会显示 `custom-7a3f9c21`，与列表页的名称对不上。
             val displayLabel = customRecord?.name ?: preset?.label ?: providerId
-            AgateProviderAvatar(providerId = providerId, label = displayLabel, size = 32.dp, corner = 10.dp)
+            AgateProviderAvatar(
+                providerId = providerId,
+                label = displayLabel,
+                size = 32.dp,
+                corner = 10.dp,
+                // 此前漏传 customName/presetKey：详情页头部对自定义家永远是色块，
+                // 与列表页同一家的 logo 对不上（隐性丢失点，一并修）
+                customName = customRecord?.name.orEmpty(),
+                customPresetKey = customRecord?.presetKey.orEmpty(),
+            )
             Spacer(Modifier.width(10.dp))
             Text(
                 displayLabel,

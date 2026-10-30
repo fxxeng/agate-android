@@ -45,6 +45,8 @@ object CustomProviderOps {
     class Record(
         val id: String,
         val name: String,
+        /** 预置模板身份 slug（空 = 手工建家 / 老记录），图标反查优先用它 */
+        val presetKey: String,
         val protocol: Protocol,
         val baseUrl: String,
         val enabled: Boolean,
@@ -90,6 +92,10 @@ object CustomProviderOps {
                     // 回落改由展示层做（`ProviderPage` 的 `labelOf`）：那里能
                     // 拿到别的来源做兜底（账号的展示名），数据层拿不到。
                     name = obj.optString("name").trim(),
+                    // 预置模板身份（创建时固化的 slug，如 "openai"）：图标反查的
+                    // 稳定锚点。老记录没有这个键 → 空串，反查回落到名称匹配（
+                    // 详见 ProviderIcons.resOfCustomIdentity 的说明）
+                    presetKey = obj.optString("presetKey").trim(),
                     protocol = Protocol.of(obj.optString("protocol")),
                     baseUrl = obj.optString("baseUrl"),
                     enabled = obj.optBoolean("enabled", true),
@@ -217,11 +223,15 @@ object CustomProviderOps {
         clientEmulation: String? = null,
         balanceQuery: Map<String, String>? = null,
         accountName: String? = null,
+        /** 预置模板 slug：身份随创建固化，此后改名也不掉图标 */
+        presetKey: String? = null,
     ): OpResult {
         val body = JSONObject()
             .put("name", name.trim())
             .put("baseUrl", baseUrl.trim())
             .put("protocol", protocol.wire)
+            // presetKey 与名称分离：名称可改，身份不随它漂
+            .put("presetKey", presetKey?.trim().orEmpty())
         if (noAuth) {
             // 与 apiKey 互斥：勾了「无需鉴权」就不带 key（内核也按这个口径归一）
             body.put("noAuth", true)
@@ -299,12 +309,15 @@ object CustomProviderOps {
         enabled: Boolean? = null,
         clientEmulation: String? = null,
         clearClientEmulation: Boolean = false,
+        /** 预置模板 slug（客户端对存量记录的一次性回填走这里） */
+        presetKey: String? = null,
     ): OpResult {
         val body = JSONObject().put("id", id)
         name?.let { body.put("name", it) }
         baseUrl?.let { body.put("baseUrl", it) }
         protocol?.let { body.put("protocol", it.wire) }
         enabled?.let { body.put("enabled", it) }
+        presetKey?.trim()?.takeIf { it.isNotEmpty() }?.let { body.put("presetKey", it) }
         if (clearClientEmulation) body.put("clientEmulation", "")
         else clientEmulation?.takeIf { it.isNotBlank() }?.let { body.put("clientEmulation", it) }
         return post("/api/custom-providers/update", body)

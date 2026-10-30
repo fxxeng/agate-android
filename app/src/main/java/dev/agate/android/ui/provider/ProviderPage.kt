@@ -49,6 +49,7 @@ import dev.agate.android.data.rateRecoverAt
 import dev.agate.android.data.CustomProviderOps
 import dev.agate.android.data.GatewayRepository
 import dev.agate.android.data.ProviderPreset
+import dev.agate.android.data.PresetApiRegistry
 import dev.agate.android.data.PresetRegistry
 import dev.agate.android.data.CheckinCenter
 import dev.agate.android.data.dto.AccountDto
@@ -92,6 +93,8 @@ internal data class ProviderGroupView(
      * 分开两个字段是为了不让「展示兜底」污染「身份判定」。
      */
     val customName: String = "",
+    /** 预置模板 slug（创建时固化，空 = 无身份记录）：图标反查优先于名称 */
+    val customPresetKey: String = "",
 ) {
     val hasWarn: Boolean get() = accounts.any { !it.enabled || !it.hasCredentials || it.lowBalance }
 }
@@ -248,6 +251,11 @@ fun ProviderPage(
     // 现在把失败如实带出来（`customNamesError`），界面上给一句可读的话 +
     // 一个重试入口；名字另有兜底来源（见 `customNames` 的组装）。
     var customNames by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
+    // id → 预置模板 slug（图标身份，随创建固化）。**没有账号名兜底** —— 它是
+    // 身份数据不是展示串，账号不知道它；老记录为空时图标反查回落名称匹配。
+    var customPresetKeys by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
+    // 回填只对每条记录试一次（防止「回填失败 → 事件 → 重载 → 再回填」空转）
+    val backfillTried = remember { mutableStateOf(emptySet<String>()) }
     /** 名字表这次取到了没有（null = 取到了；非 null = 失败原因）。 */
     var customNamesError by remember { mutableStateOf<String?>(null) }
 
@@ -280,19 +288,51 @@ fun ProviderPage(
         return out
     }
 
+    suspend fun backfillPresetKeys(records: List<CustomProviderOps.Record>) {
+        val pending = records.filter {
+            it.presetKey.isBlank() && it.name.isNotBlank() && it.id !in backfillTried.value
+        }.mapNotNull { rec ->
+            PresetApiRegistry.ALL.firstOrNull { it.name == rec.name }?.let { rec to it }
+        }
+        if (pending.isEmpty()) return
+        var hit = false
+        for ((rec, preset) in pending) {
+            backfillTried.value = backfillTried.value + rec.id
+            val r = CustomProviderOps.update(id = rec.id, presetKey = preset.key)
+            if (r.ok) hit = true
+        }
+        // 补上了不用手动重载：内核 write_items 会广播 providers_changed，
+        // 上面的总线收集器自动重拉 —— 刷新只走事件这一条路（手动调会形成
+        // loadCustomNames ⇄ backfillPresetKeys 的互相前向引用，Kotlin 局部
+        // 函数两两引用写不成合法顺序）。
+    }
     suspend fun loadCustomNames() {
         val result = CustomProviderOps.listResult()
         if (result.ok) {
             customNames = result.records
                 .filter { it.name.isNotBlank() }
                 .associate { it.id to it.name }
+            customPresetKeys = result.records
+                .filter { it.presetKey.isNotBlank() }
+                .associate { it.id to it.presetKey }
             customNamesError = null
+            backfillPresetKeys(result.records)
         } else {
             // 取不到就**保留上一份好数据**（别把已经显示对的名字弄丢），
             // 同时把原因带出去 —— 界面据此提示并给重试入口。
             customNamesError = result.error
         }
     }
+    /**
+     * 一次性回填：**从预置卡建、名字仍与模板完全一致、presetKey 缺失**的
+     * 存量记录，经 update 把模板 slug 补进记录（内核 patch 语义）。补完内核
+     * 广播 providers_changed → 这里重载，presetKey 就位后不再触发。
+     *
+     * 只补「名字仍精确命中模板」的：名字改过的家无法确定当初来自哪张卡，
+     * 宁可让图标按「改名即脱钩」脱落，也不猜一个可能错的模板贴上去。
+     * 每条只试一次（[backfillTried]），防止失败后随事件循环重试。
+     */
+
     LaunchedEffect(Unit) { loadCustomNames() }
     // 事件驱动刷新：内核在 core 的变更点广播（账号改动 / 自定义家改动），
     // 这里只重拉**本页要的两份**（快照 + 自定义家名字表），不做全局刷新。
@@ -341,6 +381,7 @@ fun ProviderPage(
                 seq += ProviderGroupView(
                     pid, preset?.label ?: labelOf(pid), preset, list,
                     customName = resolvedNames[pid].orEmpty(),
+                    customPresetKey = customPresetKeys[pid].orEmpty(),
                 )
                 seen += pid
             }
@@ -358,6 +399,7 @@ fun ProviderPage(
                 seq += ProviderGroupView(
                     pid, labelOf(pid), null, list,
                     customName = resolvedNames[pid].orEmpty(),
+                    customPresetKey = customPresetKeys[pid].orEmpty(),
                 )
             }
         }
@@ -828,6 +870,7 @@ private fun ProviderCard(
                     label = g.label,
                     size = 38.dp,
                     customName = g.customName,
+                    customPresetKey = g.customPresetKey,
                 )
                 Box(
                     Modifier

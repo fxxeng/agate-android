@@ -231,6 +231,17 @@ object PresetApiRegistry {
      * 某条自定义记录是否「由某张模板建出来的」—— 判据是**名称相等**。
      * 与上游 `matchesPresetName` 同一口径；改了名的家会回到「自定义」段。
      */
+    /**
+     * 按 slug 查模板（`key` 与 [PresetApiItem.name] 的差别：name 是可读展示串，
+     * key 是稳定标识）。提供商记录从预置卡创建时把 key 固化进 `presetKey`，
+     * 此后用户改名也不影响图标身份 —— 反查链见 `ProviderIcons.resOfCustomIdentity`。
+     */
+    fun findByKey(key: String?): Preset? {
+        val trimmed = key?.trim().orEmpty()
+        if (trimmed.isEmpty()) return null
+        return ALL.firstOrNull { it.key == trimmed }
+    }
+
     fun matchesPresetName(name: String?): Boolean {
         val trimmed = name?.trim().orEmpty()
         if (trimmed.isEmpty()) return false

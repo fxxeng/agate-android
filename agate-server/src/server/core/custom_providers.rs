@@ -116,6 +116,11 @@ pub const PROTOCOLS: &[&str] = &[PROTOCOL_CHAT_COMPLETIONS, PROTOCOL_RESPONSES, 
 /// 展示名长度上限（字符数；1~64 是契约）
 const MAX_NAME_CHARS: usize = 64;
 
+/// 预置模板标识（`presetKey`）长度上限。它是「这家从哪张预置卡建出来」的
+/// 身份标记（图标反查的稳定锚点），值域就是客户端目录里的 slug
+/// （`openai` / `opencode-zen` / `glm-cn` …），不是自由文本 —— 长度给足余量即可。
+const MAX_PRESET_KEY_CHARS: usize = 64;
+
 /// 模型 id / 映射名的长度上限（字符数）。上游模型 id 一般几十字符，
 /// 128 与 `model_rules` 的映射名上限同量级 —— 粘贴进一整段文档时不落盘。
 const MAX_MODEL_ID_CHARS: usize = 128;
@@ -297,6 +302,9 @@ fn item_of(object: &Map<String, Value>) -> Value {
     json!({
         "id": id,
         "name": name,
+        // 预置模板身份（图标反查的稳定锚点，见 `validate_preset_key`）：
+        // 老记录没有这个键，读侧缺省空串 —— 客户端反查自然回落到名称匹配
+        "presetKey": preset_key_of(object.get("presetKey")),
         "protocol": protocol,
         "baseUrl": base_url,
         "enabled": object.get("enabled").and_then(Value::as_bool).unwrap_or(true),
@@ -842,6 +850,10 @@ pub fn create(payload: &Value) -> Result<Value, String> {
         .ok_or_else(|| "请求体必须是 JSON 对象".to_string())?;
     let name = normalize_name(object.get("name"))?;
     let protocol = normalize_protocol(object.get("protocol"))?;
+    // 预置模板身份：从预置卡建家时由客户端带上（目录里的 slug）。**与名称
+    // 分离**是刻意的 —— 名称是可变的展示串（用户随时改名），图标身份不该
+    // 跟着漂；历史上「按名称精确匹配反查图标」已被名字链的两次故障证明脆弱。
+    let preset_key = validate_preset_key(object.get("presetKey"))?;
     let base_url = normalize_base_url(
         object
             .get("baseUrl")
@@ -852,6 +864,7 @@ pub fn create(payload: &Value) -> Result<Value, String> {
     let item = json!({
         "id": id,
         "name": name,
+        "presetKey": preset_key,
         "protocol": protocol,
         "baseUrl": base_url,
         "enabled": true,
@@ -900,6 +913,14 @@ pub fn update(id: &str, payload: &Value) -> Result<Value, String> {
     if let Some(value) = object.get("name") {
         let name = normalize_name(Some(value))?;
         merged.insert("name".to_string(), Value::String(name));
+    }
+    if let Some(value) = object.get("presetKey") {
+        // 客户端会对「从预置卡建、但 presetKey 缺失」的存量记录做一次性回填
+        // （名字仍与模板一致的才补），日常改名不发这个键
+        merged.insert(
+            "presetKey".to_string(),
+            Value::String(validate_preset_key(Some(value))?);
+        );
     }
     if let Some(value) = object.get("protocol") {
         let protocol = normalize_protocol(Some(value))?;
@@ -1675,6 +1696,37 @@ fn new_provider_id() -> Result<String, String> {
 }
 
 /// 展示名校验：trim 后 1~64 字符（按字符数，不是字节数 —— 中文名一样受 64 限制）。
+/// 读侧归一：预置模板标识。**容错不报错**（与 `tool_type_of` 同一取向）：
+/// 手改坏的值按「无标记」处理 —— 图标反查会自然回落到名称匹配，一条坏值
+/// 不该让整条记录消失。合法值 = 非空且只含字母数字、`-`、`_`（slug 形态）。
+fn preset_key_of(value: Option<&Value>) -> String {
+    let text = value.and_then(Value::as_str).map(str::trim).unwrap_or("");
+    let ok = !text.is_empty()
+        && text.chars().count() <= MAX_PRESET_KEY_CHARS
+        && text
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    if ok { text.to_string() } else { String::new() }
+}
+
+/// 写侧校验：预置模板标识（create / update 的门禁）。空串 = 清除 / 未带
+/// （create 里缺省即「手工建家，无模板身份」）；带了就必须是 slug 形态 ——
+/// 拼错的 key 会让图标反查静默失败，宁可落盘前拦下来。
+fn validate_preset_key(value: Option<&Value>) -> Result<String, String> {
+    let text = value.and_then(Value::as_str).map(str::trim).unwrap_or("");
+    if text.is_empty() {
+        return Ok(String::new());
+    }
+    let ok = text.chars().count() <= MAX_PRESET_KEY_CHARS
+        && text.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    if !ok {
+        return Err(format!(
+            "presetKey 必须是 1~{MAX_PRESET_KEY_CHARS} 个字母/数字/-/_ 组成的标识（如 openai、opencode-zen）",
+        ));
+    }
+    Ok(text.to_string())
+}
+
 fn normalize_name(value: Option<&Value>) -> Result<String, String> {
     let name = value
         .and_then(Value::as_str)

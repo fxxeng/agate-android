@@ -99,6 +99,8 @@ fun QuotaCenterPage(
     var customNames by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
     /** 名字表这次取到了没有（null = 取到了；非 null = 失败原因，界面上要说出来）。 */
     var customNamesError by remember { mutableStateOf<String?>(null) }
+    /** id → 预置模板 slug（图标身份；无账号名兜底 —— 账号不知道它） */
+    var customPresetKeys by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
     // 展开状态（基线用 details 折叠，默认收起）
     var expanded by remember { mutableStateOf<Set<String>>(emptySet()) }
 
@@ -161,6 +163,9 @@ fun QuotaCenterPage(
             customNames = result.records
                 .filter { it.name.isNotBlank() }
                 .associate { it.id to it.name }
+            customPresetKeys = result.records
+                .filter { it.presetKey.isNotBlank() }
+                .associate { it.id to it.presetKey }
             customNamesError = null
         } else {
             // 保留上一份好数据（别把已经显示对的名字弄丢），只把原因带出去
@@ -293,6 +298,7 @@ fun QuotaCenterPage(
                         provider = provider,
                         accounts = visible,
                         customNames = customNames,
+                        customPresetKey = customPresetKeys[provider].orEmpty(),
                         metrics = metrics,
                         expiries = expiries,
                         raws = raws,
@@ -323,6 +329,8 @@ private fun ProviderQuotaCard(
     provider: String,
     accounts: List<AccountDto>,
     customNames: Map<String, String>,
+    /** 预置模板 slug（创建时固化，空 = 无身份记录） */
+    customPresetKey: String,
     metrics: Map<String, AcctMetric>,
     expiries: Map<String, Expiry>,
     raws: Map<String, String>,
@@ -392,6 +400,7 @@ private fun ProviderQuotaCard(
                 size = 34.dp,
                 corner = 11.dp,
                 customName = customNames[provider].orEmpty(),
+                customPresetKey = customPresetKey,
             )
             Spacer(Modifier.size(10.dp))
             Column(Modifier.weight(1f)) {

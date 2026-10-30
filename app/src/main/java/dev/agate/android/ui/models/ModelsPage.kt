@@ -861,6 +861,9 @@ fun ModelsPage(
             providers = pullProviders,
             rows = refreshRows,
             customModelCounts = customModelCounts,
+            customPresetKeys = customProviders
+                .filter { it.presetKey.isNotBlank() }
+                .associate { it.id to it.presetKey },
             refreshing = refreshing,
             onDismiss = { if (!refreshing) showPull = false },
             onPullAll = { refreshAll() },
@@ -1299,6 +1302,8 @@ private fun PullModelsDialog(
     rows: List<RefreshRow>,
     /** 自定义家「已登记几个模型」；内置家不在表里（条数由 [rows] 给）。 */
     customModelCounts: Map<String, Int> = emptyMap(),
+    /** id → 预置模板 slug（图标身份，随创建固化；空 = 无身份记录） */
+    customPresetKeys: Map<String, String> = emptyMap(),
     refreshing: Boolean,
     onDismiss: () -> Unit,
     onPullAll: () -> Unit,
@@ -1380,7 +1385,13 @@ private fun PullModelsDialog(
                         Modifier.fillMaxWidth().padding(vertical = 7.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        AgateProviderAvatar(providerId = pid, label = label, size = 28.dp, corner = 9.dp)
+                        AgateProviderAvatar(
+                            providerId = pid,
+                            label = label,
+                            size = 28.dp,
+                            corner = 9.dp,
+                            customPresetKey = customPresetKeys[pid].orEmpty(),
+                        )
                         Spacer(Modifier.width(9.dp))
                         Column(Modifier.weight(1f)) {
                             Row(verticalAlignment = Alignment.CenterVertically) {

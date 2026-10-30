@@ -1252,6 +1252,8 @@ private fun CustomProviderForm(
                     headers = preset?.headers?.takeIf { it.isNotEmpty() },
                     anthropicToolType = preset?.anthropicToolType?.takeIf { it.isNotBlank() },
                     clientEmulation = preset?.clientEmulation?.takeIf { it.isNotBlank() },
+                    // 模板身份随创建固化：此后改名不再影响图标（见 ProviderIcons）
+                    presetKey = preset?.key,
                     balanceQuery = query.takeIf { it.isNotEmpty() },
                 )
             }
