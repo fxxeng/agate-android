@@ -300,6 +300,26 @@ fun ProviderPage(
         }
     }
 
+    // ── 列表派生（必须在 [commitProviderOrder] **之前**声明）──────────────
+    // 提交入口要读 [listItems] 把「列表下标」换算成「全局下标」（筛选态下
+    // 两者不同，见那边的说明）。Kotlin 的局部函数不能前向引用后声明的局部
+    // 变量，所以这两段派生挪到提交入口上面 —— 顺序是语义的一部分，不是随意摆。
+    val visible = orderState.filter { g ->
+        (query.isBlank() || g.label.contains(query, ignoreCase = true) || g.providerId.contains(query, ignoreCase = true)) &&
+            when (filter) {
+                1 -> g.hasWarn
+                2 -> !g.hasWarn
+                else -> true
+            }
+    }
+    // 排序中必须显示**全部**家：拖拽的落点下标是相对真实顺序算的，
+    // 拿筛选后的子集去拖，松手会落到一个「看起来对、实际错」的位置。
+    // （注意：这个切换发生在**长按起拖之后**，起拖那一刻列表内容会从子集
+    //  扩成全量。跟手位移有屏幕坐标补偿兜底，落点换算则交给提交入口。）
+    val listItems = if (reorderState.isSortingMode) orderState else visible
+    val warnCount = orderState.count { it.hasWarn }
+    val okCount = orderState.size - warnCount
+
     /**
      * 拖拽/置顶共用的**唯一提交入口**：把 [key] 挪到 [to] 并落盘。
      *
@@ -307,11 +327,36 @@ fun ProviderPage(
      * 选路按各账号的 priority（见账号卡的置顶，那条才是真的出战顺序）。
      * 这一点必须说清：两个层级的「置顶」语义不同，混起来会让人以为
      * 「把某家拖到第一个就会优先走它」。
+     *
+     * ── [to] 是**列表下标**，必须先换成全局下标（筛选态下两者不同）────────
+     * 排序态总会渲染全量 `orderState`，所以列表下标 = 全局下标，上面那句
+     * 看起来不成立。但**筛选态下拖拽的落点是按「筛选后子集」算出来的**
+     * （`listItems` 那时还是子集），直接拿去 `orderState` 里挪就落错了家：
+     * 例如筛出「有异常」3 家、把其中第 1 拖到第 3，全局里那个下标对应的
+     * 可能是完全不相干的一家。所以这里按 key 把「落在谁前面」换算成全局位置。
      */
     fun commitProviderOrder(key: String, to: Int) {
         val from = orderState.indexOfFirst { it.providerId == key }
-        if (from < 0 || to !in orderState.indices || from == to) return
-        orderState.add(to, orderState.removeAt(from))
+        if (from < 0) return
+        val items = listItems
+        if (to !in items.indices) return
+        // ⚠ 方向必须用**同一坐标系**判断。`to` 是列表下标、`from` 是全局下标，
+        // 筛选态下两者不能直接比大小 —— 原来写 `to > from` 是把两个坐标混用，
+        // 在筛选子集里会判反方向，落点跟着错一格。
+        // 先取落点 key，再在**全局**里比一次：它比被拖项靠后就是向后拖。
+        // 落点含义：拖到 items[to] 这个位置，即**插到「落点项」原本占据的那一格**。
+        // 向后拖（落点在全局里更靠后）：落点项及其前面的项要往前补一格，
+        // 所以插入下标直接取它的下标；实际效果是「越过它」。
+        // 向前拖（落点在全局里更靠前）：插到它前面，下标也取它自己的下标。
+        // 两种情形同为 `anchor`，差异由 removeAt(from) 的先后次序自然吃掉
+        // （remove 在 add 之前执行，from < anchor 时无需减一）。
+        val anchorKey = items[to].providerId
+        if (anchorKey == key) return
+        val anchor = orderState.indexOfFirst { it.providerId == anchorKey }
+        if (anchor < 0) return
+        val realTo = anchor.coerceIn(0, orderState.lastIndex)
+        if (realTo == from) return
+        orderState.add(realTo, orderState.removeAt(from))
         val ids = orderState.map { it.providerId }
         savedOrder = ids            // 让 groups 按新顺序重建（见 savedOrder 的说明）
         GatewayPrefs.setProviderOrder(ctx, ids)
@@ -358,19 +403,6 @@ fun ProviderPage(
         }
     }
 
-    val visible = orderState.filter { g ->
-        (query.isBlank() || g.label.contains(query, ignoreCase = true) || g.providerId.contains(query, ignoreCase = true)) &&
-            when (filter) {
-                1 -> g.hasWarn
-                2 -> !g.hasWarn
-                else -> true
-            }
-    }
-    // 排序中必须显示**全部**家：拖拽的落点下标是相对真实顺序算的，
-    // 拿筛选后的子集去拖，松手会落到一个「看起来对、实际错」的位置。
-    val listItems = if (reorderState.isSortingMode) orderState else visible
-    val warnCount = orderState.count { it.hasWarn }
-    val okCount = orderState.size - warnCount
 
     Column(Modifier.fillMaxSize().background(C.bg)) {
         // ── 页头（v44 .header-bar：菜单 + 标题 + 排序/添加）──
