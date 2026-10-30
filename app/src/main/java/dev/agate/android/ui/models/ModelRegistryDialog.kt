@@ -50,6 +50,15 @@ import org.json.JSONObject
  * 而这是中转类上游最常见的诉求（同一模型各家叫法不同）。
  * 两个清单本来就存在同一条记录的同一份写入里，所以放在同一个弹层。
  *
+ * ── 顺序是真的会影响结果的，所以给了上移/下移 ────────────────
+ * 内核 `custom::append_models_response` 按**数组顺序**把自定义家的模型追加到
+ * `/v1/models` 末尾，整份清单不做二次排序 —— 也就是说这里的顺序就是客户端
+ * 下拉里的顺序。常用模型放前面是有意义的，所以提供 ↑/↓。
+ *
+ * 为什么不用拖拽：弹层内部本身是可纵向滚动的容器，长按拖拽会和滚动抢手势，
+ * 而行高还随「已停用」提示变高，落点判定更不稳。↑/↓ 在任意长度、任意行高下
+ * 都是确定的 —— 这里的正确性比手势的顺手更重要。
+ *
  * ── 保存是整表替换，因此**必须在既有条目上改** ────────────────
  * 内核 `POST /api/custom-providers/models` 拿到的 models/mappings 会整体覆盖。
  * 这里保留每个对象的原始字段（`enabled`、`reasoning`、能力位、映射的 enabled…），
@@ -200,7 +209,35 @@ internal fun ModelRegistryDialog(
                                 modifier = Modifier.size(width = 42.dp, height = 24.dp),
                                 enabled = !saving,
                             )
-                            Spacer(Modifier.width(4.dp))
+                            // 上移 / 下移：这个顺序就是客户端看到的下发顺序（见文件头）
+                            Text(
+                                "↑",
+                                color = if (index == 0 || saving) C.textDim else C.accent,
+                                fontSize = 13.sp,
+                                modifier = Modifier
+                                    .clickable(enabled = index > 0 && !saving) {
+                                        entries = entries.toMutableList().also {
+                                            val moved = it.removeAt(index)
+                                            it.add(index - 1, moved)
+                                        }
+                                    }
+                                    .padding(horizontal = 5.dp, vertical = 4.dp),
+                            )
+                            Text(
+                                "↓",
+                                color = if (index == entries.lastIndex || saving) C.textDim
+                                else C.accent,
+                                fontSize = 13.sp,
+                                modifier = Modifier
+                                    .clickable(enabled = index < entries.lastIndex && !saving) {
+                                        entries = entries.toMutableList().also {
+                                            val moved = it.removeAt(index)
+                                            it.add(index + 1, moved)
+                                        }
+                                    }
+                                    .padding(horizontal = 5.dp, vertical = 4.dp),
+                            )
+                            Spacer(Modifier.width(2.dp))
                             Text(
                                 "移除",
                                 color = C.red,
