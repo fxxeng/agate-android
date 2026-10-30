@@ -44,7 +44,9 @@ import dev.agate.android.data.PresetRegistry
 import dev.agate.core.GatewayPrefs
 import dev.agate.android.ui.components.AgateBadge
 import dev.agate.android.ui.components.AgateChip
-import dev.agate.android.ui.components.AgateDragList
+import dev.agate.android.ui.components.ReorderState
+import dev.agate.android.ui.components.ReorderableColumn
+import dev.agate.android.ui.components.dragHandle
 import dev.agate.android.ui.components.AgateFormInput
 import dev.agate.android.ui.components.AgateSubPageHeader
 import dev.agate.android.ui.components.BadgeTone
@@ -662,27 +664,39 @@ private fun KeepaliveCard(
                 color = C.amber,
             )
         } else {
-            AgateDragList(
+            // 与提供商页/账号卡同一套拖拽组件（Reorderable）—— 原来这里是
+            // AgateDragList，第二套实现。统一之后「长按起拖、排序态、置顶」只有
+            // 一份代码要维护。语义不变：拖完只改 draft，点「保存」才落盘。
+            val chainReorder = remember { ReorderState() }
+            ReorderableColumn(
                 items = models,
-                onMove = { from, to ->
-                    val next = models.toMutableList()
-                    if (from in next.indices && to in next.indices) {
-                        next.add(to, next.removeAt(from))
-                        draft = next
+                keyOf = { it },
+                state = chainReorder,
+                onCommit = { key, to ->
+                    val from = models.indexOf(key)
+                    if (from >= 0 && to in models.indices && from != to) {
+                        draft = models.toMutableList().also { it.add(to, it.removeAt(from)) }
                     }
                 },
-                reorderHint = "拖拽排序中 · 松手不落盘，点「保存」才生效",
-            ) { model, index, _ ->
+                verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp),
+            ) { model, index, isTarget ->
                 Row(
                     Modifier
                         .fillMaxWidth()
                         .background(C.insetBg, RoundedCornerShape(10.dp))
-                        .border(1.dp, C.border, RoundedCornerShape(10.dp))
+                        .border(
+                            1.dp,
+                            if (isTarget) C.accent else C.border,
+                            RoundedCornerShape(10.dp),
+                        )
+                        .dragHandle(
+                            key = model,
+                            state = chainReorder,
+                            onStart = { chainReorder.startColumn(model, 0f) },
+                        )
                         .padding(horizontal = 10.dp, vertical = 9.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text("⠿", color = C.textDim, fontSize = 14.sp)
-                    Spacer(Modifier.width(8.dp))
                     Text(
                         model,
                         color = C.textMain,

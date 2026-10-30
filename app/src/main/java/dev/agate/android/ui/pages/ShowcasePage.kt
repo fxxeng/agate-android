@@ -38,7 +38,10 @@ import dev.agate.android.ui.components.AgateAccordion
 import dev.agate.android.ui.components.AgateAvatar
 import dev.agate.android.ui.components.AgateBadge
 import dev.agate.android.ui.components.AgateChip
-import dev.agate.android.ui.components.AgateDragList
+import dev.agate.android.ui.components.ReorderState
+import dev.agate.android.ui.components.ReorderableColumn
+import dev.agate.android.ui.components.PinToTopButton
+import dev.agate.android.ui.components.dragHandle
 import dev.agate.android.ui.components.AgateDualAxisChart
 import dev.agate.android.ui.components.AgateHeatmap
 import dev.agate.android.ui.components.AgateHeatmapLegend
@@ -173,49 +176,62 @@ fun ShowcasePage(
         )
 
         // 9 拖拽列表
-        Section("9 · 拖拽列表 AgateDragList（350ms 长按抓起 · 触觉反馈 · 置顶）")
-        AgateDragList(
+        // 9 拖拽列表 —— 与提供商页/账号卡同一套组件（Reorderable）。
+        // 这里曾经演示的是 AgateDragList（自研的第二套实现），2026-10-30 起统一：
+        // 两套拖拽并存意味着「手感、置顶语义、排序编辑态」要维护两遍，
+        // 而且改一处另一处不会跟着变。
+        Section("9 · 拖拽列表 Reorderable（长按抓起 · 触觉反馈 · 排序态置顶）")
+        val demoReorder = remember { ReorderState() }
+        ReorderableColumn(
             items = dragItems,
-            onMove = { from, to ->
-                val item = dragItems.removeAt(from)
-                dragItems.add(to, item)
-            },
-            onPin = { index ->
-                val item = dragItems.removeAt(index)
-                dragItems.add(0, item)
-            },
-            itemContent = { name, index, dragging ->
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .background(if (dragging) C.cardBg else C.insetBg, RoundedCornerShape(12.dp))
-                        .border(
-                            1.dp,
-                            if (dragging) C.accent else C.border,
-                            RoundedCornerShape(12.dp),
-                        )
-                        .padding(horizontal = 12.dp, vertical = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    if (dragging) {
-                        androidx.compose.foundation.layout.Box(
-                            Modifier
-                                .size(22.dp)
-                                .background(C.accent, CircleShape),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Text("${index + 1}", style = AgateType.Caption, color = C.onAccent)
-                        }
-                        Spacer(Modifier.width(10.dp))
-                    }
-                    AgateAvatar(name = name, size = 34.dp, corner = 10.dp)
-                    Spacer(Modifier.width(10.dp))
-                    Text(name, style = AgateType.Body, color = C.textMain)
-                    Spacer(Modifier.weight(1f))
-                    AgateStatusDots(total = 3, active = (index + 1) % 4)
+            keyOf = { it },
+            state = demoReorder,
+            onCommit = { key, to ->
+                val from = dragItems.indexOf(key)
+                if (from >= 0 && to in dragItems.indices && from != to) {
+                    dragItems.add(to, dragItems.removeAt(from))
                 }
             },
-        )
+            verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp),
+        ) { name, index, isTarget ->
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .background(C.insetBg, RoundedCornerShape(12.dp))
+                    .border(
+                        1.dp,
+                        if (isTarget) C.accent else C.border,
+                        RoundedCornerShape(12.dp),
+                    )
+                    // 长按这一行起拖（真实页面里是长按整卡 / 长按 logo）
+                    .dragHandle(
+                        key = name,
+                        state = demoReorder,
+                        onStart = { demoReorder.startColumn(name, 0f) },
+                    )
+                    .padding(horizontal = 12.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                AgateAvatar(name = name, size = 34.dp, corner = 10.dp)
+                Spacer(Modifier.width(10.dp))
+                Text(name, style = AgateType.Body, color = C.textMain)
+                Spacer(Modifier.weight(1f))
+                AgateStatusDots(total = 3, active = (index + 1) % 4)
+                // 排序编辑态下非首项出现「置顶」圆按钮（与真实页面同一行为）
+                if (demoReorder.isSortingMode && index > 0) {
+                    Spacer(Modifier.width(6.dp))
+                    PinToTopButton(
+                        dragState = demoReorder,
+                        onClick = {
+                            if (index in dragItems.indices) {
+                                dragItems.add(0, dragItems.removeAt(index))
+                            }
+                            demoReorder.exitSortingMode()
+                        },
+                    )
+                }
+            }
+        }
 
         // 10 手风琴
         Section("10 · 手风琴 AgateAccordion")
