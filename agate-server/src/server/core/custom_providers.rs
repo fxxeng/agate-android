@@ -1302,10 +1302,14 @@ pub fn wire_model_for(provider_id: &str, requested_name: &str) -> (String, Optio
 ///   鉴权：前两者 `Authorization: Bearer <key>`；anthropic 是
 ///   `x-api-key` + `anthropic-version: 2023-06-01`（它的鉴权头不是 Bearer）。
 ///
-/// key 取该家**第一个可用账号**的凭证（`first_custom_credential`：启用且
-/// 「apiKey 非空 **或** 声明了无需鉴权」，按优先级升序 —— 与转发选路的
-/// 「队首优先」同口径）；一个都没有时报「请先添加账号」。账号配了出网代理就
-/// 带上（`ResolvedProxy`），没有则直连。
+/// ── 凭证走**候选链**，凭证类失败换号（2026-10-30 修）──────────
+/// 原先只取队首一把凭证：队首账号的 Key 在上游被禁（`API key is disabled`，
+/// 403）时，拉取**永远**用那把死 Key、永远失败 —— 而名下其它账号可能是好的。
+/// 转发有换号语义，拉取同口径：按优先级逐个账号试（`custom_credentials_for`：
+/// 启用且「apiKey 非空或声明了无需鉴权」），**401 / 403 / 429** 与出网错误
+/// （代理是账号级的）换下一个；其余状态码与响应解析失败按「这家上游的问题」
+/// 处理，换号无济于事，直接报。全部失败时报**最后**一次错误并点名账号。
+/// 账号配了出网代理就带上（`ResolvedProxy`），没有则直连。
 ///
 /// ── 与转发路径**共用出网规则**（2026-10-30 修）──────────────────
 /// 拉取原先是转发的一份**独立复刻**，复刻时漏掉了转发出站规则的一半：
@@ -1326,7 +1330,7 @@ pub fn wire_model_for(provider_id: &str, requested_name: &str) -> (String, Optio
 /// 无需鉴权的上游（本地 Ollama、OpenCode Zen 的免费档）在 `/models` 上
 /// 本来就不校验凭证。旧实现在这里无条件拼 `Authorization: Bearer `（空）或
 /// `x-api-key: `，严格的上游会直接 401 —— 而这条路径以前根本走不到（空 key
-/// 的账号被 `first_custom_credential` 过滤掉了，见那个函数的说明）。
+/// 的账号被 `custom_credentials_for` 过滤掉了，见那个函数的说明）。
 /// **有意不套 `clientEmulation` 的伪装头**：`/models` 实测无需伪装即可 200，
 /// 多套一层只会让这条管理动作也跟着上游的形态校验一起坏掉（伪装头是给
 /// **对话**请求准备的，依赖请求体形状，`/models` 没有请求体）。
@@ -1345,95 +1349,144 @@ pub async fn fetch_upstream_models(
         .and_then(Value::as_str)
         .unwrap_or(PROTOCOL_CHAT_COMPLETIONS)
         .to_string();
-    let credential = store
-        .first_custom_credential(provider_id)
-        .ok_or_else(|| {
-            "请先添加账号：拉取模型清单需要一条启用且可用（填了 apiKey，或声明了无需鉴权）的账号"
-                .to_string()
-        })?;
-    // 基址：账号级覆盖优先、provider 兜底（与转发路径同口径，见
-    // [`resolve_base_url`] 的说明）。原先这里只读 provider 的那份 ——
-    // 用户改过账号地址时，拉取会打到旧地址。
-    let base_url = resolve_base_url(
-        &provider,
-        credential.base_url_override.as_deref(),
-    );
-    if base_url.is_empty() {
-        return Err("该提供商没有配置 baseUrl，无法拉取模型清单".to_string());
-    }
     // 存量记录里可能还写着 OpenCode 免费档的**旧端点**（`/zen/v1`）——
-    // 与转发路径同一道读侧迁移（否则拉取打旧端点恒 403）。
+    // 与转发路径同一道读侧迁移（否则拉取打旧端点恒 403）。特判是 provider 级的，
+    // 换号不影响它。
     let quirks = OutboundQuirks::from_provider(&provider);
-    let base_url = migrate_base_url(&base_url, quirks.emulate_opencode);
-    let url = if protocol == PROTOCOL_ANTHROPIC {
-        // `anthropic` 的惯例是 baseUrl **不带 /v1**（`https://api.anthropic.com`），
-        // 但用户从各家「Chat Completions 兼容端点」页面抄地址时常常把 `/v1` 一起
-        // 粘进来 —— 那样直接拼会得到 `/v1/v1/models`，上游稳定 404。
-        // baseUrl 落盘时已去掉末尾斜杠（见模块头第 2 条约束），这里再按是否已带
-        // `/v1` 决定拼法：两种写法都能拉到，不必让用户为「拉模型」单独改一次地址。
-        let base = base_url.trim_end_matches('/');
-        if base.ends_with("/v1") {
-            format!("{base}/models")
-        } else {
-            format!("{base}/v1/models")
-        }
-    } else {
-        format!("{}/models", base_url.trim_end_matches('/'))
-    };
-    let client = egress::client_for(credential.proxy.as_ref());
-    let mut builder = client
-        .get(&url)
-        .timeout(Duration::from_millis(FETCH_MODELS_TIMEOUT_MS));
-    // 凭证为空（无需鉴权的账号）时**一个鉴权头都不发**：空 Bearer 对严格的上游
-    // 等同凭证错误，与「这家不要凭证」的语义正好相反（见函数头的说明）
-    let api_key = credential.api_key.trim();
-    if !api_key.is_empty() {
-        builder = if protocol == PROTOCOL_ANTHROPIC {
-            builder
-                .header("x-api-key", api_key)
-                .header("anthropic-version", "2023-06-01")
-        } else {
-            builder.header("Authorization", format!("Bearer {api_key}"))
-        };
-    }
-    // 预置卡带来的**静态额外头**（如 `Anthropic-Beta`）：转发侧一律带上，
-    // 拉取侧原先漏了 —— GLM / MiniMax 这类端点缺它会直接 401/400。
-    // 与转发侧同一份读取口径（[`OutboundQuirks`]），两边不可能再分叉。
     let mut extra_headers: Vec<(String, String)> = Vec::new();
     quirks.apply_headers(&mut extra_headers);
-    for (name, value) in &extra_headers {
-        builder = builder.header(name.as_str(), value.as_str());
+    let credentials = store.custom_credentials_for(provider_id);
+    if credentials.is_empty() {
+        return Err(
+            "请先添加账号：拉取模型清单需要一条启用且可用（填了 apiKey，或声明了无需鉴权）的账号"
+                .to_string(),
+        );
     }
-    let response = builder.send().await.map_err(|error| {
-        format!("上游请求失败: {}", egress::describe_error_detail(&error))
-    })?;
-    let status = response.status().as_u16();
-    let text = response.text().await.unwrap_or_default();
-    if !response_ok(status) {
-        // 摘要取前 200 字符：够定位（大多数错误体一两行），又不至于把
-        // 一整页 HTML 灌进错误提示
-        let summary: String = text.trim().chars().take(200).collect();
-        return Err(format!("上游返回 {status}: {summary}"));
+    let mut last_error: Option<String> = None;
+    for credential in &credentials {
+        let label = {
+            let name = credential.account_name.trim();
+            if name.is_empty() {
+                credential.account_id.as_str()
+            } else {
+                name
+            }
+        };
+        // 基址：账号级覆盖优先、provider 兜底（与转发路径同口径，见
+        // [`resolve_base_url`] 的说明）。原先这里只读 provider 的那份 ——
+        // 用户改过账号地址时，拉取会打到旧地址。
+        let base_url = resolve_base_url(&provider, credential.base_url_override.as_deref());
+        if base_url.is_empty() {
+            // 换号解决不了「没配地址」：两家用的都是同一个空 baseUrl
+            return Err("该提供商没有配置 baseUrl，无法拉取模型清单".to_string());
+        }
+        let base_url = migrate_base_url(&base_url, quirks.emulate_opencode);
+        let url = if protocol == PROTOCOL_ANTHROPIC {
+            // `anthropic` 的惯例是 baseUrl **不带 /v1**（`https://api.anthropic.com`），
+            // 但用户从各家「Chat Completions 兼容端点」页面抄地址时常常把 `/v1` 一起
+            // 粘进来 —— 那样直接拼会得到 `/v1/v1/models`，上游稳定 404。
+            // baseUrl 落盘时已去掉末尾斜杠（见模块头第 2 条约束），这里再按是否已带
+            // `/v1` 决定拼法：两种写法都能拉到，不必让用户为「拉模型」单独改一次地址。
+            let base = base_url.trim_end_matches('/');
+            if base.ends_with("/v1") {
+                format!("{base}/models")
+            } else {
+                format!("{base}/v1/models")
+            }
+        } else {
+            format!("{}/models", base_url.trim_end_matches('/'))
+        };
+        let client = egress::client_for(credential.proxy.as_ref());
+        let mut builder = client
+            .get(&url)
+            .timeout(Duration::from_millis(FETCH_MODELS_TIMEOUT_MS));
+        // 凭证为空（无需鉴权的账号）时**一个鉴权头都不发**：空 Bearer 对严格的上游
+        // 等同凭证错误，与「这家不要凭证」的语义正好相反（见函数头的说明）
+        let api_key = credential.api_key.trim();
+        if !api_key.is_empty() {
+            builder = if protocol == PROTOCOL_ANTHROPIC {
+                builder
+                    .header("x-api-key", api_key)
+                    .header("anthropic-version", "2023-06-01")
+            } else {
+                builder.header("Authorization", format!("Bearer {api_key}"))
+            };
+        }
+        // 预置卡带来的**静态额外头**（如 `Anthropic-Beta`）：转发侧一律带上，
+        // 拉取侧原先漏了 —— GLM / MiniMax 这类端点缺它会直接 401/400。
+        // 与转发侧同一份读取口径（[`OutboundQuirks`]），两边不可能再分叉。
+        for (name, value) in &extra_headers {
+            builder = builder.header(name.as_str(), value.as_str());
+        }
+        let response = match builder.send().await {
+            Ok(response) => response,
+            Err(error) => {
+                // 出网失败可能是**账号级**的（代理只配在这一条账号上），
+                // 换下一个账号再试；全失败时把最后的网络错误报出去
+                let detail = format!("上游请求失败: {}", egress::describe_error_detail(&error));
+                logging::log(
+                    "[CustomProvider]",
+                    &format!("⚠️ 账号「{label}」拉取失败：{detail}，尝试下一个账号"),
+                );
+                last_error = Some(format!("账号「{label}」: {detail}"));
+                continue;
+            }
+        };
+        let status = response.status().as_u16();
+        let text = response.text().await.unwrap_or_default();
+        if !response_ok(status) {
+            // 摘要取前 200 字符：够定位（大多数错误体一两行），又不至于把
+            // 一整页 HTML 灌进错误提示
+            let summary: String = text.trim().chars().take(200).collect();
+            let detail = format!("上游返回 {status}: {summary}");
+            if matches!(status, 401 | 403 | 429) {
+                // 凭证被拒 / 限流是**账号级**失败 —— 换下一个账号再试。
+                // 队首 Key 被上游禁用时（`API key is disabled`），名下其它
+                // 账号可能是好的；卡在队首死 Key 上才是真正的 bug。
+                logging::log(
+                    "[CustomProvider]",
+                    &format!("⚠️ 账号「{label}」拉取失败（{status}），尝试下一个账号"),
+                );
+                last_error = Some(format!("账号「{label}」: {detail}"));
+                continue;
+            }
+            // 其余状态码按「这家上游的问题」处理：换号打的是同一个端点，
+            // 无济于事
+            return Err(detail);
+        }
+        let payload: Value = serde_json::from_str(&text)
+            .map_err(|error| format!("上游响应不是合法 JSON: {error}"))?;
+        let ids = payload
+            .get("data")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| {
+                        item.get("id")
+                            .and_then(Value::as_str)
+                            .map(str::trim)
+                            .filter(|id| !id.is_empty())
+                            .map(str::to_string)
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        logging::log(
+            "[CustomProvider]",
+            &format!("✅ 模型清单拉取成功：账号「{label}」，{} 个模型", ids.len()),
+        );
+        return Ok(ids);
     }
-    let payload: Value = serde_json::from_str(&text)
-        .map_err(|error| format!("上游响应不是合法 JSON: {error}"))?;
-    let ids = payload
-        .get("data")
-        .and_then(Value::as_array)
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(|item| {
-                    item.get("id")
-                        .and_then(Value::as_str)
-                        .map(str::trim)
-                        .filter(|id| !id.is_empty())
-                        .map(str::to_string)
-                })
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    Ok(ids)
+    let count = credentials.len();
+    let detail = last_error.unwrap_or_else(|| "未知错误".to_string());
+    logging::log(
+        "[CustomProvider]",
+        &format!("❌ 模型清单拉取失败：{count} 个账号全部尝试失败；{detail}"),
+    );
+    Err(format!(
+        "{count} 个账号都拉取失败（Key 可能都被上游禁用或限流）；{detail}"
+    ))
 }
 
 /// 上游清单接口是否成功（2xx 即可：个别网关会回 200 以外的成功码）

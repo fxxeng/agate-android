@@ -405,13 +405,25 @@ impl AccountStore {
     /// 管理动作，没有逐账号轮换的语义，用队首账号即可；多个账号各有清单
     /// 可见性的场景现实中不存在（同一家上游的清单对每把 key 一致）。
     /// 一个都没有时报错文案由调用方给（「请先添加账号」），这里以 None 表达。
-    pub fn first_custom_credential(&self, provider_id: &str) -> Option<CustomCredential> {
+    /// 该家**全部可用账号**的凭证，按选路优先级升序（`order_key`，与转发的
+    /// 「队首优先」同口径）。判据：
+    /// 启用，且「apiKey 非空 **或** 声明了无需鉴权」。
+    ///
+    /// ── 为什么需要复数版（2026-10-30）──────────────────────────
+    /// 拉取上游模型清单原来只取队首一把凭证 —— 队首账号的 Key 在上游被禁
+    /// （`API key is disabled`，403）时，拉取**永远**用那把死 Key、永远失败，
+    /// 而名下其它账号可能是好的。转发有换号语义，拉取也该有：按候选链逐个试，
+    /// 凭证类失败（401/403）与限流（429）换下一个，最后一个账号的错误才报给
+    /// 用户（并点名是哪个账号，能直接定位到人）。
+    pub fn custom_credentials_for(&self, provider_id: &str) -> Vec<CustomCredential> {
         let _guard = self.guard();
-        self.records_for_provider(&_guard, provider_id)
+        let mut records: Vec<StoredAccount> = self
+            .records_for_provider(&_guard, provider_id)
             .into_iter()
             .filter(|record| record.enabled() && (record.has_api_key() || record.no_auth()))
-            .min_by_key(StoredAccount::order_key)
-            .map(|record| credential_of_record(&record))
+            .collect();
+        records.sort_by_key(StoredAccount::order_key);
+        records.iter().map(credential_of_record).collect()
     }
 
     /// 改一条自定义账号的**凭证**：`apiKey`（可清除）与 `noAuth`（无需鉴权
@@ -802,7 +814,7 @@ fn describe_balance_query_changes(
 }
 
 /// 自定义账号的**内部凭证快照**（`custom_credential_by_id` /
-/// `first_custom_credential` 的返回值）。
+/// `custom_credentials_for` 的返回值）。
 ///
 /// 与公开形态（`to_custom_public_account`）的字段差别只有两个：
 /// `apiKey`（明文，出网鉴权用）与代理的**已解析形态**（`ResolvedProxy`，
