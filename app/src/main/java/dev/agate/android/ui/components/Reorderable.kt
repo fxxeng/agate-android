@@ -32,7 +32,8 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -54,12 +55,12 @@ import androidx.compose.material3.Icon
 import dev.agate.android.ui.theme.agateColors
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
@@ -68,6 +69,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.runtime.withFrameNanos
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Rect
@@ -75,20 +77,25 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerEventTimeoutCancellationException
+import androidx.compose.ui.input.pointer.changedToUpIgnoreConsumed
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChangeIgnoreConsumed
 import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onPlaced
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.LocalViewConfiguration
-import androidx.compose.ui.platform.ViewConfiguration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import kotlin.math.abs
 import kotlin.math.exp
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -300,7 +307,7 @@ class ReorderState {
      * `sortingModeHandle`（detectTapGestures 的 onLongPress）**会 consume
      * down**，挂在卡片根上时作为卡内全部子节点的祖先，把子 clickable 全饿死
      * —— 置顶箭头点不动（用户报「激活排序后，一键置顶没有反应」）。
-     * 拖拽用的是 detectDragGesturesAfterLongPress，长按成立前不消费 down，
+     * 拖拽手柄是自己实现的 awaitFirstDown + withTimeout，长按成立前不消费 down，
      * 与子 clickable 天然共存；把激活挂在它的起拖时刻就同时拿到了「长按」
      * 语义与「不抢手势」两件事。
      *
@@ -448,6 +455,18 @@ class ReorderState {
 
     internal var listState: LazyListState? = null
 
+    /**
+     * LazyColumn **自身**在 window 坐标里的顶边（px）。
+     *
+     * 用途见 [draggedVisualOffset]：跟手位移必须锚在**屏幕**上，而不是锚在
+     * 「列表内容坐标」上。只要列表整体在屏幕上动过（头部换了形态、键盘弹出、
+     * 窗口 inset 变化…），内容坐标里的「槽位没变」就等于「卡片相对手指跑掉了」。
+     */
+    internal var listTopInWindow by mutableFloatStateOf(0f)
+
+    /** 起拖那一刻列表的顶边；与 [dragStartAnchor] 配对把位移锚回屏幕。 */
+    private var dragStartListTop = 0f
+
     /** Column 变体的每项 window 坐标（onPlaced 收集；页面滚动会自动重放刷新）。 */
     internal val bounds = mutableStateMapOf<String, Rect>()
 
@@ -563,6 +582,10 @@ class ReorderState {
             listState?.layoutInfo?.visibleItemsInfo
                 ?.firstOrNull { it.key == key }?.offset?.toFloat() ?: 0f
         }
+        // 同时记下列表自身的屏幕顶边：跟手位移要把「列表整体在屏幕上移动了多少」
+        // 一并补进来（见 [listTopDelta]）。头部换形态 / IME 弹出都会让列表整体位移，
+        // 只补内容坐标的话卡片就会从手指下滑走。
+        dragStartListTop = listTopInWindow
     }
 
     /** Column 变体起拖：锚点 = 起拖时的页面滚动值（页面自动滚动补偿用，P6）。 */
@@ -901,14 +924,56 @@ class ReorderState {
      *
      * 取不到当前槽位（被拖项这一帧滚出了 `visibleItemsInfo`）时用 [lastVisibleOffset]
      * 兜底 —— 原来这里 `return 0f`，会让卡片瞬移回槽位再跳回来（拖到边缘闪一下）。
+     *
+     * ── 为什么要加 [listTopDelta] ──────────────────────────────
+     * 式子原本是 `dragDelta + 起拖槽位 − 当前槽位`，全部是**内容坐标**。它默认
+     * 「列表自身在屏幕上没动过」。一旦列表整体位移（比如排序态把头部从
+     * 搜索栏+筛选栏换成横幅，列表被顶上去 80dp），内容坐标里槽位一点没变，
+     * 补偿量却是 0 → 卡片原地不动、内容整体上移 → 表现为「按住的卡片不跟手、
+     * 往上一跳」。把列表顶边的位移补进来，位移才真正锚在**屏幕**上。
      */
     fun lazyTranslationY(): Float {
         val key = draggingKey ?: return 0f
         val st = listState ?: return 0f
         val current = st.layoutInfo.visibleItemsInfo
             .firstOrNull { it.key == key }?.offset?.toFloat() ?: lastVisibleOffset
-        return dragDelta + dragStartAnchor - current
+        return dragDelta + dragStartAnchor - current + listTopDelta()
     }
+
+    /** 起拖以来列表顶边在屏幕上的位移（px）：列表上移为正。 */
+    private fun listTopDelta(): Float = dragStartListTop - listTopInWindow
+
+    /**
+     * 请求把列表滚到**顶部**，并指明「谁应该成为第一项」（一键置顶后调）。
+     *
+     * ── 为什么一键置顶**必须**滚一下 ──────────────────────────────
+     * 置顶只是把 key 挪到 `keys[0]`。但 `LazyListState` 保持滚动位置的策略是
+     * 「盯住**第一个可见项**的 key」：被置顶的那张卡原本在第 N 位（往往还在
+     * 视口外），挪到 0 之后 LazyColumn 会把原来那个「第一个可见项」继续钉在
+     * 原位，于是被置顶的卡落在视口**上方**，用户看到的第一个还是旧的那张 ——
+     * 必须手动下滑才看得到新的第一张（用户报的现象就是这个）。
+     *
+     * [key] 不是用来反查下标的（见下），而是给容器一个**等待条件**：
+     * 「等到这个 key 真成了第一项，再滚到 0」。因为「改顺序」与「滚动」是两次
+     * 独立的状态写入，中间隔着重组；不等待的话滚的是旧的第 0 项，白滚。
+     *
+     * ⚠ 这里**不**用 key 反查下标去 `animateScrollToItem(idx)`：`keys` 是拖拽用的
+     * 乐观序，提交与滚动的先后取决于重组时机，反查很容易拿到**旧顺序**里的下标
+     * 而滚错地方。「置顶」的语义本来就是第 0 位，直接滚 0 没有歧义。
+     */
+    fun requestScrollToTop(key: String? = null) {
+        if (listState == null) return
+        scrollTopKey = key
+        scrollTopRequest++
+    }
+
+    /** 滚到顶部的请求计数：每次自增，容器侧 LaunchedEffect 读它触发一次滚动。 */
+    internal var scrollTopRequest by mutableIntStateOf(0)
+        private set
+
+    /** 期望登顶的 key（空 = 只要求回顶，不等任何条件）。 */
+    internal var scrollTopKey by mutableStateOf<String?>(null)
+        private set
 
     // ------------------------------------------------------------ Column 变体（每帧）
 
@@ -1027,32 +1092,96 @@ private fun autoScrollDelta(over: Float, marginPx: Float, limitPx: Float): Float
 }
 
 /**
- * 拖拽手柄：长按 [DRAG_LONG_PRESS_TIMEOUT_MS] 起拖（touchSlop 死区由检测器内置）+ 起拖 haptics。
+ * 拖拽手柄：**长按到点即起拖**（不必再挪一个 touchSlop）+ 起拖 haptics。
  *
  * 手柄内的 ↑↓ 图标点击不受影响 —— 手势三分流：
  * 快速点按 = 箭头点击；按住不动到阈值 = 起拖；按住即滑（未满阈值）= 页面/列表正常滚动。
  * [key] 必须是稳定的 item key（uid/providerId），**不能用 index**（重排会重启手势检测器）。
  *
- * 阈值由外层的 [ProvideDragHandleViewConfig] 经 [LocalViewConfiguration] 覆写生效
- * —— Modifier 工厂自身无法 emit CompositionLocalProvider，所以不能直接写在这里。
+ * ── 为什么不用 `detectDragGesturesAfterLongPress` ──────────────
+ * 那个检测器把两件事绑在一个回调里：长按成立**之后**还要等手指移动超过
+ * touchSlop 才调 `onDragStart`。于是「长按激活排序」这个动作被拆成了
+ * 「长按 + 轻微拖动」两步 —— 用户按住不动时状态机毫无反应，必须抖一下
+ * 才进编辑态（用户报「长按激活排序异常，必须轻微拖动才进入排序状态」）。
+ *
+ * 自己写一条就分开了：[awaitFirstDown] → `withTimeout(阈值)` 等长按到点，
+ * 超时**立刻** [onStart]（此时位移为 0，卡片原地抬起）并进拖拽循环；
+ * 若在阈值内先收到 UP（点按）或位移超 slop（想滚动）就放弃起拖、不消费任何事件。
+ *
+ * ⚠ 长按成立前**绝不 consume down**：本 Modifier 挂在卡片根上时是卡内所有子
+ * 节点的祖先，一消费就饿死全部子 clickable（v2.21.85 踩过：置顶箭头点不动）。
+ * 长按成立之后 however 必须 consume —— 那时手势已归拖拽所有，再让父级滚动
+ * 容器同时响应就会「一边拖卡片一边滚列表」。
+ *
+ * 阈值是 [DRAG_LONG_PRESS_TIMEOUT_MS]（250ms），比系统默认 400ms 短 ——
+ * 排序是高频操作，400ms 会让人觉得「按了半天没反应」。
  */
 @Composable
 fun Modifier.dragHandle(key: String, state: ReorderState, onStart: () -> Unit): Modifier {
     val haptics = LocalHapticFeedback.current
-    return pointerInput(key, state) {
-        detectDragGesturesAfterLongPress(
-            onDragStart = {
-                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                state.haptics = haptics // 跨越轻震动用（拖拽期间复用）
-                onStart()
-            },
-            onDrag = { change, amount ->
-                change.consume()
-                state.drag(amount.y)
-            },
-            onDragEnd = { state.end() },
-            onDragCancel = { state.cancel() },
-        )
+    // 阈值直接取常量（250ms），不再经 LocalViewConfiguration 覆写：
+    // 那条路需要调用方额外挂一个 provider，忘了挂就静默退回 400ms（已踩过）。
+    val longPressMs = DRAG_LONG_PRESS_TIMEOUT_MS
+    val touchSlop = LocalViewConfiguration.current.touchSlop
+    return pointerInput(key, state, longPressMs, touchSlop) {
+        awaitEachGesture {
+            // ⚠ requireUnconsumed 必须是 **false**。
+            // 卡内链上还有 `.clickable{...}`（展开/收起），它在 Main 阶段内层先跑
+            // 并且**会消费 down**；本 Modifier 在链上更靠外，拿到的是已消费的 down。
+            // 传 true 就永远等不到 down —— 长按整体失效（点了没反应，最坏的那种）：
+            // 不是「要拖一下才进排序」，是彻底不进。
+            val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Main)
+            // ── 阶段 1：等长按到点（位移超 slop / 提前抬手 / 超时 三选一）──
+            val longPressed = try {
+                withTimeout(longPressMs) {
+                    var giveUp = false
+                    while (!giveUp) {
+                        val ev = awaitPointerEvent(PointerEventPass.Main)
+                        val change = ev.changes.firstOrNull { it.id == down.id }
+                        giveUp = change == null || !change.pressed ||
+                            (change.position - down.position).getDistance() > touchSlop
+                    }
+                    false // 让出了手势（点按 / 滚动），不是长按
+                }
+            } catch (_: PointerEventTimeoutCancellationException) {
+                true // 长按到点：位移此刻为 0
+            }
+            if (!longPressed) return@awaitEachGesture
+
+            // ── 阶段 2：进入拖拽。长按成立这一刻**位移为 0** 就要激活排序态 ──
+            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+            state.haptics = haptics // 跨越轻震动用（拖拽期间复用）
+            onStart()
+
+            // ── 阶段 3：拖拽循环（此后 consume 全部事件，父级不再滚动）──
+            // 位移量取 positionChange（本指针相邻两次事件的差），不要自己拿
+            // position - 起手点累计：阶段 1 里可能已经漂过几像素，两个基准混用
+            // 会让卡片在起拖那一瞬跳一下。
+            //
+            // try/finally 是必须的：手势被系统打断（来电、多指互抢、视图被移除）
+            // 时指针会直接从 changes 里消失，循环 break 出去而不走 end() ——
+            // 不兜底 cancel 的话 draggingKey 会一直挂着，列表永久停在拖动态。
+            var finished = false
+            try {
+                while (true) {
+                    val ev = awaitPointerEvent(PointerEventPass.Main)
+                    val change = ev.changes.firstOrNull { it.id == down.id } ?: break
+                    if (change.changedToUpIgnoreConsumed()) {
+                        change.consume()
+                        finished = true
+                        state.end()
+                        break
+                    }
+                    if (change.pressed) {
+                        val dy = change.positionChangeIgnoreConsumed().y
+                        change.consume()
+                        if (dy != 0f) state.drag(dy)
+                    }
+                }
+            } finally {
+                if (!finished) state.cancel()
+            }
+        }
     }
 }
 
@@ -1115,23 +1244,14 @@ fun PinToTopButton(
     }
 }
 
-/**
- * 为拖拽手柄缩短长按阈值：`detectDragGesturesAfterLongPress` 的阈值取自
- * [LocalViewConfiguration.longPressTimeoutMillis]（系统默认 400ms）。
- *
- * 必须是**组合**而非 Modifier 扩展——[Modifier.dragHandle] 无法自己 emit
- * CompositionLocalProvider，只能由调用方的组合层级提供。
- */
-@Composable
-private fun ProvideDragHandleViewConfig(content: @Composable () -> Unit) {
-    val base = LocalViewConfiguration.current
-    val overridden = remember(base) {
-        object : ViewConfiguration by base {
-            override val longPressTimeoutMillis: Long get() = DRAG_LONG_PRESS_TIMEOUT_MS
-        }
-    }
-    CompositionLocalProvider(LocalViewConfiguration provides overridden, content = content)
-}
+// ⚠ 这里原本有一个 `ProvideDragHandleViewConfig`：通过覆写 LocalViewConfiguration
+// 把长按阈值降到 250ms。它**从未被任何调用方挂载过**（全仓零引用），
+// 也就是说那个 250ms 一直只写在注释里、实际生效的是系统默认 400ms ——
+// 典型的「文档说有、代码没接」死代码。
+//
+// 现在阈值由 [Modifier.dragHandle] **直接**读 [DRAG_LONG_PRESS_TIMEOUT_MS]，
+// 不再绕 CompositionLocal：手柄自己就是唯一的消费者，绕一层只会多出一个
+// 「忘了挂就静默失效」的坑。
 
 /**
  * 可拖拽排序的 LazyColumn（供应商列表，方案 v1 §4.2 / v2 P1–P3）。
@@ -1166,7 +1286,6 @@ fun <T> ReorderableLazyColumn(
         state.autoScrollMarginPx = with(density) { AUTO_SCROLL_MARGIN_DP.dp.toPx() }
     }
     LaunchedEffect(items) { state.syncKeys(items.map(keyOf)) }
-
     val realKeys = items.map(keyOf)
     val renderKeys = state.keys.ifEmpty { realKeys }
     // 按 key 建索引：原来在 items{} 里逐项 firstOrNull 查找，
@@ -1178,15 +1297,22 @@ fun <T> ReorderableLazyColumn(
         // 排序态空闲自动退出：在根节点**旁听**指针事件。
         // 关键：走 `PointerEventPass.Initial` 且**从不 consume** —— 只观察，
         // 所以不会重蹈 v2.21.85 那个「祖先吃掉 down、卡内 clickable 全饿死」的覆辙。
-        modifier = modifier.pointerInput(state) {
-            awaitPointerEventScope {
-                while (true) {
-                    val event = awaitPointerEvent(PointerEventPass.Initial)
-                    val uptime = event.changes.firstOrNull()?.uptimeMillis
-                    if (uptime != null) state.noteInteraction(uptime)
-                }
+        modifier = modifier
+            // 记下列表自身的屏幕顶边：跟手位移要按它补偿（见 ReorderState.lazyTranslationY）。
+            // 用 onGloballyPositioned 而不是 onPlaced：前者给 window 坐标，
+            // 后者给父容器坐标，而头部换形态时父容器自己也在动。
+            .onGloballyPositioned { coords ->
+                state.listTopInWindow = coords.boundsInWindow().top
             }
-        },
+            .pointerInput(state) {
+                awaitPointerEventScope {
+                    while (true) {
+                        val event = awaitPointerEvent(PointerEventPass.Initial)
+                        val uptime = event.changes.firstOrNull()?.uptimeMillis
+                        if (uptime != null) state.noteInteraction(uptime)
+                    }
+                }
+            },
         contentPadding = contentPadding,
         verticalArrangement = verticalArrangement,
     ) {
@@ -1261,6 +1387,26 @@ fun <T> ReorderableLazyColumn(
                 }
             }
         }
+    }
+
+    // 一键置顶：把列表滚回顶部。
+    //
+    // ⚠ 时机：必须等 `keys` 里目标真的落到第 0 位**之后**再滚。
+    // 置顶方是「先改顺序、再请求滚动」，但两次状态写入之间会隔着一次重组；
+    // 如果滚得太早，`animateScrollToItem(0)` 滚到的是**旧**的第 0 项，新置顶的
+    // 卡依旧在视口外 —— 现象就成了「点了置顶没反应，得手滑一下才看到」。
+    // 这里用 snapshotFlow 盯住「第 0 位 key == 期望的 key」这个条件，
+    // 条件成立才滚；同时带一个短兜底，数据没变（已经在首位）时也照样回顶。
+    LaunchedEffect(state.scrollTopRequest) {
+        val want = state.scrollTopKey
+        if (state.scrollTopRequest == 0) return@LaunchedEffect
+        if (want != null) {
+            // 等目标登顶（最多 600ms，超时就按当前状态滚，绝不卡住）
+            withTimeoutOrNull(600L) {
+                snapshotFlow { state.keys.firstOrNull() }.first { it == want }
+            }
+        }
+        listState.animateScrollToItem(0)
     }
 
     LaunchedEffect(state.draggingKey) {
