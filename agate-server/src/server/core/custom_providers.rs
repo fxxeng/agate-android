@@ -919,7 +919,7 @@ pub fn update(id: &str, payload: &Value) -> Result<Value, String> {
         // （名字仍与模板一致的才补），日常改名不发这个键
         merged.insert(
             "presetKey".to_string(),
-            Value::String(validate_preset_key(Some(value))?);
+            Value::String(validate_preset_key(Some(value))?),
         );
     }
     if let Some(value) = object.get("protocol") {
