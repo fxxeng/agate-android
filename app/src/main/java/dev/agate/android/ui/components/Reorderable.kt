@@ -1285,12 +1285,23 @@ fun <T> ReorderableLazyColumn(
         state.scope = scope
         state.autoScrollMarginPx = with(density) { AUTO_SCROLL_MARGIN_DP.dp.toPx() }
     }
-    LaunchedEffect(items) { state.syncKeys(items.map(keyOf)) }
+    // ⚠ 必须先把 key 列表算出来，再拿它当 LaunchedEffect 的 key。
+    //
+    // 原来写的是 `LaunchedEffect(items)` —— 而调用方传进来（排序态）的
+    // `items` 就是同一个 `SnapshotStateList` 实例，内容被就地 add/removeAt
+    // 改动后**实例不变**。`LaunchedEffect` 用 `equals` 比 key，同实例永远相等，
+    // 于是这个 effect **一次都不会重启**，`syncKeys` 只在首次组合跑过一遍。
+    // 后果：一键置顶改了 orderState，`keys` 却停在旧顺序，列表照旧渲染旧序
+    // ——「卡片钻到最上面但页面第一个还是排序前那张」的真正来源。
+    // 换成「key 内容列表」当参数：每次重组都是新 ArrayList，equals 比的是
+    // 元素序列，内容变了就重启 —— 这才是我们要的语义。
     val realKeys = items.map(keyOf)
+    LaunchedEffect(realKeys) { state.syncKeys(realKeys) }
     val renderKeys = state.keys.ifEmpty { realKeys }
     // 按 key 建索引：原来在 items{} 里逐项 firstOrNull 查找，
     // 每项每次重组 O(n) → 整个列表 O(n²)，列表一长就明显掉帧。
-    val byKey = remember(items) { items.associateBy(keyOf) }
+    // key 用 realKeys 而不是 items：理由同上（同实例的内容变更拿不到）。
+    val byKey = remember(realKeys) { items.associateBy(keyOf) }
 
     LazyColumn(
         state = listState,
@@ -1471,7 +1482,12 @@ fun <T> ReorderableColumn(
         state.autoScrollMarginPx = with(density) { AUTO_SCROLL_MARGIN_DP.dp.toPx() }
         state.columnSpacingPx = with(density) { verticalArrangement.spacing.toPx() }
     }
-    LaunchedEffect(items) { state.syncKeys(items.map(keyOf)) }
+    // ⚠ 参数必须是 key **内容**列表，不能是 items 实例（同 Lazy 变体处的详细说明）：
+    // 这里传进来的 g.accounts 常是同一个 list 实例，instance equals 恒真，
+    // 用 items 当 key 的 effect 永不重启 → syncKeys 只跑首次 → 账号置顶后
+    // 顺序不刷新。用 map 出来的新 ArrayList，equals 比元素序列，内容变了就重启。
+    val columnKeys = items.map(keyOf)
+    LaunchedEffect(columnKeys) { state.syncKeys(columnKeys) }
 
     Column(
         // 排序态空闲自动退出：与 Lazy 变体同款，只旁听不消费。
