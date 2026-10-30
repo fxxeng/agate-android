@@ -252,6 +252,15 @@ fun ModelsPage(
     var registryBaseline by remember { mutableStateOf(org.json.JSONArray()) }
     var registryMappings by remember { mutableStateOf(org.json.JSONArray()) }
     var registrySaving by remember { mutableStateOf(false) }
+    /**
+     * 逐模型的**可用账号数**（内核选路预演的结果）。
+     *
+     * 只装「真问过内核」的条目：缺失 = 还没算/算失败，界面显示「—」而不是拿
+     * 近似值顶上去。两种口径混在同一颗圆点里，比没有数字更糟。
+     */
+    var availability by remember { mutableStateOf<Map<String, Int>>(emptyMap()) }
+    /** 让「展开的胶囊」重新问一次内核（账号/模型变更后旧数字就过期了）。 */
+    var availToken by remember { mutableStateOf(0) }
 
     /**
      * 提供商 (id, label) 列表：混合模式的 pin 选择要用。
@@ -320,12 +329,15 @@ fun ModelsPage(
                 "models_changed" -> {
                     loadManage()
                     loadListView()
+                    availToken++      // 开关变了 → 可用账号数变了
                 }
                 "providers_changed" -> {
                     loadCustom()
                     loadManage()
                     loadListView()
+                    availToken++
                 }
+                "accounts_changed" -> availToken++
             }
         }
     }
@@ -630,11 +642,10 @@ fun ModelsPage(
                     models.groupBy({ it.id.substringAfter('/') }) { it.provider }
                         .mapValues { (_, list) -> list.distinct() }
                 },
-                readyAccounts = remember(snap.accountList) {
-                    snap.accountList.orEmpty()
-                        .filter { it.enabled && it.hasCredentials }
-                        .groupingBy { it.provider }
-                        .eachCount()
+                availability = availability,
+                availToken = availToken,
+                onRequestAvailability = { ids ->
+                    scope.launch { availability = ModelOps.availability(ids) }
                 },
                 onOpenSpeedtest = onOpenSpeedtest,
             )
@@ -883,14 +894,26 @@ private fun XpCard(
     onTogglePin: (String) -> Unit,
     /** 裸模型名 → 承载它的**全部**家（测速定位取第一个，账号数按全部求和）。 */
     modelProviders: Map<String, List<String>> = emptyMap(),
-    /** 家 → 就绪账号数（胶囊右侧小圆点的读数）。 */
-    readyAccounts: Map<String, Int> = emptyMap(),
+    /** 模型 → 此刻能接它的账号数（内核预演；缺失 = 还没算）。 */
+    availability: Map<String, Int> = emptyMap(),
+    /** 变化即重新问一次（账号/模型变更、手动刷新）。 */
+    availToken: Int = 0,
+    /** 展开时按需问内核要这批模型的可用数。 */
+    onRequestAvailability: (List<String>) -> Unit = {},
     onOpenSpeedtest: (provider: String?, model: String?) -> Unit = { _, _ -> },
 ) {
     val C = agateColors()
     var expanded by remember { mutableStateOf(false) }
     val count = view.countFor(view.mode)
     val tooMany = count > 80
+    // 胶囊上的数字是「此刻」的读数，所以只在**真的展开**时才去问内核 ——
+    // 折叠态根本看不到胶囊，问了就是白算（每个模型一次选路预演）。
+    // 依赖 `availToken`：账号/模型一变，旧数字立刻过期。
+    LaunchedEffect(expanded, view.ids, availToken) {
+        if (expanded && view.ids.isNotEmpty()) {
+            onRequestAvailability(view.ids.take(EXPOSED_PILL_LIMIT))
+        }
+    }
 
     Column(
         Modifier
@@ -1054,7 +1077,7 @@ private fun XpCard(
             ExposedPills(
                 ids = view.ids,
                 modelProviders = modelProviders,
-                readyAccounts = readyAccounts,
+                availability = availability,
                 onOpen = onOpenSpeedtest,
             )
         }
@@ -1150,7 +1173,7 @@ private fun FlowChips(
 private fun ExposedPills(
     ids: List<String>,
     modelProviders: Map<String, List<String>>,
-    readyAccounts: Map<String, Int>,
+    availability: Map<String, Int>,
     onOpen: (provider: String?, model: String?) -> Unit,
 ) {
     val C = agateColors()
@@ -1163,18 +1186,20 @@ private fun ExposedPills(
         ) {
             shown.forEach { id ->
                 // `provider/model` 形态自带家；裸名要反查一次
-                // `provider/model` 形态自带家（就是那一家）；裸名要反查**全部**承载家
+                // `provider/model` 形态自带家（就是那一家）；裸名要反查承载家
                 val carriers = if ('/' in id) listOf(id.substringBefore('/'))
                 else modelProviders[id.substringAfter('/')].orEmpty()
                 val model = id.substringAfter('/')
                 // 测速定位只需要一家（跳过去那一页会列出该模型的全部可用账号）
                 val provider = carriers.firstOrNull()
-                // 账号数按**全部承载家求和**：同名模型常被多家提供，只看第一家会算少
-                val ready = carriers.sumOf { readyAccounts[it] ?: 0 }
+                // 数字来自内核预演（`plan_route`）：null = 还没算到，显示「—」。
+                // **不用近似值顶替** —— 混口径的数字比没有数字更容易误导。
+                val usable = availability[id]
                 val dot = when {
-                    ready >= 3 -> C.green
-                    ready >= 1 -> C.amber
-                    else -> C.textDim
+                    usable == null -> C.textDim
+                    usable >= 3 -> C.green
+                    usable >= 1 -> C.amber
+                    else -> C.red
                 }
                 Row(
                     Modifier
@@ -1194,7 +1219,11 @@ private fun ExposedPills(
                     Spacer(Modifier.width(5.dp))
                     Box(Modifier.size(5.dp).background(dot, androidx.compose.foundation.shape.CircleShape))
                     Spacer(Modifier.width(3.dp))
-                    Text("$ready", color = C.textDim, fontSize = 9.sp)
+                    Text(
+                        usable?.toString() ?: "—",
+                        color = C.textDim,
+                        fontSize = 9.sp,
+                    )
                 }
             }
         }
@@ -1208,7 +1237,7 @@ private fun ExposedPills(
         }
         Spacer(Modifier.height(4.dp))
         Text(
-            "小圆点 = 提供该模型各家的就绪账号合计（0 = 现在点了必然失败；不含冷却/熔断等实时状态）· 点胶囊去测速",
+            "小圆点 = 此刻能接该模型的账号数（内核选路预演：已排除冷却/限制器/并发满/无凭证）· 点胶囊去测速",
             color = C.textDim,
             fontSize = 10.sp,
         )

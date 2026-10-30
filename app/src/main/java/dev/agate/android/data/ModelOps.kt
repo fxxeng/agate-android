@@ -331,6 +331,37 @@ object ModelOps {
     }
 
     // P2：经 CoreTransport 内核直调（错误信封随 status 一并透传，不拦 4xx/5xx）
+    /**
+     * 逐模型的**可用账号数**（`POST /api/routing/availability`）。
+     *
+     * ── 为什么这个数必须问内核 ─────────────────────────────────
+     * 客户端手里只有「哪家有哪些模型」和「每家几个就绪账号」两件事。乘一乘只能
+     * 得到近似值：同名模型跨多家时，只取第一家会算少，而把「这家有 3 个账号」
+     * 当成「这个模型有 3 个账号」又会算多 —— 那 3 个账号未必都能接这个模型。
+     * 真实答案只有选路层知道（它要过启用/限制器/冷却/并发/凭证五道门），
+     * 所以由内核按模型跑一次预演（与转发同一个 `plan_route`）。
+     *
+     * 返回 `模型名 → 可用账号数`；条目缺失 = 这次没算到（界面显示「—」，
+     * 不要用近似值顶替 —— 两种口径混在一颗圆点里比没有数字更糟）。
+     *
+     * 上限 60 个：内核一次只算点名的那些（每个模型一次选路预演），
+     * 而界面一次最多铺 40 个胶囊。
+     */
+    suspend fun availability(models: List<String>): Map<String, Int> {
+        if (models.isEmpty()) return emptyMap()
+        val array = org.json.JSONArray()
+        models.take(60).forEach { array.put(it) }
+        val r = post("/api/routing/availability", JSONObject().put("models", array))
+        val items = r.data?.optJSONArray("items") ?: return emptyMap()
+        val out = LinkedHashMap<String, Int>(items.length())
+        for (i in 0 until items.length()) {
+            val row = items.optJSONObject(i) ?: continue
+            val model = row.optString("model")
+            if (model.isNotBlank()) out[model] = row.optInt("usable", 0)
+        }
+        return out
+    }
+
     private suspend fun post(path: String, body: JSONObject): OpResult {
         val r = CoreTransport.post(path, body.toString())
         if (r !is CoreTransport.Reply.Ok) {
