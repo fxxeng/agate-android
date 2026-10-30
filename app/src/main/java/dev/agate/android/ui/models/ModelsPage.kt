@@ -296,7 +296,7 @@ fun ModelsPage(
     val pullProviders = remember(providers, customProviders) {
         val customIds = customProviders.map { it.id }.toSet()
         val built = providers.filter { it.first !in customIds }
-        (built + customProviders.map { it.id to it.name })
+        (built + customProviders.map { it.id to it.displayName })
             .distinctBy { it.first }
             .sortedBy { it.second }
     }
@@ -473,7 +473,7 @@ fun ModelsPage(
      * 而上游清单里某个模型暂时消失（改期、灰度）并不等于用户不想再要它。
      */
     suspend fun pullCustom(pid: String): RefreshRow {
-        val label = customProviders.firstOrNull { it.id == pid }?.name ?: pid
+        val label = customProviders.firstOrNull { it.id == pid }?.displayName ?: pid
         val fetched = CustomProviderOps.fetchModels(pid)
         if (!fetched.ok) {
             return RefreshRow(
@@ -678,7 +678,7 @@ fun ModelsPage(
                     }
                 // 零模型的自定义家也要有芯片（见上）。名字取自定义家自己的
                 // `name`（`providerLabel` 那份来自模型行，零模型时压根没有行）。
-                val fromCustoms = customProviders.map { it.id to it.name }
+                val fromCustoms = customProviders.map { it.id to it.displayName }
                 (fromRows + fromCustoms)
                     .distinctBy { it.first }
                     .sortedBy { pair ->
@@ -825,7 +825,7 @@ fun ModelsPage(
     // ── 登记模型弹层（自定义家专用）──────────────────────────
     registryTarget?.let { pid ->
         ModelRegistryDialog(
-            providerLabel = customProviders.firstOrNull { it.id == pid }?.name ?: pid,
+            providerLabel = customProviders.firstOrNull { it.id == pid }?.displayName ?: pid,
             baseline = registryBaseline,
             mappingsBaseline = registryMappings,
             saving = registrySaving,

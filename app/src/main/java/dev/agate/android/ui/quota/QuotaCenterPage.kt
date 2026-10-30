@@ -97,6 +97,8 @@ fun QuotaCenterPage(
     // （用户建的那家明明有名字）。与「提供商」页同一条口径：拿一次列表、建一个
     // id→name 的 map，展示名与图标反查都靠它。
     var customNames by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
+    /** 名字表这次取到了没有（null = 取到了；非 null = 失败原因，界面上要说出来）。 */
+    var customNamesError by remember { mutableStateOf<String?>(null) }
     // 展开状态（基线用 details 折叠，默认收起）
     var expanded by remember { mutableStateOf<Set<String>>(emptySet()) }
 
@@ -146,11 +148,24 @@ fun QuotaCenterPage(
         refresh(force = false)
     }
 
-    // 名字表只拉一次（自定义家的名称不是高频变动数据）；失败就留空 map，
-    // 退回「原样显示 id」的老行为 —— 少一个名字比让整页刷新失败更可接受。
+    // 名字表只拉一次（自定义家的名称不是高频变动数据）。
+    //
+    // ⚠️ 失败与「确实没有」必须分开（2026-10-30 修）：旧写法失败时留空 map，
+    // 而空 map 与「确实没有自定义家」在界面上完全一样 —— 表现是每个自定义家
+    // 都显示成 `custom-xxxx`（id），图标也按名反查不到而变成两字母色块。
+    // 一次临时失败被伪装成「数据就是这样」，用户既判断不出哪家坏了，也
+    // 不知道重试一下就好。
     LaunchedEffect(Unit) {
-        customNames = CustomProviderOps.Record.listOf(CustomProviderOps.list())
-            .associate { it.id to it.name }
+        val result = CustomProviderOps.listResult()
+        if (result.ok) {
+            customNames = result.records
+                .filter { it.name.isNotBlank() }
+                .associate { it.id to it.name }
+            customNamesError = null
+        } else {
+            // 保留上一份好数据（别把已经显示对的名字弄丢），只把原因带出去
+            customNamesError = result.error
+        }
     }
 
     Column(Modifier.fillMaxSize().background(C.bg)) {
@@ -164,6 +179,19 @@ fun QuotaCenterPage(
                 .padding(horizontal = 16.dp),
         ) {
             Spacer(Modifier.height(10.dp))
+
+            // 名字表取不到时的提示（与「提供商」页同一口径）：
+            // 说清「为什么显示的是占位名」，而不是让用户对着 `custom-xxx`
+            // 一串乱码猜哪里坏了。
+            val namesError = customNamesError
+            if (namesError != null) {
+                Text(
+                    "部分自定义提供商的名称暂时取不到（$namesError），列表里显示的是占位名",
+                    color = C.amber,
+                    fontSize = 11.sp,
+                )
+                Spacer(Modifier.height(8.dp))
+            }
 
             val accounts = snap.accountList
             val byProvider = accounts.groupBy { it.provider }
@@ -305,8 +333,16 @@ private fun ProviderQuotaCard(
 ) {
     val C = agateColors()
     val ctx = LocalContext.current
-    // 先查自定义家的真名，再回落内置注册表 —— 顺序与「提供商」页一致
-    val label = customNames[provider] ?: PresetRegistry.labelOf(provider)
+    // 先查自定义家的真名，再回落内置注册表 —— 顺序与「提供商」页一致。
+    //
+    // ⚠️ 自定义家取不到名字时**不拿 id 冒充**：那会让用户以为自家这家就叫
+    // `custom-77605lb5fcd0`。给一个明确的占位名（页头有提示说明原因）。
+    val label = customNames[provider]
+        ?: if (CustomProviderOps.isCustomProviderId(provider)) {
+            "（名称未取到）"
+        } else {
+            PresetRegistry.labelOf(provider)
+        }
 
     // 家级读数：优先「最早到期」的账号，失败项排前
     val ranked = accounts.sortedWith(

@@ -53,6 +53,29 @@ fn body_object(body: &Bytes) -> Result<serde_json::Map<String, Value>, Response>
 
 /// 列出全部自定义提供商（按 createdAt 升序，排序在存储层保证）。
 pub async fn get_custom_providers(State(_state): State<ServerState>) -> Response {
+    // 诊断：这批家的 id ↔ 展示名对照。「自定义家显示成 custom-xxxx」有好几种
+    // 可能（名字表没拉到 / 记录里 name 缺失 / 记录被写坏），而界面上看到的
+    // 都是同一副样子 —— 光看截图分不出来。打进运行日志，下次反馈时一眼就能
+    // 判断是「内核没给」还是「客户端没拿到」。
+    let labels = custom_providers::debug_labels();
+    if !labels.is_empty() {
+        logging::log(
+            "[CustomProvider]",
+            &format!(
+                "自定义家清单（{} 家）: {}",
+                labels.len(),
+                labels
+                    .iter()
+                    .map(|(id, name)| format!(
+                        "{}=>{}",
+                        id,
+                        if name.is_empty() { "（空名）" } else { name }
+                    ))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        );
+    }
     ok_json(json!({ "providers": custom_providers::list() }))
 }
 

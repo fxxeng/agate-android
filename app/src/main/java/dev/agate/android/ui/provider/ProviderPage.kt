@@ -225,11 +225,63 @@ fun ProviderPage(
     // 于是列表里出现「custom-7a3f9c21」这种名字（用户建的「NewAPI 中转」根本
     // 看不见）。上游 3.0.8 的做法是把 id→name 并进 `wbProviders.labelOf` 的
     // 查找链，一处合并、账号表/筛选器/日志处处生效；这里照同一口径。
+    //
+    // ── 为什么名字表要带「取到了没有」这个状态 ───────────────────
+    // 旧写法：拉不到时得到**空表**，而空表与「确实没有自定义家」在界面上
+    // 一模一样 —— 表现是**每个自定义家都显示成 `custom-xxxx`**，图标也因为
+    // 按名反查不到而变成两字母色块（截图里的现象）。用户看到的是「我建的家
+    // 全变成乱码了」，而界面上**没有任何一处**说明发生过什么 —— 一次临时的
+    // 请求失败被伪装成了「数据就是这样」。
+    //
+    // 现在把失败如实带出来（`customNamesError`），界面上给一句可读的话 +
+    // 一个重试入口；名字另有兜底来源（见 `customNames` 的组装）。
     var customNames by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
-    LaunchedEffect(Unit) {
-        customNames = CustomProviderOps.Record.listOf(CustomProviderOps.list())
-            .associate { it.id to it.name }
+    /** 名字表这次取到了没有（null = 取到了；非 null = 失败原因）。 */
+    var customNamesError by remember { mutableStateOf<String?>(null) }
+
+    /**
+     * 组装 id → 展示名。
+     *
+     * 两个来源，按可靠度排：
+     *  1. 提供商记录自己的 `name`（权威）；
+     *  2. **账号的展示名**（兜底）—— 创建自定义家时，provider 的名字同时
+     *     作为首个账号的备注名落进账号库（见内核 `create_custom_provider`），
+     *     所以账号名能救回「provider 记录的 name 丢了」的情况。
+     *
+     * 两者都没有 → 留空（**不拿 id 冒充名字**，见 `labelOf`）。
+     */
+    fun buildCustomNames(
+        records: Map<String, String>,
+        accounts: List<AccountDto>,
+    ): Map<String, String> {
+        val out = LinkedHashMap<String, String>(records)
+        // 账号名兜底：取该家**第一个**账号的展示名。账号名在用户改过备注名
+        // 之后可能与 provider 名不同 —— 那时第 ① 项已经有真名字了，不会走到
+        // 这条兜底，所以「第一个即可」不引入误导。
+        for (account in accounts) {
+            val pid = account.provider
+            if (pid.isBlank() || out.containsKey(pid)) continue
+            if (!CustomProviderOps.isCustomProviderId(pid)) continue
+            val shown = account.displayName.trim()
+            if (shown.isNotEmpty()) out[pid] = shown
+        }
+        return out
     }
+
+    suspend fun loadCustomNames() {
+        val result = CustomProviderOps.listResult()
+        if (result.ok) {
+            customNames = result.records
+                .filter { it.name.isNotBlank() }
+                .associate { it.id to it.name }
+            customNamesError = null
+        } else {
+            // 取不到就**保留上一份好数据**（别把已经显示对的名字弄丢），
+            // 同时把原因带出去 —— 界面据此提示并给重试入口。
+            customNamesError = result.error
+        }
+    }
+    LaunchedEffect(Unit) { loadCustomNames() }
     // 事件驱动刷新：内核在 core 的变更点广播（账号改动 / 自定义家改动），
     // 这里只重拉**本页要的两份**（快照 + 自定义家名字表），不做全局刷新。
     // 与 5s 兜底轮询并存：事件快、轮询保证「事件丢了也不会一直陈旧」。
@@ -238,22 +290,36 @@ fun ProviderPage(
             when (kind) {
                 "accounts_changed" -> GatewayRepository.refreshOnce()
                 "providers_changed" -> {
-                    customNames = CustomProviderOps.Record.listOf(CustomProviderOps.list())
-                        .associate { it.id to it.name }
+                    loadCustomNames()
                     GatewayRepository.refreshOnce()
                 }
             }
         }
     }
-    val labelOf = remember(customNames) {
-        { pid: String -> customNames[pid] ?: PresetRegistry.labelOf(pid) }
+    // 最终用的名字表：提供商记录里的名字 + 账号名兜底（**派生**，不额外请求）。
+    //
+    // 兜底之所以做成派生而不是塞进 state：账号快照每 5 秒来一次，塞进 state
+    // 就得跟着重拉一次名字表（白白的往返）。派生则只在真正需要时重算。
+    val resolvedNames = remember(customNames, snap.accountList) {
+        buildCustomNames(customNames, snap.accountList.orEmpty())
+    }
+    val labelOf = remember(resolvedNames) {
+        { pid: String ->
+            resolvedNames[pid]
+                // 拿不到名字时**不拿 id 冒充** —— 界面上给一个明确的占位
+                // （并有提示说明「名字取不到」），而不是让用户以为自家的家
+                // 就叫 `custom-7a3f9c21`。
+                ?: if (CustomProviderOps.isCustomProviderId(pid)) "（名称未取到）" else PresetRegistry.labelOf(pid)
+        }
     }
     // ── 分组：有账号的家按「偏好顺序 → PresetRegistry 顺序」；无账号家不出现 ──
     // ⚠️ 必须是 state 而不是 remember 只读一次：拖拽提交后要立刻让 `groups`
     // 按新顺序重算。只读一次的写法在「提交 → 快照刷新 → groups 重建」时会
     // 用旧顺序覆盖 orderState，表现为「拖完过一会儿自己弹回去」。
     var savedOrder by remember { mutableStateOf(GatewayPrefs.providerOrder(ctx)) }
-    val groups = remember(snap.accountList, customNames, savedOrder) {
+    // ⚠️ key 里要用 `resolvedNames`（含账号名兜底的那个派生值），不是
+    // `customNames` —— 否则兜底生效时 `groups` 不会重算，名字还是旧的。
+    val groups = remember(snap.accountList, resolvedNames, savedOrder) {
         val byProvider = snap.accountList?.groupBy { it.provider } ?: emptyMap()
         val seq = ArrayList<ProviderGroupView>(byProvider.size)
         val seen = HashSet<String>()
@@ -262,7 +328,7 @@ fun ProviderPage(
                 val preset = PresetRegistry.ALL.find { it.id == pid }
                 seq += ProviderGroupView(
                     pid, preset?.label ?: labelOf(pid), preset, list,
-                    customName = customNames[pid].orEmpty(),
+                    customName = resolvedNames[pid].orEmpty(),
                 )
                 seen += pid
             }
@@ -279,7 +345,7 @@ fun ProviderPage(
             if (pid !in seen) {
                 seq += ProviderGroupView(
                     pid, labelOf(pid), null, list,
-                    customName = customNames[pid].orEmpty(),
+                    customName = resolvedNames[pid].orEmpty(),
                 )
             }
         }
@@ -427,6 +493,44 @@ fun ProviderPage(
         // （ReorderState.lazyTranslationY 的 listTopDelta），双保险。
         Column(Modifier.padding(horizontal = 16.dp)) {
             Spacer(Modifier.height(6.dp))
+            // ⚠️ 名字表取不到时的提示条（2026-10-30 加）
+            //
+            // 为什么必须有：名字表空着的时候，每个自定义家都会显示成
+            // `custom-xxxx`（id）—— 用户看到的是「我建的家全变成乱码了」，
+            // 而界面**没有任何一处**说明发生过什么。一次临时的请求失败被
+            // 伪装成了「数据就是这样」，用户既没法判断是哪家坏了，也没法
+            // 知道重试一下就好了。
+            //
+            // 所以：取不到就把原因说出来，并给一个重试入口。
+            val namesError = customNamesError
+            if (namesError != null) {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .background(C.amber.copy(alpha = 0.10f), RoundedCornerShape(10.dp))
+                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        "部分自定义提供商的名称暂时取不到（$namesError），列表里显示的是占位名",
+                        color = C.amber,
+                        fontSize = 11.sp,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Text(
+                        "重试",
+                        color = C.accent,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier
+                            .clickable {
+                                scope.launch { loadCustomNames() }
+                            }
+                            .padding(horizontal = 8.dp, vertical = 3.dp),
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+            }
             AgateSearchBar(value = query, onValueChange = { query = it }, hint = "搜索提供商")
             Spacer(Modifier.height(8.dp))
             AgateSegmented(

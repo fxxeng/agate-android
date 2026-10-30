@@ -58,6 +58,21 @@ object CustomProviderOps {
         /** 已登记的模型条数（含被关掉的）。「拉取模型」弹层用它显示「已登记 N 个」。 */
         val modelCount: Int,
     ) {
+        /**
+         * 展示用的名字：[name] 为空时回落到 id。
+         *
+         * ── 为什么要有这个回落 ────────────────────────────────────
+         * [name] **保留原值**（不回落），是为了让「没取到名字」与「名字就叫
+         * id」在数据层可区分 —— 而界面上总要显示点什么，空串不行。
+         *
+         * 回落放在这里（数据层的**唯一**出口）而不是散在各个界面里：这样
+         * 「名字取不到时显示什么」只有一种说法。
+         *
+         * 注意：更彻底的兜底（账号的备注名）在 [ProviderPage] 那一层做 ——
+         * 那里才拿得到账号列表；这里只能退回 id。
+         */
+        val displayName: String get() = name.ifBlank { id }
+
         companion object {
             fun of(o: JSONObject?): Record? {
                 val obj = o ?: return null
@@ -65,8 +80,16 @@ object CustomProviderOps {
                 if (id.isBlank()) return null
                 return Record(
                     id = id,
-                    // 名称缺失回落 id：上游也是这个口径（`name || id`）
-                    name = obj.optString("name").ifBlank { id },
+                    // ⚠️ 名称**保留原值**，不在这里回落 id（2026-10-30 修）。
+                    //
+                    // 旧写法 `ifBlank { id }` 让「没取到名字」与「名字就叫 id」
+                    // 这两件事在数据层无法区分 —— 而它们在界面上的后果完全不同：
+                    // 前者是**故障**（该显示 id 之外的、真正的名字，或明确提示
+                    // 取不到），后者是**事实**（用户真的把家命名为 custom-xxx）。
+                    //
+                    // 回落改由展示层做（`ProviderPage` 的 `labelOf`）：那里能
+                    // 拿到别的来源做兜底（账号的展示名），数据层拿不到。
+                    name = obj.optString("name").trim(),
                     protocol = Protocol.of(obj.optString("protocol")),
                     baseUrl = obj.optString("baseUrl"),
                     enabled = obj.optBoolean("enabled", true),
@@ -116,6 +139,57 @@ object CustomProviderOps {
     }
 
     suspend fun list(): JSONObject? = get("/api/custom-providers")
+
+    /**
+     * 自定义家列表的**带状态**读法：区分「确实没有自定义家」与「这次没拉到」。
+     *
+     * ── 为什么必须区分 ──────────────────────────────────────────
+     * 旧接口 `list()` 失败时返回 `null`，而 `Record.listOf(null)` 给的是**空表**
+     * —— 两种情况在界面上**一模一样**：名字表是空的 → 每个自定义家都拿不到名字
+     * → 展示名回落成 `custom-xxxx` → 图标也按名反查不到 → 两字母色块。
+     *
+     * 而「没拉到」是**临时故障**（内核还没就绪 / 令牌不对 / 请求超时），
+     * 「确实没有」是**事实**。把前者当成后者，用户看到的就是「我建的家全变成
+     * 一串乱码了」，而界面上没有任何一处说明发生过什么。
+     *
+     * 现在把失败**如实带出来**（`ok=false` + 原因），让调用方能重试、能提示，
+     * 也能在拿不到名字时**不显示 id 冒充名字**。
+     */
+    suspend fun listResult(): ListResult {
+        val reply = CoreTransport.get("/api/custom-providers")
+        if (reply !is CoreTransport.Reply.Ok) {
+            val reason = (reply as? CoreTransport.Reply.Down)?.message ?: "链路错误"
+            return ListResult(ok = false, records = emptyList(), error = reason)
+        }
+        if (reply.status < 200 || reply.status >= 300) {
+            return ListResult(ok = false, records = emptyList(), error = "HTTP ${reply.status}")
+        }
+        val obj = try {
+            JSONObject(reply.text)
+        } catch (_: Exception) {
+            return ListResult(ok = false, records = emptyList(), error = "内核响应异常")
+        }
+        if (!obj.optBoolean("success")) {
+            val reason = obj.optString("error").ifBlank { "读取失败" }
+            return ListResult(ok = false, records = emptyList(), error = reason)
+        }
+        val data = obj.optJSONObject("data")
+            ?: return ListResult(ok = false, records = emptyList(), error = "响应格式异常")
+        return ListResult(ok = true, records = Record.listOf(data), error = null)
+    }
+
+    /**
+     * [listResult] 的结果。
+     *
+     * `ok=true` 且 `records` 为空 = **确实没有**自定义家（事实）；
+     * `ok=false` = 这次没拉到（临时故障，`error` 是原因）。
+     */
+    data class ListResult(
+        val ok: Boolean,
+        val records: List<Record>,
+        /** `ok=false` 时的原因（用户可读）；`ok=true` 时为 null。 */
+        val error: String?,
+    )
 
     /**
      * 新建自定义提供商 + 首个账号（一次事务，失败内核回滚）。

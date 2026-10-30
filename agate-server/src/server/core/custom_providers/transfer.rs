@@ -29,7 +29,7 @@ use std::collections::HashSet;
 use serde_json::{Map, Value};
 
 // 父模块的私有函数与常量：子模块可见（Rust 隐私规则），但名字仍要显式引入
-use super::{item_of, normalize_base_url, read_items, write_items, ID_PREFIX};
+use super::{item_of, normalize_base_url, read_raw_items, write_items, ID_PREFIX};
 use crate::server::logging;
 
 /// 一条定义的处理结果（结构化警告：账号导入端直接并进 `errors` 数组）
@@ -50,7 +50,10 @@ pub(crate) struct MergeReport {
 /// `items` 是导出文件 `customProviders` 键下的原始数组；返回时**已写盘**。
 /// 整体失败（写盘不成功）返回 Err，调用方必须当成整批导入失败。
 pub(crate) fn merge_imported(items: &[Value]) -> Result<MergeReport, String> {
-    let mut current = read_items();
+    // 基底用**原始形态**（不是归一形态）：归一是有损的（`headers` 的对象
+    // 形态被读成空表、`models[]` 的额外键被丢、`name` 缺失被回落成 id）——
+    // 拿归一形态写回，这些损失会被固化进盘上，不可逆。
+    let mut current = read_raw_items();
     let mut report = MergeReport { added: 0, updated: 0, warnings: Vec::new() };
     let mut seen: HashSet<String> = HashSet::new();
 

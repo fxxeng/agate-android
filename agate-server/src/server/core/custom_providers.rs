@@ -201,14 +201,7 @@ const FETCH_MODELS_TIMEOUT_MS: u64 = 15_000;
 /// baseUrl / enabled）缺失时按各自默认值补齐（见 `item_of`），不在这里丢弃 ——
 /// 「能列出来但编辑时才报缺字段」比「静默消失」好定位。
 fn read_items() -> Vec<Value> {
-    let raw = config::current();
-    let items = raw
-        .raw()
-        .get(KEY_CUSTOM_PROVIDERS)
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    let mut items: Vec<Value> = items
+    let mut items: Vec<Value> = read_raw_items()
         .into_iter()
         .filter_map(|item| {
             let object = item.as_object()?;
@@ -228,6 +221,32 @@ fn read_items() -> Vec<Value> {
     items
 }
 
+/// 读全量条目的**原始形态**（不做 `item_of` 归一）。
+///
+/// ── 为什么写路径必须用它，而不是 `read_items()` ──────────────────
+/// `read_items()` 返回的是**归一后**的形态，而归一是**有损**的：
+///
+///   · `headers`：写侧存**对象**形态（`{"头名":"值"}`），读侧 `headers_of`
+///     历史上只收**数组**形态 —— 对象形态被读成空表；
+///   · `models[]`：读侧 `model_entries_of` 只保留 `id` / `enabled` /
+///     `reasoning` / `capabilities` 四个键，用户登记时手填的其它键被丢掉；
+///   · `balanceScheme`：读侧会**推断**（`balance_scheme_of_record`），
+///     写回时把推断值固化成用户写的值；
+///   · `name`：读侧在缺失/空串时**回落成 id** —— 一旦被写回，用户的真名字
+///     就永久变成了 `custom-xxxx`。
+///
+/// 写路径若拿归一形态当基底，这些损失会被**固化进盘上**（不可逆）。
+/// 所以「读」与「写」必须用不同的基底：读用归一（对外契约稳定），写用原始
+/// （用户的原值一个字节都不动，只改本次要改的那几个键）。
+fn read_raw_items() -> Vec<Value> {
+    let raw = config::current();
+    raw.raw()
+        .get(KEY_CUSTOM_PROVIDERS)
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+}
+
 /// 一条存储条目 → 对外形态：补齐缺失的默认字段，**只有契约里的八个键**。
 ///
 /// 为什么在这里做「补键」而不是原样透出：手改过的配置可能少一个 `enabled`，
@@ -244,12 +263,20 @@ fn item_of(object: &Map<String, Value>) -> Value {
         .map(str::trim)
         .unwrap_or("")
         .to_string();
+    // 展示名：**缺失就是缺失**，不回落成 id（2026-10-30 修）。
+    //
+    // 旧实现在这里 `.unwrap_or(&id)` —— 名字缺失时把 id 当成名字。后果是
+    // **不可逆**的：写路径拿归一形态做基底写回盘上，这个「id 即名字」就固化
+    // 了，此后界面永远显示 `custom-xxxx`，而用户当初起的名字再也回不来。
+    //
+    // 现在这里保留「缺失」这一事实（空串），由展示层（`label_of`）去决定
+    // 回落到什么 —— 回落发生在**读**的时候，永远不会被写回盘上。
     let name = object
         .get("name")
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|text| !text.is_empty())
-        .unwrap_or(&id)
+        .unwrap_or_default()
         .to_string();
     let protocol = object
         .get("protocol")
@@ -404,43 +431,57 @@ fn url_suffix_of(value: Option<&Value>) -> String {
 /// 读侧归一：静态额外头。只收「键值都是非空字符串」的条目（上限
 /// [`MAX_HEADER_ENTRIES`] 条，键 / 值超长截断 —— 与 model_entries_of 的
 /// 「超长截断不丢弃」同一取向）；同名的最后一条赢，落盘前排序使形态稳定。
+///
+/// ── 两种存储形态都要认（2026-10-30 修）────────────────────────
+///   · **对象**形态 `{"头名": "值"}` —— **写侧实际存的就是它**
+///     （`validate_headers` 收对象、落盘写对象）；
+///   · **数组**形态 `[{"name": "头名", "value": "值"}]` —— 留给将来的编辑器。
+///
+/// 旧实现只认数组，于是**对象形态的记录被整段读成空表**。后果有两处，
+/// 且都很难从界面看出来：
+///   1. 出站请求不带这条头 —— GLM / MiniMax 的 `Anthropic-Beta` 缺了直接
+///      401/400，于是「拉取模型失败」；
+///   2. 写回时把空表落盘 —— 用户配的头**被清空**，且此后每次保存都清一次。
 fn headers_of(value: Option<&Value>) -> Map<String, Value> {
     let mut out = Map::new();
-    let Some(entries) = value.and_then(Value::as_array) else {
+    let Some(value) = value else {
         return out;
     };
-    for entry in entries.iter().take(MAX_HEADER_ENTRIES * 2) {
-        let Some(object) = entry.as_object() else { continue };
-        // 数组形态 [{name, value}] 与对象形态 {"Name": "value"} 都收：
-        // 对象形态是创建/编辑的入参形态，数组形态留给将来的编辑器
-        let pairs: Vec<(String, String)> = if let Some(name) =
-            object.get("name").and_then(Value::as_str)
-        {
-            match object.get("value").and_then(Value::as_str) {
-                Some(value) => vec![(name.to_string(), value.to_string())],
-                None => vec![],
-            }
-        } else {
-            object
-                .iter()
-                .filter_map(|(key, value)| {
-                    value.as_str().map(|text| (key.clone(), text.to_string()))
-                })
-                .collect()
-        };
-        for (key, value) in pairs {
-            let key = truncate_chars(key.trim(), MAX_HEADER_NAME_CHARS);
-            let value = truncate_chars(value.trim(), MAX_HEADER_VALUE_CHARS);
-            if key.is_empty() || value.is_empty() || key.contains(':') {
-                continue;
-            }
-            out.insert(key, Value::String(value));
-            if out.len() >= MAX_HEADER_ENTRIES {
-                return out;
-            }
+    // 数组形态：逐条取 {name, value}
+    if let Some(entries) = value.as_array() {
+        for entry in entries.iter().take(MAX_HEADER_ENTRIES * 2) {
+            let Some(object) = entry.as_object() else { continue };
+            let Some(name) = object.get("name").and_then(Value::as_str) else { continue };
+            let Some(text) = object.get("value").and_then(Value::as_str) else { continue };
+            insert_header(&mut out, name, text);
         }
+        return out;
+    }
+    // 对象形态：直接取每个键值对
+    let Some(object) = value.as_object() else {
+        return out;
+    };
+    for (name, text) in object.iter() {
+        let Some(text) = text.as_str() else { continue };
+        insert_header(&mut out, name, text);
     }
     out
+}
+
+/// 一条静态头归一后落进表里（键值都过一遍合法性检查）。
+///
+/// 抽出来是为了让对象形态与数组形态**共用同一套判定** —— 两种形态只是
+/// 取值的路子不同，「什么算一条合法的头」只有一种说法。
+fn insert_header(out: &mut Map<String, Value>, name: &str, text: &str) {
+    let key = truncate_chars(name.trim(), MAX_HEADER_NAME_CHARS);
+    let value = truncate_chars(text.trim(), MAX_HEADER_VALUE_CHARS);
+    if key.is_empty() || value.is_empty() || key.contains(':') {
+        return;
+    }
+    out.insert(key, Value::String(value));
+    if out.len() >= MAX_HEADER_ENTRIES {
+        return;
+    }
 }
 
 /// 读侧归一：工具 type 补齐。目前只有 `custom` 一个合法值（空 = 默认）。
@@ -674,6 +715,35 @@ pub fn list() -> Vec<Value> {
     read_items()
 }
 
+/// 诊断用：这批自定义家的 **id ↔ 展示名** 对照（供日志排查「名字取不到」）。
+///
+/// ── 为什么需要它 ────────────────────────────────────────────────
+/// 「自定义家显示成 `custom-xxxx`」这个现象有好几种可能（名字表没拉到 /
+/// 记录里 name 缺失 / 记录被写坏），而**界面上看到的都是同一副样子** ——
+/// 光看截图分不出来。把这张对照打进运行日志，下次用户反馈时一眼就能
+/// 判断是「内核没给」还是「客户端没拿到」。
+///
+/// 只在 `list()` 被调用的那次请求里打（不是每次读都打）—— 它跟着
+/// `/api/custom-providers` 走，频率低，日志不会被刷屏。
+pub fn debug_labels() -> Vec<(String, String)> {
+    read_raw_items()
+        .iter()
+        .filter_map(|item| {
+            let object = item.as_object()?;
+            let id = object.get("id").and_then(Value::as_str)?.trim().to_string();
+            if id.is_empty() {
+                return None;
+            }
+            let name = object
+                .get("name")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .unwrap_or("");
+            Some((id, name.to_string()))
+        })
+        .collect()
+}
+
 /// 摘要形态的自定义家列表（`{id, label, count}`）——「可选哪些家」这类候选表的
 /// **自定义家那一半**（另一半是注册表，见 `providers::summary_json`）。
 ///
@@ -696,7 +766,14 @@ where
         .into_iter()
         .filter_map(|item| {
             let id = item.get("id").and_then(Value::as_str)?;
-            let label = item.get("name").and_then(Value::as_str).unwrap_or(id);
+            // 名字为空时回显 id（`item_of` 已不再把 id 回落成名字，所以空名是
+            // 真实状态）。空串比 id 更难定位 —— 界面上一个空的标签看不出是谁。
+            let label = item
+                .get("name")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|text| !text.is_empty())
+                .unwrap_or(id);
             Some(json!({ "id": id, "label": label, "count": count(id) }))
         })
         .collect()
@@ -727,11 +804,18 @@ pub fn is_custom_provider_id(id: &str) -> bool {
     id.starts_with(ID_PREFIX) && get(id).is_some()
 }
 
-/// 自定义提供商的展示名；不存在返回 None（调用方决定回退到什么）。
+/// 自定义提供商的展示名；**没有名字**（记录缺失 / name 为空）返回 None
+/// （调用方决定回退到什么）。
+///
+/// ⚠️ 空串按「没有」处理（2026-10-30 修）：`item_of` 已不再把 id 回落成
+/// 名字，所以 name 为空是**真实状态**（记录缺这个键）。这里若返回
+/// `Some("")`，调用方会拿到一个空展示名 —— 比返回 None 更难排查。
 pub fn label_of(id: &str) -> Option<String> {
     get(id).and_then(|item| {
         item.get("name")
             .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
             .map(str::to_string)
     })
 }
@@ -782,7 +866,7 @@ pub fn create(payload: &Value) -> Result<Value, String> {
         // 余额查询方案（预置卡片提交，见 BALANCE_SCHEMES 的说明）
         "balanceScheme": validate_balance_scheme(object.get("balanceScheme"))?,
     });
-    let mut items = read_items();
+    let mut items = read_raw_items();
     items.push(item.clone());
     if !write_items(&items) {
         return Err("保存失败：配置写入未成功（请检查磁盘空间与配置目录权限）".to_string());
@@ -802,7 +886,7 @@ pub fn update(id: &str, payload: &Value) -> Result<Value, String> {
     let object = payload
         .as_object()
         .ok_or_else(|| "请求体必须是 JSON 对象".to_string())?;
-    let mut items = read_items();
+    let mut items = read_raw_items();
     let Some(index) = items
         .iter()
         .position(|item| item.get("id").and_then(Value::as_str) == Some(id))
@@ -871,7 +955,9 @@ pub fn update(id: &str, payload: &Value) -> Result<Value, String> {
     if !write_items(&items) {
         return Err("保存失败：配置写入未成功（请检查磁盘空间与配置目录权限）".to_string());
     }
-    Ok(updated)
+    // 返回**归一形态**（对外契约）：写回用原始形态（用户的原值一个字节不动），
+    // 但返回给调用方的那份要走 `item_of` —— 契约要求对外形态恒定。
+    Ok(item_of(updated.as_object().unwrap_or(&Map::new())))
 }
 
 /// 删除一个自定义提供商，**并级联删除该家名下的全部账号**；返回删掉的账号数。
@@ -898,7 +984,7 @@ pub fn remove(id: &str, store: &AccountStore) -> Result<usize, String> {
     let accounts_removed = store
         .remove_custom_accounts(id)
         .map_err(|error| error.message)?;
-    let mut items = read_items();
+    let mut items = read_raw_items();
     items.retain(|item| item.get("id").and_then(Value::as_str) != Some(id));
     if !write_items(&items) {
         return Err("保存失败：配置写入未成功（请检查磁盘空间与配置目录权限）".to_string());
@@ -956,7 +1042,7 @@ pub fn set_models(id: &str, models: Value, mappings: Value) -> Result<Value, Str
         .ok_or_else(|| "mappings 必须是数组".to_string())?;
     let models = validate_model_entries(models_raw)?;
     let mappings = validate_mapping_entries(mappings_raw)?;
-    let mut items = read_items();
+    let mut items = read_raw_items();
     let Some(index) = items
         .iter()
         .position(|item| item.get("id").and_then(Value::as_str) == Some(id))
@@ -972,7 +1058,9 @@ pub fn set_models(id: &str, models: Value, mappings: Value) -> Result<Value, Str
     if !write_items(&items) {
         return Err("保存失败：配置写入未成功（请检查磁盘空间与配置目录权限）".to_string());
     }
-    Ok(updated)
+    // 返回**归一形态**（对外契约）：写回用原始形态（用户的原值一个字节不动），
+    // 但返回给调用方的那份要走 `item_of` —— 契约要求对外形态恒定。
+    Ok(item_of(updated.as_object().unwrap_or(&Map::new())))
 }
 
 /// 批量改这家**已登记模型**的启停状态（`enabled`），其余字段原样保留。
@@ -997,7 +1085,7 @@ pub fn set_models_enabled(id: &str, ids: &[String], enabled: bool) -> Result<usi
     if id.is_empty() {
         return Err("缺少提供商 id".to_string());
     }
-    let mut items = read_items();
+    let mut items = read_raw_items();
     let Some(index) = items
         .iter()
         .position(|item| item.get("id").and_then(Value::as_str) == Some(id))
@@ -1090,7 +1178,7 @@ pub fn set_model_capabilities(
     if model_id.is_empty() {
         return Err("缺少模型 id".to_string());
     }
-    let mut items = read_items();
+    let mut items = read_raw_items();
     let Some(index) = items
         .iter()
         .position(|item| item.get("id").and_then(Value::as_str) == Some(id))
