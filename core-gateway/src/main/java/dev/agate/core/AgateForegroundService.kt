@@ -34,6 +34,7 @@ class AgateForegroundService : Service() {
         const val ACTION_START = "dev.agate.core.action.START"
         const val ACTION_STOP = "dev.agate.core.action.STOP"
         const val ACTION_TICK = "dev.agate.core.action.TICK"
+        const val ACTION_RESTART = "dev.agate.core.action.RESTART"
         private const val CHANNEL_ID = "agate_gateway"
         private const val NOTIFICATION_ID = 1001
         /** 后台受限降级通知（与网关常驻通知分开，见 [notifyBlocked]）。 */
@@ -59,6 +60,19 @@ class AgateForegroundService : Service() {
         fun stop(context: Context) {
             context.startService(
                 Intent(context, AgateForegroundService::class.java).setAction(ACTION_STOP)
+            )
+        }
+
+        /**
+         * 按**当前配置**重启网关（监听地址 / 端口改了就调它）。
+         *
+         * 服务没在跑时是 no-op —— 改配置只落盘，**不擅自把网关拉起来**：
+         * 「用户关着网关改设置」与「开着网关改设置」是两种意图，后者才需要
+         * 让新配置立即生效。
+         */
+        fun restart(context: Context) {
+            context.startService(
+                Intent(context, AgateForegroundService::class.java).setAction(ACTION_RESTART)
             )
         }
 
@@ -117,6 +131,15 @@ class AgateForegroundService : Service() {
         }
     }
 
+    /**
+     * 本服务最后一次是否成功把网关带起来（`ACTION_RESTART` 的判据：只在
+     * **确实在跑**时才重启，否则变成「改个配置顺手把网关启动了」）。
+     * 生命周期与内核一一对应：runStart 成功置位，ACTION_STOP / 启动失败清位
+     * —— START_STICKY 重启后进程与内核都死了，字段天然回到 false。
+     */
+    @Volatile
+    private var gatewayRunning: Boolean = false
+
     private var partialLock: PowerManager.WakeLock? = null
 
     @Suppress("DEPRECATION") // WifiLock 自 API 33 起废弃，但局域网保活仍依赖它
@@ -129,6 +152,7 @@ class AgateForegroundService : Service() {
         when (intent?.action) {
             ACTION_STOP -> {
                 Thread {
+                    gatewayRunning = false
                     try {
                         Gateway.stop()
                     } catch (t: Throwable) {
@@ -139,6 +163,12 @@ class AgateForegroundService : Service() {
                     stopSelf()
                 }.start()
                 return START_NOT_STICKY
+            }
+
+            ACTION_RESTART -> {
+                enterForeground("按新配置重启中…")
+                Thread { runRestart() }.start()
+                return START_STICKY
             }
 
             ACTION_TICK -> {
@@ -159,6 +189,22 @@ class AgateForegroundService : Service() {
 
     // ── 启动路径 ─────────────────────────────────────────────────
 
+    /**
+     * 按当前配置重启：先停、再起。内核 `stop` 自带端口释放等待（5s 上限
+     * 的探测循环，见 jni_bridge 的 F6），所以 stop 返回后端口就是空的，
+     * 紧接着 start 不会撞 bind。
+     */
+    private fun runRestart() {
+        if (!gatewayRunning) return
+        try {
+            Gateway.stop()
+        } catch (t: Throwable) {
+            android.util.Log.e("Agate", "重启前停止异常", t)
+        }
+        releaseKeepAwakeLocks()
+        runStart()
+    }
+
     private fun runStart() {
         val bindLan = GatewayPrefs.bindLan(this)
         val result = try {
@@ -174,6 +220,7 @@ class AgateForegroundService : Service() {
         }
         when {
             result != null && result.ok -> {
+                gatewayRunning = true
                 if (result.bindLan) acquireKeepAwakeLocks()
                 updateNotification(
                     "网关运行中 · :${result.port}（内核 v${result.version}）" +
@@ -183,11 +230,13 @@ class AgateForegroundService : Service() {
 
             result != null && result.error == "already_running" -> {
                 // 幂等重启：内核已在跑，只对齐锁与通知
+                gatewayRunning = true
                 if (result.bindLan) acquireKeepAwakeLocks() else releaseKeepAwakeLocks()
                 updateNotification("网关运行中 · :${result.port}（内核 v${result.version}）")
             }
 
             else -> {
+                gatewayRunning = false
                 val reason = result?.let { "${it.stage ?: ""}: ${it.error}" } ?: "异常"
                 updateNotification("启动失败：$reason")
                 // 告警只在「用户以为网关起来了、其实没起」时发。这里是启动

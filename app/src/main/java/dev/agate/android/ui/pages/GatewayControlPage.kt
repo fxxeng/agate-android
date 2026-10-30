@@ -22,6 +22,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -43,6 +44,7 @@ import dev.agate.android.ui.components.AgateBadge
 import dev.agate.android.ui.components.BadgeTone
 import dev.agate.android.ui.theme.AgateType
 import dev.agate.android.ui.theme.agateColors
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -198,8 +200,26 @@ fun GatewayControlPage(modifier: Modifier = Modifier, onOpenDrawer: () -> Unit =
 
         Spacer(Modifier.height(10.dp))
         SectionLabel("保活开关")
-        // B 包①：内核端口单一来源（Application/FGS 共用）；改后重启网关生效
+        // B 包①：内核端口单一来源（Application/FGS 共用）。
+        //
+        // ⚠️ 输入**防抖后自动重启**（2026-10-30 改）：旧文案「重启网关生效」把
+        // 生效时机留给用户猜 —— 改完端口，监听还钉在旧口上，外部设备连不上，
+        // 而页面上看不出任何异常。现在停笔 1.5s 后自动按新配置重启（重启是
+        // 「先停、等端口释放、再起」，见 FGS 的 runRestart）；网关没在跑时
+        // 服务端是 no-op（不会顺手把网关拉起来）。
         var portText by remember { mutableStateOf(GatewayPrefs.port(ctx).toString()) }
+        // 「上次已生效」的端口：防抖的基准。必须记住它而不是跟落盘值比 ——
+        // 首次组合时 LaunchedEffect 也会跑一次，没有这个基准的话，打开本页
+        // 1.5s 后就会无故重启一次网关。改回原值也要重启（网关此刻在新口上）。
+        var appliedPort by remember { mutableStateOf(GatewayPrefs.port(ctx).toString()) }
+        LaunchedEffect(portText) {
+            if (portText == appliedPort) return@LaunchedEffect
+            delay(1500)
+            if (portText.toIntOrNull() in 1..65535) {
+                AgateForegroundService.restart(ctx)
+                appliedPort = portText
+            }
+        }
         OutlinedTextField(
             value = portText,
             onValueChange = { raw ->
@@ -207,18 +227,23 @@ fun GatewayControlPage(modifier: Modifier = Modifier, onOpenDrawer: () -> Unit =
                 portText = digits
                 digits.toIntOrNull()?.let { if (it in 1..65535) GatewayPrefs.setPort(ctx, it) }
             },
-            label = { Text("内核端口（1-65535，重启网关生效）") },
+            label = { Text("内核端口（1-65535；运行中改它，停笔后自动重启生效）") },
             singleLine = true,
             modifier = Modifier.fillMaxWidth(),
         )
         ToggleRow(
             label = "局域网监听 0.0.0.0",
-            subtitle = "重启网关生效；无 API Key 时 /v1 拒绝服务",
+            subtitle = "运行中切换会自动按新配置重启；无 API Key 时 /v1 拒绝服务",
             checked = bindLan,
         ) { on ->
             bindLan = on
             GatewayPrefs.setBindLan(ctx, on)
-            append("局域网监听 = $on")
+            // 运行中的网关要立刻按新地址重绑 —— 旧实现把生效时机留给用户猜
+            //（重启网关生效），改完开关监听还钉在旧地址上，LAN 地址展示了、
+            // 外部设备却连不上。restart 在服务里判「确实在跑」才动，没跑时
+            // 是 no-op（见 FGS 的 gatewayRunning）。
+            AgateForegroundService.restart(ctx)
+            append("局域网监听 = $on（运行中已按新配置重启）")
         }
         ToggleRow("开机自启", "BOOT_COMPLETED / MY_PACKAGE_REPLACED", bootStart) { on ->
             bootStart = on
