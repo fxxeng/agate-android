@@ -73,6 +73,7 @@ fun CheckinCenterPage(
     onBack: () -> Unit,
     onOpenSchedule: () -> Unit = {},
     onOpenRecords: () -> Unit = {},
+    onOpenRecovery: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val C = agateColors()
@@ -171,6 +172,7 @@ fun CheckinCenterPage(
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 ShortcutText("定时签到 ›") { onOpenSchedule() }
                 ShortcutText("签到记录 ›") { onOpenRecords() }
+                ShortcutText("异常核实 ›") { onOpenRecovery() }
                 Spacer(Modifier.weight(1f))
                 // snap 是由 collectAsState() 委托的属性，直接判 != null 无法智能转换，
                 // 先取局部变量（Compose 里这个值与本次重组绑定，不会中途变）。

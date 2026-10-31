@@ -2,6 +2,7 @@ package dev.agate.android
 
 import android.app.Application
 import dev.agate.core.Gateway
+import dev.agate.core.RuntimeController
 import dev.agate.core.GatewayPrefs
 
 /**
@@ -18,11 +19,13 @@ class AgateApp : Application() {
         super.onCreate()
         Thread {
             try {
-                Gateway.coreInit(
-                    filesDir.resolve("agate").absolutePath,
-                    GatewayPrefs.port(this),
-                    GatewayPrefs.schedulerOn(this),
-                )
+                RuntimeController.runSerialized {
+                    Gateway.coreInit(
+                        filesDir.resolve("agate").absolutePath,
+                        GatewayPrefs.port(this),
+                        GatewayPrefs.schedulerOn(this),
+                    )
+                }
             } catch (t: Throwable) {
                 android.util.Log.e("Agate", "Core 初始化异常（.so 加载失败？）", t)
             }

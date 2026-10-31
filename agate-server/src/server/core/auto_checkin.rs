@@ -398,13 +398,30 @@ pub fn master_enabled() -> bool {
 /// 走 config.rs 的 `update_raw_field`，config.json 里的其它字段原样保留。
 /// `pub(crate)`：多条目配置在同一键下写回，合并逻辑只有这一份。
 pub(crate) fn write_state(patch: Value) {
+    let _ = write_state_checked(patch);
+}
+
+/// 与 write_state 同样合并配置，但把持久化失败显式交给恢复投影处理。
+pub(crate) fn write_state_checked(patch: Value) -> bool {
     let mut merged = raw_object();
     if let Value::Object(patch) = patch {
         for (key, value) in patch {
             merged.insert(key, value);
         }
     }
-    config::update_raw_field(CONFIG_KEY, Value::Object(merged));
+    config::update_raw_field(CONFIG_KEY, Value::Object(merged))
+}
+
+/// 从 SQLite 批次摘要恢复顶层 AutoCheckin 兼容视图。
+pub(crate) fn project_result(summary: &Value) -> Result<(), String> {
+    if !summary.is_object() {
+        return Err("自动签到摘要不是 JSON 对象".to_string());
+    }
+    if write_state_checked(json!({ "lastResult": summary })) {
+        Ok(())
+    } else {
+        Err("自动签到 lastResult 写入失败；执行台账保留待恢复标记".to_string())
+    }
 }
 
 // ─── 服务句柄 ───────────────────────────────────────────────
@@ -415,8 +432,10 @@ struct Inner {
     running: bool,
     /// 调度循环任务句柄（对应 Node 的 timer）
     task: Option<tokio::task::JoinHandle<()>>,
-    /// 停机标志：stop() 置位后循环退出（幂等；再次 start 会重置）
+    /// 调度循环停机标志：stop() 置位后循环退出（与当前签到取消分离）。
     stopped: Arc<AtomicBool>,
+    /// 当前签到轮次的合作式停止请求；只在账号边界检查，不中断在途 Provider。
+    cancel_current: Arc<AtomicBool>,
 }
 
 /// 定时签到服务句柄：内部一把锁 + Clone，与 update / models 同构。
@@ -456,6 +475,7 @@ impl AutoCheckin {
                 running: false,
                 task: None,
                 stopped: Arc::new(AtomicBool::new(false)),
+                cancel_current: Arc::new(AtomicBool::new(false)),
             })),
         }
     }
@@ -470,8 +490,20 @@ impl AutoCheckin {
     }
 
     /// 是否正在执行签到（getState().running）
-    fn is_running(&self) -> bool {
+    /// 当前是否存在一轮签到执行中（包括手动、调度器与闹钟触发）。
+    pub fn is_running(&self) -> bool {
         self.lock().running
+    }
+
+    /// 请求当前签到轮次在当前账号完成后停止。不会中断正在进行的 Provider 请求。
+    /// 返回 true 表示当前确有轮次在执行；false 表示没有可请求停止的轮次。
+    pub fn request_cancel_current(&self) -> bool {
+        let inner = self.lock();
+        if !inner.running {
+            return false;
+        }
+        inner.cancel_current.store(true, Ordering::SeqCst);
+        true
     }
 
     // ─── 对外状态 ───────────────────────────────────────────
@@ -592,6 +624,7 @@ impl AutoCheckin {
                 return None;
             }
             inner.running = true;
+            inner.cancel_current.store(false, Ordering::SeqCst);
             RunningGuard { inner: self.inner.clone() }
         };
 
@@ -613,13 +646,17 @@ impl AutoCheckin {
                 .unwrap_or_else(default_providers),
             None => default_providers(),
         };
-        let outcome = match checkin::run_checkin(
+        let cancel_current = self.lock().cancel_current.clone();
+        let outcome = match checkin::run_checkin_cancellable(
             &self.store,
             &self.billing,
             providers.as_slice(),
             None,
             reason,
             source,
+            Some(cancel_current.as_ref()),
+            schedule_id,
+            true,
         )
         .await
         {
@@ -628,7 +665,22 @@ impl AutoCheckin {
                 if let Some(id) = schedule_id {
                     checkin_schedules::mark_result(id, Some(summary.clone()));
                 }
+                if let Some(db) = self.store.db() {
+                    if let Err(error) = crate::server::core::checkin_run_ledger::project_pending_auto_results(db) {
+                        logging::verbose("[Checkin]", &format!("自动签到摘要投影待恢复：{error}"));
+                    }
+                }
                 Some(summary)
+            }
+            Err(error) if error.status_code == 409 => {
+                // 手动 API 或另一条签到入口正在执行：这不是本轮签到失败。
+                // 释放条目的当天去重标记，让下一次 tick 有机会执行；不要覆盖
+                // lastResult，也不要把「并发冲突」写成账号签到失败。
+                if let Some(id) = schedule_id {
+                    checkin_schedules::mark_fired(id, None);
+                }
+                logging::verbose("[Checkin]", "已有另一条签到入口正在执行，本轮调度稍后重试");
+                None
             }
             Err(error) => {
                 // 失败也写 lastResult（failed 里放错误文案），与 Node 的 catch 分支一致
@@ -714,6 +766,7 @@ impl AutoCheckin {
             "active": active,
             "total": total,
             "skipped": skipped,
+            "cancelled": result.get("cancelled").and_then(Value::as_bool).unwrap_or(false),
             // 只留前 5 条：面板展示用，避免 config.json 被长列表撑大（Node 同）
             "failed": failures.iter().take(5).cloned().collect::<Vec<_>>(),
             "failedCount": failures.len(),
@@ -726,13 +779,19 @@ impl AutoCheckin {
                 "skipped": skipped,
                 "failed": failures.len(),
                 "active": active,
+                "cancelled": result.get("cancelled").and_then(Value::as_bool).unwrap_or(false),
             }),
         );
         write_state(json!({ "lastResult": summary }));
         logging::log(
             "[Checkin]",
             &format!(
-                "定时签到完成: {succeeded}/{total} 个账号成功领取{}{}{}",
+                "{}: {succeeded}/{total} 个账号成功领取{}{}{}",
+                if result.get("cancelled").and_then(Value::as_bool) == Some(true) {
+                    "签到已停止（当前账号已收尾）"
+                } else {
+                    "定时签到完成"
+                },
                 if skipped > 0 { format!("，跳过 {skipped} 个") } else { String::new() },
                 if failures.is_empty() {
                     String::new()

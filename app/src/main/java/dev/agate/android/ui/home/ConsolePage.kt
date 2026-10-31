@@ -45,9 +45,7 @@ import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
-import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -55,7 +53,6 @@ import dev.agate.core.AgateForegroundService
 import dev.agate.core.Gateway
 import dev.agate.core.GatewayPrefs
 import dev.agate.android.data.GatewayRepository
-import dev.agate.android.data.LogOps
 import dev.agate.android.navigation.Routes
 import dev.agate.android.ui.components.agateCard
 import dev.agate.android.ui.components.AgateBadge
@@ -108,19 +105,6 @@ fun ConsolePage(
     val running = gw?.running == true
     var hcOpen by remember { mutableStateOf(false) }
 
-    // ── 崩溃自愈闭环（2026-10-30 加）──────────────────────────
-    // 内核 `crash_marker` 只在**真的 panic** 时落痕（后台被系统回收不算，
-    // 那条判据在 AppLogPage 的说明里）。以前这份痕迹只有用户主动点进
-    // 「日志」页才看得到 —— 崩溃发生过、AlarmReceiver 自动拉起恢复了，
-    // 用户全程无感，「这功能是不是自己好了」无从回答。现在进控制台就问
-    // 一次（读即清，与日志页同口径），有痕就地给横幅：复制栈给开发者 /
-    // 跳日志页看崩溃前的输出 / 关掉。
-    var crash by remember { mutableStateOf<LogOps.Crash?>(null) }
-    val clipboard = LocalClipboardManager.current
-    LaunchedEffect(Unit) {
-        crash = LogOps.takeCrash().takeIf { it.ok }?.data
-    }
-
     Column(modifier = modifier.fillMaxSize()) {
         // ── 页头（v18 吸顶：菜单 + 标题 + 实时日志）──
         AgatePageHeader(title = "控制台", onOpenDrawer = onOpenDrawer) {
@@ -134,19 +118,6 @@ fun ConsolePage(
                 .padding(horizontal = 16.dp),
         ) {
         Spacer(Modifier.height(10.dp))
-
-        crash?.let { c ->
-            CrashRecoveredBanner(
-                crash = c,
-                onCopy = {
-                    clipboard.setText(AnnotatedString(crashDump(c)))
-                    Toast.makeText(ctx, "崩溃栈已复制，可直接发给开发者", Toast.LENGTH_SHORT).show()
-                },
-                onOpenLogs = { onNavigate(Routes.LOGS) },
-                onDismiss = { crash = null },
-            )
-            Spacer(Modifier.height(10.dp))
-        }
 
         // ── 新手 3 步向导（accent 边框；三步完成自动收起，✕ 永久关闭）──
         val wizardDone = running && snap.upstreamConfigured == true && snap.requestsToday > 0
@@ -657,78 +628,4 @@ private fun fmtTokens(n: Long): String = when {
     n >= 100_000_000 -> "%.1f亿".format(n / 100_000_000.0)
     n >= 10_000 -> "%.1f万".format(n / 10_000.0)
     else -> n.toString()
-}
-
-/** 崩溃痕迹的文本形态（与日志页 `dump` 同一字段序，复制出去能直接读）。 */
-private fun crashDump(c: LogOps.Crash): String = buildString {
-    appendLine("agate crash @ ${c.at}")
-    if (c.thread.isNotBlank()) appendLine("thread: ${c.thread}")
-    if (c.location.isNotBlank()) appendLine("at: ${c.location}")
-    appendLine("message: ${c.message}")
-}
-
-/**
- * 控制台的「上次崩溃已自动恢复」横幅。
- *
- * 与日志页那条的差异：这里的用户**没主动看日志** —— 所以除了复制，还要给
- * 一个直达日志页的入口（崩溃前的输出就在那儿）；文案也点明「已自动恢复」，
- * 回答「刚才是不是挂了」这个必然的疑问。
- */
-@Composable
-private fun CrashRecoveredBanner(
-    crash: LogOps.Crash,
-    onCopy: () -> Unit,
-    onOpenLogs: () -> Unit,
-    onDismiss: () -> Unit,
-) {
-    val C = agateColors()
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .background(C.amberBg, RoundedCornerShape(12.dp))
-            .border(1.dp, C.amber.copy(alpha = 0.35f), RoundedCornerShape(12.dp))
-            .padding(horizontal = 10.dp, vertical = 8.dp),
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                "上次运行异常退出，已自动恢复",
-                fontSize = 12.sp,
-                fontWeight = FontWeight.SemiBold,
-                color = C.amber,
-                modifier = Modifier.weight(1f),
-            )
-            Text(
-                "✕",
-                fontSize = 14.sp,
-                color = C.amber,
-                modifier = Modifier.clickable(onClick = onDismiss).padding(horizontal = 6.dp),
-            )
-        }
-        Spacer(Modifier.height(3.dp))
-        Text(
-            "崩溃于 ${crash.message.take(80)}",
-            fontSize = 11.sp,
-            color = C.textSub,
-        )
-        Spacer(Modifier.height(6.dp))
-        Row {
-            Text(
-                "查看日志",
-                fontSize = 12.sp,
-                fontWeight = FontWeight.SemiBold,
-                color = C.accent,
-                modifier = Modifier
-                    .clickable(onClick = onOpenLogs)
-                    .padding(horizontal = 8.dp, vertical = 3.dp),
-            )
-            Text(
-                "复制崩溃栈",
-                fontSize = 12.sp,
-                color = C.textSub,
-                modifier = Modifier
-                    .clickable(onClick = onCopy)
-                    .padding(horizontal = 8.dp, vertical = 3.dp),
-            )
-        }
-    }
 }

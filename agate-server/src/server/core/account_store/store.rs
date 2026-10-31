@@ -171,6 +171,11 @@ impl AccountStore {
         self.inner.file_path.to_string_lossy().to_string()
     }
 
+    /// 共享 SQLite 句柄。签到执行台账与账号事实必须使用同一数据库。
+    pub fn db(&self) -> Option<&Db> {
+        self.inner.db.as_ref()
+    }
+
     /// 账号数据是否已落盘（Node 版账号存储导出的
     /// `existsSync: () => existsSync(filePath)` 的对等物）。
     ///

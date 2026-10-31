@@ -59,6 +59,8 @@ pub mod checkin_center;
 // 签到记录明细台账（GET/DELETE /api/checkin-records）：每账号一行的成败与
 // 收益明细，记账点在 `core::billing::checkin::run_checkin`，见该文件模块头
 pub mod checkin_records;
+// CheckinRun 的 uncertain 只读诊断（需管理 API Key）。
+pub mod checkin_runs;
 // 定时签到的**条目**（GET/POST /api/checkin-schedules + {id}/delete|run）：
 // 总开关仍在 /api/auto-checkin，条目 CRUD 在这里，见该文件模块头
 pub mod checkin_schedules;

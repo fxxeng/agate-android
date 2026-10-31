@@ -253,13 +253,26 @@ async fn welfare_request(
         request = request.header(name.as_str(), value.as_str());
     }
     let response = request.send().await.map_err(|error| {
+        let status = if error.is_timeout() { 504 } else { 502 };
         GatewayError::with_status(
-            502,
+            status,
             format!("CodeArts 活动请求失败：{}", egress::describe_error_detail(&error)),
         )
     })?;
     let status = response.status().as_u16();
-    let text = response.text().await.unwrap_or_default();
+    // 领取链必须区分「上游拒绝」与「响应体没读完」。reqwest 的请求总超时
+    // 同样覆盖 body 读取；吞掉这里的错误会把网络中断伪装成空 JSON，
+    // 让多阶段 delivery → claim → confirm 链路丢失真实故障类型。
+    let text = response.text().await.map_err(|error| {
+        let status = if error.is_timeout() { 504 } else { 502 };
+        GatewayError::with_status(
+            status,
+            format!(
+                "CodeArts 活动响应读取失败：{}",
+                egress::describe_error_detail(&error),
+            ),
+        )
+    })?;
     if status != 200 {
         return Err(GatewayError::with_status(
             i32::from(status),

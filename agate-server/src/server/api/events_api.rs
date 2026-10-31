@@ -15,9 +15,9 @@ use std::convert::Infallible;
 use std::time::Duration;
 
 use axum::response::sse::{Event, KeepAlive, Sse};
-use futures::stream::{StreamExt};
+use futures::stream::StreamExt;
 use futures::future::ok;
-use futures::stream::{self as fstream, Stream};
+use futures::stream::{self as fstream};
 use serde_json::json;
 use tokio_stream::wrappers::BroadcastStream;
 

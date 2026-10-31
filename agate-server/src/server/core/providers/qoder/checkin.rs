@@ -73,6 +73,186 @@ const RESULT_ALREADY_CLAIMED: &str = "ALREADY_CLAIMED";
 /// 上游没给 `benefit.amount` 时的缺省奖励额（实测就是 100）
 const DEFAULT_REWARD: f64 = 100.0;
 
+/// 只读核对一次不确定签到是否已在上游完成。
+///
+/// `run_started_at_ms` 来自 CheckinRun（毫秒）；Qoder campaign 窗口使用 Unix 秒。
+/// 仅当唯一的每日权益活动覆盖该次运行开始时间且状态明确为 `CLAIMED` 时
+/// 返回 `confirmed`。其余所有情况均为 `unknown`，绝不推导为可安全重试。
+///
+/// 国际版必须沿用正常签到的 uid → 风控头 → 重拉顺序，否则查到的列表可能
+/// 根本不包含每日权益活动。此函数不调用 claim 端点。
+pub async fn inspect_uncertain_claim(
+    store: &AccountStore,
+    region: Region,
+    account_id: &str,
+    run_started_at_ms: i64,
+) -> Result<Value, GatewayError> {
+    let observed_at_ms = crate::server::logging::now_ms();
+    let run_started_at_sec = run_started_at_ms.div_euclid(1000);
+    if run_started_at_ms <= 0 || run_started_at_sec <= 0 {
+        return Ok(unknown_reconciliation(
+            region, observed_at_ms, "签到运行时间无效，无法匹配活动窗口",
+        ));
+    }
+
+    let mut credentials = match refresh::ensure_fresh(store, region, account_id, false).await {
+        Ok(value) => value,
+        Err(error) => return Ok(unknown_reconciliation(
+            region, observed_at_ms, &format!("凭证准备失败: {error}"),
+        )),
+    };
+    let (record, _) = match refresh::snapshot(store, region, account_id) {
+        Ok(value) => value,
+        Err(error) => return Ok(unknown_reconciliation(
+            region, observed_at_ms, &format!("账号快照读取失败: {error}"),
+        )),
+    };
+    let proxy = match auth::account_proxy(&record) {
+        Ok(value) => value,
+        Err(error) => return Ok(unknown_reconciliation(
+            region, observed_at_ms, &format!("账号代理配置不可用: {error}"),
+        )),
+    };
+
+    let mut first = match fetch_campaigns(&credentials, proxy.as_ref()).await {
+        Ok(value) => value,
+        Err(error) => return Ok(unknown_reconciliation(
+            region, observed_at_ms, &format!("上游活动查询失败: {error}"),
+        )),
+    };
+    if first.status == 401 && credentials.can_refresh() {
+        credentials = match refresh::ensure_fresh(store, region, account_id, true).await {
+            Ok(value) => value,
+            Err(error) => return Ok(unknown_reconciliation(
+                region, observed_at_ms, &format!("凭证刷新失败: {error}"),
+            )),
+        };
+        first = match fetch_campaigns(&credentials, proxy.as_ref()).await {
+            Ok(value) => value,
+            Err(error) => return Ok(unknown_reconciliation(
+                region, observed_at_ms, &format!("凭证刷新后活动查询失败: {error}"),
+            )),
+        };
+    }
+    let first_list = match auth::payload(first, "签到对账活动查询") {
+        Ok(value) => value,
+        Err(error) => {
+            return Ok(unknown_reconciliation(
+                region, observed_at_ms, &format!("上游活动查询不可用: {error}"),
+            ));
+        }
+    };
+
+    let list = if region == Region::Global {
+        let uid = first_list.get("uid").and_then(Value::as_str).unwrap_or("").trim();
+        if uid.is_empty() {
+            return Ok(unknown_reconciliation(
+                region, observed_at_ms, "国际版活动列表缺少 uid，无法构造设备风控身份",
+            ));
+        }
+        let (headers, _) = risk::augment_headers(
+            endpoints::sash_headers(&credentials.access_token), region, uid,
+        ).await;
+        let second = match fetch_campaigns_with(&credentials, proxy.as_ref(), &headers).await {
+            Ok(response) => response,
+            Err(error) => {
+                return Ok(unknown_reconciliation(
+                    region, observed_at_ms, &format!("国际版风控活动查询失败: {error}"),
+                ));
+            }
+        };
+        match auth::payload(second, "签到对账活动查询（国际版风控重拉）") {
+            Ok(value) => value,
+            Err(error) => {
+                return Ok(unknown_reconciliation(
+                    region, observed_at_ms, &format!("国际版风控活动查询不可用: {error}"),
+                ));
+            }
+        }
+    } else {
+        first_list
+    };
+
+    Ok(classify_campaign_reconciliation(
+        &list, run_started_at_sec, observed_at_ms, region,
+    ))
+}
+
+fn unknown_reconciliation(region: Region, observed_at_ms: i64, reason: &str) -> Value {
+    json!({
+        "verdict": "unknown",
+        "provider": region.provider_id(),
+        "evidenceType": "campaign_claim_status",
+        "observedAt": observed_at_ms,
+        "reason": reason,
+    })
+}
+
+/// 纯函数：只接受唯一且覆盖本次 CheckinRun 开始时间的每日权益活动。
+fn classify_campaign_reconciliation(
+    list: &Value,
+    run_started_at_sec: i64,
+    observed_at_ms: i64,
+    region: Region,
+) -> Value {
+    let Some(rows) = list.get("campaigns").and_then(Value::as_array) else {
+        return unknown_reconciliation(region, observed_at_ms, "上游响应缺少 campaigns 数组");
+    };
+
+    let matching: Vec<&Value> = rows.iter().filter(|row| {
+        if row.get("actionType").and_then(Value::as_str) != Some(ACTION_CLAIM_BENEFIT) {
+            return false;
+        }
+        let start = row.get("startAt").and_then(Value::as_i64);
+        let end = row.get("endAt").and_then(Value::as_i64);
+        matches!((start, end), (Some(start), Some(end))
+            if start > 0 && end > start && start <= run_started_at_sec && run_started_at_sec <= end)
+    }).collect();
+
+    if matching.len() != 1 {
+        let reason = if matching.is_empty() {
+            "没有唯一覆盖本次运行时间的每日权益活动"
+        } else {
+            "多个每日权益活动覆盖本次运行时间，无法唯一归属"
+        };
+        return unknown_reconciliation(region, observed_at_ms, reason);
+    }
+
+    let campaign = matching[0];
+    let status = campaign.get("claimStatus").and_then(Value::as_str).unwrap_or("");
+    let start = campaign.get("startAt").and_then(Value::as_i64).unwrap_or_default();
+    let end = campaign.get("endAt").and_then(Value::as_i64).unwrap_or_default();
+    let campaign_id = campaign.get("campaignId").and_then(Value::as_str).unwrap_or("");
+    if campaign_id.is_empty() {
+        return unknown_reconciliation(region, observed_at_ms, "匹配活动缺少 campaignId");
+    }
+
+    if status != STATUS_CLAIMED {
+        // CLAIMABLE / 未知状态都不能证明超时写请求未生效：上游可能最终一致。
+        return json!({
+            "verdict": "unknown",
+            "provider": region.provider_id(),
+            "evidenceType": "campaign_claim_status",
+            "observedAt": observed_at_ms,
+            "businessWindow": { "startAt": start, "endAt": end },
+            "campaignId": campaign_id,
+            "upstreamStatus": if status.is_empty() { Value::Null } else { json!(status) },
+            "reason": "活动状态不是明确的 CLAIMED；不据此判断请求未执行",
+        });
+    }
+
+    json!({
+        "verdict": "confirmed",
+        "provider": region.provider_id(),
+        "evidenceType": "campaign_claim_status",
+        "observedAt": observed_at_ms,
+        "businessWindow": { "startAt": start, "endAt": end },
+        "campaignId": campaign_id,
+        "upstreamStatus": STATUS_CLAIMED,
+        "reason": "唯一匹配本次运行时间的每日权益活动明确显示 CLAIMED",
+    })
+}
+
 /// Qoder 的每日签到（中国版直领；国际版带设备风控身份两段拉取）。
 ///
 /// 返回 `{success, msg, ...}` —— 与 WorkBuddy / 小浣熊 / AutoClaw 三家同形状
@@ -191,13 +371,8 @@ async fn claim_from(
     let mut claim = claim_campaign(&url, &credentials, proxy.as_ref(), &headers).await?;
     // 上游并发/重放时给 409 + `{"result":"ALREADY_CLAIMED"}`（参考实现实测），
     // 那不是失败，是「今天已经领过了」。
-    if !claim.ok && (claim.status == 409 || result_of(&claim).as_deref() == Some(RESULT_ALREADY_CLAIMED))
-    {
-        return Ok(json!({
-            "success": false,
-            "alreadyCompleted": true,
-            "msg": "今日已领取",
-        }));
+    if already_claimed(&claim) {
+        return Ok(already_claimed_result());
     }
     if claim.status == 401 && credentials.can_refresh() {
         credentials = refresh::ensure_fresh(store, region, account_id, true).await?;
@@ -209,6 +384,12 @@ async fn claim_from(
             fresh_headers = augmented;
         }
         claim = claim_campaign(&url, &credentials, proxy.as_ref(), &fresh_headers).await?;
+        // 刷新后重放也可能撞上并发领取（或首次请求在上游已完成、响应状态
+        // 却表现为鉴权拒绝）。必须复用首次响应的幂等判定，不能把第二次 409
+        // ALREADY_CLAIMED 降级成普通 HTTP 错误。
+        if already_claimed(&claim) {
+            return Ok(already_claimed_result());
+        }
     }
     let body = auth::payload(claim, "签到领取")?;
 
@@ -286,6 +467,22 @@ async fn claim_campaign(
     auth::request("POST", url, Some(&json!({})), &headers, proxy).await
 }
 
+/// 领取是否已经由上游判为「今日领取过」。
+///
+/// 不把 `ALREADY_CLAIMED` 限定在非 2xx：有些网关会把业务标记包在 HTTP 200，
+/// 另一些则按 409 返回。首次领取与刷新后的唯一一次重放必须共用这条判据。
+fn already_claimed(response: &ApiResponse) -> bool {
+    response.status == 409 || result_of(response).as_deref() == Some(RESULT_ALREADY_CLAIMED)
+}
+
+fn already_claimed_result() -> Value {
+    json!({
+        "success": false,
+        "alreadyCompleted": true,
+        "msg": "今日已领取",
+    })
+}
+
 /// 领取响应的 `result` 字段（并发/重放标记），拿不到给 None。
 fn result_of(response: &ApiResponse) -> Option<String> {
     let value = response.payload.as_ref()?.get("result")?.as_str()?.trim();
@@ -328,4 +525,91 @@ fn no_claim(region: Region, claimed: bool, risk_note: Option<String>) -> Value {
         "success": false,
         "msg": "当前没有可领取的签到活动",
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn campaign(status: &str, action: &str, start: i64, end: i64) -> Value {
+        json!({
+            "campaignId": "daily-1",
+            "actionType": action,
+            "claimStatus": status,
+            "startAt": start,
+            "endAt": end,
+        })
+    }
+
+    #[test]
+    fn reconciliation_confirms_only_unique_claimed_window() {
+        let list = json!({ "campaigns": [
+            campaign("CLAIMED", ACTION_CLAIM_BENEFIT, 1_800_000_000, 1_800_086_399),
+            campaign("CLAIMABLE", "VIEW_DETAILS", 1_800_000_000, 1_800_086_399),
+        ]});
+        let result = classify_campaign_reconciliation(
+            &list, 1_800_000_001, 1_800_000_100_000, Region::Cn,
+        );
+        assert_eq!(result["verdict"], "confirmed");
+        assert_eq!(result["upstreamStatus"], "CLAIMED");
+    }
+
+    #[test]
+    fn reconciliation_never_treats_claimable_as_not_executed() {
+        let list = json!({ "campaigns": [
+            campaign("CLAIMABLE", ACTION_CLAIM_BENEFIT, 1_800_000_000, 1_800_086_399),
+        ]});
+        let result = classify_campaign_reconciliation(
+            &list, 1_800_000_001, 1_800_000_100_000, Region::Cn,
+        );
+        assert_eq!(result["verdict"], "unknown");
+        assert_eq!(result["upstreamStatus"], "CLAIMABLE");
+    }
+
+    #[test]
+    fn reconciliation_rejects_missing_or_ambiguous_windows() {
+        let missing = json!({ "campaigns": [
+            campaign("CLAIMED", ACTION_CLAIM_BENEFIT, 1_700_000_000, 1_700_086_399),
+        ]});
+        let ambiguous = json!({ "campaigns": [
+            campaign("CLAIMED", ACTION_CLAIM_BENEFIT, 1_800_000_000, 1_800_086_399),
+            campaign("CLAIMED", ACTION_CLAIM_BENEFIT, 1_800_000_000, 1_800_086_399),
+        ]});
+        for list in [&missing, &ambiguous] {
+            let result = classify_campaign_reconciliation(
+                list, 1_800_000_001, 1_800_000_100_000, Region::Cn,
+            );
+            assert_eq!(result["verdict"], "unknown");
+        }
+    }
+
+    #[test]
+    fn already_claimed_is_recognized_from_http_409() {
+        let response = ApiResponse {
+            status: 409,
+            ok: false,
+            payload: None,
+        };
+        assert!(already_claimed(&response));
+    }
+
+    #[test]
+    fn already_claimed_business_marker_is_recognized_even_on_http_200() {
+        let response = ApiResponse {
+            status: 200,
+            ok: true,
+            payload: Some(json!({ "result": "ALREADY_CLAIMED" })),
+        };
+        assert!(already_claimed(&response));
+    }
+
+    #[test]
+    fn ordinary_claim_failure_is_not_treated_as_already_completed() {
+        let response = ApiResponse {
+            status: 502,
+            ok: false,
+            payload: Some(json!({ "result": "UPSTREAM_ERROR" })),
+        };
+        assert!(!already_claimed(&response));
+    }
 }

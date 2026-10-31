@@ -177,6 +177,21 @@ pub(crate) fn run(store: &AccountStore) {
             ),
         );
     }
+    // 三家旧项目导入都依赖桌面用户主目录（HOME / USERPROFILE）。
+    // Android 的进程工作目录不是用户主目录；若 HOME 缺失，旧实现会回退到
+    // `.`，随后把「没找到旧文件」写成一次性完成标记。用户之后补齐环境或迁入
+    // 旧数据时，导入机会就永久丢失。这里在启动入口统一做保守门禁：没有有效的
+    // 绝对主目录就跳过整组导入，且不触碰任何 provider 的导入标记。
+    // 显式 Android 配置目录（AGATE_PROXY_HOME）不能代替旧桌面目录，不能据此
+    // 猜测 `~/.raccoon-proxy` 等旧文件的位置。
+    if crate::paths::user_home_dir().is_none() {
+        logging::log(
+            "[Accounts]",
+            "ℹ️  未发现有效的 HOME / USERPROFILE，跳过旧桌面账号导入；未写入迁移标记，补齐主目录后可重试",
+        );
+        return;
+    }
+
     // 小浣熊旧数据一次性导入（架构文档 §3.3，W3-T4）：
     //   `~/.raccoon-proxy/accounts.json`（旧网关多账号）+
     //   `~/.box-agent/config/auth.json`（桌面端实时登录态）→ raccoon 账号。

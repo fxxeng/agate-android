@@ -52,13 +52,15 @@ object CoreTransport {
             for (attempt in 0 until RETRY) {
                 val raw = try {
                     Gateway.apiCall(method, path, body, apiKey)
-                } catch (_: Throwable) {
-                    null
-                }
-                if (raw == null) {
-                    lastError = "core_not_ready"
-                    if (attempt < RETRY - 1) delay(RETRY_DELAY_MS)
-                    continue
+                } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                    throw cancelled
+                } catch (_: LinkageError) {
+                    return@withContext Reply.Down("Native 内核库不可用，请重启应用")
+                } catch (error: Exception) {
+                    val detail = error.message?.takeIf { it.isNotBlank() }
+                    return@withContext Reply.Down(
+                        detail?.let { "Native 调用失败：$it" } ?: "Native 调用失败"
+                    )
                 }
                 val obj = try {
                     JSONObject(raw)

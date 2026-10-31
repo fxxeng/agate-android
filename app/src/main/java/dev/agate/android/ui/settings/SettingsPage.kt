@@ -59,7 +59,9 @@ import dev.agate.android.ui.theme.AgateType
 import dev.agate.android.ui.theme.agateColors
 import dev.agate.core.AgateForegroundService
 import dev.agate.core.GatewayPrefs
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * 应用设置页（十组手风琴）。
@@ -2460,7 +2462,10 @@ private fun KeepaliveGroup(ctx: android.content.Context) {
     var refresh by remember { mutableStateOf(0) }
 
     // 三行系统实况 + 两颗开关的初值。key = refresh 让它可被手动作废重读。
-    val running = remember(refresh) { KeepalivePrefs.serviceRunning() }
+    var running by remember { mutableStateOf(false) }
+    LaunchedEffect(refresh) {
+        running = withContext(Dispatchers.IO) { KeepalivePrefs.serviceRunning() }
+    }
     val ignoring = remember(refresh) { KeepalivePrefs.ignoringBatteryOptimization(ctx) }
     val canExact = remember(refresh) { KeepalivePrefs.canExactAlarm(ctx) }
     var checkinNotify by remember(refresh) { mutableStateOf(KeepalivePrefs.checkinNotify(ctx)) }

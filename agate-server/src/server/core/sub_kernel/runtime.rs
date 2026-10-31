@@ -563,17 +563,6 @@ fn short_hash(text: &str) -> String {
 
 /// 重建配置 + 启动（或重启）内核 + 同步节点（详见模块头「启动流程」）。
 pub async fn run_restart(providers: &[ProviderInput]) -> Result<(), String> {
-    // ── 平台门（本函数是 spawn 的**唯一**入口）────────────────────
-    // Android 上数据目录里的二进制执行不了（W^X，原因见
-    // `sub_kernel::platform_supported`）。不拦的话，手动塞进来的二进制
-    // 会让这条路径死在 `os error 13` 上 —— 一句没法行动的errno，还不如
-    // 明说「这平台跑不了外部内核」。
-    if !crate::server::core::sub_kernel::platform_supported() {
-        return Err(
-            "订阅内核在此平台不可用：Android 10+ 禁止执行应用数据目录里的二进制（W^X）；内置的 http/socks 代理不受影响，可直接手动添加代理条目。"
-                .to_string(),
-        );
-    }
     if !crate::server::core::sub_kernel::installed() {
         return Err("代理内核未安装（先在「订阅管理」下载内核）".to_string());
     }

@@ -486,6 +486,27 @@ impl ServerState {
         // 的其余部分（日志、模型目录、健康检查、配置页）不依赖账号，让它们继续
         // 可用比整体拒绝启动更有用 —— 用户能在界面上看到那条 ❌ 日志并处理磁盘问题。
         let store = AccountStore::with_db(db.clone());
+        // 签到执行台账恢复必须早于自动调度器启动：result_saved 只补本地投影，
+        // 遗留 in_flight 隔离为 uncertain，绝不重放 Provider。恢复失败不阻断网关
+        // 其它能力，但遗留 running 批次会由签到入口的 ensure_recovered 拦截。
+        if let Some(database) = db.as_ref() {
+            match core::checkin_run_ledger::recover_startup(database, &store) {
+                Ok(report) if report.projected > 0 || report.uncertain > 0 || report.interrupted_runs > 0 => {
+                    logging::console_line(
+                        "[Checkin]",
+                        &format!(
+                            "签到恢复完成：补投影 {} 个账号，隔离 {} 个不确定请求，关闭 {} 个中断批次",
+                            report.projected, report.uncertain, report.interrupted_runs,
+                        ),
+                    );
+                }
+                Ok(_) => {}
+                Err(error) => logging::console_line(
+                    "[Checkin]",
+                    &format!("❌ 签到恢复未完成，新的签到请求将被保护性阻止：{error}"),
+                ),
+            }
+        }
         // 账号存储句柄给订阅内核（lazy listeners：内核 runtime 读「哪些订阅节点
         // 需要监听器」决定给谁开 —— 账号引用 ∪ 被「测试」钉住的节点，见
         // `sub_kernel::runtime::listener_node_keys`）。AccountStore 是轻量 Arc

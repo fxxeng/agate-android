@@ -133,10 +133,10 @@ pub fn list() -> Vec<Schedule> {
 // ─── 写回 ───────────────────────────────────────────────────
 
 /// 条目数组写回 `autoCheckin.schedules`（其余字段原样保留）
-fn write_entries(entries: Vec<Value>) {
+fn write_entries(entries: Vec<Value>) -> bool {
     let mut merged = auto_checkin::raw_object();
     merged.insert("schedules".to_string(), Value::Array(entries));
-    config::update_raw_field(auto_checkin::CONFIG_KEY, Value::Object(merged));
+    config::update_raw_field(auto_checkin::CONFIG_KEY, Value::Object(merged))
 }
 
 /// 条目 → 存储原文（保留 lastFiredDate / lastResult，条目级的去重状态跨重启）
@@ -272,6 +272,40 @@ pub fn mark_result(id: &str, result: Option<Value>) {
     patch_entry(id, |schedule| {
         schedule.last_result = result.filter(|value| value.is_object())
     });
+}
+
+/// 自动签到恢复专用：写盘失败必须保留执行台账的 pending 标记；
+/// 条目已被用户删除时视为成功（不应因删除旧 schedule 而阻塞恢复）。
+pub fn mark_result_checked(id: &str, result: Option<Value>) -> Result<(), String> {
+    if !stored_key_exists() {
+        if id != DEFAULT_SCHEDULE_ID {
+            return Ok(());
+        }
+        let mut schedule = legacy_schedule();
+        schedule.last_result = result.filter(|value| value.is_object());
+        return if auto_checkin::write_state_checked(json!({
+            "lastFiredDate": schedule.last_fired_date,
+            "lastResult": schedule.last_result,
+        })) {
+            Ok(())
+        } else {
+            Err("默认定时签到条目的 lastResult 写入失败".to_string())
+        };
+    }
+    let mut entries = stored_entries().unwrap_or_default();
+    let Some(index) = entries.iter().position(|raw| {
+        raw.get("id").and_then(Value::as_str) == Some(id)
+    }) else {
+        return Ok(());
+    };
+    let mut schedule = normalize_schedule(&entries[index]);
+    schedule.last_result = result.filter(|value| value.is_object());
+    entries[index] = to_value(&schedule);
+    if write_entries(entries) {
+        Ok(())
+    } else {
+        Err(format!("定时签到条目 {id} 的 lastResult 写入失败"))
+    }
 }
 
 /// 改一条条目的去重状态（只动 `apply` 碰的字段）。

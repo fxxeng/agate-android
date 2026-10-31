@@ -41,6 +41,14 @@ use crate::server::core::billing::BillingService;
 use crate::server::core::billing::WorkbuddyActivity;
 use crate::server::logging;
 
+static CHECKIN_RUN_SEQUENCE: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(1);
+
+pub fn new_checkin_run_id() -> String {
+    let sequence = CHECKIN_RUN_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    format!("{}-{}-{sequence}", logging::now_ms(), std::process::id())
+}
+
 /// 签到路径上的错误。对应 Node 版抛出的 AccountStoreError：
 /// 404「账号不存在」与 400「国际版账号暂不支持签到」。
 #[derive(Clone, Debug)]
@@ -53,6 +61,23 @@ impl CheckinError {
     fn new(message: impl Into<String>, status_code: i32) -> Self {
         Self { message: message.into(), status_code }
     }
+}
+
+/// 全进程签到互斥门：账号路由与自动调度最终都会进入
+/// `run_checkin_cancellable`，必须在这里统一防止两条入口并发跑同一批账号。
+/// `AutoCheckin::running` 只覆盖调度器自身，不能阻止手动 API 与调度任务交叠。
+fn checkin_gate() -> &'static tokio::sync::Mutex<()> {
+    static GATE: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+    GATE.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
+/// 获取全进程签到互斥门，供不经过 `run_checkin_cancellable()` 的独立签到入口复用。
+/// 不排队：并发请求立即返回 409，避免两个入口同时操作同一账号。
+pub fn try_acquire_checkin_gate(
+) -> Result<tokio::sync::MutexGuard<'static, ()>, CheckinError> {
+    checkin_gate()
+        .try_lock()
+        .map_err(|_| CheckinError::new("签到正在执行中，请稍候", 409))
 }
 
 impl std::fmt::Display for CheckinError {
@@ -654,40 +679,164 @@ pub async fn run_checkin(
     reason: &str,
     source: &str,
 ) -> Result<Value, CheckinError> {
-    let (targets, skipped) = resolve_checkin_targets(store, providers, id)?;
+    run_checkin_cancellable(store, billing, providers, id, reason, source, None, None, false).await
+}
+
+/// 可合作式停止的批量签到执行体。停止信号只在账号边界读取；当前账号的 Provider
+/// 流程会自然完成，避免取消多阶段领取流程造成远端/本地状态不一致。
+pub async fn run_checkin_cancellable(
+    store: &AccountStore,
+    billing: &BillingService,
+    providers: &[String],
+    id: Option<&str>,
+    reason: &str,
+    source: &str,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+    schedule_id: Option<&str>,
+    auto_checkin: bool,
+) -> Result<Value, CheckinError> {
+    // 不排队执行第二轮：手动接口应明确返回 409，定时调度则清掉本轮预写的
+    // lastFiredDate，留给下一次 tick 重试。否则手动批量与定时签到可能同时
+    // 领取同一账号，破坏「串行防风」的原始约束。
+    let _run_guard = try_acquire_checkin_gate()?;
+    let (mut targets, mut skipped) = resolve_checkin_targets(store, providers, id)?;
+    // 执行台账与账号存储必须共享同一 Db。无法建立台账时在任何 Provider 请求前
+    // 失败关闭，绝不退回「无保护签到」。
+    let db = store
+        .db()
+        .ok_or_else(|| CheckinError::new("签到执行台账数据库不可用，已阻止本轮签到", 500))?;
+    crate::server::core::checkin_run_ledger::recover_startup(db, store)
+        .map_err(|error| CheckinError::new(format!("签到恢复尚未完成：{error}"), 503))?;
+    crate::server::core::checkin_run_ledger::ensure_recovered(db)
+        .map_err(|error| CheckinError::new(format!("签到恢复尚未完成：{error}"), 503))?;
+    let uncertain = crate::server::core::checkin_run_ledger::uncertain_accounts_today(db)
+        .map_err(|error| CheckinError::new(format!("无法检查签到不确定状态：{error}"), 500))?;
+    if let Some(account_id) = id.filter(|id| uncertain.contains(*id)) {
+        return Err(CheckinError::new(
+            format!("账号 {account_id} 今天存在结果不确定的签到请求，为避免重复领取已暂停；请明天再试"),
+            409,
+        ));
+    }
+    let before_uncertain = targets.len();
+    targets.retain(|account| {
+        !account
+            .get("id")
+            .and_then(Value::as_str)
+            .is_some_and(|account_id| uncertain.contains(account_id))
+    });
+    let uncertain_skipped = before_uncertain - targets.len();
+    skipped += uncertain_skipped;
+    if uncertain_skipped > 0 {
+        logging::log(
+            "[Checkin]",
+            &format!("已跳过 {uncertain_skipped} 个今天结果不确定的账号，避免重复请求上游"),
+        );
+    }
+    let run_id = new_checkin_run_id();
+    let started_at = logging::now_ms();
+    crate::server::core::checkin_run_ledger::create_run(
+        db,
+        &crate::server::core::checkin_run_ledger::RunInput {
+            run_id: &run_id,
+            started_at,
+            source,
+            reason,
+            target_count: targets.len() as i64,
+            skipped_count: skipped as i64,
+            schedule_id,
+            auto_checkin,
+        },
+    )
+    .map_err(|error| CheckinError::new(format!("无法创建签到执行台账：{error}"), 500))?;
     // 「这次是用户在面板上点的吗」——只有 CodeArts 用得上（它的福利是写请求，
     // 有两道本地限流闸）。单账号 single 与批量 manual 都是点击触发；
     // schedule / startup 是无人值守，必须受闸。见 `checkin_for` 的说明。
     let manual = matches!(source, "single" | "manual");
     let mut results = Vec::with_capacity(targets.len());
-    for account in &targets {
+    let mut cancelled = false;
+    for (ordinal, account) in targets.iter().enumerate() {
+        if cancel.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::SeqCst)) {
+            cancelled = true;
+            break;
+        }
+        let account_id = account.get("id").and_then(Value::as_str).unwrap_or("");
+        let account_name = account
+            .get("displayName")
+            .and_then(Value::as_str)
+            .filter(|name| !name.is_empty())
+            .or_else(|| account.get("name").and_then(Value::as_str))
+            .unwrap_or(account_id);
+        let provider = account
+            .get("provider")
+            .and_then(Value::as_str)
+            .unwrap_or(crate::server::core::providers::DEFAULT_PROVIDER_ID);
+        crate::server::core::checkin_run_ledger::begin_account(
+            db,
+            &crate::server::core::checkin_run_ledger::AccountInput {
+                run_id: &run_id,
+                account_id,
+                account_name,
+                provider,
+                ordinal: ordinal as i64,
+                started_at: logging::now_ms(),
+            },
+        )
+        .map_err(|error| CheckinError::new(format!("无法记录账号 {account_id} 的执行意图：{error}"), 500))?;
+
         let row = checkin_for(store, billing, account, manual).await;
+        // Provider 返回后先保存完整结果证据。若此处失败，账号仍停留在
+        // in_flight；重启恢复必须隔离为 uncertain，不能重放远端请求。
+        let result_saved_at = logging::now_ms();
+        let result_json = serde_json::to_string(&row)
+            .map_err(|error| CheckinError::new(format!("账号 {account_id} 的签到结果无法序列化：{error}"), 500))?;
+        crate::server::core::checkin_run_ledger::save_result(
+            db, &run_id, account_id, result_saved_at, &result_json,
+        )
+        .map_err(|error| CheckinError::new(format!("账号 {account_id} 的签到结果未能持久化：{error}"), 500))?;
+
         // 落签到时间：手动单签与定时签到走的是**这一段**（两条链都调本函数），
-        // 所以账号页的「已签到」在两种路径下都会亮起来，不需要各自记一次。
-        // 写盘失败只记日志、不改签到结果 —— 上游那边积分已经领到了，
-        // 因为一次落盘失败就把成功的签到报成失败是本末倒置。
+        // 所以账号页的「已签到」在两种路径下都会亮起来。现在先持久化结果快照，
+        // 再写账号事实；若写入失败，保留 result_saved 并停止后续账号，等待恢复补账。
         if let Some(account_id) = row.get("id").and_then(Value::as_str) {
             // 判据是 [`day_completed`]（claim 说完成，或国际版活跃链路完成）——
             // 与台账的 outcome 判定同源；判据只此一份，别在这里再写一份。
-            if day_completed(&row) && !store.mark_checkin(account_id, logging::now_ms()) {
-                logging::verbose(
-                    "[Accounts]",
-                    &format!("账号 {account_id} 的签到时间未能落盘（账号可能已被删除）"),
-                );
+            if day_completed(&row) {
+                let account_still_exists = store
+                    .list_accounts()
+                    .get("accounts")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .any(|item| item.get("id").and_then(Value::as_str) == Some(account_id));
+                if account_still_exists && !store.mark_checkin(account_id, result_saved_at) {
+                    return Err(CheckinError::new(
+                        format!("账号 {account_id} 的签到时间未能持久化；结果已保存在执行台账，停止后续账号"),
+                        500,
+                    ));
+                }
             }
         }
-        // 签到记录台账（schema v11）：每个账号行落一条明细（成败 / 错误原文 /
-        // 收益文案都在结果行里）。写盘失败只记日志：台账缺一条不该让这次
-        // 签到的响应报错 —— 与上面 mark_checkin 的取舍同构。provider 由账号
-        // 记录带上（结果行里没有这个字段，记录页的提供商筛选列要用）。
-        crate::server::core::checkin_records::record_row(
-            &row,
-            account.get("provider").and_then(Value::as_str).unwrap_or(""),
-            source,
-            reason,
-        );
+        // 签到记录台账（schema v17）：按 (run_id, account_id) 幂等投影。
+        // 这里采用严格写入；失败时不推进 projected，也不继续下一个账号。
+        crate::server::core::checkin_records::record_row_for_run_at(
+            &row, provider, source, reason, Some(&run_id), Some(result_saved_at),
+        )
+        .map_err(|error| CheckinError::new(
+            format!("账号 {account_id} 的签到历史未能持久化：{error}"), 500,
+        ))?;
+        crate::server::core::checkin_run_ledger::mark_projected(
+            db, &run_id, account_id, logging::now_ms(),
+        )
+        .map_err(|error| CheckinError::new(
+            format!("账号 {account_id} 的签到投影状态未能提交：{error}"), 500,
+        ))?;
         results.push(row);
     }
+    // 停止请求可能在最后一个账号执行期间到达；即使没有后续账号可跳过，
+    // 也要把「请求已收到、当前轮次自然收尾」准确反映给调用方。
+    cancelled |= cancel.is_some_and(|flag| {
+        flag.load(std::sync::atomic::Ordering::SeqCst)
+    });
     // 「真实领取」与「今日已领取」都表示本日成功领到分，计入 succeeded；
     // 活跃链路（保活对话 / 活跃上报 / 网页会话）单独统计在 `active` ——
     // 它不产生「领取」，不并入 succeeded，免得把两类事混成一个数。
@@ -724,23 +873,75 @@ pub async fn run_checkin(
     logging::log(
         "[Accounts]",
         &format!(
-            "签到完成: {succeeded}/{} 个账号成功领取，{active} 个账号完成活跃保活",
+            "{}: {succeeded}/{} 个账号成功领取，{active} 个账号完成活跃保活",
+            if cancelled { "签到已按请求停止" } else { "签到完成" },
             results.len()
         ),
     );
-    // 批量轮次进台账（签到中心时间线）。写盘失败只记日志：上游那边积分已经
-    // 领到，台账缺一条不该让这次签到的响应报错。
+    // 批量轮次的完整汇总先与批次终态原子保存；之后才投影到 config 时间线。
+    // 若进程恰好在关闭批次后退出，recover_startup 会从 summary_json 补写。
+    let finished_at = logging::now_ms();
+    let failures: Vec<String> = results
+        .iter()
+        .filter_map(|item| {
+            let error = item.get("error").and_then(Value::as_str)?;
+            let name = item
+                .get("name")
+                .and_then(Value::as_str)
+                .filter(|name| !name.is_empty())
+                .or_else(|| item.get("id").and_then(Value::as_str))
+                .unwrap_or("未知账号");
+            Some(format!("{name}（{error}）"))
+        })
+        .collect();
+    let history_summary = json!({
+        "at": finished_at,
+        "date": crate::server::core::auto_checkin::today_key(),
+        "reason": reason,
+        "succeeded": succeeded,
+        "active": active,
+        "total": results.len(),
+        "skipped": skipped,
+        "cancelled": cancelled,
+        "failed": failures.iter().take(5).cloned().collect::<Vec<_>>(),
+        "failedCount": failures.len(),
+    });
+    let summary_json = if id.is_none() {
+        Some(serde_json::to_string(&history_summary).map_err(|error| {
+            CheckinError::new(format!("签到批次汇总无法序列化：{error}"), 500)
+        })?)
+    } else {
+        None
+    };
+    crate::server::core::checkin_run_ledger::finish_run_with_summary(
+        db,
+        &run_id,
+        finished_at,
+        if cancelled {
+            crate::server::core::checkin_run_ledger::RUN_CANCELLED
+        } else {
+            crate::server::core::checkin_run_ledger::RUN_COMPLETED
+        },
+        targets.len() as i64,
+        results.len() as i64,
+        skipped as i64,
+        summary_json.as_deref(),
+    )
+    .map_err(|error| CheckinError::new(format!("签到批次状态未能关闭：{error}"), 500))?;
+
+    // 时间线是兼容投影，不是执行事实来源。失败时保留 pending 标记，下一次
+    // 启动/签到前恢复会按 run_id 幂等补写，不把已成功的远端签到伪装成失败。
     if id.is_none() {
-        crate::server::core::checkin_history::record(
-            &json!({
-                "succeeded": succeeded,
-                "active": active,
-                "total": results.len(),
-                "skipped": skipped,
-                "results": results,
-            }),
-            reason,
-        );
+        match crate::server::core::checkin_history::record_for_run(
+            &history_summary, &run_id, reason,
+        ) {
+            Ok(()) => {
+                if let Err(error) = crate::server::core::checkin_run_ledger::mark_history_projected(db, &run_id) {
+                    logging::verbose("[Checkin]", &format!("签到时间线投影标记待恢复：{error}"));
+                }
+            }
+            Err(error) => logging::verbose("[Checkin]", &format!("签到时间线待恢复：{error}")),
+        }
     }
     Ok(json!({
         "results": results,
@@ -748,6 +949,7 @@ pub async fn run_checkin(
         "active": active,
         "total": results.len(),
         "skipped": skipped,
+        "cancelled": cancelled,
     }))
 }
 
@@ -762,13 +964,22 @@ mod tests {
     //! 「放行了却仍判不出已完成」（面板不亮）或「判得出但先被丢成 Err」（`claim`
     //! 为 null）这两种半截修复。`closed_loop_tolerated_400_reaches_completed` 把
     //! 这条链整条钉住，是本次修复（上游 issue #137）唯一的端到端回归保护。
-    use super::checkin_completed_today;
+    use super::{checkin_completed_today, checkin_gate};
     use crate::server::core::billing::request::BillingCall;
     use crate::server::core::billing::{is_duplicate_claim, normalize_daily_claim, BillingService};
     use serde_json::{json, Value};
 
     /// 上游真实的 400 文案（WorkBuddy 国内版当日已签到时的原话）。
     const REAL_DUPLICATE: &str = "今天已签到，请明天再来";
+
+    #[test]
+    fn checkin_gate_rejects_overlapping_rounds_without_queueing() {
+        let gate = checkin_gate();
+        let first = gate.try_lock().expect("first round should acquire the gate");
+        assert!(gate.try_lock().is_err(), "a competing round must be rejected");
+        drop(first);
+        assert!(gate.try_lock().is_ok(), "the gate must be released after the round");
+    }
 
     // ── 下游判据本身 ────────────────────────────────────────────
 

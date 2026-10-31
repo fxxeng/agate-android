@@ -112,13 +112,26 @@ async fn call(
         request = request.header(name.as_str(), value.as_str());
     }
     let response = request.send().await.map_err(|error| {
+        let status = if error.is_timeout() { 504 } else { 502 };
         GatewayError::with_status(
-            502,
+            status,
             format!("OfficeAce 订阅请求失败：{}", egress::describe_error_detail(&error)),
         )
     })?;
     let status = response.status().as_u16();
-    let text = response.text().await.unwrap_or_default();
+    // `RequestBuilder::timeout` 覆盖响应体读取阶段。这里不能把 body read
+    // 错误吞成空字符串：否则超时 / 连接中断会被误报成「响应不是合法 JSON」，
+    // 签到页看不到真正的网络故障原因。
+    let text = response.text().await.map_err(|error| {
+        let status = if error.is_timeout() { 504 } else { 502 };
+        GatewayError::with_status(
+            status,
+            format!(
+                "OfficeAce 订阅响应读取失败：{}",
+                egress::describe_error_detail(&error),
+            ),
+        )
+    })?;
     // 401/403 = 控制面临时凭据失效（约 2 小时过期），要用户重新登录，与网络错误区分开
     if status == 401 || status == 403 {
         return Err(GatewayError::with_status(

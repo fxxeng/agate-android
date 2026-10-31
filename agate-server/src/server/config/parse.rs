@@ -30,11 +30,52 @@ use super::types::*;
 
 /// 环境变量里的 API Key（新名优先，旧名兼容读；去空白，空串当未配置）
 pub(super) fn env_api_key() -> Option<String> {
-    env_api_key_value()
+    process_env_api_key_value()
 }
 
 /// 两个候选名按序取第一个有效值（`AGATE_PROXY_API_KEY` > 旧名）
+// Android host 的运行时覆盖与进程环境变量分开保存。外层 Option 表示
+// 「是否启用覆盖」，内层 Option 表示覆盖值（Some(None) = 明确不启用 Key）。
+// 不能在网关运行期间 set_var/remove_var：鉴权请求会并发读取进程环境。
+fn android_api_key_override() -> &'static std::sync::RwLock<Option<Option<String>>> {
+    static OVERRIDE: std::sync::OnceLock<std::sync::RwLock<Option<Option<String>>>> =
+        std::sync::OnceLock::new();
+    OVERRIDE.get_or_init(|| std::sync::RwLock::new(None))
+}
+
+/// Android JNI 网关专用：设置显式运行时 API Key 覆盖。
+/// `None` 表示明确不注入 Key（本机回环模式）；传入空白也按无 Key 处理。
+pub(crate) fn set_android_api_key_override(key: Option<&str>) {
+    let value = key.map(str::trim).filter(|value| !value.is_empty()).map(str::to_owned);
+    let lock = android_api_key_override();
+    let mut guard = lock.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+    *guard = Some(value);
+}
+
+/// 清除 Android 覆盖，恢复桌面/headless 环境变量兜底语义。
+pub(crate) fn clear_android_api_key_override() {
+    let lock = android_api_key_override();
+    let mut guard = lock.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+    *guard = None;
+}
+
+/// 两个候选名按序取第一个有效值（`AGATE_PROXY_API_KEY` > 旧名）。
+/// Android 正在托管网关时优先读取显式运行时覆盖，不修改/读取动态变化的 env。
 pub(crate) fn env_api_key_value() -> Option<String> {
+    {
+        let guard = android_api_key_override()
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(value) = guard.as_ref() {
+            return value.clone();
+        }
+    }
+    process_env_api_key_value()
+}
+
+/// 只读取进程环境变量；配置快照构建使用此函数，避免 Android 运行时覆盖
+/// 被误当作持久配置/旧版单 Key 配置并显示在管理 API 中。
+fn process_env_api_key_value() -> Option<String> {
     for name in ["AGATE_PROXY_API_KEY", "WORKBUDDY_PROXY_API_KEY"] {
         if let Ok(value) = std::env::var(name) {
             let trimmed = value.trim().to_string();
@@ -627,6 +668,22 @@ mod tests {
 
     use super::*;
     use serde_json::json;
+
+    /// Android 运行时覆盖必须同时支持「注入 Key」与「明确无 Key」，且不能
+    /// 因为桌面环境变量兜底而覆盖显式的无 Key 状态。
+    #[test]
+    fn android_api_key_override_is_explicit_and_normalized() {
+        set_android_api_key_override(Some("  lan-secret  "));
+        assert_eq!(env_api_key_value().as_deref(), Some("lan-secret"));
+
+        set_android_api_key_override(Some("   "));
+        assert_eq!(env_api_key_value(), None, "空白覆盖必须明确关闭 Key");
+
+        set_android_api_key_override(None);
+        assert_eq!(env_api_key_value(), None, "None 参数表示显式无 Key，而非清除覆盖");
+
+        clear_android_api_key_override();
+    }
 
     /// 一份只含给定几项的原始底稿。
     fn map_of(pairs: &[(&str, Value)]) -> Map<String, Value> {

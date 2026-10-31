@@ -315,7 +315,16 @@ pub fn is_reserved(key: &str) -> bool {
 /// 在百毫秒量级，不会让启动明显变慢。**不要把这两条往 [`V1_SCHEMA`] 里补**：
 /// 新库按 1→15 依次跑，v15 那一步同样会建出来，而 v1 里多写一份等于同一条索引
 /// 有了两处定义 —— 将来改一处忘一处，正是 `V4_SCHEMA` 那类错位的来源。
-pub const SCHEMA_VERSION: i64 = 15;
+///
+/// v16 新增 `checkin_runs` / `checkin_run_accounts` 执行台账：它与 v11 的
+/// `checkin_records` 展示历史分工不同，前者保存远端调用前后的执行证据，后者
+/// 继续服务签到记录页。两张新表不设 accounts 外键，账号删除后仍保留执行证据。
+/// v17 为 `checkin_records` 增加可空 `run_id` 与部分唯一索引，使批次投影可幂等。
+/// v18 为 `checkin_runs` 增加精简汇总快照与时间线投影状态，覆盖批次关闭/时间线写入
+/// 之间的崩溃窗口，并允许从账号结果快照重建未正常关闭批次的中断摘要。
+/// v19 持久化 AutoCheckin 的 schedule 归属与摘要投影完成状态，覆盖顶层/条目级
+/// `lastResult` 写入之间的崩溃窗口；v20 增加 uncertain 对账证据与独立解决标记；v21 增加对账历史幂等投影标记。
+pub const SCHEMA_VERSION: i64 = 21;
 
 /// 版本 1 的全部表与索引：改造前所有 JSON / JSONL 文件的对应形态。
 ///
@@ -819,6 +828,120 @@ CREATE INDEX IF NOT EXISTS idx_requests_summary ON requests(
 );
 ";
 
+/// 版本 16：签到执行过程台账（批次 + 每账号执行状态）。
+///
+/// 与 `checkin_records` 的展示历史分离：本表记录请求执行过程与恢复证据，
+/// 不因用户清理历史记录而删除。`in_flight` 在启动恢复时会被隔离为
+/// `uncertain`，绝不据此自动重放远端领取请求。
+const V16_SCHEMA: &str = "
+CREATE TABLE IF NOT EXISTS checkin_runs (
+  run_id        TEXT PRIMARY KEY,
+  started_at    INTEGER NOT NULL,
+  finished_at   INTEGER,
+  source        TEXT NOT NULL DEFAULT '',
+  reason        TEXT NOT NULL DEFAULT '',
+  status        TEXT NOT NULL DEFAULT 'running'
+                CHECK (status IN ('running','completed','partial','cancelled','interrupted')),
+  target_count  INTEGER NOT NULL DEFAULT 0,
+  result_count  INTEGER NOT NULL DEFAULT 0,
+  skipped_count INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_checkin_runs_started ON checkin_runs(started_at);
+CREATE INDEX IF NOT EXISTS idx_checkin_runs_status ON checkin_runs(status);
+
+CREATE TABLE IF NOT EXISTS checkin_run_accounts (
+  run_id          TEXT NOT NULL,
+  account_id      TEXT NOT NULL,
+  account_name    TEXT NOT NULL DEFAULT '',
+  provider        TEXT NOT NULL DEFAULT '',
+  ordinal         INTEGER NOT NULL DEFAULT 0,
+  state           TEXT NOT NULL DEFAULT 'in_flight'
+                  CHECK (state IN ('in_flight','result_saved','projected','uncertain')),
+  started_at      INTEGER NOT NULL,
+  result_saved_at INTEGER,
+  projected_at    INTEGER,
+  result_json     TEXT,
+  last_error      TEXT,
+  PRIMARY KEY (run_id, account_id)
+);
+CREATE INDEX IF NOT EXISTS idx_checkin_run_accounts_state_started
+  ON checkin_run_accounts(state, started_at);
+CREATE INDEX IF NOT EXISTS idx_checkin_run_accounts_account_started
+  ON checkin_run_accounts(account_id, started_at);
+";
+
+/// 版本 17：签到展示历史增加执行批次关联键。
+///
+/// `run_id` 为空表示 v17 之前的历史、单账号兼容路径或独立活动记录；非空时，
+/// `(run_id, account_id)` 唯一，允许恢复流程重复投影同一执行结果而不产生重复行。
+/// 用部分唯一索引保留旧记录与非批次路径的既有语义。
+const V17_SCHEMA: &str = "
+ALTER TABLE checkin_records ADD COLUMN run_id TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_checkin_records_run_account
+  ON checkin_records(run_id, account_id) WHERE run_id IS NOT NULL;
+";
+
+/// 版本 18：签到批次保存汇总快照与时间线投影状态。
+///
+/// `summary_json` 是批次完成后的稳定汇总证据；`history_projected` 表示
+/// config 中的兼容时间线已按 run_id 幂等投影。进程若在批次关闭后、时间线
+/// 写入前退出，启动恢复可从这里补齐，而不需要重新执行 Provider。
+const V18_SCHEMA: &str = "
+ALTER TABLE checkin_runs ADD COLUMN summary_json TEXT;
+ALTER TABLE checkin_runs ADD COLUMN history_projected INTEGER NOT NULL DEFAULT 0;
+";
+
+/// 版本 19：持久化自动签到摘要的投影目标与完成状态。
+///
+/// `schedule_id` 让进程重启后仍能把批次摘要恢复到正确的定时条目；
+/// `auto_checkin` 区分 AutoCheckin 触发与普通手动 API 批次；
+/// `auto_result_projected` 使顶层与条目级 lastResult 的兼容投影可重试。
+const V19_SCHEMA: &str = "
+ALTER TABLE checkin_runs ADD COLUMN schedule_id TEXT;
+ALTER TABLE checkin_runs ADD COLUMN auto_checkin INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE checkin_runs ADD COLUMN auto_result_projected INTEGER NOT NULL DEFAULT 0;
+";
+
+/// 版本 20：不确定签到的只追加对账证据与正向解决标记。
+///
+/// `state='uncertain'` 保留原始执行事实；`reconciled_at/evidence_id` 是独立的
+/// 解决层。只有同一事务内写入严格筛选后的上游证据并设置该标记，才解除当日隔离。
+/// 证据表通过触发器禁止 UPDATE/DELETE，避免事后改写审计材料。
+const V20_SCHEMA: &str = "
+ALTER TABLE checkin_run_accounts ADD COLUMN reconciled_at INTEGER;
+ALTER TABLE checkin_run_accounts ADD COLUMN reconciliation_evidence_id INTEGER;
+CREATE TABLE IF NOT EXISTS checkin_reconciliation_evidence (
+  evidence_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  verdict TEXT NOT NULL CHECK (verdict IN ('confirmed','unknown')),
+  evidence_type TEXT NOT NULL,
+  observed_at INTEGER NOT NULL,
+  evidence_json TEXT NOT NULL,
+  resolved INTEGER NOT NULL DEFAULT 0 CHECK (resolved IN (0,1))
+);
+CREATE INDEX IF NOT EXISTS idx_checkin_reconciliation_run_account
+  ON checkin_reconciliation_evidence(run_id, account_id, evidence_id);
+CREATE TRIGGER IF NOT EXISTS trg_checkin_reconciliation_no_update
+BEFORE UPDATE ON checkin_reconciliation_evidence
+BEGIN SELECT RAISE(ABORT, 'checkin reconciliation evidence is append-only'); END;
+CREATE TRIGGER IF NOT EXISTS trg_checkin_reconciliation_no_delete
+BEFORE DELETE ON checkin_reconciliation_evidence
+BEGIN SELECT RAISE(ABORT, 'checkin reconciliation evidence is append-only'); END;
+";
+
+/// 版本 21：把已解决的对账证据幂等投影到签到历史，并记录恢复投影进度。
+///
+/// 历史行通过 reconciliation_evidence_id 回溯原始只追加证据；
+/// checkin_run_accounts.reconciliation_projected_at 允许启动恢复重试投影。
+const V21_SCHEMA: &str = "
+ALTER TABLE checkin_run_accounts ADD COLUMN reconciliation_projected_at INTEGER;
+ALTER TABLE checkin_records ADD COLUMN reconciliation_evidence_id INTEGER;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_checkin_records_reconciliation_evidence
+  ON checkin_records(reconciliation_evidence_id) WHERE reconciliation_evidence_id IS NOT NULL;
+";
+
 /// 把库升到 [`SCHEMA_VERSION`]（幂等：已是最新版时什么都不做）。
 ///
 /// **库版本高于本程序时返回 `Err` 拒绝打开**（v14 起有意反转的一条既有决定，
@@ -976,6 +1099,177 @@ fn apply_version(
         // v15：requests 补两条索引（status 的定位 + 报表窄列的覆盖，见
         // V15_SCHEMA 与 SCHEMA_VERSION 的 v15 段）。
         15 => conn.execute_batch(V15_SCHEMA),
+        // v16：签到执行台账（批次与每账号状态），与展示历史 checkin_records 分离。
+        16 => conn.execute_batch(V16_SCHEMA),
+        // v17：展示历史增加 run_id，并按 (run_id, account_id) 幂等约束。
+        17 => conn.execute_batch(V17_SCHEMA),
+        18 => conn.execute_batch(V18_SCHEMA),
+        19 => conn.execute_batch(V19_SCHEMA),
+        20 => conn.execute_batch(V20_SCHEMA),
+        21 => conn.execute_batch(V21_SCHEMA),
         _ => Ok(()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{migrate, SCHEMA_VERSION};
+    use rusqlite::{Connection, OptionalExtension};
+
+    #[test]
+    fn v17_through_v21_add_history_auto_result_reconciliation_and_projection_metadata() {
+        let conn = Connection::open_in_memory().expect("open in-memory database");
+        conn.execute_batch(
+            "CREATE TABLE checkin_records (
+                row_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts INTEGER NOT NULL,
+                date TEXT NOT NULL DEFAULT '',
+                source TEXT NOT NULL DEFAULT '',
+                reason TEXT NOT NULL DEFAULT '',
+                account_id TEXT NOT NULL DEFAULT '',
+                account_name TEXT NOT NULL DEFAULT '',
+                provider TEXT NOT NULL DEFAULT '',
+                outcome TEXT NOT NULL DEFAULT '',
+                ok INTEGER NOT NULL DEFAULT 0,
+                message TEXT,
+                error TEXT,
+                kept_active INTEGER NOT NULL DEFAULT 0
+             );
+             CREATE TABLE checkin_runs (
+                run_id TEXT PRIMARY KEY,
+                started_at INTEGER NOT NULL,
+                finished_at INTEGER,
+                source TEXT NOT NULL DEFAULT '',
+                reason TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'running',
+                target_count INTEGER NOT NULL DEFAULT 0,
+                result_count INTEGER NOT NULL DEFAULT 0,
+                skipped_count INTEGER NOT NULL DEFAULT 0
+             );
+             INSERT INTO checkin_records(ts, account_id) VALUES (1, 'legacy-account');
+             PRAGMA user_version = 16;",
+        )
+        .expect("seed v16 schema");
+
+        migrate(&conn).expect("migrate v16 through v21");
+        let version: i64 = conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .expect("read schema version");
+        assert_eq!(version, SCHEMA_VERSION);
+
+        let summary_column: Option<String> = conn
+            .query_row(
+                "SELECT name FROM pragma_table_info('checkin_runs') WHERE name = 'summary_json'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .expect("summary column lookup");
+        assert_eq!(summary_column.as_deref(), Some("summary_json"));
+        let evidence_table: Option<String> = conn
+            .query_row(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'checkin_reconciliation_evidence'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .expect("reconciliation evidence table lookup");
+        assert_eq!(evidence_table.as_deref(), Some("checkin_reconciliation_evidence"));
+        let reconciliation_projection_column: Option<String> = conn
+            .query_row(
+                "SELECT name FROM pragma_table_info('checkin_run_accounts') WHERE name = 'reconciliation_projected_at'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .expect("reconciliation projection marker lookup");
+        assert_eq!(reconciliation_projection_column.as_deref(), Some("reconciliation_projected_at"));
+        let history_evidence_column: Option<String> = conn
+            .query_row(
+                "SELECT name FROM pragma_table_info('checkin_records') WHERE name = 'reconciliation_evidence_id'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .expect("history evidence id lookup");
+        assert_eq!(history_evidence_column.as_deref(), Some("reconciliation_evidence_id"));
+        conn.execute(
+            "INSERT INTO checkin_runs(run_id, started_at, source, reason)
+             VALUES ('migration-run', 1, 'manual', 'migration test')",
+            [],
+        )
+        .expect("insert run using migrated schema");
+        let history_projected: i64 = conn
+            .query_row(
+                "SELECT history_projected FROM checkin_runs WHERE run_id = 'migration-run'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("history projected default");
+        assert_eq!(history_projected, 0);
+
+        let schedule_column: Option<String> = conn
+            .query_row(
+                "SELECT name FROM pragma_table_info('checkin_runs') WHERE name = 'schedule_id'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .expect("schedule id column lookup");
+        assert_eq!(schedule_column.as_deref(), Some("schedule_id"));
+        conn.execute(
+            "UPDATE checkin_runs SET schedule_id = 'morning', auto_checkin = 1
+             WHERE run_id = 'migration-run'",
+            [],
+        )
+        .expect("write auto-checkin metadata");
+        let auto_metadata: (Option<String>, i64, i64) = conn
+            .query_row(
+                "SELECT schedule_id, auto_checkin, auto_result_projected
+                 FROM checkin_runs WHERE run_id = 'migration-run'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("read auto-checkin metadata");
+        assert_eq!(auto_metadata, (Some("morning".to_string()), 1, 0));
+
+        let legacy_run_id: Option<String> = conn
+            .query_row(
+                "SELECT run_id FROM checkin_records WHERE account_id = 'legacy-account'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("legacy row remains readable");
+        assert_eq!(legacy_run_id, None);
+
+        conn.execute(
+            "INSERT INTO checkin_records(ts, account_id, run_id)
+             VALUES (2, 'account-1', 'run-1')",
+            [],
+        )
+        .expect("first projection insert");
+        conn.execute(
+            "INSERT INTO checkin_records(ts, account_id, run_id)
+             VALUES (3, 'account-1', 'run-1')
+             ON CONFLICT(run_id, account_id) WHERE run_id IS NOT NULL DO NOTHING",
+            [],
+        )
+        .expect("duplicate projection is idempotent");
+        conn.execute(
+            "INSERT INTO checkin_records(ts, account_id)
+             VALUES (4, 'account-1'), (5, 'account-1')",
+            [],
+        )
+        .expect("non-run legacy paths may still write repeated rows");
+
+        let rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM checkin_records
+                 WHERE run_id = 'run-1' AND account_id = 'account-1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count projected rows");
+        assert_eq!(rows, 1);
     }
 }

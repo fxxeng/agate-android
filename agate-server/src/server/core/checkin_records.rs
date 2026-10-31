@@ -1,4 +1,4 @@
-//! 签到记录的**每账号明细台账**（`checkin_records` 表，schema v11）。
+//! 签到记录的**每账号明细台账**（`checkin_records` 表，schema v11 起；v17 增加执行键）。
 //!
 //! ── 解决什么问题 ────────────────────────────────────────────
 //! 改造前「签到到底领到了什么」只有两个落点：config.json 的 `lastResult`
@@ -8,10 +8,12 @@
 //!
 //! ── 来源（source）的字面集合 ─────────────────────────────────
 //! `schedule` 定时条目轮次 / `startup` 启动补签 / `manual` 手动批量与条目
-//! 立即执行 / `single` 单账号签到 / `activity` 国际版活动的手动领取与保活。
+//! 立即执行 / `single` 单账号签到 / `activity` 国际版活动的手动领取与保活 /
+//! `reconciliation` Provider 正向状态核实后的恢复历史。
 //! 前四种都从 `run_checkin` 的唯一记账点进来（`source` 参数原样透传），
-//! `activity` 从 `api::billing::run_activity` 进来（那条路径不走 run_checkin，
-//! 但行的形状同构，见 `record_activity`）。
+//! `activity` 从 `api::billing::run_activity` 进来；该独立入口也使用 CheckinRun
+//! 写前日志与结果快照，但保留专属的 `record_activity_for_run_at` outcome 判据。
+//! `reconciliation` 是对账成功后的独立历史来源，必须携带 evidence_id，不伪装成实时响应。
 //!
 //! ── 结果判据只此一份 ────────────────────────────────────────
 //! outcome 的判定复用签到执行体的同一对函数
@@ -19,10 +21,10 @@
 //! 「今天已完成」「等窗口重试」的口径在台账与调度（`auto_checkin::tick`）
 //! 之间必须一致，各写一份迟早分叉。
 //!
-//! ── 写失败不报错 ────────────────────────────────────────────
-//! 记账点在签到响应路径上，上游积分已经领到 —— 台账缺一条不该让那次签到
-//! 报错（与 `run_checkin` 里 `mark_checkin` 的取舍同构）。失败打一行
-//! **verbose** 日志就完。
+//! ── 两种写入语义 ────────────────────────────────────────────
+//! 旧 `record_row` / `record_activity` 维持 best-effort 兼容；可恢复的
+//! `run_checkin` 路径调用 `record_row_for_run_at`，必须拿到提交成功结果后
+//! 才能把执行台账推进到 `projected`。
 //!
 //! ── 硬约束：持锁（连接锁）期间不打日志 ──────────────────────
 //! 与 `core::usage_records` 同一条：`Db::with*` 拿的是全局唯一的连接锁，
@@ -30,7 +32,7 @@
 
 use std::sync::OnceLock;
 
-use rusqlite::params;
+use rusqlite::{params, OptionalExtension};
 use serde_json::{json, Value};
 
 use crate::server::core::beijing;
@@ -88,6 +90,32 @@ fn kept_active_of(row: &Value) -> bool {
 ///   - 其余 → **failed**，错误原文取行的 `error`，缺了取 claim 的 `msg`
 ///     （claim.success=false 且带文案的失败，如「登录态已过期」）。
 pub fn record_row(row: &Value, provider: &str, source: &str, reason: &str) {
+    if record_row_for_run(row, provider, source, reason, None).is_err() {
+        logging::verbose("[Checkin]", "签到记录未能落库（库不可用或写入失败）");
+    }
+}
+
+/// 将执行批次身份写入展示历史。恢复投影时可重复调用：数据库唯一索引保证
+/// 同一 `(run_id, account_id)` 最多一行；不带 run_id 的旧入口保持原有行为。
+pub fn record_row_for_run(
+    row: &Value,
+    provider: &str,
+    source: &str,
+    reason: &str,
+    run_id: Option<&str>,
+) -> Result<(), String> {
+    record_row_for_run_at(row, provider, source, reason, run_id, None)
+}
+
+/// 使用 Provider 结果首次持久化时的时间戳，保证崩溃恢复不会改变历史时间。
+pub fn record_row_for_run_at(
+    row: &Value,
+    provider: &str,
+    source: &str,
+    reason: &str,
+    run_id: Option<&str>,
+    recorded_at: Option<i64>,
+) -> Result<(), String> {
     let claim = row.get("claim").cloned().unwrap_or(Value::Null);
     let row_error = row
         .get("error")
@@ -119,7 +147,9 @@ pub fn record_row(row: &Value, provider: &str, source: &str, reason: &str) {
         (OUTCOME_FAILED, message)
     };
     let kept_active = kept_active_of(row);
-    insert(Entry {
+    insert_checked(Entry {
+        ts: recorded_at,
+        run_id: run_id.map(str::to_string),
         account_id: text_or(row.get("id"), ""),
         account_name: text_or(row.get("name"), &text_or(row.get("id"), "")),
         provider: provider.to_string(),
@@ -134,11 +164,12 @@ pub fn record_row(row: &Value, provider: &str, source: &str, reason: &str) {
             .map(str::to_string),
         error,
         kept_active,
-    });
+    })
 }
 
 /// 国际版活动的手动领取 / 保活（`api::billing::run_activity` 的返回行，
-/// `{id, name, mode, claim, activity}`）。
+/// `{id, name, mode, claim, activity}`）。兼容入口仍 best-effort；可恢复执行链
+/// 使用 `record_activity_for_run_at` 并传入 run_id / 原始时间戳。
 ///
 /// 判定按 mode 分两条：`keepalive` 看「上报 / 保活对话 / 网页会话」任一成功
 /// —— 它的 claim 是 `{success:false, msg:"活跃保活完成"}` 的形态，走 claim
@@ -147,6 +178,19 @@ pub fn record_row(row: &Value, provider: &str, source: &str, reason: &str) {
 /// 「活动未开启但活跃上报成功（或网页会话建成）」按 `record_row` 同款落到 already。
 /// reason 用人话（界面的「来源/说明」列直接展示）。
 pub fn record_activity(row: &Value, provider: &str, mode: &str) {
+    if record_activity_for_run_at(row, provider, mode, None, None).is_err() {
+        logging::verbose("[Checkin]", "签到活动记录未能落库（库不可用或写入失败）");
+    }
+}
+
+/// 可恢复活动入口的严格投影。传入 run_id 后可在崩溃恢复时幂等补写。
+pub fn record_activity_for_run_at(
+    row: &Value,
+    provider: &str,
+    mode: &str,
+    run_id: Option<&str>,
+    recorded_at: Option<i64>,
+) -> Result<(), String> {
     let reason = match mode {
         "keepalive" => "手动保活",
         "claim" => "手动领取活动",
@@ -180,8 +224,6 @@ pub fn record_activity(row: &Value, provider: &str, mode: &str) {
     } else if claim_pending(&claim) {
         (OUTCOME_PENDING, None, false)
     } else if report_ok {
-        // full / claim 模式「活动未开启但活跃上报成功」：与 record_row 同款，
-        // 这一天的国际版日活实际完成了，不落 failed。
         (OUTCOME_ALREADY, None, true)
     } else {
         (
@@ -194,7 +236,9 @@ pub fn record_activity(row: &Value, provider: &str, mode: &str) {
             false,
         )
     };
-    insert(Entry {
+    insert_checked(Entry {
+        ts: recorded_at,
+        run_id: run_id.map(str::to_string),
         account_id: text_or(row.get("id"), ""),
         account_name: text_or(row.get("name"), &text_or(row.get("id"), "")),
         provider: provider.to_string(),
@@ -209,11 +253,13 @@ pub fn record_activity(row: &Value, provider: &str, mode: &str) {
             .map(str::to_string),
         error,
         kept_active,
-    });
+    })
 }
 
 /// 一行明细的落库形态（`insert` 的入参；字段与表列一一对应）
 struct Entry<'a> {
+    ts: Option<i64>,
+    run_id: Option<String>,
     account_id: String,
     account_name: String,
     provider: String,
@@ -226,46 +272,83 @@ struct Entry<'a> {
     kept_active: bool,
 }
 
-/// 落一行台账（一次事务）。失败打 verbose，不向上报
-/// （见模块头「写失败不报错」）。
+/// 可恢复执行链使用的严格写入：不吞掉错误，只有确认提交后才能推进 ledger。
+fn insert_checked(entry: Entry<'_>) -> Result<(), String> {
+    let db = database().ok_or_else(|| "签到记录数据库不可用".to_string())?;
+    let ts = entry.ts.unwrap_or_else(logging::now_ms);
+    let date = beijing::date_key_of_ms(ts).unwrap_or_else(beijing::today_key);
+    db.with_mut(|conn| -> Result<(), rusqlite::Error> {
+        conn.execute(
+            "INSERT INTO checkin_records
+               (ts, date, source, reason, account_id, account_name, provider,
+                outcome, ok, message, error, kept_active, run_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+             ON CONFLICT(run_id, account_id) WHERE run_id IS NOT NULL DO NOTHING",
+            params![
+                ts, date, entry.source, entry.reason, entry.account_id,
+                entry.account_name, entry.provider, entry.outcome,
+                entry.ok as i64, entry.message, entry.error,
+                entry.kept_active as i64, entry.run_id,
+            ],
+        )?;
+        Ok(())
+    })
+    .ok_or_else(|| "签到记录数据库连接不可用".to_string())?
+    .map_err(|error| format!("签到记录写入失败: {error}"))
+}
+
+/// 将已由 Provider 正向核实的结果投影到签到历史。
 ///
-/// 台账**全量保留**：不按天数裁、也没有条数上限（与请求日志同一取向）——
-/// 要清历史用签到记录页自己的「清空 / 按筛选删除」（`clear_all` /
-/// `clear_where`）。这里原本会顺带按「请求日志保留天数」裁超期行，
-/// 那套保留期已随请求日志一起移除。
-fn insert(entry: Entry<'_>) {
-    let Some(db) = database() else { return };
-    let ts = logging::now_ms();
-    let date = beijing::today_key();
-    let failed = db
-        .with_mut(|conn| -> Result<(), rusqlite::Error> {
-            conn.execute(
-                "INSERT INTO checkin_records
-                   (ts, date, source, reason, account_id, account_name, provider,
-                    outcome, ok, message, error, kept_active)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
-                params![
-                    ts,
-                    date,
-                    entry.source,
-                    entry.reason,
-                    entry.account_id,
-                    entry.account_name,
-                    entry.provider,
-                    entry.outcome,
-                    entry.ok as i64,
-                    entry.message,
-                    entry.error,
-                    entry.kept_active as i64,
-                ],
-            )?;
-            Ok(())
-        })
-        .map(|result| result.is_err())
-        .unwrap_or(true);
-    if failed {
-        logging::verbose("[Checkin]", "签到记录未能落库（库不可用或写入失败）");
-    }
+/// 该行明确标记为 reconciliation 来源，不伪装成实时领取响应；
+/// evidence_id 与 run_id/account_id 双重约束，重复调用只会命中同一行。
+pub fn record_reconciliation_for_run_at(
+    db: &Db,
+    run_id: &str,
+    account_id: &str,
+    account_name: &str,
+    provider: &str,
+    evidence_id: i64,
+    recorded_at: i64,
+) -> Result<(), String> {
+    let date = beijing::date_key_of_ms(recorded_at)
+        .unwrap_or_else(beijing::today_key);
+    db.with_mut(|conn| -> Result<(), rusqlite::Error> {
+        let tx = conn.transaction()?;
+        let evidence_valid: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM checkin_reconciliation_evidence
+             WHERE evidence_id = ?1 AND run_id = ?2 AND account_id = ?3
+               AND provider = ?4 AND verdict = 'confirmed' AND resolved = 1)",
+            params![evidence_id, run_id, account_id, provider],
+            |row| row.get(0),
+        )?;
+        if !evidence_valid {
+            return Err(rusqlite::Error::InvalidQuery);
+        }
+        tx.execute(
+            "INSERT INTO checkin_records
+               (ts, date, source, reason, account_id, account_name, provider,
+                outcome, ok, message, error, kept_active, run_id, reconciliation_evidence_id)
+             VALUES (?1, ?2, 'reconciliation', '上游状态核实（恢复对账）', ?3, ?4, ?5,
+                     'already', 1, '上游状态确认当日已完成；此记录为恢复核实，不代表本次请求响应',
+                     NULL, 0, ?6, ?7)
+             ON CONFLICT(run_id, account_id) WHERE run_id IS NOT NULL DO NOTHING",
+            params![recorded_at, date, account_id, account_name, provider, run_id, evidence_id],
+        )?;
+        let stored: Option<i64> = tx
+            .query_row(
+                "SELECT reconciliation_evidence_id FROM checkin_records
+                 WHERE run_id = ?1 AND account_id = ?2",
+                params![run_id, account_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if stored != Some(evidence_id) {
+            return Err(rusqlite::Error::InvalidQuery);
+        }
+        tx.commit()
+    })
+    .ok_or_else(|| "签到记录数据库连接不可用".to_string())?
+    .map_err(|error| format!("对账历史投影失败: {error}"))
 }
 
 /// 结果行的字符串字段读取（非字符串给缺省）
@@ -386,6 +469,7 @@ pub fn query(query: &Query, limit: usize, offset: usize) -> Value {
                         "message": row.get::<_, Option<String>>("message")?,
                         "error": row.get::<_, Option<String>>("error")?,
                         "keptActive": row.get::<_, i64>("kept_active").unwrap_or(0) != 0,
+                        "reconciliationEvidenceId": row.get::<_, Option<i64>>("reconciliation_evidence_id")?,
                     }))
                 },
             )?;
@@ -425,5 +509,48 @@ fn value_to_text(value: &Value) -> String {
     match value {
         Value::String(text) => text.clone(),
         other => other.to_string(),
+    }
+}
+
+
+#[cfg(test)]
+mod reconciliation_tests {
+    use super::record_reconciliation_for_run_at;
+    use crate::server::db::test_temp::TempDb;
+
+    #[test]
+    fn reconciliation_history_projection_is_idempotent_and_evidence_bound() {
+        let (db, _guard) = TempDb::open("checkin-records-reconciliation-projection");
+        let now = crate::server::logging::now_ms();
+        db.with_mut(|conn| {
+            conn.execute(
+                "INSERT INTO checkin_reconciliation_evidence
+                 (evidence_id, run_id, account_id, provider, verdict, evidence_type, observed_at, evidence_json, resolved)
+                 VALUES (41, 'run-1', 'account-1', 'qoder', 'confirmed', 'campaign_claim_status', ?1, '{}', 1)",
+                [now],
+            )
+        }).expect("database available").expect("seed confirmed evidence");
+        record_reconciliation_for_run_at(
+            &db, "run-1", "account-1", "Qoder", "qoder", 41, now,
+        ).expect("first reconciliation history insert");
+        record_reconciliation_for_run_at(
+            &db, "run-1", "account-1", "Qoder", "qoder", 41, now + 1,
+        ).expect("same evidence replay is idempotent");
+        assert!(record_reconciliation_for_run_at(
+            &db, "run-1", "account-1", "Qoder", "qoder", 42, now + 2,
+        ).is_err(), "a different evidence id must not replace the first history row");
+        let row = db.with(|conn| {
+            conn.query_row(
+                "SELECT source, outcome, reconciliation_evidence_id, ts
+                 FROM checkin_records WHERE run_id = 'run-1' AND account_id = 'account-1'",
+                [],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?, row.get::<_, i64>(3)?)),
+            )
+        }).expect("database available").expect("projected row");
+        assert_eq!(row.0, "reconciliation");
+        assert_eq!(row.1, "already");
+        assert_eq!(row.2, 41);
+        assert_eq!(row.3, now);
     }
 }

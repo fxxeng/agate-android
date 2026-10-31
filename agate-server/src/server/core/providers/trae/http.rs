@@ -48,24 +48,48 @@ pub async fn post_json(
     for (name, value) in headers {
         request = request.header(*name, value.clone());
     }
-    let response = request
-        .json(body)
-        .send()
-        .await
-        .map_err(|error| GatewayError::with_status(502, format!("Trae 请求发不出去：{}", egress::describe_error_detail(&error))))?;
+    let response = request.json(body).send().await.map_err(|error| {
+        let status = if error.is_timeout() { 504 } else { 502 };
+        GatewayError::with_status(
+            status,
+            format!("Trae 请求发送失败：{}", egress::describe_error_detail(&error)),
+        )
+    })?;
     let status = response.status().as_u16();
-    let text = read_limited(response).await;
+    let text = read_limited(response).await?;
     Ok(Reply { status, body: text })
 }
 
-/// 读响应体，最多 `MAX_BODY_BYTES`。
-async fn read_limited(response: reqwest::Response) -> String {
-    let limit = MAX_BODY_BYTES;
-    match response.bytes().await {
-        Ok(bytes) if bytes.len() <= limit => String::from_utf8_lossy(&bytes).into_owned(),
-        Ok(bytes) => String::from_utf8_lossy(&bytes[..limit]).into_owned(),
-        Err(_) => String::new(),
+/// 读响应体，最多 `MAX_BODY_BYTES`，并保留读取失败语义。
+///
+/// 不能用 `unwrap_or_default()`：签到领取后必须回查同设备状态，若回查响应体
+/// 读取超时却被伪装成空 JSON，调用方会把传输故障误判成「没有确认到账」。
+/// 使用 chunk 读取也避免 `Response::bytes()` 先把超大 HTML 错误页完整读入内存。
+async fn read_limited(mut response: reqwest::Response) -> Result<String, GatewayError> {
+    let mut body = Vec::with_capacity(MAX_BODY_BYTES.min(16 * 1024));
+    while let Some(chunk) = response.chunk().await.map_err(|error| {
+        let status = if error.is_timeout() { 504 } else { 502 };
+        GatewayError::with_status(
+            status,
+            format!("Trae 响应体读取失败：{}", egress::describe_error_detail(&error)),
+        )
+    })? {
+        if append_limited(&mut body, &chunk) {
+            break;
+        }
     }
+    Ok(String::from_utf8_lossy(&body).into_owned())
+}
+
+/// 追加一个响应块；返回 true 表示已经触及上限，应停止继续读取。
+fn append_limited(body: &mut Vec<u8>, chunk: &[u8]) -> bool {
+    let remaining = MAX_BODY_BYTES.saturating_sub(body.len());
+    if remaining == 0 {
+        return true;
+    }
+    let copied = chunk.len().min(remaining);
+    body.extend_from_slice(&chunk[..copied]);
+    chunk.len() > remaining || body.len() == MAX_BODY_BYTES
 }
 
 /// 把多个候选 host 的失败拼成一条**能看懂**的报错。
@@ -83,6 +107,21 @@ pub fn describe_candidates(urls: &[String], errors: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn response_body_is_bounded_across_chunks() {
+        let mut body = Vec::new();
+        assert!(!append_limited(&mut body, b"first"));
+        assert!(!append_limited(&mut body, b" second"));
+        assert_eq!(body, b"first second");
+
+        body.resize(MAX_BODY_BYTES - 2, b'x');
+        assert!(append_limited(&mut body, b"abcd"));
+        assert_eq!(body.len(), MAX_BODY_BYTES);
+        assert_eq!(&body[MAX_BODY_BYTES - 2..], b"ab");
+        assert!(append_limited(&mut body, b"ignored"));
+        assert_eq!(body.len(), MAX_BODY_BYTES);
+    }
 
     #[test]
     fn the_failure_summary_stays_readable() {

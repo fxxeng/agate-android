@@ -39,6 +39,8 @@ object Gateway {
     private external fun nativeCoreInit(dataDir: String, port: Int, schedulerOn: Boolean): String
     private external fun nativeSchedulerSet(on: Boolean): String
     private external fun nativeCheckinRunNow(timeoutMs: Long): String
+    private external fun nativeCheckinRunAndWait(): String
+    private external fun nativeRequestCheckinStop(): String
     private external fun nativeVersion(): String
     private external fun nativeSetLogCallback(callback: Any?): String
 
@@ -47,14 +49,13 @@ object Gateway {
     /**
      * 管理面内核直调（P2 通道层）：method+path+body 经 JNI 走内核内存 Router，
      * 不经 127.0.0.1 端口 —— Core 态（网关未运行）下管理操作照常可用。
-     * 返回 {ok, status, body} JSON 文本；链路异常返回 null。
+     * 返回 {ok, status, body} JSON 文本。Native 加载/调用异常向上传递，
+     * 由 CoreTransport 转换为明确的链路错误；这里不能把错误吞成 null。
      */
-    fun apiCall(method: String, path: String, body: String?, apiKey: String): String? =
-        try {
-            nativeApiCall(method, path, body, apiKey)
-        } catch (_: Throwable) {
-            null
-        }
+    fun apiCall(method: String, path: String, body: String?, apiKey: String): String {
+        ensureLoaded()
+        return nativeApiCall(method, path, body, apiKey)
+    }
 
     data class StartResult(
         val ok: Boolean,
@@ -173,6 +174,22 @@ object Gateway {
     fun checkinRunNow(timeoutMs: Long = 120_000L): JSONObject {
         ensureLoaded()
         return JSONObject(nativeCheckinRunNow(timeoutMs))
+    }
+
+    /**
+     * FGS 专用：等待 Rust 签到任务真正完成后返回。
+     * STOP 可通过 [requestCheckinStop] 合作式停止后续账号；当前账号仍会自然收尾。
+     * 调用方必须在后台线程调用，并在整个等待期间持有 WakeLock。
+     */
+    fun checkinRunAndWait(): JSONObject {
+        ensureLoaded()
+        return JSONObject(nativeCheckinRunAndWait())
+    }
+
+    /** 请求当前签到轮次在当前账号自然收尾后停止；不会中断在途 Provider 请求。 */
+    fun requestCheckinStop(): JSONObject {
+        ensureLoaded()
+        return JSONObject(nativeRequestCheckinStop())
     }
 
     // ── 日志回调 ──────────────────────────────────────────────────

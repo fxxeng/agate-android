@@ -32,6 +32,7 @@ pub mod growth;
 pub mod keepalive;
 pub mod normalize;
 pub mod region;
+pub mod reconcile;
 
 pub use adapter::{
     ensure_leading_system_message, WorkBuddyAdapter, WORKBUDDY_ADAPTER, WORKBUDDY_INTL_ADAPTER,

@@ -162,3 +162,30 @@ val verifyKernelSo by tasks.registering {
 tasks.matching { it.name == "assembleDebug" }.configureEach {
     finalizedBy(verifyKernelSo)
 }
+
+// Release 包是可交付产物：缺少 Native Core 必须失败，不能像 Debug 一样仅警告。
+val verifyReleaseKernelSo by tasks.registering {
+    description = "验证 Release APK 包含 arm64-v8a/libagate_server.so"
+    group = "verification"
+    val apkDir = layout.buildDirectory.dir("outputs/apk/release")
+    dependsOn("assembleRelease")
+
+    doLast {
+        val dir = apkDir.get().asFile
+        val apks = dir.listFiles { f -> f.extension == "apk" }.orEmpty()
+        check(apks.isNotEmpty()) { "Release APK 未生成：${dir.absolutePath}" }
+        apks.forEach { apk ->
+            val hasKernel = ZipFile(apk).use { zip ->
+                zip.getEntry("lib/arm64-v8a/libagate_server.so") != null
+            }
+            check(hasKernel) {
+                "${apk.name} 缺少 lib/arm64-v8a/libagate_server.so，拒绝将不可运行的 Release 包作为交付产物"
+            }
+            logger.lifecycle("[ok] ${apk.name} 包含 arm64-v8a/libagate_server.so")
+        }
+    }
+}
+
+tasks.matching { it.name == "assembleRelease" }.configureEach {
+    finalizedBy(verifyReleaseKernelSo)
+}

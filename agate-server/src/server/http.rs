@@ -694,6 +694,20 @@ pub fn panel_router(state: ServerState) -> Router {
         // （CHECKIN_PROVIDERS ∩ supports_checkin），见 api::checkin_center 的模块头。
         // 挂 protected：它能列出全部账号及其签到时间，敏感度与 /api/accounts 一致。
         .route("/api/checkin-center", get(api::checkin_center::get_center))
+        // 不确定签到只读诊断：展示批次、账号、Provider 与失败边界，不提供
+        // 强制解除或远端重试。挂 protected，避免泄露账号标识与内部执行信息。
+        .route(
+            "/api/checkin-runs/uncertain",
+            get(api::checkin_runs::query_uncertain),
+        )
+        .route(
+            "/api/checkin-runs/reconcile",
+            post(api::checkin_runs::inspect_provider),
+        )
+        .route(
+            "/api/checkin-runs/evidence",
+            get(api::checkin_runs::query_evidence),
+        )
         // ── Qoder UMID 组件（设备风控身份）──
         // GET 状态 / POST 安装（安装仅 Linux，见 api::qoder_umid 的模块头）。
         // 挂 protected：安装会向 npm 下载并落地一个可执行组件，敏感度与

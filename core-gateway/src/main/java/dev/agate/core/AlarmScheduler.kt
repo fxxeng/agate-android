@@ -44,15 +44,28 @@ object AlarmScheduler {
         val at = nextOccurrence(times) ?: return null
         val pi = pendingIntent(app)
         val am = app.getSystemService(Context.ALARM_SERVICE) as AlarmManager
-        // canExact 变化（用户从设置页收回授权）会以 SecurityException 体现，双保险
-        runCatching {
+        // canExact 可能在检查后被用户撤权；先尝试精确闹钟，再降级为非精确。
+        // 两条路径都可能因后台限制/ROM 策略抛异常，不能让 BroadcastReceiver 崩溃，
+        // 也不能把一个实际上未注册的时间写进「下次闹钟」状态。
+        val scheduled = try {
             if (canExact(app)) {
-                am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi)
+                try {
+                    am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi)
+                } catch (exactFailure: Exception) {
+                    android.util.Log.w("Agate", "精确闹钟不可用，降级为非精确闹钟", exactFailure)
+                    am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi)
+                }
             } else {
                 am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi)
             }
-        }.onFailure {
-            am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi)
+            true
+        } catch (failure: Exception) {
+            android.util.Log.e("Agate", "注册下次签到闹钟失败", failure)
+            false
+        }
+        if (!scheduled) {
+            GatewayPrefs.setNextAlarmAt(app, 0L)
+            return null
         }
         GatewayPrefs.setNextAlarmAt(app, at)
         return at

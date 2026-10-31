@@ -1,73 +1,80 @@
 name: android-build
 
-# 仓库已转公共（Actions 免费不占额度），保持手动触发、按需构建。
 on:
+  push:
+  pull_request:
   workflow_dispatch:
 
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    permissions:
-      # M0：把首次生成的 Cargo.lock 提交回仓库，保证后续构建可复现
-      contents: write
+permissions:
+  contents: read
 
+concurrency:
+  group: agate-android-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust-tests:
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Rust 工具链（含 aarch64-linux-android 目标）
+      - name: Rust toolchain
         uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-linux-android
-
-      - name: Rust 构建缓存
+      - name: Rust cache
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: agate-server
+      # Repository-wide rustfmt debt predates this branch (413 files in the
+      # first CI audit). Keep the check visible but non-blocking while a
+      # dedicated formatting-only change is planned; compile/tests remain gates.
+      - name: Rust formatting (legacy debt; non-blocking)
+        continue-on-error: true
+        run: cargo fmt --manifest-path agate-server/Cargo.toml --all -- --check
+      - name: Rust tests
+        run: cargo test --manifest-path agate-server/Cargo.toml --locked --lib
 
+  android-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain (Android arm64)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: agate-server
       - name: JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
-
-      - name: 安装 NDK r27c 与 cargo-ndk
+      - name: Install Android NDK r27c and cargo-ndk
         run: |
-          command -v sdkmanager >/dev/null || export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
-          yes | sdkmanager --install "ndk;27.2.12479018" > /dev/null
+          SDKMANAGER="$(command -v sdkmanager || true)"
+          if [ -z "$SDKMANAGER" ]; then
+            SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          fi
+          yes | "$SDKMANAGER" --install "ndk;27.2.12479018" > /dev/null
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"
           cargo install cargo-ndk --locked
-
-      - name: 交叉编译 libagate_server.so（O5 验证点：rustls/ring + rusqlite bundled）
-        run: bash scripts/build-android-so.sh
-
-      - name: 提交 Cargo.lock
+      - name: Build Rust Android library
+        run: bash scripts/build-android-so.sh arm64-v8a
+      - name: Gradle tests
+        run: ./gradlew :app:testDebugUnitTest :core-gateway:testDebugUnitTest --no-daemon
+      - name: Build Debug and Release APKs
+        run: ./gradlew :app:assembleDebug :app:assembleRelease --no-daemon
+      - name: Verify APK contents
         run: |
-          cd agate-server
-          if [ -n "$(git status --porcelain Cargo.lock)" ]; then
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add Cargo.lock
-            git commit -m "chore: lock agate-server dependencies [skip ci]"
-            git push
-          fi
-
-      - name: Gradle 8.9
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '8.9'
-
-      - name: 数据层单元测试（SSE 报文解析）
-        run: gradle :app:testDebugUnitTest --no-daemon
-
-      - name: 构建 M0 Demo APK
-        run: gradle :app:assembleDebug --no-daemon
-
-      - name: 上传产物（APK + .so）
+          set -euo pipefail
+          for apk in app/build/outputs/apk/debug/*.apk app/build/outputs/apk/release/*.apk; do
+            test -f "$apk"
+            unzip -l "$apk" | grep -q 'lib/arm64-v8a/libagate_server.so'
+          done
+      - name: Upload APKs
         uses: actions/upload-artifact@v4
         with:
-          name: agate-m0-arm64
-          path: |
-            app/build/outputs/apk/debug/*.apk
-            core-gateway/src/main/jniLibs/arm64-v8a/*.so
+          name: agate-android-apks
+          path: app/build/outputs/apk/*/*.apk
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 14

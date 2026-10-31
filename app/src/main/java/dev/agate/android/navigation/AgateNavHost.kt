@@ -95,6 +95,7 @@ import dev.agate.android.ui.tasks.TasksPage
 import dev.agate.android.ui.tasks.CheckinCenterPage
 import dev.agate.android.ui.tasks.CheckinSchedulePage
 import dev.agate.android.ui.tasks.CheckinRecordsPage
+import dev.agate.android.ui.tasks.CheckinRecoveryPage
 import dev.agate.android.ui.tasks.PeriodicTasksPage
 import dev.agate.android.ui.pages.SkeletonPage
 import dev.agate.android.ui.theme.AgateThemeMode
@@ -104,7 +105,7 @@ import dev.agate.core.GatewayPrefs
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
-/** 路由常量（4 主 Tab + 22 二级页）。 */
+/** 路由常量（4 主 Tab + 23 二级页）。 */
 object Routes {
     const val HOME = "home"
     const val PROVIDERS = "providers"
@@ -120,6 +121,7 @@ object Routes {
     const val TASK_CHECKIN = "task_checkin"
     const val TASK_SCHEDULE = "task_schedule"
     const val TASK_RECORDS = "task_records"
+    const val TASK_RECOVERY = "task_recovery"
     const val TASK_PERIODIC = "task_periodic"
     const val QUOTA = "quota"
     const val REPORTS = "reports"
@@ -504,7 +506,11 @@ fun AgateNavHost(
                         onBack = { navController.popBackStack() },
                         onOpenSchedule = { navController.navigate(Routes.TASK_SCHEDULE) },
                         onOpenRecords = { navController.navigate(Routes.TASK_RECORDS) },
+                        onOpenRecovery = { navController.navigate(Routes.TASK_RECOVERY) },
                     )
+                }
+                composable(Routes.TASK_RECOVERY) {
+                    CheckinRecoveryPage(onBack = { navController.popBackStack() })
                 }
                 composable(Routes.TASK_SCHEDULE) {
                     // 定时签到：总开关 + 条目 CRUD（行内表单）+ 保活链拖动排序

@@ -397,11 +397,5 @@ fn is_link_like(metadata: &std::fs::Metadata) -> bool {
 /// 只判断「有没有设」，不重复解析路径 —— 解析口径的唯一事实来源是
 /// `paths::config_dir()`；覆盖生效时迁移整体不适用。
 fn env_dir_override_set() -> bool {
-    ["AGATE_PROXY_HOME", "WORKBUDDY_PROXY_HOME"]
-        .iter()
-        .any(|name| {
-            std::env::var(name)
-                .map(|value| !value.trim().is_empty())
-                .unwrap_or(false)
-        })
+    crate::paths::has_config_dir_override()
 }

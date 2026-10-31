@@ -89,14 +89,6 @@ pub async fn run_download() -> Result<DownloadOutcome, String> {
     if crate::server::core::sub_kernel::installed() {
         return Ok(DownloadOutcome::Done);
     }
-    // Android：真实原因是 W^X（下载了也执行不了），不是「没有资产」——
-    // 文案按实际原因给，见 `sub_kernel::platform_supported`。
-    if !crate::server::core::sub_kernel::platform_supported() {
-        return Err(
-            "订阅内核在此平台不可用：Android 10+ 禁止执行应用数据目录里的二进制（W^X）。"
-                .to_string(),
-        );
-    }
     let Some((asset, sha256)) = crate::server::core::sub_kernel::asset_for_current_platform() else {
         return Err("当前平台暂不支持代理内核（官方没有这一平台的预编译产物）".to_string());
     };

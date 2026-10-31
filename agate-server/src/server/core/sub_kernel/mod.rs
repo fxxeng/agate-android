@@ -142,32 +142,6 @@ pub fn installed() -> bool {
     kernel_dir().join(kernel_binary_name()).exists()
 }
 
-/// 订阅内核在此平台是否**结构性可用**。
-///
-/// ── Android 为什么不可用（2026-10-30 补门）──────────────────
-/// Android 10+（targetSdk ≥ 29，本项目 targetSdk=35）对应用数据目录强制
-/// W^X + SELinux `app_data_file`：`execve` 一个落在 filesDir 里的 ELF
-/// 一律 EACCES（os error 13），`chmod 755` 也救不了。而 mihomo 是按需
-/// 下载到 `kernel_dir()`（应用可写目录）的 —— 这条链路在 Android 上
-/// **结构性不可用**，不是配置问题。
-///
-/// 官方资产表（`asset_for_current_platform`）本来就没有 android 条目，
-/// 下载已经被拒；这道门拦的是剩下的两条路：手动塞进来的二进制触发的
-/// autostart / restart —— 让它们报一句可读的原因，而不是死在
-/// 「os error 13」上让人怀疑是权限没给。要在这平台启用，得把内核作为
-/// `lib*.so` 打进 jniLibs、从 `nativeLibraryDir` 执行（只读目录不受 W^X
-/// 约束）—— 那是「所有用户白背 20MB」的产品取舍，见模块头的下载说明。
-pub fn platform_supported() -> bool {
-    #[cfg(target_os = "android")]
-    {
-        return false;
-    }
-    #[cfg(not(target_os = "android"))]
-    {
-        return true;
-    }
-}
-
 // ─── 一条订阅的输入形态 ─────────────────────────────────────
 
 /// worker 命令携带的订阅清单项（api 层从 `core::subscriptions` 的条目构造）。
@@ -604,11 +578,6 @@ fn kernel_effectively_running() -> bool {
 /// 经命令队列走（`request_restart`），与手动启动同一串行通道；run_restart
 /// 会先清理上次运行遗留的进程再重建配置。
 pub fn autostart_for_gateway() {
-    // Android：数据目录里的二进制执行不了（W^X，见 [`platform_supported`]），
-    // 自动拉起只会在每次网关启动时徒劳一轮 —— 直接跳过。
-    if !platform_supported() {
-        return;
-    }
     if !crate::server::core::subscriptions::should_autostart()
         || is_manually_halted()
         || kernel_effectively_running()

@@ -6,7 +6,7 @@
 //!   · 控制面：本文件只提供 6 个「电源开关 + 闹钟 + 日志」函数。
 //!
 //! 两级启动（B 包 · 方案 v2.0 三开关），桌面壳 `ensure_ready` 的序列拆两段：
-//!   Core（随进程）：AGATE_PROXY_HOME → `ServerState::bootstrap` →
+//!   Core（随进程）：Android 显式数据目录覆盖 → `ServerState::bootstrap` →
 //!     `access::attach_db`；后台循环任务（scheduled_tasks + auto_checkin +
 //!     订阅内核 worker / zcode 配置同步 / 余额查询，见 bootstrap 末尾区块）
 //!     随 Core 常驻，不监听任何端口，也不随网关启停；
@@ -17,8 +17,8 @@
 //! （见 lib.rs），因此本桥不需要自建 Runtime —— 与 headless bin 的时序一致
 //! （那边也是先 start、再建运行时等信号）。
 //!
-//! 数据目录经 `AGATE_PROXY_HOME` 注入（与 Docker 部署同一机制），
-//! `paths.rs` 零改动。
+//! Android 数据目录经 `paths::set_config_dir_override` 注入；桌面/headless
+//! 仍通过 `AGATE_PROXY_HOME` / `WORKBUDDY_PROXY_HOME` 环境变量配置。
 //!
 //! 与上游的全部差异：本文件 + Cargo.toml（lib 改名/cdylib/license/profile/
 //! android deps）+ lib.rs 的模块挂载 + logging.rs 的 console_line 挂钩 +
@@ -30,7 +30,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
 use jni::objects::{GlobalRef, JClass, JObject, JString, JValue};
-use jni::sys::{jboolean, jint, jlong, jobject, jstring};
+use jni::sys::{jboolean, jint, jlong, jstring};
 use jni::{JNIEnv, JavaVM};
 use serde_json::{json, Value};
 use tokio::sync::oneshot;
@@ -60,6 +60,9 @@ struct Running {
 
 /// 网关运行句柄；`None` = 已停止。Mutex 常量化初始化（Rust 1.63+）。
 static RUNNING: Mutex<Option<Running>> = Mutex::new(None);
+/// 串行化网关 start/stop：避免并发启动重复 bind，或重复 start 在
+/// already_running 返回前改写当前会话的鉴权环境变量。
+static GATEWAY_OP: Mutex<()> = Mutex::new(());
 
 /// Kotlin 侧注册的日志回调（GlobalRef 保活）；`None` = 只写 logcat。
 static LOG_CALLBACK: Mutex<Option<GlobalRef>> = Mutex::new(None);
@@ -101,8 +104,8 @@ fn prio_to_level(prio: i32) -> &'static str {
 }
 
 /// console_line 的挂钩：logcat 全量输出；已注册回调时转发 Kotlin。
-/// 线程安全：回调调用不持锁（只拷贝裸句柄）；Kotlin 侧约定仅在网关启停时
-/// 调用 nativeSetLogCallback，运行期不会与这里竞争释放 GlobalRef。
+/// 线程安全：回调调用不持锁；先克隆 GlobalRef 保活到回调结束，因此 Kotlin
+/// 侧即使并发撤销/替换监听，也不会释放本次正在使用的 JNI 全局引用。
 pub fn forward_log(tag: &str, text: &str) {
     let prio = prio_of(tag, text);
     logcat_write(prio, tag, text);
@@ -111,16 +114,19 @@ pub fn forward_log(tag: &str, text: &str) {
         return;
     }
     let Some(vm) = JAVA_VM.get() else { return };
-    let Some(raw) = LOG_CALLBACK
+    // 克隆 GlobalRef 并把克隆持有到 Java 回调结束。若只取 raw jobject 后
+    // 释放锁，另一个线程可同时 setLogCallback(null) 并销毁原 GlobalRef，
+    // 造成回调线程使用已释放的 JNI 全局引用。GlobalRef 的克隆共享同一底层
+    // 引用计数，能把引用生命周期覆盖到本次调用结束。
+    let Some(callback) = LOG_CALLBACK
         .lock()
         .ok()
-        .and_then(|guard| guard.as_ref().map(|cb| cb.as_obj().as_raw()))
+        .and_then(|guard| guard.as_ref().cloned())
     else {
         return;
     };
     let message = format!("{tag} {text}");
-    // 安全性：raw 来自仍存活的 GlobalRef（见上面的调用约定），此处只借用
-    let obj = unsafe { JObject::from_raw(raw) };
+    let obj = callback.as_obj();
     IN_FORWARD.with(|f| f.store(true, Ordering::Relaxed));
     // 已附着（JNI 调用线程）→ 直接用；未附着（Tokio 工作线程）→ 附着并在
     // guard 离开作用域时自动脱离，不碰 Java 自己附着的线程
@@ -140,6 +146,12 @@ fn jni_safe(s: &str) -> String {
         .collect()
 }
 
+fn clear_pending_exception(env: &mut JNIEnv<'_>) {
+    if env.exception_check().unwrap_or(false) {
+        let _ = env.exception_clear();
+    }
+}
+
 fn call_on_log(
     env: &mut JNIEnv<'_>,
     obj: &JObject<'_>,
@@ -147,16 +159,24 @@ fn call_on_log(
     tag: &str,
     message: &str,
 ) -> Result<(), jni::errors::Error> {
-    let l = env.new_string(jni_safe(level))?;
-    let t = env.new_string(jni_safe(tag))?;
-    let m = env.new_string(jni_safe(message))?;
-    env.call_method(
-        obj,
-        "onLog",
-        "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V",
-        &[JValue::Object(&l), JValue::Object(&t), JValue::Object(&m)],
-    )?;
-    Ok(())
+    let result = (|| {
+        let l = env.new_string(jni_safe(level))?;
+        let t = env.new_string(jni_safe(tag))?;
+        let m = env.new_string(jni_safe(message))?;
+        env.call_method(
+            obj,
+            "onLog",
+            "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V",
+            &[JValue::Object(&l), JValue::Object(&t), JValue::Object(&m)],
+        )?;
+        Ok(())
+    })();
+    // 日志回调是尽力而为的旁路能力，不能让 Kotlin listener 抛出的异常
+    // 留在一个由 Java 管理的调用线程上，污染该线程后续的 JNI 操作。
+    if result.is_err() {
+        clear_pending_exception(env);
+    }
+    result
 }
 
 // ── 两级内核（B 包 · 方案 v2.0 三开关）──────────────────────────
@@ -194,9 +214,10 @@ fn ensure_core(data_dir: &str, port: u16) -> Result<bool, String> {
             return Ok(false);
         }
     }
-    // 数据目录注入：paths::config_dir() 的唯一覆盖口（AGATE_PROXY_HOME）。
-    // 进程内单 Core、首启先于任何内核线程，重启时重设同值无副作用。
-    std::env::set_var("AGATE_PROXY_HOME", data_dir);
+    // 数据目录注入：显式覆盖 paths::config_dir()，不修改进程全局环境变量。
+    // Android 的数据目录属于宿主生命周期配置；桌面/headless 仍读取 env。
+    crate::paths::set_config_dir_override(data_dir)
+        .map_err(|reason| format!("配置目录初始化失败: {reason}"))?;
     let state = match ServerState::bootstrap(port, IpAddr::V4(Ipv4Addr::LOCALHOST)) {
         Ok(state) => state,
         Err(reason) => {
@@ -279,6 +300,40 @@ fn checkin_run_now(timeout_ms: u64) -> Value {
     }
 }
 
+/// 执行一轮签到并等待 Rust 任务真正结束。
+///
+/// Android FGS 使用此入口持有 WakeLock 直到执行完成；不能用带超时的
+/// `checkin_run_now`，因为超时只停止 JNI 调用方等待，不会取消 Tokio 任务。
+fn checkin_run_and_wait() -> Value {
+    let checkin = {
+        let Ok(guard) = CORE.lock() else {
+            return json!({ "ok": false, "error": "state poisoned" });
+        };
+        let Some(core) = guard.as_ref() else {
+            return json!({ "ok": false, "error": "core_not_ready" });
+        };
+        core.state.auto_checkin().clone()
+    };
+    let (tx, rx) = std::sync::mpsc::channel::<Option<Value>>();
+    crate::spawn_task(async move {
+        let result = checkin.fire("alarm").await;
+        // None 也可能表示调度器/手动入口已经抢到 running 标记。
+        // FGS 持锁期间必须等那一轮真实结束，不能把 busy 当作任务已结束。
+        if result.is_none() {
+            while checkin.is_running() {
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            }
+        }
+        let _ = tx.send(result);
+    });
+    match rx.recv() {
+        Ok(Some(result)) => json!({ "ok": true, "done": true, "result": result }),
+        // None = 已有一轮在执行，本次没有启动新的签到。
+        Ok(None) => json!({ "ok": false, "done": true, "error": "busy" }),
+        Err(_) => json!({ "ok": false, "done": true, "error": "checkin task ended without result" }),
+    }
+}
+
 // =====================================================================
 // 管理面内核直调（P2 通道层）：Android 管理操作不经端口/网络栈。
 // 网关「运行/停止」只决定 8787 端口开不开（B2 语义），管理面在
@@ -358,48 +413,64 @@ pub extern "system" fn Java_dev_agate_core_Gateway_nativeApiCall<'local>(
     body: JString<'local>,
     api_key: JString<'local>,
 ) -> jstring {
-    let mut get = |s: &JString<'local>| -> String {
-        env.get_string(s).map(|v| v.to_string_lossy().into_owned()).unwrap_or_default()
+    // JNI 参数读取失败不能折叠成空字符串：那会把参数错误伪装成路由/鉴权
+    // 错误，而且 get_string 失败时可能已有 pending Java exception。
+    let method = match read_jstring(&mut env, &method) {
+        Ok(value) => value,
+        Err(error) => return jni_argument_error(&mut env, "method", error),
     };
-    let method = get(&method);
-    let path = get(&path);
-    let api_key = get(&api_key);
-    let body = get(&body);
-    let body = if body.is_empty() { None } else { Some(body) };
+    let path = match read_jstring(&mut env, &path) {
+        Ok(value) => value,
+        Err(error) => return jni_argument_error(&mut env, "path", error),
+    };
+    let api_key = match read_jstring(&mut env, &api_key) {
+        Ok(value) => value,
+        Err(error) => return jni_argument_error(&mut env, "api_key", error),
+    };
+    // Kotlin 契约中 body 是 nullable：null 与空字符串都表示无请求体。
+    let body = if body.is_null() {
+        None
+    } else {
+        match read_jstring(&mut env, &body) {
+            Ok(value) if !value.is_empty() => Some(value),
+            Ok(_) => None,
+            Err(error) => return jni_argument_error(&mut env, "body", error),
+        }
+    };
     json_reply(&mut env, api_call(&method, &path, body, &api_key))
 }
 
 fn start_gateway(data_dir: &str, port: u16, bind_lan: bool, api_key: Option<&str>) -> Value {
-    // 登录期可能临时占着该端口（Core 态收回调用，见 core::login_listener）：
-    // 必须先释放并等端口归还，否则下面的 bind 会撞自己。
-    crate::server::core::login_listener::release();
-    // ── 只有**局域网监听**才注入 Key（本次调整）──────────────────
-    // 本机模式（`bind_lan = false`，只绑 127.0.0.1）下不注入：env 里没有 Key
-    // 时 `active_api_keys()` 为空 → 鉴权中间件走「免鉴权」分支 → 本机客户端
-    // **不必填 Key** 就能调 `/v1/*`。
-    //
-    // 这是安全的：本机模式下端口只监听回环地址，门外没有别人；要求填 Key 只是
-    // 给调试和自建客户端凭空加一道墙（用户实际反馈就是这个）。
-    //
-    // 局域网模式必须注入：那时端口对同网段开放，没有 Key 等于把额度对全网公开
-    // （`v1_fail_closed` 只是兜底，真正的凭证就是这把 Key）。
-    //
-    // 反过来也要显式清掉：上一次 LAN 会话设过 env，若这次切回本机却不清，
-    // 进程内的 Key 会残留 → 又变成「必须填 Key」，与本次预期相反。
-    match api_key.map(str::trim).filter(|k| !k.is_empty()) {
-        Some(key) if bind_lan => std::env::set_var("AGATE_PROXY_API_KEY", key),
-        _ => std::env::remove_var("AGATE_PROXY_API_KEY"),
-    }
+    let Ok(_op) = GATEWAY_OP.lock() else {
+        return json!({ "ok": false, "error": "gateway operation lock poisoned" });
+    };
+    // 先判断运行态，再触碰进程级鉴权环境变量。否则「LAN 正在运行时，
+    // 重复发起本机模式 start」会先 remove_var，再返回 already_running，
+    // 导致正在运行的 LAN 网关瞬间失去 API Key。
     {
         let Ok(guard) = RUNNING.lock() else {
             return json!({ "ok": false, "error": "state poisoned" });
         };
         if let Some(r) = guard.as_ref() {
-            return json!({ "ok": false, "error": "already_running", "port": r.port });
+            return json!({
+                "ok": false,
+                "error": "already_running",
+                "port": r.port,
+                "bind_lan": r.bind_lan,
+                "version": VERSION
+            });
         }
     }
+    // 登录期可能临时占着该端口（Core 态收回调用，见 core::login_listener）：
+    // 必须先释放并等端口归还，否则下面的 bind 会撞自己。
+    crate::server::core::login_listener::release();
+    // Android host 的 Key 是显式运行时覆盖，不写进进程环境变量。
+    // `Some(None)` 表示本机回环模式明确不注入 Key；LAN 模式必须有调用方传入的 Key。
+    let runtime_key = api_key.filter(|key| bind_lan && !key.trim().is_empty());
+    crate::server::config::parse::set_android_api_key_override(runtime_key);
     // Core 兜底：网关必先有 Core（通常 Application 已初始化，这里兜异常路径）
     if let Err(reason) = ensure_core(data_dir, port) {
+        crate::server::config::parse::clear_android_api_key_override();
         return json!({ "ok": false, "stage": "bootstrap", "error": reason });
     }
     let host: IpAddr = if bind_lan {
@@ -409,9 +480,11 @@ fn start_gateway(data_dir: &str, port: u16, bind_lan: bool, api_key: Option<&str
     };
     let shutdown_tx = {
         let Ok(mut core_guard) = CORE.lock() else {
+            crate::server::config::parse::clear_android_api_key_override();
             return json!({ "ok": false, "error": "state poisoned" });
         };
         let Some(core) = core_guard.as_mut() else {
+            crate::server::config::parse::clear_android_api_key_override();
             return json!({ "ok": false, "error": "core_not_ready" });
         };
         // 端口可能晚于 Core 就位（core_init 用默认口，这里才是用户配置口）
@@ -442,12 +515,15 @@ fn start_gateway(data_dir: &str, port: u16, bind_lan: bool, api_key: Option<&str
         match server::start(&core.state) {
             Ok(tx) => tx,
             Err(conflict) => {
+                crate::server::config::parse::clear_android_api_key_override();
                 logcat_write(LOG_ERROR, LOGCAT_TAG, &format!("网关启动失败: {}", conflict.message));
                 return json!({ "ok": false, "stage": "bind", "error": conflict.message });
             }
         }
     };
     let Ok(mut guard) = RUNNING.lock() else {
+        let _ = shutdown_tx.send(());
+        crate::server::config::parse::clear_android_api_key_override();
         return json!({ "ok": false, "error": "state poisoned" });
     };
     server::logging::log(
@@ -474,13 +550,18 @@ fn start_gateway(data_dir: &str, port: u16, bind_lan: bool, api_key: Option<&str
 }
 
 fn stop_gateway() -> Value {
+    let Ok(_op) = GATEWAY_OP.lock() else {
+        return json!({ "ok": false, "error": "gateway operation lock poisoned" });
+    };
     let r = {
         let Ok(mut guard) = RUNNING.lock() else {
+            crate::server::config::parse::clear_android_api_key_override();
             return json!({ "ok": false, "error": "state poisoned" });
         };
         guard.take()
     };
     let Some(r) = r else {
+        crate::server::config::parse::clear_android_api_key_override();
         return json!({ "ok": false, "error": "not_running" });
     };
     // 优雅停机：start() 内部的协调任务会把它转成 watch 广播，
@@ -497,6 +578,7 @@ fn stop_gateway() -> Value {
         if server::probe_port(r.port).is_ok() {
             hits += 1;
             if hits >= 2 {
+                crate::server::config::parse::clear_android_api_key_override();
                 return json!({ "ok": true, "port": r.port, "released": true });
             }
         } else {
@@ -504,6 +586,9 @@ fn stop_gateway() -> Value {
         }
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
+    // 即使端口释放探测超时，也已发出 shutdown；清除覆盖，避免下一次 Core
+    // 会话意外继承旧 LAN Key。下一次 start 会重新设置覆盖。
+    crate::server::config::parse::clear_android_api_key_override();
     json!({ "ok": true, "port": r.port, "released": false })
 }
 
@@ -565,14 +650,13 @@ fn trigger_task(task: &str) -> Value {
             .timeout(std::time::Duration::from_secs(120))
             .build()
             .unwrap_or_default();
-        // M3-1 回归修复：env 注入 AGATE_PROXY_API_KEY 后闸门 keys 非空，
-        // 内部触发请求也必须带这把 Key，否则闹钟签到 401。
+        // Android host 的 LAN Key 现在保存在显式运行时覆盖中，不再写入
+        // AGATE_PROXY_API_KEY 环境变量。内部触发请求必须使用与鉴权中间件
+        // 相同的取值入口，否则 LAN 模式会出现「外部请求能鉴权、闹钟内部
+        // 请求 401」的不一致。桌面/headless 的环境变量兜底仍由该入口保留。
         let mut request = client.post(&url);
-        if let Ok(key) = std::env::var("AGATE_PROXY_API_KEY") {
-            let key = key.trim().to_string();
-            if !key.is_empty() {
-                request = request.header("Authorization", format!("Bearer {key}"));
-            }
+        if let Some(key) = crate::server::config::parse::env_api_key_value() {
+            request = request.header("Authorization", format!("Bearer {key}"));
         }
         match request.send().await {
             Ok(resp) => server::logging::log(
@@ -586,6 +670,32 @@ fn trigger_task(task: &str) -> Value {
 }
 
 // ── JNI 导出（dev.agate.core.Gateway）────────────────────────────
+
+fn read_jstring(env: &mut JNIEnv<'_>, value: &JString<'_>) -> Result<String, String> {
+    match env.get_string(value) {
+        Ok(value) => Ok(value.to_string_lossy().into_owned()),
+        Err(error) => {
+            // JNI 字符串读取失败可能伴随 pending Java exception。若不清理，
+            // 后续 json_reply/new_string 也会失败，导致 Kotlin 收到 null，
+            // 原始错误反而丢失。这里把异常转换成 Rust 错误契约后再清理。
+            let message = error.to_string();
+            clear_pending_exception(env);
+            Err(message)
+        }
+    }
+}
+
+fn jni_argument_error(env: &mut JNIEnv<'_>, argument: &str, error: String) -> jstring {
+    json_reply(
+        env,
+        json!({
+            "ok": false,
+            "stage": "jni",
+            "argument": argument,
+            "error": error,
+        }),
+    )
+}
 
 fn json_reply(env: &mut JNIEnv<'_>, value: Value) -> jstring {
     match env.new_string(value.to_string()) {
@@ -601,10 +711,10 @@ pub extern "system" fn Java_dev_agate_core_Gateway_nativeStart<'local>(
     _class: JClass<'local>,
     config: JString<'local>,
 ) -> jstring {
-    let cfg_text = match env.get_string(&config) {
-        Ok(s) => s.to_string_lossy().into_owned(),
-        Err(e) => {
-            return json_reply(&mut env, json!({"ok": false, "stage": "config", "error": e.to_string()}))
+    let cfg_text = match read_jstring(&mut env, &config) {
+        Ok(value) => value,
+        Err(error) => {
+            return jni_argument_error(&mut env, "config", error);
         }
     };
     let cfg: Value = match serde_json::from_str(&cfg_text) {
@@ -617,8 +727,8 @@ pub extern "system" fn Java_dev_agate_core_Gateway_nativeStart<'local>(
         return json_reply(&mut env, json!({"ok": false, "stage": "config", "error": "data_dir 必填"}));
     };
     let port = cfg.get("port").and_then(Value::as_u64).unwrap_or(8080).clamp(1, 65535) as u16;
-    // api_key（M3）：壳层生成的本机 Key → env 注入。config::active_keys_from
-    // 每次鉴权都实时读 env（parse::env_api_key_value），无需写 config.json；
+    // api_key（M3）：Android host 通过显式运行时覆盖注入，不修改进程环境变量，
+    // config::active_keys_from 每次鉴权读取该覆盖，无需写 config.json；
     // 效果 = 上游「兼容模式」：局域网形态下壳的 /api 与 /v1 请求带这把 Key
     // 即过闸门，同时 /v1 不再 fail-closed（keys 非空），Key 可展示给局域网
     // 设备复用（M3 访问密钥页）。
@@ -656,10 +766,10 @@ pub extern "system" fn Java_dev_agate_core_Gateway_nativeCoreInit<'local>(
     port: jint,
     scheduler_on: jboolean,
 ) -> jstring {
-    let dir = match env.get_string(&data_dir) {
-        Ok(s) => s.to_string_lossy().into_owned(),
-        Err(e) => {
-            return json_reply(&mut env, json!({ "ok": false, "error": e.to_string() }))
+    let dir = match read_jstring(&mut env, &data_dir) {
+        Ok(value) => value,
+        Err(error) => {
+            return jni_argument_error(&mut env, "data_dir", error);
         }
     };
     let port = port.clamp(1, 65535) as u16;
@@ -687,6 +797,39 @@ pub extern "system" fn Java_dev_agate_core_Gateway_nativeCheckinRunNow<'local>(
     json_reply(&mut env, checkin_run_now(timeout))
 }
 
+/// 请求当前签到轮次在当前账号完成后停止；不取消在途 Provider 请求。
+fn checkin_request_stop() -> Value {
+    let checkin = {
+        let Ok(guard) = CORE.lock() else {
+            return json!({ "ok": false, "error": "state poisoned" });
+        };
+        let Some(core) = guard.as_ref() else {
+            return json!({ "ok": false, "error": "core_not_ready" });
+        };
+        core.state.auto_checkin().clone()
+    };
+    let requested = checkin.request_cancel_current();
+    json!({ "ok": true, "requested": requested, "running": checkin.is_running() })
+}
+
+/// FGS 专用：等待本轮签到任务真正结束后再返回，供 WakeLock 生命周期使用。
+#[no_mangle]
+pub extern "system" fn Java_dev_agate_core_Gateway_nativeRequestCheckinStop<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+) -> jstring {
+    json_reply(&mut env, checkin_request_stop())
+}
+
+/// FGS 专用：等待本轮签到任务真正结束后再返回，供 WakeLock 生命周期使用。
+#[no_mangle]
+pub extern "system" fn Java_dev_agate_core_Gateway_nativeCheckinRunAndWait<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+) -> jstring {
+    json_reply(&mut env, checkin_run_and_wait())
+}
+
 #[no_mangle]
 pub extern "system" fn Java_dev_agate_core_Gateway_nativeStatus<'local>(
     mut env: JNIEnv<'local>,
@@ -701,10 +844,10 @@ pub extern "system" fn Java_dev_agate_core_Gateway_nativeTriggerTask<'local>(
     _class: JClass<'local>,
     task: JString<'local>,
 ) -> jstring {
-    let task = match env.get_string(&task) {
-        Ok(s) => s.to_string_lossy().into_owned(),
-        Err(e) => {
-            return json_reply(&mut env, json!({"ok": false, "error": e.to_string()}))
+    let task = match read_jstring(&mut env, &task) {
+        Ok(value) => value,
+        Err(error) => {
+            return jni_argument_error(&mut env, "task", error);
         }
     };
     json_reply(&mut env, trigger_task(&task))
@@ -712,10 +855,13 @@ pub extern "system" fn Java_dev_agate_core_Gateway_nativeTriggerTask<'local>(
 
 #[no_mangle]
 pub extern "system" fn Java_dev_agate_core_Gateway_nativeVersion<'local>(
-    mut env: JNIEnv<'local>,
+    env: JNIEnv<'local>,
     _class: JClass<'local>,
 ) -> jstring {
-    json_reply(&mut env, json!(VERSION))
+    match env.new_string(VERSION) {
+        Ok(value) => value.into_raw(),
+        Err(_) => std::ptr::null_mut(),
+    }
 }
 
 /// 回调对象契约：`void onLog(String level, String tag, String message)`。
@@ -742,7 +888,11 @@ pub extern "system" fn Java_dev_agate_core_Gateway_nativeSetLogCallback<'local>(
                         }
                         json!({"ok": true})
                     }
-                    Err(e) => json!({"ok": false, "error": e.to_string()}),
+                    Err(e) => {
+                        let message = e.to_string();
+                        clear_pending_exception(&mut env);
+                        json!({"ok": false, "error": message})
+                    }
                 }
             }
             Err(e) => json!({"ok": false, "error": e.to_string()}),

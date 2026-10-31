@@ -18,7 +18,7 @@ command -v cargo-ndk >/dev/null || cargo install cargo-ndk --locked
 
 echo "▶ cargo ndk -t $TARGET_ABI build --release --lib（首次全量编译约 5-15 分钟）"
 cd "$REPO_ROOT/agate-server"
-cargo ndk -t "$TARGET_ABI" -o "$OUT_DIR" build --release --lib
+cargo ndk -t "$TARGET_ABI" -o "$OUT_DIR" build --locked --release --lib
 
 SO="$OUT_DIR/$TARGET_ABI/libagate_server.so"
 test -f "$SO" || { echo "❌ 产物未生成：$SO"; exit 1; }

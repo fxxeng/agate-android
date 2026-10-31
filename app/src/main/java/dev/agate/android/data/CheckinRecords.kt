@@ -48,6 +48,7 @@ object CheckinRecords {
         "manual" -> "批量"
         "single" -> "单账号"
         "activity" -> "活动领取"
+        "reconciliation" -> "恢复核实"
         else -> raw.ifBlank { "—" }
     }
 
@@ -83,6 +84,8 @@ object CheckinRecords {
         val message: String? = o.optString("message").takeIf { it.isNotBlank() }
         val error: String? = o.optString("error").takeIf { it.isNotBlank() }
         val keptActive: Boolean = o.optBoolean("keptActive")
+        val reconciliationEvidenceId: Long? = o.optLong("reconciliationEvidenceId")
+            .takeIf { o.has("reconciliationEvidenceId") && !o.isNull("reconciliationEvidenceId") && it > 0 }
 
         val outcomeEnum: Outcome? get() = Outcome.of(outcome)
 

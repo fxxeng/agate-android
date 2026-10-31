@@ -165,13 +165,22 @@ async fn trigger_login_active(region: Region, store: &AccountStore, account_id: 
     // body 与客户端 `withWebInfo` 一致：source_id + device_id（device_id 可能为空串）
     let body = json!({ "source_id": "autoclaw", "device_id": credentials.device_id });
     match userapi_post(&credentials, USER_INFO_PATH, &body, "登录").await {
-        Ok(_) => {
-            logging::verbose(
-                "[AutoClaw]",
-                &format!("账号 {account_id} 已触发登录（user-info），复核活动福利"),
-            );
-            true
-        }
+        Ok(payload) => match user_info_trigger_result(&payload) {
+            Ok(()) => {
+                logging::verbose(
+                    "[AutoClaw]",
+                    &format!("账号 {account_id} 已触发登录（user-info），复核活动福利"),
+                );
+                true
+            }
+            Err(reason) => {
+                logging::verbose(
+                    "[AutoClaw]",
+                    &format!("账号 {account_id} 活动福利触发未确认: {reason}"),
+                );
+                false
+            }
+        },
         Err(error) => {
             logging::verbose(
                 "[AutoClaw]",
@@ -180,6 +189,29 @@ async fn trigger_login_active(region: Region, store: &AccountStore, account_id: 
             false
         }
     }
+}
+
+/// user-info 是附加福利的触发动作；HTTP 200 本身不足以证明业务成功。
+/// 与 AutoClaw userapi 其余已核实接口一致，必须有整数 `code == 0`。
+/// 缺失/类型错误/非零业务码都不等待后续流水复核，也不影响主签到结果。
+fn user_info_trigger_result(payload: &Value) -> Result<(), String> {
+    let Some(object) = payload.as_object() else {
+        return Err("上游响应不是 JSON 对象".to_string());
+    };
+    let Some(code) = object.get("code").and_then(Value::as_i64) else {
+        return Err("上游响应缺少有效业务码".to_string());
+    };
+    if code != 0 {
+        let message = object
+            .get("msg")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|message| !message.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("上游业务码 {code}"));
+        return Err(message);
+    }
+    Ok(())
 }
 
 /// 签到任务本身（原主体；活动福利的触发与附加在外面那层包装里）。
@@ -326,4 +358,30 @@ fn attach_today_reward(mut claim: Value, reward: Value) -> Value {
         object.insert("promotionReward".to_string(), reward);
     }
     claim
+}
+
+#[cfg(test)]
+mod user_info_trigger_tests {
+    use super::user_info_trigger_result;
+    use serde_json::json;
+
+    #[test]
+    fn user_info_requires_explicit_success_business_code() {
+        assert!(user_info_trigger_result(&json!({"code": 0, "data": {}})).is_ok());
+    }
+
+    #[test]
+    fn user_info_rejects_nonzero_business_code_with_message() {
+        assert_eq!(
+            user_info_trigger_result(&json!({"code": 631001, "msg": "User login error"})),
+            Err("User login error".to_string())
+        );
+    }
+
+    #[test]
+    fn user_info_rejects_missing_or_malformed_business_code() {
+        assert!(user_info_trigger_result(&json!({"data": {}})).is_err());
+        assert!(user_info_trigger_result(&json!({"code": "0"})).is_err());
+        assert!(user_info_trigger_result(&json!(null)).is_err());
+    }
 }

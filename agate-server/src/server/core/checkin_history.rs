@@ -40,59 +40,84 @@ pub fn list() -> Vec<Value> {
     }
 }
 
-/// 追加一轮签到汇总。`summary` 是 `run_checkin` 的返回值（含 results），
-/// 这里只挑界面要展示的字段重组成一行，`results` 明细不落台账 ——
-/// 失败明细的展示口径与 `autoCheckin.lastResult` 一致（`名字（错误）`，取前 5 条），
-/// 两处同构意味着签到中心与定时任务卡看到的是同一份失败解释。
-///
-/// 失败只记日志、不向上传播：台账写不进去不影响这次签到本身的结果
-/// （积分已经在上游领到了）。
-pub fn record(summary: &Value, reason: &str) {
+/// 追加一轮签到汇总（兼容旧调用）。写入失败只返回 false，不改变签到结果。
+pub fn record(summary: &Value, reason: &str) -> bool {
+    record_inner(summary, reason, None)
+}
+
+/// 按稳定 run_id 幂等投影签到轮次。恢复时重复调用不会重复插入时间线。
+pub fn record_for_run(summary: &Value, run_id: &str, reason: &str) -> Result<(), String> {
+    if run_id.trim().is_empty() {
+        return Err("签到时间线缺少 run_id".to_string());
+    }
+    if record_inner(summary, reason, Some(run_id)) {
+        Ok(())
+    } else {
+        Err("签到时间线写入失败；批次汇总仍保留在执行台账".to_string())
+    }
+}
+
+fn record_inner(summary: &Value, reason: &str, run_id: Option<&str>) -> bool {
     let number = |key: &str| summary.get(key).and_then(Value::as_u64).unwrap_or(0);
     let failures: Vec<String> = summary
-        .get("results")
+        .get("failed")
         .and_then(Value::as_array)
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(|item| {
-                    let error = item.get("error").and_then(Value::as_str)?;
-                    let name = item
-                        .get("name")
-                        .and_then(Value::as_str)
-                        .filter(|text| !text.is_empty())
-                        .or_else(|| item.get("id").and_then(Value::as_str))
-                        .unwrap_or("未知账号");
-                    Some(format!("{name}（{error}）"))
+        .map(|items| items.iter().filter_map(Value::as_str).map(str::to_string).collect())
+        .unwrap_or_else(|| {
+            summary
+                .get("results")
+                .and_then(Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|item| {
+                            let error = item.get("error").and_then(Value::as_str)?;
+                            let name = item
+                                .get("name")
+                                .and_then(Value::as_str)
+                                .filter(|text| !text.is_empty())
+                                .or_else(|| item.get("id").and_then(Value::as_str))
+                                .unwrap_or("未知账号");
+                            Some(format!("{name}（{error}）"))
+                        })
+                        .collect()
                 })
-                .collect()
-        })
-        .unwrap_or_default();
-    let now_ms = logging::now_ms();
-    let entry = json!({
+                .unwrap_or_default()
+        });
+    let now_ms = summary
+        .get("at")
+        .and_then(Value::as_i64)
+        .unwrap_or_else(logging::now_ms);
+    let mut entry = json!({
         "at": now_ms,
-        // 日期键按北京时间（上游自然日口径，见 core::beijing）：台账的
-        // 「今天」与签到的「今天」必须是同一天，否则海外部署下时间线会错位
-        "date": auto_checkin::today_key(),
+        "date": summary.get("date").and_then(Value::as_str)
+            .map(str::to_string).unwrap_or_else(auto_checkin::today_key),
         "reason": reason,
         "succeeded": number("succeeded"),
-        // 活跃保活数（WorkBuddy 国际版）：与 succeeded 分开统计 —— 保活的
-        // 成功不落 checkinAt，台账里也要单独一列，时间线才读得出这一轮
-        // 「国际版那边发生了什么」
         "active": number("active"),
         "total": number("total"),
         "skipped": number("skipped"),
         "failed": failures.iter().take(5).cloned().collect::<Vec<_>>(),
-        "failedCount": failures.len(),
+        "failedCount": summary
+            .get("failedCount")
+            .and_then(Value::as_u64)
+            .unwrap_or(failures.len() as u64),
     });
+    if let (Some(run_id), Some(object)) = (run_id, entry.as_object_mut()) {
+        object.insert("runId".to_string(), Value::String(run_id.to_string()));
+    }
     let mut entries = list();
+    if let Some(run_id) = run_id {
+        // 以稳定身份替换而非盲目 prepend：同一批次恢复多次只保留一条。
+        entries.retain(|item| item.get("runId").and_then(Value::as_str) != Some(run_id));
+    }
     entries.insert(0, entry);
     entries.truncate(MAX_ENTRIES);
-    write(entries);
+    write(entries)
 }
 
 /// 合并写回 `checkinHistory`（与 auto_checkin::write_state 同一模式：
 /// `update_raw_field` 按键直写，config.json 里的其它字段原样保留）
-fn write(entries: Vec<Value>) {
-    config::update_raw_field(CONFIG_KEY, Value::Array(entries));
+fn write(entries: Vec<Value>) -> bool {
+    config::update_raw_field(CONFIG_KEY, Value::Array(entries))
 }

@@ -387,6 +387,9 @@ private fun RecordRow(entry: CheckinRecords.Entry) {
                     style = AgateType.Caption,
                     color = C.textDim,
                 )
+                entry.reconciliationEvidenceId?.let { evidenceId ->
+                    Text(" · 证据 #$evidenceId", style = AgateType.Caption, color = C.textDim)
+                }
                 if (entry.keptActive) {
                     Text(" · 已保活", style = AgateType.Caption, color = C.blue)
                 }

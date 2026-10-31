@@ -585,7 +585,10 @@ async fn round_trip(
             let reply =
                 post_checkin(&url, body, variant, device_id, &credential.access_token, scheme, proxy)
                     .await?;
-            let payload = reply.json().unwrap_or_else(|| json!({}));
+            // 不能把空响应、HTML 错误页或缺少业务码的 JSON 当成 code:0。
+            // 否则 claim 响应解析失败后，只要回查恰好显示已签到（例如另一端
+            // 并发完成），就可能把本次未确认的领取误报为成功。
+            let payload = parse_checkin_payload(&reply.body)?;
             let code = payload.get("code").and_then(Value::as_i64).unwrap_or(CODE_OK);
             last = payload;
             match probe_for(code) {
@@ -609,6 +612,25 @@ async fn round_trip(
         };
         scheme = next;
     }
+}
+
+/// 签到端点必须返回 JSON 对象和整数业务码。
+///
+/// 旧逻辑把 JSON 解析失败降级成 `{}`，再由 `status_of` 把缺失的 `code` 默认成
+/// 0。这样一个空 body / HTML 页面就会伪装成业务成功；对 claim 尤其危险，因为
+/// 后续状态回查可能受并发客户端影响。协议向量中的 status 与 claim 响应都带
+/// `code`，因此缺失时按上游协议错误处理，不猜成功。
+fn parse_checkin_payload(body: &str) -> Result<Value, GatewayError> {
+    let payload: Value = serde_json::from_str(body).map_err(|_| {
+        GatewayError::with_status(502, "Trae 签到接口返回了无效 JSON 响应")
+    })?;
+    if !payload.is_object() || payload.get("code").and_then(Value::as_i64).is_none() {
+        return Err(GatewayError::with_status(
+            502,
+            "Trae 签到接口响应缺少有效的整数业务码",
+        ));
+    }
+    Ok(payload)
 }
 
 /// 真正发出去的那一发：ug 画像 + 指定鉴权方案 + 本轮固定设备号。
@@ -648,4 +670,29 @@ async fn post_checkin(
         ));
     }
     Ok(reply)
+}
+
+#[cfg(test)]
+mod response_tests {
+    use super::*;
+
+    #[test]
+    fn parses_valid_checkin_business_response() {
+        let payload = parse_checkin_payload(r#"{"code":0,"enable":true}"#)
+            .expect("valid protocol response");
+        assert_eq!(payload.get("code").and_then(Value::as_i64), Some(0));
+    }
+
+    #[test]
+    fn rejects_empty_or_non_json_checkin_response() {
+        assert_eq!(parse_checkin_payload("").err().map(|error| error.status_code), Some(502));
+        assert_eq!(parse_checkin_payload("<html>upstream error</html>").err().map(|error| error.status_code), Some(502));
+    }
+
+    #[test]
+    fn rejects_json_without_integer_business_code() {
+        assert_eq!(parse_checkin_payload("{}").err().map(|error| error.status_code), Some(502));
+        assert_eq!(parse_checkin_payload(r#"{"code":"0"}"#).err().map(|error| error.status_code), Some(502));
+        assert_eq!(parse_checkin_payload(r#"[{"code":0}]"#).err().map(|error| error.status_code), Some(502));
+    }
 }
