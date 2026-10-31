@@ -53,3 +53,45 @@ uploaded before the emulator build starts.
 - Existing unit tests pass.
 - `:app:connectedDebugAndroidTest` passes on API 35 x86_64 emulator.
 - Normal CI Debug/Release APKs remain arm64-only and pass Batch 1 APK/JNI gates.
+
+
+## Round 3 · Batch 2 diagnostic follow-up (CI-Fix4)
+
+The first API 35 x86_64 emulator run compiled the Android test APK but the
+instrumentation process exited before JUnit reported any tests (`tests=0`,
+`Process crashed`). The failure is not classified as a Kotlin assertion failure.
+
+CI-Fix4 intentionally does not change Rust, JNI, Gateway, Service, or test logic.
+It adds failure-preserving diagnostics around `connectedDebugAndroidTest`:
+
+- `logcat-all.txt`: complete emulator logcat (`-b all`, threadtime format).
+- `logcat-crash.txt`: crash buffer, including native crash records when emitted.
+- `emulator-getprop.txt`: emulator build/ABI properties.
+- `dropbox-native-crash.txt` and `dropbox-app-crash.txt`: Android DropBox crash
+  records when accessible.
+- `gradle-exit-code.txt`: original Gradle test exit code.
+
+The capture runs from an EXIT trap, so a non-zero Gradle result does not skip
+log collection. The instrumentation artifact upload remains `if: always()` and
+now includes this diagnostics directory.
+
+### Diagnostic decision tree
+
+1. `Fatal signal`, tombstone, `libagate_server.so`, or Rust panic evidence:
+   investigate native initialization/ABI-specific behavior before changing code.
+2. `linker`, `dlopen`, missing dependency, or ELF relocation evidence:
+   compare x86_64 `DT_NEEDED`, SONAME, and symbol dependencies with the arm64 build.
+3. `AndroidRuntime` Java exception:
+   diagnose the first fatal exception and process owner; do not infer that
+   `AgateApp`'s background initialization catch covers native signals.
+4. No crash evidence:
+   retain the logs and add a narrower startup probe in a subsequent batch;
+   do not make speculative production-code changes.
+
+### Acceptance for CI-Fix4
+
+- Rust all-targets and normal arm64 APK jobs remain unchanged.
+- The x86_64 instrumentation compile/run is attempted as before.
+- Whether it passes or fails, the artifact contains the captured diagnostics
+  whenever the emulator is available to the runner script.
+- The original instrumentation exit code remains the step result.
