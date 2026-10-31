@@ -98,25 +98,7 @@ jobs:
           disable-animations: true
           # Keep the emulator diagnostics even when Gradle/instrumentation fails.
           # `set +e` is intentional: the EXIT trap must run after a non-zero test result.
-          script: |
-            set +e
-            capture_instrumentation_diagnostics() {
-              test_exit=$?
-              trap - EXIT
-              diag_dir="app/build/outputs/agate-instrumentation-diagnostics"
-              mkdir -p "$diag_dir"
-
-              adb logcat -b all -d -v threadtime > "$diag_dir/logcat-all.txt" 2>&1 || true
-              adb logcat -b crash -d -v threadtime > "$diag_dir/logcat-crash.txt" 2>&1 || true
-              adb shell getprop > "$diag_dir/emulator-getprop.txt" 2>&1 || true
-              adb shell dumpsys dropbox --print data_app_native_crash > "$diag_dir/dropbox-native-crash.txt" 2>&1 || true
-              adb shell dumpsys dropbox --print data_app_crash > "$diag_dir/dropbox-app-crash.txt" 2>&1 || true
-              printf '%s\n' "$test_exit" > "$diag_dir/gradle-exit-code.txt"
-              exit "$test_exit"
-            }
-            trap capture_instrumentation_diagnostics EXIT
-
-            ./gradlew :app:connectedDebugAndroidTest -PagateInstrumentationAbi=x86_64 --no-daemon --stacktrace
+          script: bash .github/scripts/run-instrumentation.sh
       - name: Upload Android Instrumentation reports
         if: always()
         uses: actions/upload-artifact@v4
