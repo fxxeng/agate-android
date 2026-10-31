@@ -99,6 +99,7 @@
 
 pub mod accio_accounts;
 pub mod antigravity_accounts;
+pub mod atomcode_accounts;
 pub mod autoclaw_accounts;
 pub mod autoclaw_import;
 pub mod catpaw_accounts;
@@ -109,8 +110,10 @@ pub mod codearts_accounts;
 pub mod commandcode_accounts;
 pub mod custom_accounts;
 pub mod kuku_accounts;
+pub mod lobsterai_accounts;
 pub mod loomy_accounts;
 pub mod monkeycode_accounts;
+pub mod modelscope_accounts;
 pub mod officeace_accounts;
 pub mod orcaterm_accounts;
 pub mod priority;

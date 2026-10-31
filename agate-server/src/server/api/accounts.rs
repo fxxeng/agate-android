@@ -1274,6 +1274,106 @@ pub async fn add_account(state: &ServerState, body: &Bytes) -> Response {
             )
         }
 
+        // LobsterAI（有道龙虾）：**粘贴 / 导入一律拒绝**（如实拒绝，不是漏做）。
+        //
+        // ── 为什么不能「尽力而为」──────────────────────────────────
+        // 本家的续期要一整组身份载荷件（`uuid` + 两个 `keyfrom`），它们只在换码
+        // 那一刻由上游下发 —— 用户从别处粘不出这三样（见
+        // `account_store::lobsterai_accounts` 的模块头）。没有它们账号只能用到
+        // access 过期，之后必须重新登录。与其落一条看着正常、到期就废的记录，
+        // 不如现在就说清只有网页登录一条路。
+        Some(crate::server::core::providers::ProviderKind::LobsterAi) => {
+            return management_error(
+                400,
+                "LobsterAI 只能通过「网页登录」添加：它的续期需要换码时下发的 \
+                 uuid 与 keyfrom，粘贴给不出这三项",
+            );
+        }
+        // AtomCode（AtomGit）：**粘贴 accessToken + refreshToken** → 本地归一化
+        // → 落账号（**不调上游**：本家没有「校验一次令牌」的轻接口，
+        // 目录刷新与首次转发就是它的连通性验证）。
+        //
+        // ── 为什么允许粘贴（与 LobsterAI 相反）────────────────────
+        // 本家续期只要一枚 `refreshToken`（不像 LobsterAI 还要 uuid + 两个
+        // keyfrom）：用户手里那份登录输出就够用。只给 accessToken 也收下 ——
+        // 那种账号能转发、到期后必须重新获取，公开形态的 `canRefresh` 会
+        // 如实为 false（见 `account_store::atomcode_accounts` 的模块头）。
+        //
+        // ── 两种来源仍然回绝（如实拒绝，不是漏做）──────────────────
+        // `importDesktop`：AtomCode 没有可实时读取的本机登录态（官方 `auth.toml`
+        // 是它自己 CLI 的落盘形态，字段与我们的记录不同）；
+        // 文件导入：同上 —— 与其硬凑一个「看起来导入成功、实际用不了」的记录，
+        // 不如现在就说清该粘什么。与上游插件 `normalize_account` 对
+        // `Desktop` / `FileBase64` 的两种回绝逐字同口径。
+        Some(crate::server::core::providers::ProviderKind::Atomcode) => {
+            if import_desktop {
+                return management_error(
+                    400,
+                    "AtomCode 没有可导入的本机登录态，请粘贴 accessToken（可附 refreshToken）\
+                     或改用「网页登录」添加账号",
+                );
+            }
+            if auth_file_content.is_some() || auth_file_b64.is_some() {
+                return management_error(
+                    400,
+                    "AtomCode 不支持凭证文件导入（官方 auth.toml 是它自己 CLI 的落盘形态），\
+                     请粘贴 accessToken / refreshToken",
+                );
+            }
+            match crate::server::core::providers::atomcode::normalize_paste(&payload) {
+                Ok(secret) => store.add_atomcode_account(&secret, import_name, "manual"),
+                Err(error) => Err(AccountStoreError::new(error.message, error.status_code)),
+            }
+        }
+        // ModelScope（魔搭，国内站 / 国际站两家）：**粘贴 `ms-` 令牌**
+        // → 出网探活一次（顺便就是当日签到）→ 拿上游的 HavanaId 做账号 id → 落账号。
+        //
+        // ── 为什么必须出网（与别家不同的地方）────────────────────
+        // 令牌是不透明的 `ms-…`，不是 JWT，**解不出任何身份**。不出网就只能拿
+        // 令牌尾号当 id —— 同一个账号换一次令牌就多出两条记录（用户看到
+        // 「我只有一个魔搭账号，怎么越加越多」）。所以这里的探活是**硬前置**：
+        // 失败就不落账号（`probe` 的模块头写了这个取舍）。
+        //
+        // 顺带的好处：令牌无效、或**站点点错**（国内令牌打国际站会 401
+        // `access forbidden`）在添加的那一刻就说清楚，而不是等第一次转发才失败。
+        //
+        // `importDesktop` 不提供：魔搭没有桌面客户端，没有可读的登录态文件
+        // （与 Loomy / MonkeyCode 同一处境）。
+        Some(
+            kind @ (crate::server::core::providers::ProviderKind::Modelscope
+            | crate::server::core::providers::ProviderKind::ModelscopeIntl),
+        ) => {
+            let region = crate::server::core::providers::modelscope::region::region_of_kind(kind)
+                .unwrap_or(crate::server::core::providers::modelscope::Region::Cn);
+            if import_desktop {
+                return management_error(
+                    400,
+                    "ModelScope 没有桌面客户端，无法导入登录态；请粘贴 ms- 开头的 API 令牌",
+                );
+            }
+            let token = crate::server::core::providers::modelscope::credentials::token_from_payload(
+                &payload,
+            );
+            if token.is_empty() {
+                return management_error(400, "请提供 ModelScope 令牌（ms- 开头）");
+            }
+            // 探活：一次调用拿「令牌是否可用」+「是谁」+ 当日签到
+            let identity =
+                match crate::server::core::providers::modelscope::probe::identify(region, &token)
+                    .await
+                {
+                    Ok(identity) => identity,
+                    Err(reason) => return management_error(400, reason),
+                };
+            store.add_modelscope_account(
+                region,
+                &token,
+                &identity.user_id,
+                &identity.display_name,
+                import_name,
+                "manual",
+            )
+        }
         // WorkBuddy 系的两家（国内版 / 国际版）：同一套凭证形态与落账号路径，
         // 差别只有归属 —— provider id 自己就是归属（拆家后不再从 payload 里的
         // `edition` 反推：那是账号的属性，而落哪一家是身份问题）。
@@ -1655,6 +1755,43 @@ pub async fn refresh_account(state: &ServerState, body: &Bytes) -> Response {
     // （`refresh_account` 的文档里把这条列为「加带 refreshToken 的家时必须一起加」）。
     if state.store().antigravity_account_record(&id).is_some() {
         return refresh_provider_account(state, &id, ProviderKind::Antigravity).await;
+    }
+    // ── 按注册表**自动分派**（这一道是「默认正确」的保证，别删）────────
+    // 上面每一条显式分派都有它非写不可的理由（桌面端登录态不主动刷新、
+    // 两个地区要反查、Cline 要看池、没有续期机制的家要给一句针对性的说明）。
+    // 但「这家有 refreshToken ⇒ 走自家适配器强制刷新」本质上**是同一条动作**，
+    // 各家协议的差异早就在适配器里了（`refresh_access_token`）。
+    //
+    // 所以这里按「账号自己的 provider + 适配器声明的 `supports_refresh()`」自动
+    // 分派，而不是要求每加一家都回来手工补一条 `if`。这条兜底存在的理由是实测过的：
+    // 本函数的文档自己写着「漏登记编译器不会提醒，只在用户点按钮时才暴露」——
+    // 2026-10 接 LobsterAI 时就漏在了这里（它的续期串被发去了腾讯的鉴权端点）。
+    //
+    // ⚠️ 位置必须在所有显式分派**之后**、workbuddy 兜底**之前**：
+    //   - 之后：上面那些带定制文案的分支先回答，用户看到的提示才准确；
+    //   - 之前：workbuddy 兜底拿的是 `AuthService::refresh_account`（腾讯那套），
+    //     别家的凭证打过去只会得到一条与账号本身无关的错误。
+    // WorkBuddy 系本身也声明 `supports_refresh() == true`，但它走的是 AuthService
+    // 那条链路（不是适配器），因此显式排除。
+    if let Some(provider_id) = state.store().provider_of_account(&id) {
+        if !crate::server::core::providers::workbuddy::region::is_workbuddy_family(&provider_id) {
+            if let Some(kind) = crate::server::core::providers::kind_from_id(&provider_id) {
+                if crate::server::core::providers::adapter::adapter_for(kind).supports_refresh() {
+                    return refresh_provider_account(state, &id, kind).await;
+                }
+                // 不支持续期的家：如实拒绝（比落到 workbuddy 兜底拿一条腾讯的错好）。
+                // 上面那些定制文案的分支已先行返回，这里只兜「新加的家没写显式分支」
+                // 这一格 —— 它的措辞是通用的，因此不必逐家维护。
+                return management_error(
+                    400,
+                    format!(
+                        "{} 的登录态没有刷新机制（上游没有续期接口）：\
+                         请在官方客户端重新登录后重新添加该账号",
+                        crate::server::core::providers::meta(kind).label
+                    ),
+                );
+            }
+        }
     }
     // WorkBuddy 系（国内版 / 国际版）的兜底：两条链路都按**账号自己的**
     // endpoint / prefixPath / platform / edition 续期

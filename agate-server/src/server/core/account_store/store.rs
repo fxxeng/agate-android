@@ -619,6 +619,22 @@ impl AccountStore {
         session
     }
 
+    /// 指定账号属于哪一家（provider id）；不存在时 None。
+    ///
+    /// ── 为什么需要它（一条踩过的坑）──────────────────────────────
+    /// `api::accounts::refresh_account` 的手动「刷新 Token」是一条**手写分派链**：
+    /// 每加一家带 refreshToken 的提供商，就得回去补一条 `if`。那张表的文档自己
+    /// 写着「漏登记编译器不会提醒，只在用户点按钮时才暴露」—— 2026-10 接 ModelScope
+    /// 与 LobsterAI 时确实漏了（LobsterAI 会落到 workbuddy 兜底，拿有道龙虾的
+    /// 续期串去打腾讯的鉴权端点）。
+    ///
+    /// 有了这个取值口，那条链就能按「账号自己的 provider + 适配器声明的
+    /// `supports_refresh()`」**自动分派**，不必再靠人记 —— 新家默认就是对的。
+    pub fn provider_of_account(&self, id: &str) -> Option<String> {
+        let guard = self.guard();
+        self.record_by_id(&guard, id).map(|record| record.provider())
+    }
+
     /// 指定账号的凭证（Node 版 getCredentialsById）；无凭证/不存在时 None
     ///
     /// 小浣熊桌面端账号同样把 auth.json 的实时值填进 `access_token` /

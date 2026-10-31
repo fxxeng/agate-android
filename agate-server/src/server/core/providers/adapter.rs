@@ -1143,6 +1143,10 @@ pub fn adapter_for(kind: ProviderKind) -> &'static dyn ProviderAdapter {
         // 生成）、粘贴 `user_` API Key、响应是 NDJSON（`UpstreamResponse::
         // CommandCodeNdjson`，见 `commandcode/mod.rs` 的模块头）
         ProviderKind::CommandCode => &super::commandcode::COMMANDCODE_ADAPTER,
+        // ModelScope（魔搭）的两个站点是两个 provider、两个实例（同一份实现按
+        // 地区参数化，见 `modelscope/region.rs` 与 `modelscope/adapter.rs`）
+        ProviderKind::Modelscope => &super::modelscope::MODELSCOPE_ADAPTER,
+        ProviderKind::ModelscopeIntl => &super::modelscope::MODELSCOPE_INTL_ADAPTER,
         // Antigravity（Google 的 AI IDE）：账号 / token 刷新 / 模型目录 / 会话转发
         // 全部已接通（转发走 `UpstreamResponse::AntigravityGemini` 那条翻译层，
         // 见 `antigravity/mod.rs` 与 `antigravity/adapter.rs`）
@@ -1155,6 +1159,14 @@ pub fn adapter_for(kind: ProviderKind) -> &'static dyn ProviderAdapter {
         // 余额全部已接通（建会话 → assistant SSE，`is_stateful` 为 true，
         // 见 `orcaterm/mod.rs` 与 `orcaterm/adapter.rs` 的模块头）
         ProviderKind::OrcaTerm => &super::orcaterm::ORCATERM_ADAPTER,
+        // LobsterAI（网易有道「有道龙虾」）：无状态 OpenAI 兼容转发 + 目录 /
+        // 积分 / 每日签到 / **浏览器登录（loopback 回调）**。归 Web 分段
+        // （见 `lobsterai/mod.rs` 的模块头）。
+        ProviderKind::LobsterAi => &super::lobsterai::LOBSTERAI_ADAPTER,
+        // AtomCode（AtomGit）：无状态 OpenAI 兼容转发 + 目录 / 每窗口调用次数
+        // + 免费 CodingPlan 领取（签到链）+ **轮询式**网页登录（回调在代理
+        // 域名终结，不走适配器的回调钩子 —— 见 `atomcode/adapter.rs` 的模块头）。
+        ProviderKind::Atomcode => &super::atomcode::ATOMCODE_ADAPTER,
     }
 }
 
@@ -1254,6 +1266,21 @@ pub fn implemented_kinds() -> Vec<ProviderKind> {
         // 远程模型目录（静态清单，`supports_model_refresh()` 为 false）——
         // 进本列表只代表「已实现」（与 Zcode 同一口径：刷新循环对它是空操作）。
         ProviderKind::OrcaTerm,
+        // ModelScope 两个站点各算一家：适配器已接真身（目录 / 转发 / 余额 /
+        // 签到），且有远程目录（`GET {推理域}/models`）—— 不在列表里的话
+        // 两家的目录刷新都不会被调度（症状是「账号加了、模型列表一直空着」，
+        // 因为本家**没有**内置兜底清单可回落）。
+        ProviderKind::Modelscope,
+        ProviderKind::ModelscopeIntl,
+        // LobsterAI：适配器已接真身（账号 / 续期 / 目录 / 转发 / 积分 / 签到），
+        // 且有远程目录（`GET /api/models/available`）—— 必须在列表里，否则目录
+        // 刷新循环不会问它（症状是「账号加了、模型列表一直是 19 条兜底」）。
+        ProviderKind::LobsterAi,
+        // AtomCode：适配器已接真身（账号 / 续期 / 目录 / 转发 / 额度 / 签到），
+        // 且有远程目录（`GET {codingplan}/coding-plan/models-v2`）—— 必须在
+        // 列表里，否则目录刷新循环不会问它（症状是「账号加了、模型列表一直空着」，
+        // 因为本家**没有**内置兜底清单可回落）。
+        ProviderKind::Atomcode,
     ]
 }
 

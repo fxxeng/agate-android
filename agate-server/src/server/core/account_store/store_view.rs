@@ -361,6 +361,27 @@ impl AccountStore {
             // tokenTail / tokenExpireAt（续期是否在工作可被肉眼校验，见
             // `orcaterm_accounts.rs`）
             self.to_orcaterm_public_account(record)
+        } else if crate::server::core::providers::modelscope::region::region_of_provider_id(
+            &record.provider(),
+        )
+        .is_some()
+        {
+            // ModelScope（魔搭，国内站 / 国际站）：摘掉令牌本体，留 `tokenTail` /
+            // `userId`(HavanaId) / `hasToken`。判据走 `region_of_provider_id`
+            // （两个站点是两家 provider，别写死一个 id）。
+            self.to_modelscope_public_account(record)
+        } else if record.provider() == super::lobsterai_accounts::LOBSTERAI_PROVIDER_ID {
+            // LobsterAI（有道龙虾）：摘掉令牌本体 + **全部续期载荷件**（uuid / 两个
+            // keyfrom），只留 `canRefresh` 布尔 —— 三件载荷件是续期的身份字段，
+            // 下发等于把「这个账号能被别人续期」的条件送出去（见
+            // `lobsterai_accounts.rs` 的模块头）。
+            self.to_lobsterai_public_account(record)
+        } else if record.provider() == super::atomcode_accounts::ATOMCODE_PROVIDER_ID {
+            // AtomCode（AtomGit）：摘掉 `accessToken` 与 `refreshToken`，留
+            // `tokenTail` / `canRefresh` / `hasToken`。refresh token 是长期有效的
+            // 续期凭据，下发等于把「这个账号能被别人续期」的条件送出去
+            // （见 `atomcode_accounts.rs` 的模块头）。
+            self.to_atomcode_public_account(record)
         } else if record
             .provider()
             .starts_with(crate::server::core::custom_providers::ID_PREFIX)

@@ -179,6 +179,17 @@ pub fn panel_router(state: ServerState) -> Router {
             "/auth/callback-accio",
             get(api::session::login_accio_callback),
         )
+        // LobsterAI 网页登录的 loopback 回调：**浏览器 302 到这里**（授权页完成后
+        // 顶层导航到我们拼给门户的 redirect_uri）。与上面 Accio 那条同一形态、
+        // 同一理由免鉴权。
+        //
+        // 路径是**裸 `/auth/callback`**（不是 `-lobsterai` 后缀）：那是参考实现已验证
+        // 的形状，而门户是否对回调路径有白名单**没有实测支撑** —— 不为了命名风格去赌
+        // 一次未经验证的兼容性（见 `providers::lobsterai::oauth` 的模块头）。
+        .route(
+            "/auth/callback",
+            get(api::session::login_lobsterai_callback),
+        )
         // CodeArts portal 的登录回调：**路径由上游定死**（它只认我们给的 port，
         // 拼成 `http://127.0.0.1:<port>/oauth/callback`），所以这条不能像上面几家
         // 那样挑一个别家撞不到的名字。GET 收查询串、POST 收表单里的 code。

@@ -69,6 +69,7 @@ import dev.agate.android.data.GatewayRepository
 import dev.agate.android.data.KernelOps
 import dev.agate.android.data.LoginClient
 import dev.agate.android.data.LoginKind
+import dev.agate.android.data.ProviderCategory
 import dev.agate.android.data.ProviderPreset
 import dev.agate.android.data.PresetApiRegistry
 import dev.agate.android.data.PresetRegistry
@@ -104,6 +105,16 @@ fun AddProviderPage(onBack: () -> Unit, initialProviderId: String? = null) {
         )
     }
     var showPicker by remember { mutableStateOf(false) }
+    /**
+     * 选择器弹层这次是**为哪一段**打开的（Agent / Web）。
+     *
+     * ── 为什么要单独存一份，而不是让弹层自己读页签 ────────────────
+     * `tab` 声明在下面那个 `Column` 的 lambda 里（页面内容的作用域），
+     * 而弹层挂在这个 lambda 之外 —— 直接读它编译不过。把它提到页面级又会
+     * 与 `wantCustomAdd` 的初始化顺序打架（那个值在更下面才算出来）。
+     * 打开弹层的那一刻正是段已知的时刻，顺手记下来最省事。
+     */
+    var pickerSegment by remember { mutableStateOf(ProviderCategory.AGENT) }
     // 内核探活：登录/落账号都由网关执行，没起来时先给「启动网关」入口
     var kernelUp by remember { mutableStateOf<Boolean?>(null) }
     var loginSession by remember { mutableStateOf<LoginSession?>(null) }
@@ -180,13 +191,21 @@ fun AddProviderPage(onBack: () -> Unit, initialProviderId: String? = null) {
                 .padding(horizontal = 16.dp)
                 .padding(bottom = 24.dp)
         ) {
-            // ptabs：v44 胶囊页签（官方 / 中转 / 自定义），中转与自定义为占位
-            var tab by remember { mutableStateOf(if (wantCustomAdd) 2 else 0) }
+            // ptabs：v44 胶囊页签（Agent / Web / 预置 API / 自定义）
+            var tab by remember { mutableStateOf(if (wantCustomAdd) 3 else 0) }
             Row(
                 modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                // 三个页签：官方 AGENT / 中转 API / 自定义。
+                // 四个页签：Agent / Web / 预置 API / 自定义。
+                //
+                // ── 为什么 Agent 与 Web 要分成两段（2026-10-31）──────────
+                // 对齐上游 3.3 的分段：Agent 是「编程客户端 / CLI」那一类，
+                // 转发靠伪装官方客户端；Web 是「网页版对话站点」（智谱清言、
+                // DeepSeek 网页），登录靠 Cookie 或网页令牌。两类混在一张
+                // 列表里，用户按「我要用哪个客户端」找家时会先撞上一串网页站。
+                // 归属由注册表的 `category` 声明（内核 `ProviderCategory` 是
+                // 唯一事实来源），本页只负责按它分段。
                 //
                 // 为什么没有上游那个「导入 · 更多」：
                 // 上游的 `data-for` 只有 official / relay / custom 三个值，
@@ -197,7 +216,8 @@ fun AddProviderPage(onBack: () -> Unit, initialProviderId: String? = null) {
                 // 走 ImportFileForm；需要粘贴的家有「粘贴凭证」。再开一个页签
                 // 只会让人多选一次提供商，做的是同一件事。
                 listOf(
-                    "Agent · ${PresetRegistry.ALL.size}",
+                    "Agent · ${PresetRegistry.byCategory(ProviderCategory.AGENT).size}",
+                    "Web · ${PresetRegistry.byCategory(ProviderCategory.WEB).size}",
                     "预置 API · ${PresetApiRegistry.ALL.size}",
                     "自定义",
                 ).forEachIndexed { i, label ->
@@ -226,9 +246,16 @@ fun AddProviderPage(onBack: () -> Unit, initialProviderId: String? = null) {
 
             Spacer(Modifier.height(12.dp))
 
-            if (tab == 0) {
+            if (tab <= 1) {
                 // ── 选择提供商卡：pick-cur + 最近 chips ──
-                val picked = current
+                // 当前分段（Agent / Web）：两个页签共用这一段渲染，差别只有
+                // 数据源与文案。**选中项按分段收窄**：从 Agent 切到 Web 时，
+                // 上一段选中的家不该继续显示在「选择提供商」和凭据卡上 ——
+                // 那会让「我要加智谱清言」变成「我加了一个 Cline 账号」。
+                val segment = if (tab == 1) ProviderCategory.WEB else ProviderCategory.AGENT
+                val segmentLabel = if (segment == ProviderCategory.WEB) "Web" else "Agent"
+                val segmentCount = PresetRegistry.byCategory(segment).size
+                val picked = current?.takeIf { it.category == segment }
                 Column(
                     Modifier
                         .fillMaxWidth()
@@ -245,14 +272,14 @@ fun AddProviderPage(onBack: () -> Unit, initialProviderId: String? = null) {
                             .fillMaxWidth()
                             .background(C.insetBg, RoundedCornerShape(14.dp))
                             .border(1.dp, C.accent.copy(alpha = 0.45f), RoundedCornerShape(14.dp))
-                            .clickable { showPicker = true }
+                            .clickable { pickerSegment = segment; showPicker = true }
                             .padding(horizontal = 12.dp, vertical = 10.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         if (shown == null) {
                             Column(Modifier.weight(1f)) {
                                 Text("选择要添加的家", color = C.textMain, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-                                Text("24 家 Agent · 点此打开选择器", color = C.textSub, fontSize = 12.sp)
+                                Text("$segmentCount 家 $segmentLabel · 点此打开选择器", color = C.textSub, fontSize = 12.sp)
                             }
                         } else {
                             AgateProviderAvatar(providerId = shown.id, label = shown.label, size = 40.dp)
@@ -267,9 +294,12 @@ fun AddProviderPage(onBack: () -> Unit, initialProviderId: String? = null) {
 
                     // v44 .rchips「最近」：有记录才显示，没有则整行隐藏（按你的要求）。
                     // 数据来自 GatewayPrefs.recentProviders —— 每次添加成功时 push。
+                    // **按当前分段过滤**：最近列表是跨段共用的一个数组，
+                    // 不过滤时在 Web 段点「最近」里的 Cline 会切到一个不属于本段的家
+                    // （凭据卡按 `picked` 收窄后会整块消失，看起来像界面坏了）。
                     val recents = GatewayPrefs.recentProviders(ctx)
-                        .mapNotNull { id -> PresetRegistry.ALL.find { it.id == id } }
-                        .filter { it.disabledNote == null }
+                        .mapNotNull { id -> PresetRegistry.byId(id) }
+                        .filter { it.disabledNote == null && it.category == segment }
                         .take(4)
                     if (recents.isNotEmpty()) {
                         Spacer(Modifier.height(10.dp))
@@ -392,15 +422,15 @@ fun AddProviderPage(onBack: () -> Unit, initialProviderId: String? = null) {
                         onBack()
                     }
                 }
-                // tab 0 是 Agent（上面那一支），这里只剩 1（预置 API）/ 2（自定义）。
-                // 用 else 兜底而不是穷举：tab 来自上面的 forEachIndexed，
-                // 万一以后加页签却忘了这里，宁可不渲染也不要崩溃。
+                // tab 0/1 是 Agent 与 Web（上面那一支），这里只剩 2（预置 API）
+                // 与 3（自定义）。用 else 兜底而不是穷举：tab 来自上面的
+                // forEachIndexed，万一以后加页签却忘了这里，宁可不渲染也不要崩溃。
                 when (tab) {
-                    1 -> PresetApiTab(
+                    2 -> PresetApiTab(
                         custom = customProviders,
                         onDone = done,
                     )
-                    2 -> CustomProviderTab(
+                    3 -> CustomProviderTab(
                         custom = customProviders,
                         loaded = customLoaded,
                         initialTarget = initialCustomTarget,
@@ -416,6 +446,7 @@ fun AddProviderPage(onBack: () -> Unit, initialProviderId: String? = null) {
     if (showPicker) {
         ProviderPickerSheet(
             currentId = current?.id,
+            category = pickerSegment,
             onPick = {
                 current = it
                 showPicker = false
@@ -598,6 +629,39 @@ private fun PasteLoginForm(preset: ProviderPreset, onDone: (Boolean, String) -> 
         modifier = Modifier.fillMaxWidth(),
         colors = ButtonDefaults.buttonColors(containerColor = C.accent, contentColor = C.onAccent),
     ) { Text(if (busy) "校验中…" else "添加", fontWeight = FontWeight.SemiBold) }
+
+    // ── 免登录添加（只有智谱清言一家：`guestLogin`）─────────────────
+    // 单独一个按钮而不是「留空点添加」：留空提交是隐藏动作，用户既不知道它会
+    // 干什么，也不知道访客没有积分体系 —— 那两句必须先说出来，动作才成立。
+    // 主按钮的 `enabled = primary.isNotBlank()` 因此保持原样（其余各家没有
+    // 「空输入也有意义」的语义，放宽它会让那些家的空提交全部变成 400）。
+    if (preset.guestLogin) {
+        Spacer(Modifier.height(8.dp))
+        OutlinedButton(
+            onClick = {
+                busy = true; hint = null
+                scope.launch {
+                    // 空凭证 + guestLogin ⇒ AccountOps 发 {provider, guest:true}，
+                    // 由内核现换一份访客凭证（设备号随记录落库，换一次就是一个新身份）
+                    val r = AccountOps.addAccountFor(preset.id, "", null, name.ifBlank { null })
+                    busy = false
+                    if (r.ok) onDone(true, "已添加 ${preset.label} 访客账号")
+                    else hint = r.error ?: "访客凭证获取失败"
+                }
+            },
+            enabled = !busy,
+            modifier = Modifier.fillMaxWidth(),
+            colors = ButtonDefaults.outlinedButtonColors(contentColor = C.textMain),
+        ) { Text(if (busy) "处理中…" else "免登录添加访客账号", fontWeight = FontWeight.Medium) }
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "访客凭证可直接对话（免费额度由上游按设备发放），但没有积分体系：" +
+                "余额、每日登录积分、活动领取只对登录账号开放。想要积分请粘贴已登录账号的 accessToken。",
+            color = C.textSub,
+            fontSize = 11.sp,
+            lineHeight = 16.sp,
+        )
+    }
 }
 
 /** v44 .sheet 选择器：按通道分节（网页 / 验证码 / 粘贴），pk-row 行 + 选中勾。 */
@@ -605,6 +669,8 @@ private fun PasteLoginForm(preset: ProviderPreset, onDone: (Boolean, String) -> 
 @Composable
 private fun ProviderPickerSheet(
     currentId: String?,
+    /** 只列这一段的家（Agent / Web）；两段各自的通道构成完全不同，混着列没有意义 */
+    category: ProviderCategory,
     onPick: (ProviderPreset) -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -614,7 +680,7 @@ private fun ProviderPickerSheet(
     var q by remember { mutableStateOf("") }
     var kindFilter by remember { mutableStateOf<LoginKind?>(null) }
 
-    val filtered = PresetRegistry.ALL.filter { p ->
+    val filtered = PresetRegistry.byCategory(category).filter { p ->
         (kindFilter == null || p.kind == kindFilter) &&
             (q.isBlank() || p.label.contains(q, ignoreCase = true) || p.desc.contains(q, ignoreCase = true))
     }
@@ -632,7 +698,7 @@ private fun ProviderPickerSheet(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
-                    "选择 AGENT",
+                    if (category == ProviderCategory.WEB) "选择 WEB" else "选择 AGENT",
                     color = C.textMain,
                     fontSize = 16.sp,
                     fontWeight = FontWeight.Bold,

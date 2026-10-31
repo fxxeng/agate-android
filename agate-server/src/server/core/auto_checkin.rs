@@ -125,7 +125,7 @@ pub fn default_time() -> String {
 /// 这是「有签到或每日活跃任务」的清单，不是「有积分概念」的清单：CatPaw 有积分
 /// 查询但没有签到，因此不在此列 —— 它的账号在批量签到里被算作 `skipped`。
 /// 加一家之前先确认它的签到链路真的存在（一个点了必然报错的复选框比没有更糟）。
-pub const CHECKIN_PROVIDERS: [&str; 12] = [
+pub const CHECKIN_PROVIDERS: [&str; 16] = [
     "workbuddy",
     "workbuddy-intl",
     "raccoon",
@@ -140,6 +140,19 @@ pub const CHECKIN_PROVIDERS: [&str; 12] = [
     // 追加在**末尾**：这个数组的顺序就是界面复选框与签到中心分组行的顺序，
     // 插在中间会让所有存量用户的清单顺序变一下（没有功能影响，但没必要动）。
     "codearts",
+    // ModelScope（魔搭）两家：签到就是「读一次登录信息」（顺带激活当日魔粒）。
+    // 追加在末尾 —— 这个数组的顺序就是界面复选框与签到中心分组行的顺序。
+    "modelscope",
+    "modelscope-intl",
+    // LobsterAI（有道龙虾）：三步签到（活动位 → 上下文两道预检 → check_in +
+    // uuid4 幂等键），见 `providers::lobsterai::checkin`。追加在末尾（与上面同一理由）。
+    "lobsterai",
+    // AtomCode（AtomGit）：这里的「签到」是**领取免费 CodingPlan**（按需领取：
+    // 套餐有效时只回读额度），见 `providers::atomcode::checkin` 的模块头。
+    // 它挂在签到链上的三个理由：新账号必须领一次否则目录为空 / 套餐会到期 /
+    // 签到链本来就有「每天逐账号跑一次、结果进台账」的调度。
+    // 追加在末尾（与上面同一理由）。
+    "atomcode",
 ];
 
 /// 缺省的签到提供商集合（全选）
@@ -157,12 +170,23 @@ pub fn default_providers() -> Vec<String> {
 /// 会让这一家的勾选框再也取消不掉（读完就补回来，界面上表现为「取消勾选没反应」）。
 /// 所以补齐只做一次，靠配置里的版本号记账；版本一旦写上去，用户之后再取消勾选
 /// 就真的生效了。执行点见 `checkin_schedules::extend_providers_once`。
-pub const PROVIDERS_VERSION: i64 = 2;
+pub const PROVIDERS_VERSION: i64 = 5;
 
 /// 「哪一版加入的家」——条目清单的版本低于它 = 这家还没被提供过 ⇒ 补进去。
 /// 版本 1 = 多条目改造上线时的形态（9 家；`qoder-intl` 由 `normalize_providers`
 /// 的存量兼容规则跟着 `qoder` 带上，不在这里重复登记）。
-const PROVIDERS_ADDED_IN: [(&str, i64); 2] = [("officeace", 2), ("codearts", 2)];
+const PROVIDERS_ADDED_IN: [(&str, i64); 6] = [
+    ("officeace", 2),
+    ("codearts", 2),
+    // 版本 3（2026-10-31）：ModelScope 两家一次性纳入。它们**默认在范围内**
+    // （与 OfficeAce / CodeArts 同口径），版本号记账保证「用户取消勾选后不再被补回」。
+    ("modelscope", 3),
+    ("modelscope-intl", 3),
+    // 版本 4：LobsterAI（有道龙虾）。
+    ("lobsterai", 4),
+    // 版本 5：AtomCode（AtomGit）—— 签到 = 领取免费 CodingPlan。
+    ("atomcode", 5),
+];
 
 /// 版本 `version` 之后才加入清单的家（按注册顺序）。空数组 = 这一版没有新家，
 /// 或配置比代码还新（装过更新的版本又退回来）——两种情况都只记账、不动清单。

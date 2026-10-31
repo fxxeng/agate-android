@@ -1,15 +1,15 @@
 //! Core 态（网关未运行）的登录回调监听器。
 //!
 //! ── 为什么需要它 ──────────────────────────────────────────
-//! 四家的网页登录把回调地址拼成 `http://127.0.0.1:<网关端口>/...`
-//! （accio / accio-cn / codearts / antigravity，端口来自进程级
+//! 五家的网页登录把回调地址拼成 `http://127.0.0.1:<网关端口>/...`
+//! （accio / accio-cn / codearts / antigravity / lobsterai，端口来自进程级
 //! `set_loopback_port`，bootstrap 写一次）。两级内核之后 Core 态**不监听端口**，
 //! 于是授权页打得开、回调却打到一个没人听的端口上 —— 用户会一直等到
 //! `LOGIN_TIMEOUT_MS`（5 分钟）才失败，且期间没有任何错误提示。
 //!
 //! 修法（与参考实现 `Android-AI-gateway` 的 `LoopbackCallbackServer` 同思路，
 //! 但改动更小）：登录发起时**临时**把这台端口占起来，收完回调再释放。
-//! - 不另开随机端口：四家的 redirect 都来自只读的 `OnceLock`，换端口要改 4 处
+//! - 不另开随机端口：五家的 redirect 都来自只读的 `OnceLock`，换端口要改 5 处
 //!   拼装逻辑，收益不值；
 //! - 复用 `server::start(state)`：它 bind 的就是 `state.port`、挂的是完整
 //!   `router(state)`，鉴权/错误信封/所有回调路径与「网关运行中」逐字一致；

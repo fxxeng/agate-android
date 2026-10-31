@@ -415,10 +415,14 @@ fn start_gateway(data_dir: &str, port: u16, bind_lan: bool, api_key: Option<&str
             return json!({ "ok": false, "error": "core_not_ready" });
         };
         // 端口可能晚于 Core 就位（core_init 用默认口，这里才是用户配置口）
-        // → 重设三家 OAuth 的回调登记 + 监听参数，与 bootstrap 首装同口径。
+        // → 重设四家 OAuth 的回调登记 + 监听参数，与 bootstrap 首装同口径。
         crate::server::core::providers::accio::oauth::set_loopback_port(port);
         crate::server::core::providers::codearts::oauth::set_loopback_port(port);
         crate::server::core::providers::antigravity::oauth::set_loopback_port(port);
+        // LobsterAI 的回调落在 `http://127.0.0.1:<port>/auth/callback`，
+        // 授权地址由适配器在发起登录时本地拼 —— 漏了这一行 = 登录必失败
+        // （回调地址拼不出来，门户回不到本机）。
+        crate::server::core::providers::lobsterai::oauth::set_loopback_port(port);
         core.state.port = port;
         core.state.host = host;
         // 管理界面（这里是 Compose UI）跑在本机：OAuth 回调可占本机登记端口

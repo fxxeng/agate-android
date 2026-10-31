@@ -389,6 +389,50 @@ pub async fn checkin_for(
             .map(welfare_claim_of);
             claim_result(id, name, &display, true, claim)
         }
+        "modelscope" | "modelscope-intl" => {
+            // ModelScope（魔搭）：**没有独立的签到接口** —— 读一次
+            // `GET /api/v1/users/login/info` 就是签到（顺带激活当日魔粒），
+            // 见 `modelscope::checkin` 的模块头。两个站点打各自的站：分派键是
+            // provider id，地区由它反查（与本文件里 AutoClaw / Qoder 同一处置）。
+            //
+            // 「今天已经触发过」不算失败：上游不区分「第一次」与「第 N 次」，
+            // 重复调用是安全的，如实报成功（不硬造一个「已签到」的判断）。
+            let region = crate::server::core::providers::modelscope::region::region_of_provider_id(
+                provider_id,
+            )
+            .unwrap_or(crate::server::core::providers::modelscope::Region::Cn);
+            let claim =
+                crate::server::core::providers::modelscope::checkin::claim_for_account(
+                    store, region, &id,
+                )
+                .await;
+            claim_result(id, name, &display, true, claim)
+        }
+        "atomcode" => {
+            // AtomCode（AtomGit）：签到 = **按需领取免费 CodingPlan**（先探测，
+            // 套餐无效才按 Max → Pro → Lite 级联；`duplicate:true` 是「已持有」
+            // 的成功语义，命中即停）。「套餐有效 / 已持有」两种无事可做的结局由
+            // 实现带 `alreadyCompleted:true`，`checkin_completed_today` 据此落
+            // 当日台账（见 `atomcode/checkin.rs` 的模块头）。
+            let claim = crate::server::core::providers::atomcode::checkin::claim_for_account(
+                store, &id,
+            )
+            .await
+            .map_err(|error| error.message);
+            claim_result(id, name, &display, true, claim)
+        }
+        "lobsterai" => {
+            // LobsterAI（有道龙虾）：三步签到（活动位 → 上下文两道预检 →
+            // check_in + uuid4 幂等键），幂等靠客户端，见 `lobsterai::checkin`
+            // 的模块头。「今天已签到」由实现给 `alreadyCompleted:true` + 中性文案，
+            // `checkin_completed_today` 按它落当日台账。
+            let claim = crate::server::core::providers::lobsterai::checkin::claim_for_account(
+                store, &id,
+            )
+            .await
+            .map_err(|error| error.message);
+            claim_result(id, name, &display, true, claim)
+        }
         // 兜底只服务默认那家（WorkBuddy 国内版）——**不是**「剩下所有家」。
         // 这里曾经是无所不包的 `_`：一个 provider 只要没在上面列出，就会拿自己的
         // 令牌去打腾讯的签到接口，稳定报错且看不出原因（Qoder 接入前正是这个处境）。

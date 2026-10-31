@@ -225,7 +225,7 @@ pub async fn login_start(State(state): State<ServerState>, body: Bytes) -> Respo
         },
     };
     // ── 需要 loopback 回调的家：Core 态临时占住端口 ──────────────
-    // 四家的 redirect 拼的是 `127.0.0.1:<网关端口>`，而 Core 态不监听端口
+    // 五家的 redirect 拼的是 `127.0.0.1:<网关端口>`，而 Core 态不监听端口
     // （见 `core::login_listener` 的模块头）。不先确保监听，授权完成后回调
     // 会打空，用户干等到 5 分钟超时。网关已在跑时 ensure() 是空操作。
     if matches!(
@@ -234,6 +234,7 @@ pub async fn login_start(State(state): State<ServerState>, body: Bytes) -> Respo
             | crate::server::core::providers::ProviderKind::AccioCn
             | crate::server::core::providers::ProviderKind::CodeArts
             | crate::server::core::providers::ProviderKind::Antigravity
+            | crate::server::core::providers::ProviderKind::LobsterAi
     ) {
         if let Err(reason) = crate::server::core::login_listener::ensure(&state) {
             return management_error(400, reason);
@@ -389,6 +390,31 @@ pub async fn login_start(State(state): State<ServerState>, body: Bytes) -> Respo
         };
         return ok_json(json!({ "state": task_state, "authUrl": auth_url,
             "edition": task_edition, "provider": "officeace" }));
+    }
+    // AtomCode（AtomGit）：**服务端中介的轮询登录**（与 ZCode / OfficeAce 同一
+    // 形态，见 `core::login::atomcode` 的模块头）—— 授权回调在代理域名
+    // （`acs.atomgit.com/callback`）终结，**不往本机跳**，所以不需要壳侧开回调
+    // 监听、也不注册 `/auth/callback` 路由；发起后由后台任务每 3 秒问一次
+    // `auth/check`。响应形状与另外几条登录链一致
+    // （`{state, authUrl, edition, provider}`），前端不需要新分支。
+    if kind == crate::server::core::providers::ProviderKind::Atomcode {
+        let handle = match state.login().start_atomcode_login() {
+            Ok(handle) => handle,
+            Err(error) => return management_error(400, error),
+        };
+        let (task_state, auth_url, task_edition) = match state
+            .login()
+            .wait_for_auth_url(&handle, Duration::from_millis(AUTH_URL_WAIT_MS))
+            .await
+        {
+            Ok(values) => values,
+            Err(error) => {
+                logging::log("[Login]", &format!("❌ 发起 AtomCode 登录失败: {error}"));
+                return management_error(502, error);
+            }
+        };
+        return ok_json(json!({ "state": task_state, "authUrl": auth_url,
+            "edition": task_edition, "provider": "atomcode" }));
     }
     // Cline：**设备授权登录**（WorkOS RFC 8628）。形态上介于「网页登录」与
     // 「Qoder 设备授权」之间：同步问上游要 user_code 与授权页地址（一次 POST），
@@ -1388,6 +1414,39 @@ pub async fn login_accio_callback(
             state.login().drop_accio_pending(&task_state);
             oauth_callback_page(error.status_code, &format!("登录失败：{}", error.message))
         }
+    }
+}
+
+// ─── GET /auth/callback（LobsterAI 的 loopback 回调）─────────
+
+/// LobsterAI 网页登录的回调（**浏览器 302 到这里**，查询串带 `code` / `state`）。
+///
+/// ── 为什么免鉴权（挂 public 组）──────────────────────────────
+/// 调用方是**用户的浏览器**（授权页完成后顶层导航到我们拼给门户的 redirect_uri），
+/// 它当然没有我们的 API Key。与 Accio / CatPaw / AutoClaw 几条 loopback 回调同一取舍。
+///
+/// ── 路径为什么是裸 `/auth/callback` ─────────────────────────
+/// 本仓其余几家自己挑的回调路径都带家名后缀（`-accio` 等），这一家**例外**：
+/// 授权地址里的 `redirect_uri` 是我们拼给门户的，门户会按它回落 —— 参考实现用的
+/// 就是裸 `/auth/callback`，而门户是否对回调路径有白名单**没有实测支撑**，所以
+/// 跟随那条已验证的形状（见 `providers::lobsterai::oauth` 的模块头）。
+///
+/// ── 任务关联 ────────────────────────────────────────────────
+/// `state` 是我们生成的那个（拼在授权 URL 里），门户原样带回，因此直接按它查任务表。
+///
+/// 响应是给人看的 HTML（浏览器停在这一页），不走 `ok_json` 那套信封。
+pub async fn login_lobsterai_callback(
+    State(state): State<ServerState>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    let code = params.get("code").cloned().unwrap_or_default();
+    let task_state = params.get("state").cloned().unwrap_or_default();
+    if let Some(error) = params.get("error").filter(|value| !value.trim().is_empty()) {
+        return oauth_callback_page(400, &format!("登录失败：授权被拒绝（{error}）"));
+    }
+    match state.login().finish_lobsterai_login(&code, &task_state).await {
+        Ok(_) => oauth_callback_page(200, "登录成功，已返回网关，可以关闭此页面。"),
+        Err(error) => oauth_callback_page(error.status_code, &format!("登录失败：{}", error.message)),
     }
 }
 

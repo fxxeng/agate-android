@@ -198,6 +198,32 @@ pub(crate) fn refresh_meta(kind: ProviderKind) -> (bool, i64) {
             super::chatglm::models::remote_refreshed(),
             super::chatglm::models::last_refreshed_at(),
         ),
+        // ModelScope 两个站点各有一个缓存槽（两站的清单互不覆盖，见
+        // `modelscope/models.rs` 的模块头）：这里如实各查自己那一格。
+        // 本家**没有**内置兜底清单，所以「有内容」严格等于「远程拉到过」。
+        ProviderKind::Modelscope | ProviderKind::ModelscopeIntl => {
+            let region = super::modelscope::region::region_of_kind(kind)
+                .unwrap_or(super::modelscope::Region::Cn);
+            (
+                super::modelscope::models::remote_refreshed(region),
+                super::modelscope::models::last_refreshed_at(region),
+            )
+        }
+        // LobsterAI 有远程目录（`GET /api/models/available`），但**有内置兜底**
+        // （19 条）：所以 `remote_refreshed()` 特意只认真实拉取，界面据此区分
+        // 「内置清单 / 远程」（见 `lobsterai/models.rs` 的模块头）。
+        ProviderKind::LobsterAi => (
+            super::lobsterai::models::remote_refreshed(),
+            super::lobsterai::models::last_refreshed_at(),
+        ),
+        // AtomCode（AtomGit）的清单来自
+        // `GET {codingplan}/coding-plan/models-v2?plan_type=…`，且**没有内置
+        // 兜底**（名单里写死的模型点一下就可能是「参数错误」，见
+        // `atomcode/models.rs` 的模块头）：所以「有内容」严格等于「远程拉到过」。
+        ProviderKind::Atomcode => (
+            super::atomcode::models::remote_refreshed(),
+            super::atomcode::models::last_refreshed_at(),
+        ),
     }
 }
 

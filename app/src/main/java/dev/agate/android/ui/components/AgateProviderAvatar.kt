@@ -42,6 +42,20 @@ object ProviderIcons {
         "officeace" to R.drawable.provider_officeace,
         "orcaterm" to R.drawable.provider_orcaterm,
         "cline" to R.drawable.provider_cline,
+        // 智谱清言：取自上游 3.3 网页提供商插件包 `assets/chatglm.png`
+        // （256×256，即各端安装包里那张应用图标）。**归 Agent/Web 任一都走这条映射**：
+        // 分组只决定它出现在哪一段，不改变身份，所以不需要第二份表。
+        "chatglm" to R.drawable.provider_chatglm,
+        // ModelScope（魔搭）：国内 / 国际共用这一张（与 AutoClaw / MonkeyCode 同一形态
+        // —— 它们本来就是同一个产品在两个站点）。`normalize()` 会把
+        // `modelscope-intl` 折成 `modelscope`，所以只需登记一条。
+        "modelscope" to R.drawable.provider_modelscope,
+        // LobsterAI（网易有道「有道龙虾」）：上游 `ui/assets/providers/lobsterai.png`
+        // （256×256，红底白龙虾吉祥物）。单一站点，无变体。
+        "lobsterai" to R.drawable.provider_lobsterai,
+        // AtomCode（AtomGit）：上游 `ui/assets/providers/atomcode.png`。
+        // 单一站点（没有地区 / 额度池），无变体。
+        "atomcode" to R.drawable.provider_atomcode,
     )
 
     /**

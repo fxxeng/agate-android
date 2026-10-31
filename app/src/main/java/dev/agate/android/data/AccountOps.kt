@@ -71,6 +71,19 @@ object AccountOps {
      * - kuku：cookie 整串（BDUSS/STOKEN…），上游校验并补全昵称
      * - commandcode：apiKey（user_ 前缀）
      * - antigravity：refreshToken（email 可选）
+     * - chatglm：accessToken（refreshToken 可选）；**两者都空 = 访客**
+     *
+     * ── chatglm 这条为什么以前完全用不了 ────────────────────────
+     * 注册表早就把 chatglm 的通道写成「粘贴凭证」，但这里没有对应分支，
+     * 于是任何输入都落到末尾的 `else` → 「该提供商不支持粘贴凭证添加」。
+     * 内核那边**本来就是好的**（`api::accounts` 的 Chatglm 分支认
+     * accessToken / refreshToken / guest，访客还能现换一份凭证），断的只是
+     * 客户端这一跳。
+     *
+     * ── 访客为什么显式带 `guest` ────────────────────────────────
+     * 内核的缺省规则是「没有令牌就当访客」，但**显式传 `guest: true`** 才能让
+     * 后续维护者一眼看出这次是有意的免登录添加；也避免将来内核把缺省值改成
+     * false 时这里静默失效（那会让「添加访客」变成 400「请提供访问令牌」）。
      */
     suspend fun addAccountFor(
         providerId: String,
@@ -86,6 +99,46 @@ object AccountOps {
             "antigravity" -> {
                 body.put("refreshToken", primary.trim())
                 if (!secondary.isNullOrBlank()) body.put("email", secondary.trim())
+            }
+            "chatglm" -> {
+                // 用户可能整段粘了 `chatglm_token=xxx;`（内核也会剥一次，
+                // 两边都剥是为了让「回显给用户的字段」与「真正发出去的值」
+                // 在日志里长得一样）
+                val token = primary.trim()
+                    .removePrefix("chatglm_token=")
+                    .trimEnd(';')
+                    .trim()
+                if (token.isEmpty()) {
+                    body.put("guest", true)
+                } else {
+                    body.put("accessToken", token)
+                    if (!secondary.isNullOrBlank()) body.put("refreshToken", secondary.trim())
+                }
+            }
+            // ModelScope（魔搭）两家：只有一枚 `ms-` 令牌（既调推理又读身份 /
+            // 魔粒 / 签到），所以没有第二个字段可填 —— 表单里的 secondary 对
+            // 这两家是空的（`pasteSecondaryHint` 未声明）。
+            //
+            // 内核添加时会**出网探活一次**（顺便就是当日签到），拿上游的
+            // HavanaId 做账号 id；令牌无效或**站点点错**（国内令牌打国际站）
+            // 都会在这一步 400，所以错误文案要原样带回给用户。
+            "modelscope", "modelscope-intl" -> body.put("accessToken", primary.trim())
+            // LobsterAI（有道龙虾）：**没有粘贴通道** —— 内核对该家的粘贴入口
+            // 始终回 400（续期要的 uuid / keyfrom 只能从换码拿到，见注册表里
+            // 它自己那条注释）。走到这里说明界面漏了拦截，如实转成一句可读的话，
+            // 而不是把空体发出去换一个内核的原始 400。
+            "lobsterai" -> return OpResult(
+                false,
+                null,
+                "LobsterAI 只能通过网页登录添加（点卡片里的登录按钮）",
+            )
+            // AtomCode（AtomGit）：accessToken 必填、refreshToken 可选（有它才能
+            // 自动续期）。内核 `api::accounts` 的 Atomcode 分支把这份 JSON 交给
+            // `atomcode::normalize_paste` 归一（驼峰 / 下划线两种写法都认），
+            // 缺 accessToken 时回 400 并说明该粘什么。
+            "atomcode" -> {
+                body.put("accessToken", primary.trim())
+                if (!secondary.isNullOrBlank()) body.put("refreshToken", secondary.trim())
             }
             else -> return OpResult(false, null, "该提供商不支持粘贴凭证添加")
         }

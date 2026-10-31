@@ -103,6 +103,16 @@ pub mod accio;
 /// 构造 v1internal 信封，响应走 `UpstreamResponse::AntigravityGemini` 那条
 /// Gemini SSE 翻译层）全部已接通；`is_stateful` 恒 false，见 `antigravity/mod.rs`）。
 pub mod antigravity;
+/// AtomCode（AtomGit）：账号管理（**轮询式网页登录** + 粘贴 accessToken /
+/// refreshToken）+ 无状态 OpenAI 兼容转发 + 模型目录 / 每窗口调用次数额度 /
+/// 免费 CodingPlan 领取（挂在签到链上）。
+///
+/// ⚠️ 登录**没有本地回调**：授权在代理域名（`acs.atomgit.com/callback`）终结，
+/// 靠轮询 `auth/check` 判完成 —— 与 ZCode / OfficeAce 同一形态，发起入口是
+/// `LoginService::start_atomcode_login`（不走适配器的网页登录钩子）。
+/// 续期会**轮换** refresh token，所以必须单飞 + 写回新的一对
+/// （见 `atomcode/oauth.rs` 与 `atomcode/refresh.rs` 的模块头）。
+pub mod atomcode;
 pub mod autoclaw;
 pub mod catalog;
 /// 远程模型清单的**持久化缓存**（各家的清单在进程重启后由它读回，见模块头）。
@@ -144,6 +154,19 @@ pub mod officeace;
 /// 多轮拍平为单条输入）+ 余额（月度 AI 配额）全部已接通；
 /// `is_stateful` 为 true（请求内会话，与 KukuAI 同形态），见 `orcaterm/mod.rs`。
 pub mod orcaterm;
+/// ModelScope（魔搭）：国内站 `modelscope` / 国际站 `modelscope-intl`，
+/// **一家实现两个实例**（地区即 provider 身份，见 `modelscope/region.rs`）。
+///
+/// 能力：无状态 OpenAI 兼容转发 + 模型目录 + 魔粒余额 + 每日签到；
+/// **没有续期**（`ms-` 令牌是长期 API key）。归 Web 分段（对话在网页站上）。
+pub mod modelscope;
+/// LobsterAI（网易有道「有道龙虾」）：账号管理（**浏览器登录**：授权页 → 本机
+/// loopback 回调 → 换码）+ 无状态 OpenAI 兼容转发 + 目录 / 积分 / 每日签到。
+///
+/// ⚠️ 续期要一整组身份载荷件（`uuid` + 两个 `keyfrom`），只在换码那一刻下发 ——
+/// 所以**粘贴入口一律拒绝**，落账号必须带齐这三件（见 `lobsterai/credentials.rs`
+/// 与 `lobsterai/mod.rs` 的模块头）。归 Web 分段。
+pub mod lobsterai;
 pub mod onboarding_memory;
 /// **本地就绪闸门**：一条通道在「还没出本机就注定发不出去」时，让选路绕开它
 /// （当前唯一的用户是 ZCode 活动套餐的令牌池，判据与取舍见模块头）。
@@ -473,6 +496,35 @@ pub enum ProviderKind {
     /// 会话转发（建会话 → assistant SSE）+ 余额（月度 AI 配额）；
     /// `is_stateful` 为 true（请求内会话），见 `orcaterm/mod.rs` 的模块头。
     OrcaTerm,
+    /// ModelScope（魔搭）**国内站**（`modelscope`）。
+    ///
+    /// ── 为什么是两个 provider 而不是「一家 + 地区字段」──────────────
+    /// 两站的账号体系互不相通（同一令牌打错站会 401），而地区做成账号字段会让
+    /// 两站的模型清单互相覆盖（单槽缓存）、账号也无法按站隔离。拆成两家后各家
+    /// 有独立的账号、清单、启停与缓存槽 —— 与 AutoClaw / Qoder / MonkeyCode
+    /// 同一拆法（见 `modelscope/region.rs` 的模块头）。
+    ///
+    /// 无状态 OpenAI 兼容转发 + 模型目录 + 魔粒余额 + 每日签到；**没有续期**
+    /// （`ms-` 令牌是长期 API key）。见 `modelscope/mod.rs`。
+    Modelscope,
+    /// ModelScope **国际站**（`modelscope-intl`）
+    ModelscopeIntl,
+    /// LobsterAI（网易有道「有道龙虾」，`lobsterai.youdao.com`）。
+    ///
+    /// 无状态 OpenAI 兼容转发（只收 SSE）+ 目录 / 积分 / 每日签到 / 浏览器登录。
+    /// **续期要一整组身份载荷件**（`uuid` + 两个 `keyfrom`），只在换码那一刻下发 ——
+    /// 所以**没有「粘贴凭证」这条路径**（`api::accounts` 对它始终回 400），
+    /// 见 `lobsterai/mod.rs` 的模块头。
+    LobsterAi,
+    /// AtomCode（AtomGit 的编码 Agent，`api-ai.gitcode.com`）。
+    ///
+    /// 无状态 OpenAI 兼容转发 + 模型目录 / 每窗口调用次数 / 免费 CodingPlan
+    /// 领取（挂在签到链上）+ **轮询式网页登录**（回调在代理域名终结，不回到
+    /// 本机，见 `atomcode/mod.rs` 的模块头）。续期会轮换 refresh token。
+    ///
+    /// 归 **Agent 分段**：它是编程客户端（与 WorkBuddy / Qoder 同一档），
+    /// 不是网页对话站。
+    Atomcode,
 }
 
 /// 一个提供商的静态元数据。
@@ -486,6 +538,39 @@ pub struct ProviderMeta {
     pub id: &'static str,
     /// 展示名（前端组头、日志里用中文/品牌名）
     pub label: &'static str,
+    /// 这一家在「添加账号」里归哪一段（Agent / Web）
+    pub category: ProviderCategory,
+}
+
+/// 内置提供商的分段（对齐上游 3.3 的 `provider_category`）。
+///
+/// ── 为什么要把它做成注册表字段，而不是客户端写一份 id 清单 ────────
+/// 「哪一家算 Web」是**产品事实**而不是界面偏好：上游把智谱清言挪进独立的
+/// 网页提供商包，并在插件文档里明写「智谱清言不属于 Agent 提供商」——
+/// 这条判断与登录通道、能力位同源，都属于这家自己。前端若各写一份，
+/// 新加一家时两处必然有一处漏（漏了的表现是「这家在界面上凭空消失」，
+/// 因为两个分段都不收它）。
+///
+/// 取值经 `/api/providers` 的 `category` 字段下发；客户端仍按注册表渲染，
+/// 但**判据只有一个**：这里是唯一事实来源。
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ProviderCategory {
+    /// 编程客户端 / CLI / 桌面 Agent（转发靠伪装官方客户端那一类）
+    Agent,
+    /// 网页版对话站点（在浏览器里用的那种，登录靠 Cookie 或网页令牌）
+    Web,
+}
+
+impl ProviderMeta {
+    /// 一家 Agent 提供商
+    pub const fn agent(id: &'static str, label: &'static str) -> Self {
+        Self { id, label, category: ProviderCategory::Agent }
+    }
+    /// 一家 Web 提供商
+    pub const fn web(id: &'static str, label: &'static str) -> Self {
+        Self { id, label, category: ProviderCategory::Web }
+    }
 }
 
 /// 内置提供商注册表（顺序稳定，前端的 `providers` 摘要数组按此顺序输出）。
@@ -507,69 +592,94 @@ pub const PROVIDERS: &[ProviderMeta] = &[
     // 由它自己拼版本后缀（拼成「登录 WorkBuddy 国内版账号」）；`/health` 的
     // `product` 字段也仍是 "WorkBuddy" —— 桌面端靠它认出自家网关的端口。
     // 这两处都不是「这一家在界面上的名字」，各自有各自的契约。
-    ProviderMeta { id: "workbuddy", label: "WorkBuddy 国内版" },
+    ProviderMeta::agent("workbuddy", "WorkBuddy 国内版"),
     // 两个地区**相邻**排列（与 AutoClaw / Accio / ZCode 同一理由：同一条产品线的
     // 两个版本，中间隔着别家会让「找国际版」变成一次扫描）。
     // 顺序也决定模型目录合并时同名模型先归谁家 —— 国内版在前，与存量账号的
     // 归属一致。
-    ProviderMeta { id: "workbuddy-intl", label: "WorkBuddy 国际版" },
-    ProviderMeta { id: "raccoon", label: "小浣熊" },
-    ProviderMeta { id: "catpaw", label: "CatPaw" },
+    ProviderMeta::agent("workbuddy-intl", "WorkBuddy 国际版"),
+    ProviderMeta::agent("raccoon", "小浣熊"),
+    ProviderMeta::agent("catpaw", "CatPaw"),
     // AutoClaw 两个地区**相邻**排列（本次改动的要求）：界面上它们是同一条产品线的
     // 两个版本，中间隔着别的家会让「找国际版」变成一次扫描。顺序也决定模型目录
     // 合并时同名模型先归谁家 —— 国内版在前，与存量账号的归属一致。
-    ProviderMeta { id: "autoclaw", label: "AutoClaw 国内版" },
-    ProviderMeta { id: "autoclaw-intl", label: "AutoClaw 国际版" },
+    ProviderMeta::agent("autoclaw", "AutoClaw 国内版"),
+    ProviderMeta::agent("autoclaw-intl", "AutoClaw 国际版"),
     // Qoder 两个地区**相邻**排列（与 AutoClaw / Accio / ZCode 同一理由）：拆家后
     // 是**两家独立的提供商**，国内版保持裸 `qoder`（存量账号的落盘契约，只改
     // 展示名），国际版取 `qoder-intl`。顺序也决定模型目录合并时同名模型先归
     // 谁家 —— 国内版在前，与存量账号的归属一致。
-    ProviderMeta { id: "qoder", label: "Qoder 中国版" },
-    ProviderMeta { id: "qoder-intl", label: "Qoder 国际版" },
-    ProviderMeta { id: "cline-free", label: "Cline Free" },
-    ProviderMeta { id: "cline-pass", label: "Cline Pass" },
+    ProviderMeta::agent("qoder", "Qoder 中国版"),
+    ProviderMeta::agent("qoder-intl", "Qoder 国际版"),
+    ProviderMeta::agent("cline-free", "Cline Free"),
+    ProviderMeta::agent("cline-pass", "Cline Pass"),
     // Accio 两个地区**相邻**排列（与 AutoClaw 同一理由：同一条产品线的两个
     // 版本，中间隔着别家会让「找国际版」变成一次扫描）。顺序也决定模型目录
     // 合并时同名模型先归谁家 —— 国际版在前（用户装的、默认用的是它）。
-    ProviderMeta { id: "accio", label: "Accio" },
-    ProviderMeta { id: "accio-cn", label: "Accio 国内版" },
+    ProviderMeta::agent("accio", "Accio"),
+    ProviderMeta::agent("accio-cn", "Accio 国内版"),
     // ZCode 两个地区**相邻**排列（与 AutoClaw / Accio 同一理由：同一条产品线的
     // 两个版本，中间隔着别家会让「找国际版」变成一次扫描）。顺序也决定模型目录
     // 合并时同名模型先归谁家 —— 国内版在前（国内网络环境下更常被添加的那个）。
-    ProviderMeta { id: "zcode", label: "ZCode 国内版" },
-    ProviderMeta { id: "zcode-intl", label: "ZCode 国际版" },
-    ProviderMeta { id: "codearts", label: "CodeArts" },
-    ProviderMeta { id: "trae", label: "Trae" },
+    ProviderMeta::agent("zcode", "ZCode 国内版"),
+    ProviderMeta::agent("zcode-intl", "ZCode 国际版"),
+    ProviderMeta::agent("codearts", "CodeArts"),
+    ProviderMeta::agent("trae", "Trae"),
     // Loomy（讯飞）：单一地区、单一入口（手机号验证码登录），没有国际版伴生。
-    ProviderMeta { id: "loomy", label: "Loomy" },
+    ProviderMeta::agent("loomy", "Loomy"),
     // KukuAI（百度文库库库 AI）：单一地区、单一入口（粘贴 Cookie / 导入本机
     // 客户端登录态），没有国际版伴生。排在末尾（2026-10 接入，后到居后）。
-    ProviderMeta { id: "kuku", label: "KukuAI" },
+    ProviderMeta::agent("kuku", "KukuAI"),
     // MonkeyCode（长亭科技）的两个站点**相邻**排列（与 AutoClaw / Qoder /
     // ZCode 同一理由：同一条产品线的两个版本，中间隔着别家会让「找国际版」
     // 变成一次扫描）。顺序也决定模型目录合并时同名模型先归谁家 ——
     // 国内版在前（用户直觉里「MonkeyCode 就是国内那个站」）。
-    ProviderMeta { id: "monkeycode", label: "MonkeyCode" },
-    ProviderMeta { id: "monkeycode-intl", label: "MonkeyCode 国际版" },
+    ProviderMeta::agent("monkeycode", "MonkeyCode"),
+    ProviderMeta::agent("monkeycode-intl", "MonkeyCode 国际版"),
     // Command Code：单一域名、单一入口（粘贴 user_ API Key），没有国际版伴生
     // （规格 §9：参考里只有 api.commandcode.ai 一个主机）。排在末尾
     // （2026-10 接入，后到居后，与 Kuku 同一处置）。
-    ProviderMeta { id: "commandcode", label: "Command Code" },
+    ProviderMeta::agent("commandcode", "Command Code"),
     // Antigravity（Google）：单一入口（粘贴 Google refresh token）、没有地区
     // 伴生（规格 §6：没有 region 参数，sandbox/daily/prod 是环境不是地区）。
     // 排在末尾（2026-10 接入，后到居后，与 Kuku / Command Code 同一处置）。
-    ProviderMeta { id: "antigravity", label: "Antigravity" },
-    ProviderMeta { id: "chatglm", label: "智谱清言" },
+    ProviderMeta::agent("antigravity", "Antigravity"),
+    ProviderMeta::web("chatglm", "智谱清言"),
     // OfficeAce（华为云果办 / OfficeClaw）：排末尾（新家按约定追加在末尾）。
     // 它的可用名单与 codearts / catpaw / trae / zcode 大面积同名（glm-5.2 /
     // glm-5.3 / deepseek-v4-flash-0731 / kimi-k2.6 …），注册表顺序决定目录
     // 合并时同名模型先归谁家 —— 放在末尾即「同名时优先已有各家」。
-    ProviderMeta { id: "officeace", label: "OfficeAce 果办" },
+    ProviderMeta::agent("officeace", "OfficeAce 果办"),
     // OrcaTerm（腾讯云遨驰终端桌面客户端）：单一入口（粘贴 accessToken /
     // 导入桌面端登录态），没有地区伴生。排在末尾（2026-10 接入，后到居后）。
     // 它的模型名（glm-5.3 / kimi-k3 / deepseek-v4-* 等）与 codearts / catpaw /
     // zcode 大面积同名，同样靠末位让同名模型优先归已有各家。
-    ProviderMeta { id: "orcaterm", label: "OrcaTerm" },
+    ProviderMeta::agent("orcaterm", "OrcaTerm"),
+    // ModelScope（魔搭）：两个站点**相邻**排列（与 WorkBuddy / AutoClaw / Qoder /
+    // MonkeyCode 同一理由 —— 同一条产品线的两个版本，中间隔着别家会让「找国际版」
+    // 变成一次扫描）。国内版在前，与其余各家的排列一致。
+    //
+    // 归 **Web 分段**：魔搭的对话在网页站（modelscope.cn）上，登录靠网页令牌 +
+    // Cookie，不是「伪装桌面客户端」那一类。上游 3.3 把网页提供商整体拆成独立
+    // 插件包，并把智谱清言明确归为 Web —— 本家同属这一类。
+    ProviderMeta::web("modelscope", "ModelScope 国内版"),
+    ProviderMeta::web("modelscope-intl", "ModelScope 国际版"),
+    // LobsterAI（网易有道「有道龙虾」）：单一站点（`lobsterai.youdao.com`），
+    // 没有地区 / 额度池之分。**只有浏览器登录一条入口**（粘贴给不出续期所需的
+    // 载荷件，见 `api::accounts` 的 LobsterAI 分支）。排在末尾（2026-10 接入，
+    // 后到居后，与 Kuku / Command Code 同一处置）。
+    //
+    // 归 **Web 分段**：对话在网页站上，登录靠浏览器授权 —— 与智谱清言 / ModelScope
+    // 同一类（上游 3.3 的网页提供商那一档）。
+    ProviderMeta::web("lobsterai", "LobsterAI"),
+    // AtomCode（AtomGit 的编码 Agent）：三条平面（登录代理 / CodingPlan REST /
+    // 聊天网关）。**轮询式网页登录**（回调在代理域名终结，不占本机端口 ——
+    // 所以不需要 `needsGateway` 那条约束）+ 粘贴 accessToken / refreshToken
+    // 两条入口都有。排在末尾（后到居后，与 Kuku / Command Code / LobsterAI
+    // 同一处置）。
+    //
+    // 归 **Agent 分段**：它是编程客户端，不是网页对话站。
+    ProviderMeta::agent("atomcode", "AtomCode"),
 ];
 
 /// provider id 在注册表里的下标（未知 id → None）。
@@ -652,6 +762,10 @@ pub fn kind_from_id(id: &str) -> Option<ProviderKind> {
         "monkeycode-intl" => Some(ProviderKind::MonkeyCodeIntl),
         "commandcode" => Some(ProviderKind::CommandCode),
         "antigravity" => Some(ProviderKind::Antigravity),
+        "modelscope" => Some(ProviderKind::Modelscope),
+        "modelscope-intl" => Some(ProviderKind::ModelscopeIntl),
+        "lobsterai" => Some(ProviderKind::LobsterAi),
+        "atomcode" => Some(ProviderKind::Atomcode),
         "chatglm" => Some(ProviderKind::Chatglm),
         "officeace" => Some(ProviderKind::OfficeAce),
         "orcaterm" => Some(ProviderKind::OrcaTerm),
@@ -698,6 +812,10 @@ pub const fn kind_id(kind: ProviderKind) -> &'static str {
         ProviderKind::Chatglm => "chatglm",
         ProviderKind::OfficeAce => "officeace",
         ProviderKind::OrcaTerm => "orcaterm",
+        ProviderKind::Modelscope => "modelscope",
+        ProviderKind::ModelscopeIntl => "modelscope-intl",
+        ProviderKind::LobsterAi => "lobsterai",
+        ProviderKind::Atomcode => "atomcode",
     }
 }
 
@@ -842,6 +960,9 @@ where
                 "id": detail.id,
                 "label": detail.label,
                 "count": count(detail.id),
+                // 分段归属（`agent` / `web`）：添加账号页按它分页签。
+                // 下发而不是让前端猜，理由见 `ProviderCategory` 的说明。
+                "category": detail.category,
                 // 「这家有没有余额查询能力」：界面据此决定要不要显示余额相关的
                 // 设置（低余额限流阈值）—— 不支持的家显示成「未配置查询」是误导。
                 // 判据单一来源：适配器的 `supports_usage`（自定义家走

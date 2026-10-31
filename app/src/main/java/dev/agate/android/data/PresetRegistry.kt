@@ -16,6 +16,17 @@ package dev.agate.android.data
 /** 登录通道：决定点卡片后的交互形态。 */
 enum class LoginKind { WEBVIEW, SMS, PASTE }
 
+/**
+ * 添加账号页的分段归属（与内核 `providers::ProviderCategory` 逐字对齐）。
+ *
+ * ── 为什么客户端也要有这一份 ─────────────────────────────────
+ * 内核 `/api/providers` 的摘要里已经带 `category`（唯一事实来源），但本页的
+ * 提供商卡是**离线静态渲染**的（`PresetRegistry.ALL`），不等摘要回来 ——
+ * 所以分段必须在注册表里也声明一次。两处的取值由 `docs/` 的移植记录对齐；
+ * 新加一家时**两处一起改**，改漏的表现是那家在两个分段都不出现。
+ */
+enum class ProviderCategory { AGENT, WEB }
+
 /** 登录/接入通道（核实版）。 */
 enum class AuthChannel(val label: String) {
     EMBEDDED("内嵌登录"),
@@ -35,6 +46,8 @@ data class ProviderPreset(
     val kind: LoginKind,
     /** 该家真实支持的通道，顺序即 UI 顺序；首项为默认。 */
     val channels: List<AuthChannel>,
+    /** 添加账号页的分段归属（Agent / Web）；默认 Agent，Web 家逐个声明。 */
+    val category: ProviderCategory = ProviderCategory.AGENT,
     /** 粘贴通道的主输入提示（为空表示该家不走粘贴）。 */
     val pasteHint: String? = null,
     val pasteSecondaryHint: String? = null,
@@ -71,6 +84,20 @@ data class ProviderPreset(
      * 需要有人接），授权地址其实与前一条相同。
      */
     val browserLogin: Boolean = false,
+    /**
+     * 粘贴通道是否同时提供**免登录添加**（只有智谱清言一家为 true）。
+     *
+     * ── 为什么必须有这个标记，而不是「粘贴框留空即访客」──────────
+     * 内核 `api::accounts` 的 Chatglm 分支确实把「没有令牌」当访客
+     * （`want_guest` 缺省 = `plain_token.is_none()`），但那是**后端契约**：
+     * 界面上「留空点添加」与「点一个叫添加访客账号的按钮」不是同一件事 ——
+     * 前者是隐藏动作（用户不知道空着提交会发生什么，也不知道访客没有积分），
+     * 后者是明说的入口。上游 3.3 用的就是后者（`guestLogin` 分段 + 独立按钮）。
+     *
+     * 而当前粘贴表单的主按钮是 `enabled = primary.isNotBlank()` —— 留空根本点不动。
+     * 所以这条能力只能由注册表声明、由表单渲染一个独立按钮来表达。
+     */
+    val guestLogin: Boolean = false,
 )
 
 object PresetRegistry {
@@ -80,16 +107,40 @@ object PresetRegistry {
     val ALL: List<ProviderPreset> = listOf(
         // WorkBuddy：上游推 authUrl → 轮询 auth/token；可粘贴 auth.json（需 uid）
         // 智谱清言（chatglm.cn）：无状态转发 + 双凭证形态 —— 访客免登录可换证、
-        // 登录账号有积分。客户端这边只给两条最稳的通道：粘贴 accessToken /
-        // refreshToken，或导入本机桌面客户端登录态（`importDesktop: true`，
-        // 内核 `api::accounts` 的 Chatglm 分支直接认这两个字段）。
+        // 登录账号有积分。客户端这边给两条通道：粘贴 accessToken（可选填
+        // refreshToken），或**免登录添加访客账号**（`guestLogin = true`，
+        // 内核 `api::accounts` 的 Chatglm 分支收到 `guest: true` 现换一份凭证）。
         // 不做内嵌网页登录：那需要跑上游的签名三件套 + 设备号，网页端流程在
         // WebView 里不可靠。
         ProviderPreset(
-            "chatglm", "智谱清言", "chatglm.cn · 粘贴 Token 或导入桌面登录态", LoginKind.WEBVIEW,
-            listOf(AuthChannel.PASTE, AuthChannel.IMPORT_DESKTOP),
-            pasteHint = "粘贴 accessToken（或 refreshToken）",
-            pasteSecondaryHint = "留空则按访客（guest）添加",
+            "chatglm", "智谱清言", "chatglm.cn · 访客免登录 / 粘贴 Token", LoginKind.PASTE,
+            listOf(AuthChannel.PASTE),
+            category = ProviderCategory.WEB,
+            pasteHint = "粘贴 accessToken（JWT；也可直接粘 chatglm_token=… 整行）",
+            pasteSecondaryHint = "续期令牌 refreshToken（可选；留空则失效后需重新获取）",
+            guestLogin = true,
+        ),
+        // ModelScope（魔搭）：两个站点**账号体系分开**（令牌打错站会 401），
+        // 所以是两家 provider、各填各的令牌。同一枚 `ms-` 令牌两用 ——
+        // 既调推理又读身份/魔粒/签到，用户只需复制一次。
+        //
+        // 两家都归 **Web 分段**：对话在网页站上，登录靠网页令牌 + Cookie，
+        // 不是「伪装桌面客户端」那一类（与 chatglm 同一档）。
+        ProviderPreset(
+            "modelscope", "ModelScope 国内版", "modelscope.cn · 粘贴 ms- 令牌",
+            LoginKind.PASTE,
+            listOf(AuthChannel.PASTE),
+            category = ProviderCategory.WEB,
+            pasteHint = "粘贴 ms- 开头的 API 令牌（modelscope.cn「访问令牌」页）",
+            supportsCheckin = true,
+        ),
+        ProviderPreset(
+            "modelscope-intl", "ModelScope 国际版", "modelscope.ai · 粘贴 ms- 令牌",
+            LoginKind.PASTE,
+            listOf(AuthChannel.PASTE),
+            category = ProviderCategory.WEB,
+            pasteHint = "粘贴国际站的 ms- 令牌（modelscope.ai；与国内站不通用）",
+            supportsCheckin = true,
         ),
         ProviderPreset(
             "workbuddy", "WorkBuddy 国内版", "copilot.tencent.com 网页登录", LoginKind.WEBVIEW,
@@ -229,9 +280,46 @@ object PresetRegistry {
             "orcaterm", "OrcaTerm", "网页登录", LoginKind.WEBVIEW,
             listOf(AuthChannel.EMBEDDED),
         ),
+        // LobsterAI（网易有道「有道龙虾」）：**只有浏览器登录一条入口**。
+        //
+        // ── 为什么没有粘贴通道 ──────────────────────────────────────
+        // 本家续期要一整组身份载荷件（`uuid` + 两个 `keyfrom`），只在换码那一刻
+        // 由上游下发 —— 粘贴给不出这三样。内核 `api::accounts` 对它的粘贴入口
+        // **始终回 400**（如实拒绝，不是漏做），所以这里也就不提供粘贴段。
+        //
+        // ── 回调落在网关端口 ───────────────────────────────────────
+        // 门户 302 回 `127.0.0.1:<网关端口>/auth/callback`，所以要 `needsGateway = true`
+        // （与 accio / codearts / antigravity 同一档）。归 **Web 分段**。
+        ProviderPreset(
+            "lobsterai", "LobsterAI", "lobsterai.youdao.com · 网页登录", LoginKind.WEBVIEW,
+            listOf(AuthChannel.EMBEDDED, AuthChannel.EXTERNAL),
+            category = ProviderCategory.WEB,
+            supportsCheckin = true,
+            needsGateway = true,
+        ),
+        // AtomCode（AtomGit）：**服务端中介的轮询登录** —— 授权回调在
+        // `acs.atomgit.com/callback` 终结，不回到本机（与 ZCode / OfficeAce
+        // 同一形态）。因此**不需要** `needsGateway`：没有本机回调端口要占。
+        //
+        // 另有**粘贴通道**：本家续期只要一枚 refreshToken（不像 LobsterAI 还要
+        // uuid + keyfrom），用户手里的登录输出就够用，内核 `api::accounts` 的
+        // Atomcode 分支确实收粘贴（只给 accessToken 也收，但那类账号不能续期）。
+        // 签到 = 领取免费 CodingPlan（内核 CHECKIN_PROVIDERS 里有它），所以
+        // `supportsCheckin = true`。归 **Agent 分段**（编程客户端）。
+        ProviderPreset(
+            "atomcode", "AtomCode", "AtomGit · 浏览器授权 / 粘贴令牌", LoginKind.WEBVIEW,
+            listOf(AuthChannel.EMBEDDED, AuthChannel.EXTERNAL, AuthChannel.PASTE),
+            pasteHint = "粘贴 accessToken（登录输出里的 access_token）",
+            pasteSecondaryHint = "续期令牌 refreshToken（可选；留空则到期后需重新登录）",
+            supportsCheckin = true,
+        ),
     )
 
     fun byId(id: String): ProviderPreset? = ALL.firstOrNull { it.id == id }
+
+    /** 某一分段（Agent / Web）下的全部家，顺序沿用 [ALL]。 */
+    fun byCategory(category: ProviderCategory): List<ProviderPreset> =
+        ALL.filter { it.category == category }
 
     /** 未知家（手改数据文件塞进来的 id）回落到 id 本身显示。 */
     fun labelOf(id: String): String = byId(id)?.label ?: id
