@@ -70,6 +70,21 @@ impl ProviderAdapter for AtomcodeAdapter {
         errors::classify_gateway_error(status, error_body)
     }
 
+    /// **流内静默失败**的分类（`HTTP 200` + 正文是「参数错误」/「三方请求失败…」）。
+    ///
+    /// 本家的这两种失败都在**成功状态**下下发（上游实测记录见 `errors` 的模块头），
+    /// `finish_reason` 那条路认不出它们 —— 认不出的后果是把网关的报错页当模型
+    /// 回答粘进对话，客户端完全看不出异常。所以必须有这一支。
+    fn stream_error_classifier(&self, message: &str) -> Option<UpstreamErrorClass> {
+        errors::classify_stream_error(message)
+    }
+
+    /// 声明「有分类能力」—— 预读门控靠它决定要不要缓冲上游的流。
+    /// ⚠️ 覆写了分类器就必须覆写本方法，否则分类器永远收不到文案。
+    fn has_stream_error_classifier(&self) -> bool {
+        true
+    }
+
     /// 取可用令牌。**这里不发网络请求**（本方法会在转发路径上被调）：临期只记一行
     /// 提示，真正的续期由维护链路与 401 后的强制刷新负责。
     fn ensure_access_token<'a>(

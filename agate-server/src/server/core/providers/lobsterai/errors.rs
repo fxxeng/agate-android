@@ -24,17 +24,13 @@
 //!
 //! ── 两种「HTTP 200 的假成功」────────────────────────────────
 //!   1. **流内错误帧**：`HTTP 200` + SSE 正文是 `{"error":{"message":"…"}}` ——
-//!      额度耗尽可能以这个形态下发，换号循环若不认它，用户就会看到「一个账号用完
-//!      出错、但池里还有账号也不切换」；
-//!   2. **信封不变量**：`code:0` 配 `data:null` = 令牌已失效 —— 这一条**已经接上**
-//!      （`oauth::unwrap_envelope` 把 `data:null` 判成 401），这里只把判据留一份
-//!      可单测的纯函数。
-//!
-//! ── ⚠️ 第 1 条目前**没有调用点**（与 atomcode 同一处公开的缺口）──
-//! 「流内错误帧」要在 SSE 逐帧出口判，而本仓的逐帧出口
-//! （`upstream::ForwardStream`）现在**只按适配器声明的 `finish_reason`** 识别拒答
-//! （`ProviderAdapter::stream_refusal_finishes`），没有「按帧内容嗅探」的挂点。
-//! 因此本函数是**纯函数 + 测试**：判据先立住，等通用层给出挂点再接。
+//!      额度耗尽可能以这个形态下发。**这一条已经接上**：内核的预读门控
+//!      （`upstream::refusal::hold_head`）在窗口里扫出错误帧文案，本模块的
+//!      [`classify_stream_error`] 把它翻成档位，编排层据此换号 / 冷却
+//!      （挂点见 `ProviderAdapter::stream_error_classifier`）。
+//!   2. **信封不变量**：`code:0` 配 `data:null` = 令牌已失效 —— 这一条同样
+//!      已经接上（`oauth::unwrap_envelope` 把 `data:null` 判成 401），
+//!      这里只把判据留一份可单测的纯函数。
 //!
 //! ── 硬约束 ──────────────────────────────────────────────────
 //! release 是 `panic=abort`：本文件零 unwrap/expect/panic。
@@ -215,55 +211,6 @@ pub fn classify(status: u16, error_body: &Value) -> UpstreamErrorClass {
     content_block::classify_or_fatal(status, error_body, message, upstream_code)
 }
 
-/// 一次「流内错误帧」的识别结果（HTTP 200 下发的业务失败）。
-///
-/// 见模块头：识别函数当前没有挂点（逐帧出口还没有「按内容嗅探」的回调），
-/// 判据先立住，接口留着。
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub enum StreamSilentFailure {
-    /// 帧里是余额耗尽
-    HardCredit { message: String },
-    /// 帧里是会话已死
-    SessionDead { message: String },
-    /// 帧里是别的业务错误（参考实现的 default 分支：**也换号**）
-    Other { message: String },
-}
-
-/// 识别**流内错误帧**：`HTTP 200` + SSE 正文是 `{"error":{"message":"…"}}`。
-///
-/// ── 为什么不能复用 [`classify`] ──────────────────────────────────
-/// 那个函数的优先级里**状态码排在最前**，而流内错误的 HTTP 状态是 **200** ——
-/// 那些分支全失效，只剩关键词表可用；传 200 进去未命中关键词时只能得到「成功」，
-/// 而「成功」意味着**不换号**。所以本函数只回答「帧里是不是一类业务失败」，
-/// 默认值给 [`StreamSilentFailure::Other`]（参考实现的 default 分支同样换号，防雪崩）。
-///
-/// ⚠️ **纯函数，当前没有调用点**（原因见模块头）。
-pub fn silent_failure_in_frame(payload: &str) -> Option<StreamSilentFailure> {
-    let trimmed = payload.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    let parsed: Value = serde_json::from_str(trimmed).ok()?;
-    // `{"error":{"message":…}}` 才是这个形态；`{"error":"…"}` 也认（宽容读取）
-    let message = match parsed.get("error") {
-        Some(Value::Object(error)) => error
-            .get("message")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .unwrap_or("")
-            .to_string(),
-        Some(Value::String(text)) => text.trim().to_string(),
-        _ => return None,
-    };
-    if mentions_hard_credit(&message) || mentions_hard_credit(trimmed) {
-        return Some(StreamSilentFailure::HardCredit { message });
-    }
-    if mentions_session_dead(&message) || mentions_session_dead(trimmed) {
-        return Some(StreamSilentFailure::SessionDead { message });
-    }
-    Some(StreamSilentFailure::Other { message })
-}
-
 /// 业务信封是否是「`code:0` + `data:null`」= **令牌已失效**的形态。
 ///
 /// ⚠️ 这一条**已经接上**：`oauth::unwrap_envelope` 就把 `data` 为 null / 缺失判成
@@ -274,6 +221,42 @@ pub fn envelope_reports_dead_session(payload: &Value) -> bool {
         return false;
     }
     matches!(payload.get("data"), None | Some(Value::Null))
+}
+
+/// **流内错误帧**的文案 → 编排层认的错误档位（`None` = 认不出，放行）。
+///
+/// ── 这条链路现在**接上了**（此前是已知缺口）──────────────────────
+/// 本模块上方那段「⚠️ 第 1 条目前没有调用点」写的是：逐帧出口没有「按内容嗅探」
+/// 的挂点。现在挂点有了 —— `refusal::hold_head` 在预读窗口里扫出错误帧文案，
+/// 适配器的 `stream_error_classifier` 把文案翻成档位。本函数就是那个分类器，
+/// 判据与 [`classify`] 的**第 2、3 步逐字同源**（同一个关键词表、同一套业务码）——
+/// 刻意共用常量而不是再抄一份，否则两张表迟早分叉（表现是「HTTP 层换了号、
+/// 流内层没换」，最难查的那种不一致）。
+///
+/// ── 为什么按「余额耗尽 → 会话已死 → 其余不认」这个顺序 ────────────
+/// 与 `classify` 同口径（那两档是**账号级**处置：换号 / 只能重登）。
+/// 其余文案**一律回 `None`** 而不是折成 `Fatal`：流内错误帧的文案五花八门，
+/// 把它当成终态错误透出去会盖掉一次**可能正常**的答复 —— 宁可漏判（fail-open）。
+pub fn classify_stream_error(message: &str) -> Option<UpstreamErrorClass> {
+    let text = message.trim();
+    if text.is_empty() {
+        return None;
+    }
+    if mentions_hard_credit(text) {
+        return Some(UpstreamErrorClass::QuotaLimited {
+            reset_at: None,
+            message: format!("LobsterAI 积分不足（流内）：{text}"),
+            // 流内帧只有一句文案，没有信封里的数字码 ⇒ 不编一个（与「不猜」同口径）
+            upstream_code: None,
+            status: 402,
+        });
+    }
+    if mentions_session_dead(text) {
+        return Some(UpstreamErrorClass::TokenExpired {
+            message: format!("LobsterAI 登录态已失效（流内）：{text}，请重新登录"),
+        });
+    }
+    None
 }
 
 #[cfg(test)]
@@ -351,25 +334,25 @@ mod tests {
         assert!(mentions_hard_credit("credit exhausted"));
     }
 
-    /// 流内错误帧：HTTP 200 下的业务失败（默认 Other 也要换号）
+    /// 流内错误帧：文案 → 档位。余额耗尽 / 会话已死各归各档，
+    /// **其余一律 `None`（放行）** —— 流内文案五花八门，判死会盖掉可能正常的答复。
     #[test]
-    fn silent_failure_in_frame_classifies() {
-        assert_eq!(
-            silent_failure_in_frame(r#"{"error":{"message":"积分不足"}}"#),
-            Some(StreamSilentFailure::HardCredit {
-                message: "积分不足".to_string()
-            })
-        );
+    fn stream_error_classifier_covers_the_two_account_level_cases() {
         assert!(matches!(
-            silent_failure_in_frame(r#"{"error":{"message":"token rejected"}}"#),
-            Some(StreamSilentFailure::SessionDead { .. })
+            classify_stream_error("积分不足，请充值"),
+            Some(UpstreamErrorClass::QuotaLimited { .. })
         ));
         assert!(matches!(
-            silent_failure_in_frame(r#"{"error":{"message":"whatever"}}"#),
-            Some(StreamSilentFailure::Other { .. })
+            classify_stream_error("失败：credit exhausted"),
+            Some(UpstreamErrorClass::QuotaLimited { .. })
         ));
-        assert_eq!(silent_failure_in_frame(""), None);
-        assert_eq!(silent_failure_in_frame("not json"), None);
+        assert!(matches!(
+            classify_stream_error("token rejected"),
+            Some(UpstreamErrorClass::TokenExpired { .. })
+        ));
+        // 认不出的文案放行，不折成 Fatal
+        assert!(classify_stream_error("随便一句别的错").is_none());
+        assert!(classify_stream_error("").is_none());
     }
 
     /// 信封不变量：`code:0` + `data:null` = 令牌已失效

@@ -67,6 +67,22 @@ impl ProviderAdapter for LobsterAiAdapter {
         errors::classify(status, error_body)
     }
 
+    /// **流内错误帧**的分类（`HTTP 200` + `data: {"error":…}`）。
+    ///
+    /// 本家把「积分耗尽」既写成 HTTP 400 + 正文关键词，也（实测记录里）以
+    /// `HTTP 200` 的流内错误帧下发 —— 后者走 `finish_reason` 那条路认不出
+    /// （终帧是正常的 `stop`），所以必须有这一支，否则账号用完**不会换号也不会
+    /// 冷却**，客户端把一个「余额用完了」当成正常回答（见 `errors` 的模块头）。
+    fn stream_error_classifier(&self, message: &str) -> Option<UpstreamErrorClass> {
+        errors::classify_stream_error(message)
+    }
+
+    /// 声明「有分类能力」—— 预读门控靠它决定要不要缓冲上游的流。
+    /// ⚠️ 覆写了分类器就必须覆写本方法，否则分类器永远收不到文案。
+    fn has_stream_error_classifier(&self) -> bool {
+        true
+    }
+
     /// 取可用令牌。**这里不发网络请求**（本方法会在转发路径上被调）：临期只记一行
     /// 提示，真正的续期由维护链路与 401 后的强制刷新负责（见 `credentials_expiring`
     /// 与 `refresh_access_token`）。

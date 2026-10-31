@@ -27,13 +27,11 @@
 //! 完全看不出异常（`cpa-jethub-plugins/plugins/atomcode/errors.go` 记了实测）。
 //! 两种都在这里识别，交给 SSE 出口与错误分类两条路使用。
 //!
-//! ── ⚠️ 静默失败的三件套目前**没有调用点**（与 lobsterai 同一处公开的缺口）──
-//! 本仓的逐帧出口（`upstream::ForwardStream`）只按适配器声明的 `finish_reason`
-//! 识别拒答（`ProviderAdapter::stream_refusal_finishes`），没有「按帧内容嗅探」
-//! 的挂点，而适配器的 `is_error_response` 又只拿得到 `status + headers`。
-//! 所以 [`silent_failure_in_content`] / [`silent_failure_error`] 先作为**纯函数 +
-//! 测试**立住判据，等通用层给出挂点再接 —— 在那之前，这类失败会以**正常回答**
-//! 的形式到达客户端（如实记下，不假装已覆盖）。
+//! ── 静默失败的两条判据现在都**接上了**──────────────────────────
+//! 内核的预读窗口（`upstream::refusal::hold_head` + 本适配器的
+//! `stream_error_classifier`）会把首帧内容挖出来交给这里的
+//! [`classify_stream_error`]。此前逐帧出口没有「按内容嗅探」的挂点，判据只能
+//! 先立着 —— 那时这类失败会以**正常回答**的形式到达客户端，现在不会了。
 //!
 //! ── 硬约束 ──────────────────────────────────────────────────
 //! release 是 `panic=abort`：本文件零 unwrap/expect/panic。
@@ -42,7 +40,6 @@ use serde_json::Value;
 
 use crate::server::core::providers::adapter::UpstreamErrorClass;
 use crate::server::core::providers::content_block;
-use crate::server::errors::GatewayError;
 
 /// 网关在**成功状态**下用这句正文表示「我拒绝了这个请求」。
 ///
@@ -92,37 +89,6 @@ pub fn silent_failure_in_content(content: &str) -> Option<SilentFailure> {
         return Some(SilentFailure::ThirdPartyBroken);
     }
     None
-}
-
-/// 把静默失败渲染成客户端可见的错误。
-///
-/// 一律是 502 而不是 400：请求本身没问题（HTTP 通、网关也答了 200），
-/// 是**这次生成没成**。归成 400 会让客户端以为是自己的请求体写错了。
-///
-/// `model` 是**客户端看到的那个名字**（不是改写后发给上游的 id）——
-/// 报错要报用户能据以行动的那个名字。
-pub fn silent_failure_error(failure: SilentFailure, model: &str) -> GatewayError {
-    let subject = if model.trim().is_empty() {
-        "该请求".to_string()
-    } else {
-        format!("模型「{}」", model.trim())
-    };
-    match failure {
-        SilentFailure::ParameterRejected => GatewayError::with_status(
-            502,
-            format!(
-                "AtomCode 网关拒绝了{subject}：返回成功状态但正文是「{PARAMETER_ERROR_MESSAGE}」。\
-                 通常表示该模型不在这个账号的套餐内，或请求参数不被接受"
-            ),
-        ),
-        SilentFailure::ThirdPartyBroken => GatewayError::with_status(
-            502,
-            format!(
-                "AtomCode 网关返回了上游报错页而不是回答（{subject}）：该模型被列出但后端不可用，\
-                 请换一个模型重试"
-            ),
-        ),
-    }
 }
 
 /// 从归一化后的错误体里取一行可读文案。
@@ -212,6 +178,45 @@ pub fn classify_gateway_error(status: u16, error_body: &Value) -> UpstreamErrorC
     content_block::classify_or_fatal(status, error_body, message, upstream_code)
 }
 
+/// **流内静默失败**的分类：`HTTP 200` + 正文是 [`PARAMETER_ERROR_MESSAGE`] /
+/// [`THIRD_PARTY_FAILURE_MARKER`] 时该归哪一档（`None` = 认不出，放行）。
+///
+/// ── 这两条现在**接上了**（此前是已知缺口）────────────────────────
+/// 本模块上方那段「⚠️ 静默失败的三件套目前没有调用点」写的是：逐帧出口没有
+/// 「按内容嗅探」的挂点。现在挂点有了 —— 内核的预读窗口把内容挖出来交给
+/// `ProviderAdapter::stream_error_classifier`，本函数就是那个分类器。
+///
+/// ── 为什么两档都归 `Fatal` 而不是「换号」的两档 ────────────────
+/// 与 `classify_gateway_error` 对这两件事的口径一致：**它们不是账号问题**。
+///   · `参数错误` = 这个模型不在该账号的套餐内，或请求参数不被接受 —— 换一个
+///     账号多半还是同一句（套餐是账号属性，但**同一账号换个模型**才是解），
+///     归 `QuotaLimited` 会把账号整片冷却掉，代价远大于收益；
+///   · `三方请求失败` = 被列出的模型后端坏了 —— 与账号、凭证都无关。
+/// 归 `Fatal` 的语义正是「如实透出、不罚账号」，编排层据此顺延到下一个账号/家
+/// （`defer_to_next_account` 对所有档位都会试），但**不落冷却**。
+///
+/// ⚠️ 判据与 [`silent_failure_in_content`] **共用同一个函数**，不在这里再抄一份
+/// 「相等 / 前缀」的规则 —— 两份判据迟早分叉（表现是「预读窗口认、这里不认」）。
+pub fn classify_stream_error(message: &str) -> Option<UpstreamErrorClass> {
+    match silent_failure_in_content(message)? {
+        SilentFailure::ParameterRejected => Some(UpstreamErrorClass::Fatal {
+            status: 200,
+            message: format!(
+                "AtomCode 网关拒绝了这个请求：返回成功状态但正文是「{PARAMETER_ERROR_MESSAGE}」。\
+                 通常表示该模型不在这个账号的套餐内，或请求参数不被接受"
+            ),
+            upstream_code: None,
+        }),
+        SilentFailure::ThirdPartyBroken => Some(UpstreamErrorClass::Fatal {
+            status: 200,
+            message: "AtomCode 网关返回了上游报错页而不是回答：该模型被列出但后端不可用，\
+                      请换一个模型重试"
+                .to_string(),
+            upstream_code: None,
+        }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -292,15 +297,20 @@ mod tests {
         assert_eq!(silent_failure_in_content(""), None);
     }
 
-    /// 静默失败的错误一律 502（请求本身没问题，是这次生成没成）
+    /// 流内静默失败 → `Fatal`（**不是**账号级的两档：这不是凭证/额度问题）
     #[test]
-    fn silent_failure_errors_are_502() {
-        assert_eq!(
-            silent_failure_error(SilentFailure::ParameterRejected, "GLM-5.3-Flash").status_code,
-            502
-        );
-        let error = silent_failure_error(SilentFailure::ThirdPartyBroken, "");
-        assert_eq!(error.status_code, 502);
-        assert!(error.message.contains("该请求"));
+    fn stream_error_classifier_is_fatal_not_account_level() {
+        // 参数错误：模型不在套餐内 / 参数不被接受 —— 不该冷却账号
+        assert!(matches!(
+            classify_stream_error("参数错误"),
+            Some(UpstreamErrorClass::Fatal { .. })
+        ));
+        assert!(matches!(
+            classify_stream_error("三方请求失败: 502 <html>x</html>"),
+            Some(UpstreamErrorClass::Fatal { .. })
+        ));
+        // 认不出的正文放行（fail-open）—— 模型正常复述这些词时不能被误判
+        assert!(classify_stream_error("参数错误通常指请求体不合法").is_none());
+        assert!(classify_stream_error("").is_none());
     }
 }

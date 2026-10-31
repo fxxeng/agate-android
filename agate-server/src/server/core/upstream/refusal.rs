@@ -55,7 +55,23 @@ use crate::server::config;
 use crate::server::core::upstream::stall;
 
 /// 门控在「看到 `finish_reason`」或「缓冲区达到上限」时结束（见模块头）。
+///
+/// 这是**拒答**那一支的上限：它要看的是终帧的 `finish_reason`，而终帧一般在流尾
+/// ⇒ 对普通答复等价于「整段缓冲」（代价见模块头）。
 const HOLD_CAP_BYTES: usize = 32 * 1024;
+
+/// **只**嗅探流内错误帧时的上限 —— 比 [`HOLD_CAP_BYTES`] 小得多，因为两者的
+/// 代价模型完全不同。
+///
+/// ── 为什么错误帧可以小得多（一条关键的性质）──────────────────────
+/// 错误帧是**终态**：上游一旦决定不给答复，那条 `{"error":…}` 几乎总是**首帧**
+/// （参考实现里它就是开头那一句）。所以用它判定不需要等流讲完 —— 循环一看到
+/// 错误帧就 `break`（见 [`hold_head`]），上限只是「万一它出现在偏后位置」的兜底。
+///
+/// 对比之下，拒答必须读到 `finish_reason`（一般在流尾），上限压小就漏判。
+/// 把两者的上限分开，是为了不让「只嗅探错误帧」的家为一次 32 KiB 的整段缓冲
+/// 付出首字节延迟（那是本仓流式体验的实打实退化，不是纸面代价）。
+const HOLD_CAP_ERROR_BYTES: usize = 8 * 1024;
 
 /// 一次预读的产物。
 pub struct HeldHead {
@@ -69,6 +85,12 @@ pub struct HeldHead {
     pub rest: BoxStream<'static, Result<Bytes, std::io::Error>>,
     /// 预读窗口内看到的 `finish_reason`（`None` = 没看到 / 读不出来）
     pub finish_reason: Option<String>,
+    /// 预读窗口内看到的**流内错误帧**文案（`None` = 没有；见 [`scan_stream_error`]）
+    ///
+    /// 与 `finish_reason` 并列而不是二选一：两者的判据与处置完全不同
+    /// （拒答看 `finish_reason` 的取值、错误帧看正文），且一个窗口里**可能两者都有**
+    /// —— 那时按各自的分支各判一次，谁先命中谁负责。
+    pub stream_error: Option<String>,
 }
 
 /// `finish_reason` 是否在本家声明的「拒答」集合里（大小写不敏感）。
@@ -151,12 +173,69 @@ pub fn scan_finish_reason(text: &str) -> Option<String> {
     None
 }
 
-/// 把上游流拉到「能判定是否被拒」为止（见模块头）。
+/// 预读窗口里出现的**第一个 `{"error": …}` 帧**的可读文案（`None` = 没有）。
+///
+/// ── 为什么需要它（与 `finish_reason` 是两件事）──────────────────
+/// 有一类上游把「这次不给你答复」写成一条 **SSE 正文里的错误帧**：
+/// `HTTP 200` + `data: {"error":{"message":"积分不足…"}}`，**终帧的
+/// `finish_reason` 仍是正常的 `stop`** —— 于是它既不是拒答（`finish_reason`
+/// 那条路认不出），也不是 HTTP 错误（状态码是 200）。编排层若不认它，客户端
+/// 就会把一个「余额用完了」当成一次正常回答，且账号**不会**被换掉/冷却。
+///
+/// 这一形态是 LobsterAI / AtomCode 的实现明确记录的（两家都在自己的
+/// `errors.rs` 里写着「额度耗尽可能以这个形态下发」，并把它做成了纯函数 —— 因为
+/// 在本模块出现之前，逐帧出口没有「按内容嗅探」的挂点）。
+///
+/// ── 判据只管「有没有 error 帧」，**不管它是什么意思** ─────────────
+/// 「这条错误属于哪一档」（余额耗尽 / 会话已死 / 别的）是**上游侧知识**，由适配器
+/// 的 `stream_error_classifier` 回答（与本模块不碰 `finish_reason` 的含义同一分工）。
+/// 本函数只负责从字节里把它挖出来，挖不到就是 `None`（fail-open，见模块头）。
+///
+/// 口径：`{"error":{"message":…}}` 与 `{"error":"…"}` 两种形态都认（宽容读取）；
+/// 文案为空时给一句中性的兜底串（**不返回空串** —— 空串会让调用方以为没读到）。
+pub fn scan_stream_error(text: &str) -> Option<String> {
+    for data in frame_payloads(text) {
+        let Ok(frame) = serde_json::from_str::<Value>(data) else {
+            continue;
+        };
+        let message = match frame.get("error") {
+            Some(Value::Object(error)) => error
+                .get("message")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .unwrap_or("")
+                .to_string(),
+            Some(Value::String(text)) => text.trim().to_string(),
+            _ => continue,
+        };
+        return Some(if message.is_empty() {
+            "上游在流内返回了错误帧（未给出文案）".to_string()
+        } else {
+            message
+        });
+    }
+    None
+}
+
+/// 把上游流拉到「能判定是否被拒 / 有没有错误帧」为止（见模块头）。
+///
+/// `watch_finishes` / `watch_error` 决定这次预读**要不要**收集哪一类判据：
+///   · `watch_finishes` = 适配器声明了非空 `stream_refusal_finishes`；
+///   · `watch_error` = 适配器的 `stream_error_classifier` 会给结论。
+/// 两者都为假时**调用点根本不该进来**（构造期已短路）；真进来又都为假则立刻返回
+/// 空预读（等价于不缓冲）—— 那是内部契约错误的自保，不是正常路径。
+///
+/// 上限按「要看什么」取（见 [`HOLD_CAP_BYTES`] / [`HOLD_CAP_ERROR_BYTES`]）：
+/// 只看错误帧时用小的那个 —— 错误帧是终态、通常就是首帧，等它不需要读完流。
 ///
 /// 入参是**未消费**的 `reqwest::Response`（调用点在本函数之后不再需要它）：
 /// 状态码与响应头在这里取出，字节流被包上进空闲守卫（与 `ForwardStream::new`
 /// 同一件事，只是提前到这里 —— 预读期间上游卡住也不能把请求挂死）。
-pub async fn hold_head(response: reqwest::Response) -> HeldHead {
+pub async fn hold_head(
+    response: reqwest::Response,
+    watch_finishes: bool,
+    watch_error: bool,
+) -> HeldHead {
     let status = response.status().as_u16();
     let headers = response.headers().clone();
     // 与 `ForwardStream::new` / 聚合器同款：reqwest 错误就地描述成文案折进 io::Error
@@ -172,13 +251,32 @@ pub async fn hold_head(response: reqwest::Response) -> HeldHead {
     let mut buffered: Vec<u8> = Vec::new();
     let mut text = String::new();
     let mut finish_reason: Option<String> = None;
+    let mut stream_error: Option<String> = None;
+    // 上限按「要看什么」取（见两个常量的说明）：两者都看时取大的那个。
+    let cap = if watch_finishes {
+        HOLD_CAP_BYTES
+    } else if watch_error {
+        HOLD_CAP_ERROR_BYTES
+    } else {
+        0
+    };
     loop {
         // 先看已缓冲的字节里有没有终帧（一次读可能带来好几帧）
-        if let Some(reason) = scan_finish_reason(&text) {
-            finish_reason = Some(reason);
-            break;
+        if watch_finishes {
+            if let Some(reason) = scan_finish_reason(&text) {
+                finish_reason = Some(reason);
+                break;
+            }
         }
-        if buffered.len() >= HOLD_CAP_BYTES {
+        // 流内错误帧同样是「到此已可判定」：它一旦出现，后面再读到什么都不会改变
+        // 「这次没有答复」这个事实（错误帧是终态），所以与终帧一样提前收手。
+        if watch_error {
+            if let Some(message) = scan_stream_error(&text) {
+                stream_error = Some(message);
+                break;
+            }
+        }
+        if buffered.len() >= cap {
             break;
         }
         match source.next().await {
@@ -196,6 +294,7 @@ pub async fn hold_head(response: reqwest::Response) -> HeldHead {
         buffered,
         rest: source,
         finish_reason,
+        stream_error,
     }
 }
 
@@ -251,5 +350,50 @@ mod tests {
             scan_finish_reason("data: {\"choices\":[],\"usage\":{\"completion_tokens\":1}}\n\n")
         );
         let _ = json!({});
+    }
+
+    /// 流内错误帧：两种形态都认；普通帧与 usage 帧不能误判
+    #[test]
+    fn scan_stream_error_finds_the_error_frame() {
+        // `{"error":{"message":…}}`（背后的真实形态）
+        assert_eq!(
+            Some("积分不足".to_string()),
+            scan_stream_error("data: {\"error\":{\"message\":\"积分不足\"}}\n\n")
+        );
+        // `{"error":"…"}` 也认（宽容读取）
+        assert_eq!(
+            Some("token rejected".to_string()),
+            scan_stream_error("data: {\"error\":\"token rejected\"}\n\n")
+        );
+        // **关键**：正常的答复帧里有 `error` 之外的键，一个都不该被当成错误帧
+        let normal = concat!(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"你好\"},\"finish_reason\":null}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+            "data: {\"choices\":[],\"usage\":{\"completion_tokens\":3}}\n\n",
+            "data: [DONE]\n\n",
+        );
+        assert_eq!(None, scan_stream_error(normal));
+        // 错误帧里 `message` 为空时给中性兜底串，**不返回空串**
+        assert_eq!(
+            Some("上游在流内返回了错误帧（未给出文案）".to_string()),
+            scan_stream_error("data: {\"error\":{\"message\":\"  \"}}\n\n")
+        );
+        // 半截帧 / 非 data 行 / 畸形 JSON：都不认
+        assert_eq!(None, scan_stream_error("data: {\"error\":{\"message\":\"x\""));
+        assert_eq!(None, scan_stream_error(": keepalive\n\n"));
+        assert_eq!(None, scan_stream_error("data: 不是 json\n\n"));
+        assert_eq!(None, scan_stream_error(""));
+    }
+
+    /// 两者能在**同一段字节**里各取各的（错误帧与终帧可能同时出现）
+    #[test]
+    fn finish_reason_and_stream_error_are_independent() {
+        let text = concat!(
+            "data: {\"error\":{\"message\":\"quota exhausted\"}}\n\n",
+            "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+        );
+        // 两者都不为空 —— 判据是两件事，不互相遮蔽
+        assert_eq!(Some("quota exhausted".to_string()), scan_stream_error(text));
+        assert_eq!(Some("stop".to_string()), scan_finish_reason(text));
     }
 }
