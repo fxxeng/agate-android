@@ -1146,6 +1146,21 @@ mod tests {
                 result_count INTEGER NOT NULL DEFAULT 0,
                 skipped_count INTEGER NOT NULL DEFAULT 0
              );
+             CREATE TABLE checkin_run_accounts (
+                run_id          TEXT NOT NULL,
+                account_id      TEXT NOT NULL,
+                account_name    TEXT NOT NULL DEFAULT '',
+                provider        TEXT NOT NULL DEFAULT '',
+                ordinal         INTEGER NOT NULL DEFAULT 0,
+                state           TEXT NOT NULL DEFAULT 'in_flight'
+                                CHECK (state IN ('in_flight','result_saved','projected','uncertain')),
+                started_at      INTEGER NOT NULL,
+                result_saved_at INTEGER,
+                projected_at    INTEGER,
+                result_json     TEXT,
+                last_error      TEXT,
+                PRIMARY KEY (run_id, account_id)
+             );
              INSERT INTO checkin_records(ts, account_id) VALUES (1, 'legacy-account');
              PRAGMA user_version = 16;",
         )
