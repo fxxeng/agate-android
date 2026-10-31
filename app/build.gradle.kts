@@ -6,6 +6,12 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+// CI 仪器测试在 x86_64 Android Emulator 上运行；正式构建默认仍只打 arm64-v8a。
+val agateAbi = providers.gradleProperty("agateInstrumentationAbi").orNull ?: "arm64-v8a"
+require(agateAbi == "arm64-v8a" || agateAbi == "x86_64") {
+    "Unsupported Agate ABI: $agateAbi"
+}
+
 android {
     namespace = "dev.agate.android"
     compileSdk = 35
@@ -18,22 +24,14 @@ android {
         versionCode = 3
         versionName = "0.4.0-m3"
 
-        // ── 只打 arm64-v8a ────────────────────────────────────
-        // 内核 .so 只有 arm64 一份（`.github/workflows/android-build.yml` 的
-        // cargo-ndk 目标 + `scripts/build-android-so.sh` 都只编 aarch64）。
-        //
-        // 不加这行的话，AGP 会按依赖库里的 ABI 打出四架构 APK，而
-        // armeabi-v7a / x86 / x86_64 里**没有 libagate_server.so** ——
-        // `Gateway.ensureLoaded` 直接 `System.loadLibrary`，外面没有
-        // try/catch，于是那些设备的表现是「装得上、一开就崩」，比装不上更难查。
-        //
-        // 限定之后：32 位设备在安装阶段就被挡下（INSTALL_FAILED_NO_MATCHING_ABIS），
-        // 失败点更靠前、原因更明确；顺带把另外三个 ABI 的 androidx .so 从包里去掉。
-        // 将来若要支持其它架构，得先把 build-android-so.sh 的 target 补上，
-        // 再改这里 —— 两处必须一起改。
+        // 正式构建默认只打 arm64-v8a，避免生成缺少 Native Core 的假 ABI。
+        // CI Instrumentation 专用构建通过 -PagateInstrumentationAbi=x86_64
+        // 临时切到 x86_64 Emulator；该属性只用于 connectedDebugAndroidTest，
+        // 不改变常规 Debug/Release 产物的 ABI 范围。
         ndk {
-            abiFilters += listOf("arm64-v8a")
+            abiFilters += listOf(agateAbi)
         }
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     // ── 固定签名（debug）──────────────────────────────────────
@@ -110,6 +108,10 @@ dependencies {
     // 只是一组抛 "not mocked" 的桩，不补的话所有解析断言都跑不起来。
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20240303")
+
+    // 真实 Android Runtime / JNI / ForegroundService 仪器测试。
+    androidTestImplementation("androidx.test:runner:1.6.2")
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
 }
 
 // ── 打包后校验：内核 .so 在不在包里 ──────────────────────────────

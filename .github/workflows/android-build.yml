@@ -41,7 +41,7 @@ jobs:
       - name: Rust toolchain (Android arm64)
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-linux-android
+          targets: aarch64-linux-android,x86_64-linux-android
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
         with:
@@ -84,4 +84,26 @@ jobs:
           name: agate-android-apks
           path: app/build/outputs/apk/*/*.apk
           if-no-files-found: error
+          retention-days: 14
+      # x86_64 仅用于 GitHub Android Emulator 的真实 JNI/Service Instrumentation。
+      # 正式 Debug/Release APK 已在上面按默认 arm64-v8a 构建并校验，不受此步骤影响。
+      - name: Build Rust Android library for x86_64 instrumentation
+        run: bash scripts/build-android-so.sh x86_64
+      - name: Android Instrumentation (x86_64 emulator)
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          disable-animations: true
+          script: ./gradlew :app:connectedDebugAndroidTest -PagateInstrumentationAbi=x86_64 --no-daemon
+      - name: Upload Android Instrumentation reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agate-android-instrumentation-results
+          path: |
+            app/build/outputs/androidTest-results/connected/**
+            app/build/reports/androidTests/connected/**
+          if-no-files-found: warn
           retention-days: 14

@@ -40,4 +40,16 @@ class PendingTickRegistryTest {
 
         assertTrue(ticks.snapshot().isEmpty())
     }
+
+    @Test
+    fun completingOneTickDoesNotRemoveAnotherTick() {
+        val ticks = PendingTickRegistry()
+        ticks.register(40)
+        ticks.register(41)
+
+        ticks.complete(40)
+
+        assertFalse(ticks.hasAny(setOf(40)))
+        assertTrue(ticks.hasAny(setOf(41)))
+    }
 }
