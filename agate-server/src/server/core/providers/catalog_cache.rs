@@ -108,6 +108,17 @@ pub const SCOPE_ANTIGRAVITY: &str = "antigravity";
 /// OfficeAce（华为云果办 / OfficeClaw）的模型目录缓存槽
 pub const SCOPE_OFFICEACE: &str = "officeace";
 
+/// ModelScope 国内站（`GET {推理域}/models`）
+pub const SCOPE_MODELSCOPE_CN: &str = "modelscopeCn";
+/// ModelScope 国际站（另一个站点、另一份清单，与国内站互不覆盖）
+pub const SCOPE_MODELSCOPE_INTL: &str = "modelscopeIntl";
+/// LobsterAI（网易有道「有道龙虾」；`GET /api/models/available`）
+pub const SCOPE_LOBSTERAI: &str = "lobsterai";
+/// AtomCode（AtomGit；`GET {codingplan}/coding-plan/models-v2`）
+pub const SCOPE_ATOMCODE: &str = "atomcode";
+/// KukuAI（百度文库库库 AI；`GET /wenchain/genflowpro/model/list`）
+pub const SCOPE_KUKU: &str = "kuku";
+
 /// 全部 scope（事实来源：`cached_scopes` 按它遍历；新增一家时加在这里）。
 pub const ALL_SCOPES: &[&str] = &[
     SCOPE_WORKBUDDY,
@@ -129,6 +140,12 @@ pub const ALL_SCOPES: &[&str] = &[
     SCOPE_COMMANDCODE,
     SCOPE_ANTIGRAVITY,
     SCOPE_CHATGLM,
+    SCOPE_OFFICEACE,
+    SCOPE_MODELSCOPE_CN,
+    SCOPE_MODELSCOPE_INTL,
+    SCOPE_LOBSTERAI,
+    SCOPE_ATOMCODE,
+    SCOPE_KUKU,
 ];
 
 /// 一份清单缓存
@@ -263,4 +280,34 @@ fn write_all(conn: &Connection, all: &Map<String, Value>) -> bool {
         params![KV_KEY, text],
     )
     .is_ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    /// **scope 名两两不同**：重名 = 两家写进同一格，后写的把前者的清单覆盖掉 ——
+    /// 症状是「某一家重启后拿到的是另一家的模型清单」，且两边都显示成功。
+    /// 一条测试守住这个比事后翻数据库便宜得多。
+    #[test]
+    fn scopes_are_unique() {
+        let mut seen = HashSet::new();
+        for scope in ALL_SCOPES {
+            assert!(seen.insert(*scope), "scope 名重复：{scope}");
+        }
+        assert_eq!(seen.len(), ALL_SCOPES.len());
+    }
+
+    /// `ALL_SCOPES` 是**事实来源**（`cached_scopes` 按它遍历、启动日志按它汇报），
+    /// 所以新增一家必须在两处同时登记：这里用「条数」把「加了常量忘了进数组」
+    /// 钉住 —— 那一漏的表现是**启动日志里那家永远缺席**（缓存其实恢复了，
+    /// 只是没人报告）。改这个数字时要同时想一遍「新加的那家在数组里吗」。
+    #[test]
+    fn all_scopes_size_matches_declared_scopes() {
+        assert_eq!(ALL_SCOPES.len(), 25, "新增 scope 后请同步本数字与 ALL_SCOPES");
+        for scope in ALL_SCOPES {
+            assert!(!scope.trim().is_empty(), "scope 名不能为空");
+        }
+    }
 }

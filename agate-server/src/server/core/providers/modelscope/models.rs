@@ -43,6 +43,17 @@ struct CatalogState {
     fetched_at: i64,
 }
 
+/// 本地区在 `catalog_cache` 里的 scope 名（两个站点各一份，互不覆盖）
+///
+/// 与模块头「两个地区两套缓存」同一条：缓存槽也必须分开，合并会让两个站点的
+/// 清单在重启后互相覆盖 —— 那正是当初拆地区时消灭的问题。
+pub fn scope_of(region: Region) -> &'static str {
+    match region {
+        Region::Cn => crate::server::core::providers::catalog_cache::SCOPE_MODELSCOPE_CN,
+        Region::Intl => crate::server::core::providers::catalog_cache::SCOPE_MODELSCOPE_INTL,
+    }
+}
+
 /// 两个地区各一个槽
 static STATE_CN: OnceLock<Mutex<Option<CatalogState>>> = OnceLock::new();
 static STATE_INTL: OnceLock<Mutex<Option<CatalogState>>> = OnceLock::new();
@@ -55,11 +66,36 @@ fn state(region: Region) -> &'static Mutex<Option<CatalogState>> {
     }
 }
 
-/// 在锁内执行一段取值（毒锁不 panic，见 [`state`]）
+/// 在锁内执行一段取值（毒锁不 panic，见 [`state`]）。
+///
+/// **首次访问时**把落盘缓存装回内存（只查一次库 —— `list` 在清单构造路径上）。
+/// ── 为什么本地区尤其需要它 ──────────────────────────────────
+/// 本家**没有内置兜底表**（清单是账号相关的，编一份会害用户看到调不通的模型，见
+/// 模块头）。没有落盘缓存时进程一重启就是**空清单**，直到后台刷新才恢复。
 fn with_state<R>(region: Region, f: impl FnOnce(&mut Option<CatalogState>) -> R) -> R {
     let mutex = state(region);
     let mut guard = mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if guard.is_none() {
+        if let Some(cached) = restore_from_cache(region) {
+            *guard = Some(cached);
+        }
+    }
     f(&mut guard)
+}
+
+/// 从落盘缓存还原本地区状态（解析不出条目时给 `None`）。
+///
+/// 存的是**条目数组**（`id` / `name` 那些聚合层形态 —— 本家落地后就是它，
+/// 见 [`map_entry`]），时刻取缓存自己的 `fetchedAt`。
+fn restore_from_cache(region: Region) -> Option<CatalogState> {
+    let cached = crate::server::core::providers::catalog_cache::load(scope_of(region))?;
+    if cached.models.is_empty() {
+        return None;
+    }
+    Some(CatalogState {
+        models: cached.models,
+        fetched_at: cached.fetched_at,
+    })
 }
 
 /// 把一个 OpenAI 目录条目映射成聚合层认的形态。
@@ -147,6 +183,9 @@ pub async fn refresh(region: Region, token: &str, force: bool) -> ModelRefreshOu
         );
     }
     let count = models.len();
+    // 落盘（进程重启后读回）：本家没有兜底表，这条缓存是「重启后还有模型」的
+    // 唯一保障。两个站点写各自的 scope（见 `scope_of`）。
+    crate::server::core::providers::catalog_cache::save(scope_of(region), &models, now);
     with_state(region, |slot| {
         *slot = Some(CatalogState { models, fetched_at: now });
     });

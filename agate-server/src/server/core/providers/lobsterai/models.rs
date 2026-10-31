@@ -49,7 +49,7 @@ const CATALOG_TTL_MS: i64 = 2 * 60 * 60 * 1000;
 const FALLBACK_CONTEXT_WINDOW: i64 = 131_072;
 
 /// 目录里的一条模型
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ModelEntry {
     /// 发给上游的模型名（`modelId`）—— 也是目录对外广告的 `id`
     pub wire_id: String,
@@ -68,24 +68,58 @@ pub struct ModelEntry {
 }
 
 /// 进程内目录状态（**只装远程目录**；空表示还没拉到过，此时对外用兜底清单）
+///
+/// ── 为什么落盘的是 `entries` 而不是 manifest 值 ────────────────
+/// 清单值是有损的（`credits` 被渲染成 `"免费" / "x1.5"` 标签），而缓存要的是
+/// 无损往返 ⇒ 存 `ModelEntry` 本身（走 serde）。本结构体自己**不参与**序列化
+/// （时刻由 `catalog_cache` 的 `fetchedAt` 承载，不在这里再存一份）。
 #[derive(Clone, Debug, Default)]
 struct CatalogState {
     entries: Vec<ModelEntry>,
     fetched_at: i64,
 }
 
+/// 本家在 `catalog_cache` 里的 scope 名（进程重启后读回上次的远程清单）
+pub const SCOPE: &str = crate::server::core::providers::catalog_cache::SCOPE_LOBSTERAI;
+
 fn state() -> &'static Mutex<Option<CatalogState>> {
     static STATE: OnceLock<Mutex<Option<CatalogState>>> = OnceLock::new();
     STATE.get_or_init(|| Mutex::new(None))
 }
 
-/// 毒锁按「可重建的展示数据」处理，与本仓其它目录模块同口径
+/// 毒锁按「可重建的展示数据」处理，与本仓其它目录模块同口径。
+///
+/// **首次访问时**把落盘缓存装回内存（只在首次查一次库 —— `list_models` 在
+/// 每个请求的清单构造路径上，不能每次都查库）。恢复失败（库没开 / 值坏 / 这家
+/// 没条目）保持 `None`，对外用内置兜底清单 —— 与改造前一致。
 fn with_state<R>(f: impl FnOnce(&mut Option<CatalogState>) -> R) -> R {
     let mut guard = match state().lock() {
         Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(),
     };
+    if guard.is_none() {
+        if let Some(cached) = restore_from_cache() {
+            *guard = Some(cached);
+        }
+    }
     f(&mut guard)
+}
+
+/// 从落盘缓存还原状态（解析不出条目时给 `None`，由调用方保持内置兜底）。
+///
+/// 存的是**条目数组**（`ModelEntry` 走 serde），时刻直接取缓存自己的
+/// `fetchedAt` —— 与写入侧同一个来源，不往条目里再塞一份。
+fn restore_from_cache() -> Option<CatalogState> {
+    let cached = crate::server::core::providers::catalog_cache::load(SCOPE)?;
+    let entries: Vec<ModelEntry> =
+        serde_json::from_value(Value::Array(cached.models.clone())).ok()?;
+    if entries.is_empty() {
+        return None;
+    }
+    Some(CatalogState {
+        entries,
+        fetched_at: cached.fetched_at,
+    })
 }
 
 /// 静态兜底目录：**19 条，逐条照抄参考实现**（顺序也照抄，便于与上游对账）。
@@ -417,12 +451,21 @@ pub async fn refresh(
         Ok(entries) if !entries.is_empty() => {
             let fetched_at = crate::server::logging::now_ms();
             let count = entries.len();
+            // 落盘（进程重启后读回）。**存条目数组、不存整份 `CatalogState`**：
+            // `catalog_cache` 自己就有 `fetchedAt` 字段，再往条目里塞一份时刻
+            // 会出现两个来源（且恢复侧只读它那一个）。两侧都走 serde，
+            // 「存什么形态、读什么形态」由同一个派生保证。
+            let rows: Vec<Value> = entries
+                .iter()
+                .filter_map(|entry| serde_json::to_value(entry).ok())
+                .collect();
             with_state(|guard| {
                 *guard = Some(CatalogState {
                     entries,
                     fetched_at,
                 });
             });
+            crate::server::core::providers::catalog_cache::save(SCOPE, &rows, fetched_at);
             crate::server::logging::log(
                 "[LobsterAI]",
                 &format!("目录刷新完成：{count} 个模型（客户端版本 {version}）"),
@@ -510,5 +553,55 @@ mod tests {
     fn credits_label_renders_free_for_zero() {
         assert_eq!(credits_label(0.0), "免费");
         assert_eq!(credits_label(1.5), "x1.5");
+    }
+
+    /// **落盘缓存的往返无损**：`ModelEntry` 走 serde 存、再读回来必须等价。
+    ///
+    /// 这条测试守的是「缓存接上之后不静默丢字段」—— `to_manifest_value` 的输出
+    /// 是**有损**的（`credits` 成了 `"免费"` 标签），若误把 manifest 当缓存存，
+    /// 恢复出来的条目能力位会整体退化。事后很难看出（清单看着有模型）。
+    #[test]
+    fn cache_roundtrip_preserves_every_field() {
+        let entry = ModelEntry {
+            wire_id: "glm-5".to_string(),
+            display_name: "GLM-5".to_string(),
+            context_window: 131_072,
+            max_tokens: 8_192,
+            supports_image: Some(true),
+            supports_thinking: true,
+            cost_multiplier: Some(0.0), // 0 = 免费，不是「缺失」
+        };
+        let rows = vec![serde_json::to_value(&entry).ok().unwrap_or(Value::Null)];
+        let back: Vec<ModelEntry> =
+            serde_json::from_value(Value::Array(rows)).unwrap_or_default();
+        assert_eq!(back.len(), 1);
+        let back = back.first().cloned().unwrap_or(entry.clone());
+        assert_eq!(back.wire_id, entry.wire_id);
+        assert_eq!(back.context_window, entry.context_window);
+        assert_eq!(back.supports_image, entry.supports_image);
+        assert_eq!(back.supports_thinking, entry.supports_thinking);
+        // `Some(0.0)` 不能被读成 `None`（那会从「免费」变成「不知道倍率」）
+        assert_eq!(back.cost_multiplier, Some(0.0));
+    }
+
+    /// ⚠️ 缓存里存的必须**不是** manifest 形态（前者有损，后者无损）
+    #[test]
+    fn cache_shape_differs_from_manifest_shape() {
+        let entry = ModelEntry {
+            wire_id: "glm-5".to_string(),
+            display_name: "GLM-5".to_string(),
+            context_window: 0,
+            max_tokens: 0,
+            supports_image: None,
+            supports_thinking: false,
+            cost_multiplier: Some(1.5),
+        };
+        let cached = serde_json::to_value(&entry).unwrap_or(Value::Null);
+        let manifest = to_manifest_value(&entry);
+        // 缓存形态用 Rust 字段名（`wireId`/`costMultiplier`），manifest 用展示键
+        assert!(cached.get("costMultiplier").is_some());
+        assert!(cached.get("credits").is_none());
+        // manifest 把倍率渲染成标签
+        assert_eq!(manifest.get("credits").and_then(Value::as_str), Some("x1.5"));
     }
 }

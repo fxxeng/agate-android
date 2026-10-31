@@ -59,15 +59,52 @@ struct RemoteCatalog {
     fetched_at_ms: i64,
 }
 
-/// 进程级远程目录缓存（不落盘：模型清单变化不频繁，重启后回落到静态兜底，
-/// 首次访问或手动刷新时再拉）
+/// 进程级远程目录缓存。
+///
+/// ── 落盘（`providers::catalog_cache`）──────────────────────────
+/// 远程清单成功后写一份到统一库，进程重启时在首次访问读回 —— 于是重启后的起点
+/// 是上次拉到的清单，而不是 13 条静态兜底。兜底本身仍在（拉不到时用），
+/// 但「已刷新过却因重启退回兜底」这条退化被消掉了
+/// （上游新增的模型在管理页与 `/v1/models` 里一起消失、已下架的又冒出来）。
 static REMOTE: Mutex<Option<RemoteCatalog>> = Mutex::new(None);
 
+/// 本家在 `catalog_cache` 里的 scope 名
+pub const SCOPE: &str = crate::server::core::providers::catalog_cache::SCOPE_KUKU;
+
+/// 取远程目录句柄。**所有读取路径都经由它**，所以落盘缓存的恢复放在这里
+/// （唯一入口，不必在 `list` / `remote_refreshed` / `last_refreshed_at` 各写一遍）。
 fn remote_guard() -> std::sync::MutexGuard<'static, Option<RemoteCatalog>> {
+    ensure_restored();
     match REMOTE.lock() {
         Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(),
     }
+}
+
+/// 首次访问时从落盘缓存还原（只查一次库 —— `list` 在清单构造路径上）。
+///
+/// 直接锁 `REMOTE` 而不是经 [`remote_guard`]：否则会递归。恢复失败（库没开 /
+/// 值坏 / 没条目）保持 `None`，对外用静态兜底 —— 与改造前一致。
+fn ensure_restored() {
+    static ONCE: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    ONCE.get_or_init(|| {
+        let Some(cached) = crate::server::core::providers::catalog_cache::load(SCOPE) else {
+            return;
+        };
+        if cached.models.is_empty() {
+            return;
+        }
+        let mut guard = match REMOTE.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if guard.is_none() {
+            *guard = Some(RemoteCatalog {
+                models: cached.models,
+                fetched_at_ms: cached.fetched_at,
+            });
+        }
+    });
 }
 
 /// 模型清单（远程优先，未拉到 / 未刷过用静态兜底）。
@@ -183,6 +220,8 @@ pub async fn refresh(
             catalog.models = models.clone();
             catalog.fetched_at_ms = now;
             drop(guard);
+            // 落盘（进程重启后读回）
+            crate::server::core::providers::catalog_cache::save(SCOPE, &models, now);
             crate::server::logging::log(
                 "[Models]",
                 &format!("✅ KukuAI 模型目录已更新（{} 个）", models.len()),

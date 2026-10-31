@@ -61,7 +61,7 @@ use super::endpoints::{
 const CATALOG_TTL_MS: i64 = 2 * 60 * 60 * 1000;
 
 /// 目录里的一条模型
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ModelEntry {
     /// 发给网关的模型名（`display_model_name`，如 `glm5.3-flash`）
     pub gateway_id: String,
@@ -76,11 +76,22 @@ pub struct ModelEntry {
 }
 
 /// 进程内目录状态
+///
+/// 落盘的只是 `entries`（走 `ModelEntry` 的 serde 派生，无损往返），本结构体
+/// 自己**不参与**序列化 —— 时刻由 `catalog_cache` 的 `fetchedAt` 承载。
 #[derive(Clone, Debug, Default)]
 struct CatalogState {
     entries: Vec<ModelEntry>,
     fetched_at: i64,
 }
+
+/// 本家在 `catalog_cache` 里的 scope 名（进程重启后读回上次的远程清单）
+///
+/// ── 为什么这一家**尤其**需要它 ──────────────────────────────
+/// 本家**没有内置兜底清单**（名义目录 ≠ 可达目录，见模块头）。没有落盘缓存时，
+/// 进程一重启 `list_models()` 就是**空清单** —— 用户在管理页看到「一个模型都没有」，
+/// 直到后台刷新或手动点刷新才恢复。这是本家接缓存前后最刺眼的差别。
+pub const SCOPE: &str = crate::server::core::providers::catalog_cache::SCOPE_ATOMCODE;
 
 fn state() -> &'static Mutex<Option<CatalogState>> {
     static STATE: OnceLock<Mutex<Option<CatalogState>>> = OnceLock::new();
@@ -91,12 +102,34 @@ fn state() -> &'static Mutex<Option<CatalogState>> {
 ///
 /// 毒锁按「上一个持有者 panic 过、数据可能半更新」处理：这份缓存是可重建的
 /// 展示数据，不值得让进程挂掉 —— 与本仓其它目录模块同口径。
+/// **首次访问时**把落盘缓存装回内存（只在首次查一次库 —— `list_models` 在
+/// 每个请求的清单构造路径上，不能每次都查库）。恢复失败保持 `None`，
+/// 对外就是空清单 —— 与改造前一致。
 fn with_state<R>(f: impl FnOnce(&mut Option<CatalogState>) -> R) -> R {
     let mut guard = match state().lock() {
         Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(),
     };
+    if guard.is_none() {
+        if let Some(cached) = restore_from_cache() {
+            *guard = Some(cached);
+        }
+    }
     f(&mut guard)
+}
+
+/// 从落盘缓存还原状态（解析不出条目时给 `None`）。
+fn restore_from_cache() -> Option<CatalogState> {
+    let cached = crate::server::core::providers::catalog_cache::load(SCOPE)?;
+    let entries: Vec<ModelEntry> =
+        serde_json::from_value(Value::Array(cached.models.clone())).ok()?;
+    if entries.is_empty() {
+        return None;
+    }
+    Some(CatalogState {
+        entries,
+        fetched_at: cached.fetched_at,
+    })
 }
 
 /// 网关名 → 展示名。只覆盖**上游名字对用户不够清楚**的那几个：
@@ -397,12 +430,19 @@ pub async fn refresh(credentials: &AtomcodeCredentials, force: bool) -> ModelRef
             Ok(entries) if !entries.is_empty() => {
                 let fetched_at = crate::server::logging::now_ms();
                 let count = entries.len();
+                // 落盘（进程重启后读回）。本家**没有兜底清单**，这条缓存就是
+                // 「重启后还有模型可选」的唯一保障，不能省。
+                let rows: Vec<Value> = entries
+                    .iter()
+                    .filter_map(|entry| serde_json::to_value(entry).ok())
+                    .collect();
                 with_state(|guard| {
                     *guard = Some(CatalogState {
                         entries,
                         fetched_at,
                     });
                 });
+                crate::server::core::providers::catalog_cache::save(SCOPE, &rows, fetched_at);
                 crate::server::logging::log(
                     "[AtomCode]",
                     &format!("目录刷新完成：{count} 个模型（档位 {tier}）"),
@@ -550,5 +590,28 @@ mod tests {
     fn unknown_model_resolves_to_none() {
         assert_eq!(upstream_id_for("no-such-model-xyz"), None);
         assert_eq!(upstream_id_for("   "), None);
+    }
+
+    /// **落盘缓存的往返无损**：本家没有兜底清单，所以「缓存读回来少了字段」
+    /// 会直接表现为模型能力位退化（上下文窗口 / 视觉位丢），事后很难看出
+    /// （清单里模型还在、只是变弱了）。
+    #[test]
+    fn cache_roundtrip_preserves_every_field() {
+        let entry = ModelEntry {
+            gateway_id: "glm5.3-flash".to_string(),
+            display_name: "GLM-5.3-Flash".to_string(),
+            context_window: 200_000,
+            supports_vision: Some(false),
+            reasoning_levels: vec!["low".to_string(), "high".to_string()],
+        };
+        let rows = vec![serde_json::to_value(&entry).ok().unwrap_or(Value::Null)];
+        let back: Vec<ModelEntry> =
+            serde_json::from_value(Value::Array(rows)).unwrap_or_default();
+        assert_eq!(back.len(), 1);
+        let back = back.first().cloned().unwrap_or(entry.clone());
+        assert_eq!(back.gateway_id, entry.gateway_id);
+        assert_eq!(back.context_window, 200_000);
+        assert_eq!(back.supports_vision, Some(false));
+        assert_eq!(back.reasoning_levels, entry.reasoning_levels);
     }
 }
