@@ -16,7 +16,6 @@ import android.os.Looper
 import android.os.PowerManager
 import org.json.JSONObject
 import java.util.concurrent.Executors
-import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.RejectedExecutionException
 
 /**
@@ -45,9 +44,9 @@ class AgateForegroundService : Service() {
         private const val CHANNEL_BLOCKED_ID = "agate_blocked"
         private const val NOTIFICATION_ID_BLOCKED = 1002
 
-        // 跨 Service 实例保存最近一次用户意图。旧实例的 onDestroy 可能晚于新
-        // START 的交付；此标记防止旧实例的兜底 Gateway.stop 越过新启动。
-        private val gatewayStartRequested = AtomicBoolean(false)
+        // 跨 Service 实例保存带代次的最新网关意图。布尔值只能表达当前状态，
+        // 不能识别「旧销毁清理捕获后又发生新 STOP/START」这样的过期快照。
+        private val gatewayIntent = GatewayIntentTracker()
 
         /**
          * 拉起前台服务；**后台受限时不抛**，返回 false 由调用方决定下一步。
@@ -154,7 +153,7 @@ class AgateForegroundService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_STOP -> {
-                gatewayStartRequested.set(false)
+                gatewayIntent.requestStop()
                 // STOP 不必等排在 TICK 后面：先通过轻量 JNI 置合作式停止标志。
                 // 当前 Provider 请求自然结束后，Rust 会在账号边界阻止下一账号启动。
                 val ticksToStop = pendingTicks.snapshot()
@@ -222,7 +221,7 @@ class AgateForegroundService : Service() {
 
             else -> {
                 // ACTION_START，或 null intent（START_STICKY 被杀重启）
-                gatewayStartRequested.set(true)
+                gatewayIntent.requestStart()
                 enterForeground("启动中…")
                 enqueueCommand(ACTION_START) { runStart() }
                 return START_STICKY
@@ -493,22 +492,20 @@ class AgateForegroundService : Service() {
     // ── 通知 ─────────────────────────────────────────────────────
 
     override fun onDestroy() {
-        // 兜底清理必须服从进程级最新启动意图。旧实例可能因 stopSelfResult()
-        // 销毁，而一个新的 START 已经交付/正在交付；无条件 Gateway.stop() 会在
-        // 新实例 START 之后异步落地，造成「Gateway 起来后又被旧 onDestroy 停掉」。
-        // 显式 ACTION_STOP 已在命令队列中同步停止 Gateway；只有当前仍是停止意图
-        // 时，销毁兜底才补做 stop。检查放在线程执行时，而不是入队时，缩小竞态窗。
+        // 捕获本次销毁时的意图代次。若之后发生任何新 START/STOP，旧清理快照
+        // 即失效；检查放在 RuntimeController 串行区内，避免检查与 Gateway.stop
+        // 之间插入另一个生命周期变更。显式 ACTION_STOP 仍由其命令负责执行。
+        val destroyIntent = gatewayIntent.snapshot()
         try {
             commandExecutor.execute {
                 try {
                     RuntimeController.runSerialized {
-                        // 将意图检查放进同一个生命周期串行区：若新 START 已先排入
-                        // RuntimeController，则跳过；若 STOP 清理先取得串行位，它
-                        // 必然先于随后排入的 START 完成，不会出现 stop 越过 start。
-                        if (!gatewayStartRequested.get()) {
+                        // 比较完整代次，而非只看布尔状态：旧实例销毁后只要出现
+                        // 任何新生命周期意图，这份兜底清理就不能再代表当前状态。
+                        if (gatewayIntent.mayCleanup(destroyIntent)) {
                             Gateway.stop()
                         } else {
-                            android.util.Log.i("Agate", "跳过旧 Service 实例清理：已有新的 START 意图")
+                            android.util.Log.i("Agate", "跳过过期 Service 销毁清理：网关意图已更新")
                         }
                     }
                 } catch (t: Throwable) {

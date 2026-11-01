@@ -1094,3 +1094,23 @@ CheckinRun 专项另行估算：功能实现约 **85–90%**（执行台账、�
 - 这两组测试通过直接构造 SQLite 持久化状态模拟崩溃窗口，不发起 Provider 网络请求，也不等同于真实进程 kill/restart。
 - 静态验证：`git diff --check`、`rust_balance.py`、`rust_depth.py`、`check_eol.py` 通过。Rust 测试未执行（环境缺 Cargo/Rustc/Rustfmt）；Android/Gradle/真机测试同样未执行。
 - 下一验收门槛：在具备 Rust 工具链的环境运行 `cargo test`；之后增加独立进程重启恢复测试，并覆盖 DB 写入/投影中断点。
+
+
+## 2026-11-01：Round 3 CI-Fix8 验证与 Batch 3 并行推进
+
+### Round 3 验证分支执行基线（与本地架构分支历史分开记录）
+
+- 验证分支：`verify/arch-8faa5f5 @ 385cc04ed96d3d88f29b29e2c70f75f2a8416c90`。
+- 第 10 轮 GitHub Actions Run `41268816939`：Rust tests + Android build 双绿；真实 x86_64 Emulator Instrumentation 2/2 通过。
+- 第 9 轮失败的 `foregroundServicePreservesStartAfterStopOrderingBarrier` 在第 10 轮通过。CI-Fix8 的进程级启动意图标记修复了已观测到的旧 `onDestroy()` 清理晚于新 START 的竞态。
+- 该结果只证明 R10 两条 Instrumentation 用例和当轮构建通过，不代表 Phase 1/2/3 已整体验收；更复杂的重复命令、Service 重建、进程回收、长 tick/STOP 与真机 ROM 行为仍待验证。
+- R10 stage 阶段出现双实例竞争；最终 750 文件 SHA1 对账为 0 mismatch / 0 missing / 0 extra，证明该产物无损，但 stage 流程仍需进程级互斥锁。该流程问题不得归入 Android CI 门禁修复。
+
+### Batch 3 小批量并行工作（基于 385cc04 快照）
+
+- Phase 3：将 `AgateForegroundService` 的进程级 `AtomicBoolean` 意图标记升级为 `GatewayIntentTracker` 代次快照。旧 `onDestroy()` 只在其捕获快照仍是当前代次且状态为 stopped 时，才可执行兜底 `Gateway.stop()`；新增 3 个纯 JVM 单元测试。
+- Phase 2：静态盘点 `AgateApp`、`AgateForegroundService`、`GatewayControlPage` 的生产生命周期入口，当前可见 `coreInit/start/stop/schedulerSet` 均经过 `RuntimeController`。Boot/Alarm 通过 Service 转发，不直接调用 JNI。完整状态机、进程重建与动态压力验收仍未完成。
+- Phase 1：Kotlin `Gateway.kt` 的 11 个 external 声明与 Rust `jni_bridge.rs` 的 11 个 JNI 导出对应；CI 已有 JNI export 对照门禁。空 Java String 分配失败时返回 null、统一 NativeResult/API version、panic containment 与长任务释放契约仍需继续审计。
+- Phase 4：Android/JNI 适配主要集中在 `jni_bridge.rs`、`lib.rs` Android cfg、`server/logging.rs` Android 日志适配和 `paths.rs` 数据目录覆盖；未发现 Rust Core 直接持有 Android Context/Service。环境变量、HOME/USERPROFILE、文件系统、网络和信号语义仍需逐项审计。
+- 本批新增代码和文档尚未通过 Gradle/Android CI。当前执行环境没有 Cargo/Rustc；Gradle Wrapper 下载 Gradle 8.11.1 时 DNS 失败。只有静态检查通过，不得将本批新改动标为构建或测试通过。
+- 新批次交付以 `Agate_Verification_Source_8faa5f5_CI-Fix9_Batch3` 源码快照为准；它基于 Round 10 验证快照，不代表原 `architecture/kotlin-rust-core` 分支的 Git 历史，也不包含 `.git`。
