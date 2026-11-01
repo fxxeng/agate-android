@@ -467,6 +467,15 @@ private fun MappingRowCard(
     }
 }
 
+/**
+ * 空查询时每家最多列几条候选模型。
+ *
+ * 为什么是「每家」而不是「总共」：见 [AddMappingCard] 里 `filtered` 的说明 ——
+ * 总量上限会让第一家吃掉整个清单。这个数只要够看清一家有哪些模型即可，
+ * 用户真在找的时候就打字搜（那时上限是 80）。
+ */
+private const val PER_PROVIDER_IN_PICKER = 8
+
 /* ── 新增映射卡 ── */
 @Composable
 private fun AddMappingCard(
@@ -483,13 +492,29 @@ private fun AddMappingCard(
     var picking by remember { mutableStateOf(false) }
     var level by remember { mutableStateOf<String?>(null) }
 
+    // ── 候选清单：按「家」分配名额（2026-11-01 修「只看得到一家」）──────
+    // 旧写法是 `hit.take(40)`：`models` 由 manage 按家顺序给出，**第一家
+    // （WorkBuddy）的模型就能占满 40 条**，后面所有家被整段截掉 ——
+    // 不打字搜索时永远看不到别家。这不是「太多了截一下」，是**清单被一家吃掉**。
+    //
+    // 现在：空查询时每家各出至多 8 条（家在 manage 里是连续段，按家轮转取样），
+    // 保证任何一家都至少露头；有查询时那是用户在找具体模型，按匹配取 80 条。
     val filtered = remember(query, models) {
         val q = query.trim()
-        val hit = if (q.isEmpty()) models else models.filter {
-            it.optString("id").contains(q, ignoreCase = true) ||
-                it.optString("providerLabel").contains(q, ignoreCase = true)
+        if (q.isNotEmpty()) {
+            models.filter {
+                it.optString("id").contains(q, ignoreCase = true) ||
+                    it.optString("providerLabel").contains(q, ignoreCase = true)
+            }.take(80)
+        } else {
+            // 按家分组（保持 manage 里各家的原始顺序），每家取前 PER_PROVIDER 条
+            val perProvider = linkedMapOf<String, MutableList<JSONObject>>()
+            models.forEach { m ->
+                val owner = m.optString("provider")
+                perProvider.getOrPut(owner) { ArrayList() }.add(m)
+            }
+            perProvider.values.flatMap { it.take(PER_PROVIDER_IN_PICKER) }
         }
-        hit.take(40)
     }
 
     Column(

@@ -229,6 +229,19 @@ fun ModelsPage(
     // 管理视图（含已禁用条目 + 官方可见性）。`snap.models` 只有「已启用」，
     // 光靠它画不出开关，也画不出被关掉的那些（它们已从清单里消失）。
     var manage by remember { mutableStateOf<List<ModelOps.ManageModelRow>>(emptyList()) }
+    // 管理视图加载失败的原因（null = 正常）。页面顶部会显示一行可点重试的提示。
+    var manageError by remember { mutableStateOf<String?>(null) }
+    /**
+     * 「刚点过、等 manage 回话」的临时覆盖：`"provider|id" -> enabled`。
+     *
+     * 为什么需要它：点开关到 manage 回话之间有几帧，这段时间里界面只能读旧数据
+     * （会话快照还是旧的、manage 还没到）—— 没有这层覆盖，开关会**先弹回原状
+     * 再跳过去**，看起来就是「点了没反应」。它只在成功响应与下一次 manage
+     * 之间生效，`loadManage()` 成功即清空 —— 所以它**不会**掩盖真实失败：
+     * 内核若没写成，manage 回来仍是原值，开关就会弹回去（那才是如实反馈）。
+     */
+    var optimistic by remember { mutableStateOf<Map<String, Boolean>>(emptyMap()) }
+
     /**
      * 自定义 / 预置 API 建出来的家。
      *
@@ -312,8 +325,29 @@ fun ModelsPage(
         customProviders.associate { it.id to it.modelCount }
     }
 
+    /**
+     * 拉管理视图（启停状态的唯一权威）。
+     *
+     * ── 失败必须**看得见**（2026-11-01）──────────────────────────
+     * 旧写法是 `parse(fetchManage().data)`：请求失败时 `data` 为 null ⇒ `parse`
+     * 返回空列表 ⇒ **没有任何提示**。而模型页的开关状态完全依赖这份数据：
+     * 空列表 ⇒ 每行都查不到自己 ⇒ 只能退回「默认开着」⇒
+     * 界面上全是「开」，点一下发的是「关闭」，而下一帧又退回「开」——
+     * 症状就是「模型关不掉」，且**连本来正常的模型也一样**。
+     * 现在失败时保留上一份数据并把错误显示出来（页面顶部一行）。
+     */
     fun loadManage() {
-        scope.launch { manage = ModelOps.ManageModelRow.parse(ModelOps.fetchManage().data) }
+        scope.launch {
+            val r = ModelOps.fetchManage()
+            if (r.ok) {
+                manage = ModelOps.ManageModelRow.parse(r.data)
+                manageError = null
+                // 权威数据到手：撤掉本地「刚点过」的临时覆盖（它只为补异步窗口）
+                optimistic = emptyMap()
+            } else {
+                manageError = r.error ?: "模型状态加载失败"
+            }
+        }
     }
 
     // 管理视图进页面拉一次：启停状态与「桌面端是否列出」只有它给得出。
@@ -395,8 +429,13 @@ fun ModelsPage(
             // 而且 `toggle()` 开头的 `if (toggling != null) return` 会把之后
             // **所有**点击吞掉 —— 症状是「这个模型关不掉，别的也点不动」。
             try {
-                val r = ModelOps.setState(bare, !row.enabled, row.provider.ifBlank { null })
+                val target = !row.enabled
+                val r = ModelOps.setState(bare, target, row.provider.ifBlank { null })
                 if (r.ok) {
+                    // 先让开关**立刻**停在新位置（补 manage 回话前的几帧），
+                    // 再拉权威数据；`loadManage()` 成功会清掉这层覆盖。
+                    optimistic = optimistic +
+                        ("${row.provider.lowercase()}|${bare.lowercase()}" to target)
                     // 管理视图立刻刷新（权威）；会话清单随 `refreshOnce` 稍后对齐
                     loadManage()
                     loadListView()
@@ -596,7 +635,12 @@ fun ModelsPage(
             // 条目 + 真实 enabled。会话清单只用来补富数据（上下文 / 能力位）。
             // 只有管理视图里确实没有这条（理论上不该发生）才退回 true ——
             // 那时它在会话清单里，说明内核认为它可用。
-            m.copy(enabled = mg?.enabled ?: true, official = mg?.official)
+            val key = "${m.provider.lowercase()}|${bare(m.id).lowercase()}"
+            m.copy(
+                // 临时覆盖 > 管理视图 > 默认开（见 optimistic 的说明）
+                enabled = optimistic[key] ?: mg?.enabled ?: true,
+                official = mg?.official,
+            )
         }
         val present = fromSession
             .map { "${it.provider.lowercase()}|${bare(it.id).lowercase()}" }
@@ -718,6 +762,32 @@ fun ModelsPage(
                 }
             }
             Spacer(Modifier.height(10.dp))
+            // ── 管理视图没拉到 → **必须说出来**（2026-11-01）──────────
+            // 它承载「哪个模型是开着的」这一唯一权威。拉失败时开关只能退回
+            // 「默认开着」，用户会看到「关不掉」——而根因是这份数据没到手。
+            // 静默失败会把这种基础设施故障伪装成产品故障（上一版就是这么
+            // 被误判成开关逻辑 bug 的）。所以这里显式一行，且可点重试。
+            val mgErr = manageError
+            if (mgErr != null) {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .background(C.insetBg, RoundedCornerShape(12.dp))
+                        .border(1.dp, C.border, RoundedCornerShape(12.dp))
+                        .clickable { loadManage() }
+                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        "模型启停状态未加载（$mgErr）· 点此重试",
+                        color = C.textMain,
+                        fontSize = 12.sp,
+                        modifier = Modifier.weight(1f),
+                    )
+                    AgateBadge("重试", BadgeTone.BLUE)
+                }
+                Spacer(Modifier.height(8.dp))
+            }
             // 「已启用 / 全部」放在分段控件下面一行：它是**读数**（客户端真会
             // 收到几个），不是筛选器 —— 关掉的模型仍然列在下面（置灰），
             // 所以这里不给第二个分段，避免用户以为是一种新的视图形态。
