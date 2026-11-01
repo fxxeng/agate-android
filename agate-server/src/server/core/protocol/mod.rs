@@ -61,6 +61,8 @@ pub mod antigravity_signature_cache;
 pub mod antigravity_stream;
 pub mod chatglm_stream;
 pub mod commandcode_outbound;
+pub mod deepseek_stream;
+pub mod doubaowork_stream;
 pub mod freeform;
 pub mod history;
 pub mod native_tool;

@@ -10,7 +10,7 @@
 //! 版本：构造它、交给 `ForwardStream::from_translated` 或聚合器，凭证仍由
 //! `provider_loop` 那两处按既有规则处置。
 //!
-//! ── 本文件服务三种上游响应协议（三家各一台，互不共用）──────────
+//! ── 本文件服务五种上游响应协议（五家各一台，互不共用）──────────
 //!   1. **Anthropic Messages SSE**（`AnthropicToChatStream` ←
 //!      `protocol::anthropic_outbound::ChatFromAnthropicStream`）：内置家里只有
 //!      ZCode 的活动套餐通道说这套协议；
@@ -26,8 +26,20 @@
 //!      `{"response":{…gemini…}}` 信封（缺省回退顶层），字段路径（`candidates`
 //!      / `usageMetadata` / `thought` / `thoughtSignature`）全是 Gemini 方言 ——
 //!      与上面两台同样没有可复用的词表，另开一台。
-//! 三台壳逐行同构（同一种错误处置、同一种空闲守卫、同一种调试采集），
-//! 差别只有内部那台状态机与日志前缀 —— 因此下面三个 struct 读起来是镜像的。
+//!   4. **DeepSeek 网页版的 path-value SSE**（`DeepSeekToChatStream` ←
+//!      `protocol::deepseek_stream::ChatFromDeepSeekStream`）：帧是
+//!      `{"p":路径,"o":操作,"v":值}` 的 patch 指令，正文主体是**不带 `p` 的
+//!      裸增量**，结束标志是 `response/status == FINISHED`。⚠️ 与第 5 台
+//!      （ChatGLM）的**关键差别**：本家**不做差分**（裸增量即净增量，从不发
+//!      全文快照），把 ChatGLM 那套前缀差分照搬会把每个字都判成「对不上」而丢弃。
+//!   5. **豆包工作的自有 SSE 事件流**（`DoubaoworkToChatStream` ←
+//!      `doubaowork::chat` 的 `parse_event` + `ChatFromDoubaoworkStream`）：
+//!      上游用 `event:` 名（`SSE_ACK` / `CHUNK_DELTA` / `SSE_REPLY_END` /
+//!      `gateway-error`）+ 多种载荷载体（其中 `patch_value.content` 是
+//!      **字符串化的 JSON**），且 **HTTP 恒 200**、错误在流内。解析全部在
+//!      那台纯函数里（已有一整套测试），这里只做搬运。
+//! 五台壳逐行同构（同一种错误处置、同一种空闲守卫、同一种调试采集），
+//! 差别只有内部那台状态机与日志前缀 —— 因此下面五个 struct 读起来是镜像的。
 //!
 //! ── 与自定义家那条的三个差别（都是刻意的）────────────────────
 //!   1. `model` 传**上游真名**（与自定义家一致）：帧里的 `model` 由下游的
@@ -53,6 +65,8 @@ use crate::server::core::protocol::anthropic_outbound::ChatFromAnthropicStream;
 use crate::server::core::protocol::antigravity_stream::ChatFromAntigravityStream;
 use crate::server::core::protocol::chatglm_stream::ChatFromChatglmStream;
 use crate::server::core::protocol::commandcode_outbound::ChatFromCommandCodeStream;
+use crate::server::core::protocol::deepseek_stream::ChatFromDeepSeekStream;
+use crate::server::core::protocol::doubaowork_stream::ChatFromDoubaoworkStream;
 
 /// 上游 Anthropic SSE → 标准 chat SSE 的字节流（`reqwest::Response` 直接进来）。
 ///
@@ -452,6 +466,203 @@ impl Stream for ChatglmToChatStream {
                     self.upstream_done = true;
                     // 文案已在构造时描述好（见 inner 字段说明）：原样上抛，
                     // 由下游的流 / 聚合器转成错误帧或 502
+                    return Poll::Ready(Some(Err(error)));
+                }
+            }
+        }
+    }
+}
+
+
+/// 上游 **DeepSeek 网页版的 path-value SSE** → 标准 chat SSE 的字节流
+/// （`reqwest::Response` 直接进来）。
+///
+/// 与 [`ChatglmToChatStream`] 逐行同构：管道同样是
+/// `响应字节 → 空闲守卫 → 转换器 → 帧队列`，错误同样在构造时描述成文案折进
+/// `io::Error`，`pending` 队列同样保证「同一上游 chunk 产出的多帧不乱序」
+/// （内容帧必须先于收尾帧），EOF 时同样调 `machine.finish()`。
+///
+/// ── ⚠️ 与 ChatGLM 那台的**关键差别**：本家不做差分 ─────────────
+/// 本家的帧是 patch 指令（`{"p":路径,"o":操作,"v":值}`），正文主体是**不带
+/// `p` 的裸增量**（`{"v":"几个字"}`），而**从不发全文快照** —— 因此那台状态机
+/// （`protocol::deepseek_stream`）**原样追加每一段**，不做任何前缀差分。
+/// 把 ChatGLM 那套差分照搬过来会把每个字都判成「与已发内容对不上」而丢弃
+/// （原因见那台的模块头）。
+///
+/// ── 上游状态码仍是成败判据 ──────────────────────────────────
+/// 本家正常返回 `text/event-stream`；HTTP 非 2xx（401 / 429 / 5xx）是真实
+/// 错误，由编排层按状态码分流，不进这台状态机。**流内错误另走错误帧**
+/// （`{"error":{…}}` / `biz_code` 非零，见 `protocol::deepseek_stream`）。
+pub struct DeepSeekToChatStream {
+    /// 上游字节流（已描述错误、已装空闲守卫）
+    inner: futures::stream::BoxStream<'static, Result<Bytes, std::io::Error>>,
+    /// 协议状态机（path-value patch → chat 帧）
+    machine: ChatFromDeepSeekStream,
+    /// 已翻译待下发的帧（一个上游 chunk 可能产出多帧）
+    pending: VecDeque<Bytes>,
+    /// 上游已结束（不再 poll 上游，把 pending 与收尾帧吐完即 None）
+    upstream_done: bool,
+    /// 调试模式的采集器（None = 未开启）
+    capture: Option<Arc<crate::server::core::debug_traffic::TrafficCapture>>,
+}
+
+impl DeepSeekToChatStream {
+    /// `model` 是**上游真名**（下发帧里的 `model` 字段，见模块头）。
+    pub fn new(
+        response: reqwest::Response,
+        model: &str,
+        telemetry: &Arc<super::usage::RequestTelemetry>,
+    ) -> Self {
+        use futures::StreamExt;
+        let described = response.bytes_stream().map(|item| {
+            item.map_err(|error| {
+                std::io::Error::other(crate::server::core::egress::describe_error_detail(&error))
+            })
+        });
+        let guarded = super::stall::idle_guard(
+            Box::pin(described),
+            Duration::from_millis(crate::server::config::timeout_settings().stream_idle_ms()),
+        );
+        Self {
+            inner: guarded,
+            machine: ChatFromDeepSeekStream::new(model),
+            pending: VecDeque::new(),
+            upstream_done: false,
+            capture: telemetry.capture(),
+        }
+    }
+}
+
+impl Stream for DeepSeekToChatStream {
+    type Item = Result<Bytes, std::io::Error>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        use futures::StreamExt;
+        loop {
+            if let Some(frame) = self.pending.pop_front() {
+                return Poll::Ready(Some(Ok(frame)));
+            }
+            if self.upstream_done {
+                return Poll::Ready(None);
+            }
+            match self.inner.poll_next_unpin(cx) {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(None) => {
+                    self.upstream_done = true;
+                    for frame in self.machine.finish() {
+                        self.pending.push_back(frame);
+                    }
+                }
+                Poll::Ready(Some(Ok(bytes))) => {
+                    if let Some(capture) = &self.capture {
+                        capture.push(&bytes);
+                    }
+                    for frame in self.machine.push(&bytes[..]) {
+                        self.pending.push_back(frame);
+                    }
+                }
+                Poll::Ready(Some(Err(error))) => {
+                    self.upstream_done = true;
+                    return Poll::Ready(Some(Err(error)));
+                }
+            }
+        }
+    }
+}
+
+/// 上游 **豆包工作的自有 SSE 事件流** → 标准 chat SSE 的字节流
+/// （`reqwest::Response` 直接进来）。
+///
+/// 与上面几台逐行同构（同一种错误处置、同一种空闲守卫、同一种调试采集）。
+///
+/// ── 本家为什么在**翻译器之外的纯函数**里解析（刻意的分工）────────
+/// 载荷 → 增量的解析全部在 `providers::doubaowork::chat::parse_event`
+/// （纯函数 + 一整套单测），本台只把那一串增量折成 chat 帧。分开的理由：
+/// 解析规则会随上游变化而变（载体有四种），帧构造不会 —— 混在一起会让
+/// 「上游多一种载体」变成「改翻译器」。
+///
+/// ── 上游状态码不是成败判据（与 Command Code 同一处境）──────────
+/// 本家 **HTTP 恒 200**，认证失败 / 限流 / 额度不足全部以流内
+/// `gateway-error` 表达。因此编排层**不**按状态码分流错误 —— 它照旧把 200
+/// 与响应体一起交进来，成败由本台折出的错误帧表达（聚合器据此转 502、
+/// 流式路径原样把错误帧透给客户端）。
+///
+/// ── 自带保留 `event:` 名的缓冲器 ──────────────────────────────
+/// 共享的 `protocol::SseLineBuffer` **刻意丢弃 `event:` 行**（它的调用方都只
+/// 看载荷、事件名从 JSON 的 `type` 读）。本家不行：`SSE_ACK` /
+/// `SSE_REPLY_END` / `gateway-error` 三个信号**只**出现在 `event:` 行上。
+/// 因此那台状态机自带一个保留事件名的缓冲器（见 `protocol::doubaowork_stream`
+/// 的模块头），而不是去改共享缓冲器的语义（那会波及另外四家的解析路径）。
+pub struct DoubaoworkToChatStream {
+    /// 上游字节流（已描述错误、已装空闲守卫）
+    inner: futures::stream::BoxStream<'static, Result<Bytes, std::io::Error>>,
+    /// 协议状态机（自有事件流 → chat 帧）
+    machine: ChatFromDoubaoworkStream,
+    /// 已翻译待下发的帧（一个上游 chunk 可能产出多帧）
+    pending: VecDeque<Bytes>,
+    /// 上游已结束（不再 poll 上游，把 pending 与收尾帧吐完即 None）
+    upstream_done: bool,
+    /// 调试模式的采集器（None = 未开启）
+    capture: Option<Arc<crate::server::core::debug_traffic::TrafficCapture>>,
+}
+
+impl DoubaoworkToChatStream {
+    /// `model` 是**上游真名**（下发帧里的 `model` 字段，见模块头）。
+    pub fn new(
+        response: reqwest::Response,
+        model: &str,
+        telemetry: &Arc<super::usage::RequestTelemetry>,
+    ) -> Self {
+        use futures::StreamExt;
+        let described = response.bytes_stream().map(|item| {
+            item.map_err(|error| {
+                std::io::Error::other(crate::server::core::egress::describe_error_detail(&error))
+            })
+        });
+        let guarded = super::stall::idle_guard(
+            Box::pin(described),
+            Duration::from_millis(crate::server::config::timeout_settings().stream_idle_ms()),
+        );
+        Self {
+            inner: guarded,
+            machine: ChatFromDoubaoworkStream::new(model),
+            pending: VecDeque::new(),
+            upstream_done: false,
+            capture: telemetry.capture(),
+        }
+    }
+}
+
+impl Stream for DoubaoworkToChatStream {
+    type Item = Result<Bytes, std::io::Error>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        use futures::StreamExt;
+        loop {
+            if let Some(frame) = self.pending.pop_front() {
+                return Poll::Ready(Some(Ok(frame)));
+            }
+            if self.upstream_done {
+                return Poll::Ready(None);
+            }
+            match self.inner.poll_next_unpin(cx) {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(None) => {
+                    self.upstream_done = true;
+                    for frame in self.machine.finish() {
+                        self.pending.push_back(frame);
+                    }
+                }
+                Poll::Ready(Some(Ok(bytes))) => {
+                    if let Some(capture) = &self.capture {
+                        capture.push(&bytes);
+                    }
+                    for frame in self.machine.push(&bytes[..]) {
+                        self.pending.push_back(frame);
+                    }
+                }
+                Poll::Ready(Some(Err(error))) => {
+                    self.upstream_done = true;
                     return Poll::Ready(Some(Err(error)));
                 }
             }

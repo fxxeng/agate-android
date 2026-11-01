@@ -437,7 +437,7 @@ mod tests {
         }));
         assert!(bundle
             .as_ref()
-            .is_some_and(|bundle| bundle.access_token == "at" && bundle.user_id.is_empty()));
+            .is_ok_and(|bundle| bundle.access_token == "at" && bundle.user_id.is_empty()));
         assert_eq!(
             bundle.ok().map(|bundle| bundle.expires_in),
             Some(604_800)

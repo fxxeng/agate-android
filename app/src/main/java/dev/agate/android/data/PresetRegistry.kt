@@ -124,13 +124,21 @@ object PresetRegistry {
         // 所以是两家 provider、各填各的令牌。同一枚 `ms-` 令牌两用 ——
         // 既调推理又读身份/魔粒/签到，用户只需复制一次。
         //
-        // 两家都归 **Web 分段**：对话在网页站上，登录靠网页令牌 + Cookie，
-        // 不是「伪装桌面客户端」那一类（与 chatglm 同一档）。
+        // 两家都归 **Agent 分段**（与外层 `category` 的默认值一致，故不显式声明）。
+        //
+        // ── 判据是 pack.json，不是「有没有网页站」────────────────────
+        // 上游把提供商拆成两个插件包：`agent2api-providers` 不声明
+        // `provider_category`（默认 agent，30 个 id）、`agent2api-web-providers`
+        // 声明 `"provider_category": "web"`（**只有 chatglm + deepseek-web**）。
+        // 魔搭两个站点都在 agent 包内 ⇒ Agent。
+        //
+        // 曾经按「对话在网页站、登录靠网页令牌」把它归成了 Web —— 那是把
+        // 「转发实现走哪条路」和「有没有网页站」混为一谈，归错了。别再按
+        // 产品形态猜，去读 pack.json。
         ProviderPreset(
             "modelscope", "ModelScope 国内版", "modelscope.cn · 粘贴 ms- 令牌",
             LoginKind.PASTE,
             listOf(AuthChannel.PASTE),
-            category = ProviderCategory.WEB,
             pasteHint = "粘贴 ms- 开头的 API 令牌（modelscope.cn「访问令牌」页）",
             supportsCheckin = true,
         ),
@@ -138,7 +146,6 @@ object PresetRegistry {
             "modelscope-intl", "ModelScope 国际版", "modelscope.ai · 粘贴 ms- 令牌",
             LoginKind.PASTE,
             listOf(AuthChannel.PASTE),
-            category = ProviderCategory.WEB,
             pasteHint = "粘贴国际站的 ms- 令牌（modelscope.ai；与国内站不通用）",
             supportsCheckin = true,
         ),
@@ -289,11 +296,13 @@ object PresetRegistry {
         //
         // ── 回调落在网关端口 ───────────────────────────────────────
         // 门户 302 回 `127.0.0.1:<网关端口>/auth/callback`，所以要 `needsGateway = true`
-        // （与 accio / codearts / antigravity 同一档）。归 **Web 分段**。
+        // （与 accio / codearts / antigravity 同一档）。
+        //
+        // 归 **Agent 分段**（用默认值，不显式声明）：本家在上游 agent 包里，
+        // 与 ModelScope 同一判据。浏览器授权登录 ≠ 网页提供商。
         ProviderPreset(
             "lobsterai", "LobsterAI", "lobsterai.youdao.com · 网页登录", LoginKind.WEBVIEW,
             listOf(AuthChannel.EMBEDDED, AuthChannel.EXTERNAL),
-            category = ProviderCategory.WEB,
             supportsCheckin = true,
             needsGateway = true,
         ),
@@ -311,6 +320,45 @@ object PresetRegistry {
             listOf(AuthChannel.EMBEDDED, AuthChannel.EXTERNAL, AuthChannel.PASTE),
             pasteHint = "粘贴 accessToken（登录输出里的 access_token）",
             pasteSecondaryHint = "续期令牌 refreshToken（可选；留空则到期后需重新登录）",
+            supportsCheckin = true,
+        ),
+        // DeepSeek 网页版（chat.deepseek.com）：**粘贴 userToken**。
+        //
+        // ── 粘的不是 Cookie，也不是开放平台的 API Key ─────────────
+        // 网页版认的是浏览器 localStorage 里 `userToken` 对象的 `.value`
+        // —— 这条最容易走偏：把 Cookie 整串粘进来会稳定 401，用 `sk-` 的
+        // 平台 Key 更是另一套接口（api.deepseek.com）。
+        // 提示语因此写死「userToken」而不是笼统的「令牌」。
+        //
+        // ── 本家没有续期、没有签到（如实声明，别照抄邻近条目）──────
+        // 上游没有 refresh 接口（官方能力表 refresh/checkin/usage 都是
+        // `undeclared`），所以 `supportsCheckin` **不置位** —— 置位会让签到
+        // 中心多出一行永远「不支持」的账号。
+        //
+        // 归 **Web 分段**：上游 web 插件包的成员只有 chatglm 与它两家。
+        ProviderPreset(
+            "deepseek-web", "DeepSeek 网页", "chat.deepseek.com · 粘贴 userToken",
+            LoginKind.PASTE,
+            listOf(AuthChannel.PASTE),
+            category = ProviderCategory.WEB,
+            pasteHint = "粘贴 userToken（浏览器 F12 → localStorage 里 userToken 的 value）",
+            pasteMultiline = true,
+        ),
+        // 豆包工作（www.doubao.com）：**粘贴 Cookie**（整串）。
+        //
+        // ── 归 Agent 分段（用注册表默认值）──────────────────────
+        // 上游 agent 插件包里的家（该包不声明 provider_category）。
+        //
+        // ── 为什么有签到、没有「网页登录」通道 ───────────────────
+        // 签到 = 读当日签到态 + 领取活动奖励（内核 `rewards`）；登录本应是
+        // 「内嵌窗口取 Cookie」，但那条链在 Android 侧的收尾（从 WebView 读
+        // Cookie 再提交）尚未在客户端实现，因此**只提供粘贴入口** ——
+        // 给一个点了没反应的通道比少给一条更糟。
+        ProviderPreset(
+            "doubaowork", "豆包工作", "www.doubao.com · 粘贴 Cookie", LoginKind.PASTE,
+            listOf(AuthChannel.PASTE),
+            pasteHint = "Cookie 整串（含 sessionid；登录 www.doubao.com 后复制）",
+            pasteMultiline = true,
             supportsCheckin = true,
         ),
     )

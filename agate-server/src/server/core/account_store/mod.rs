@@ -108,6 +108,8 @@ pub mod cline_accounts;
 pub mod chatglm_accounts;
 pub mod codearts_accounts;
 pub mod commandcode_accounts;
+pub mod deepseek_web_accounts;
+pub mod doubaowork_accounts;
 pub mod custom_accounts;
 pub mod kuku_accounts;
 pub mod lobsterai_accounts;
@@ -225,6 +227,19 @@ pub(crate) const COMMANDCODE_PROVIDER_ID: &str = crate::server::core::providers:
 /// `sandbox`/`daily`/`prod` 是环境不是地区，规格 §6）。
 pub(crate) const ANTIGRAVITY_PROVIDER_ID: &str = crate::server::core::providers::kind_id(
     crate::server::core::providers::ProviderKind::Antigravity,
+);
+
+/// DeepSeek **网页版** provider id（**从注册表推导**，同
+/// [`COMMANDCODE_PROVIDER_ID`] 的口径）。账号形态见 `deepseek_web_accounts.rs`
+/// —— 单一 provider、没有地区之分（网页版只有一个站点）。
+pub(crate) const DEEPSEEK_WEB_PROVIDER_ID: &str = crate::server::core::providers::kind_id(
+    crate::server::core::providers::ProviderKind::DeepSeekWeb,
+);
+
+/// 豆包工作 provider id（**从注册表推导**，同 [`COMMANDCODE_PROVIDER_ID`] 的
+/// 口径）。账号形态见 `doubaowork_accounts.rs` —— 单一 provider、没有地区之分。
+pub(crate) const DOUBAOWORK_PROVIDER_ID: &str = crate::server::core::providers::kind_id(
+    crate::server::core::providers::ProviderKind::Doubaowork,
 );
 
 /// OfficeAce（华为云果办 / OfficeClaw）provider id（**从注册表推导**，同

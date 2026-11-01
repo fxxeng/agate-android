@@ -343,6 +343,15 @@ impl AccountStore {
             // Command Code：单一入口（粘贴 `user_` API Key），公开形态去掉 key
             // 本体、只留尾号与「有没有 key」（见 `commandcode_accounts.rs`）
             self.to_commandcode_public_account(record)
+        } else if record.provider() == super::DEEPSEEK_WEB_PROVIDER_ID {
+            // DeepSeek 网页版：单一入口（粘贴 userToken），公开形态去掉 token
+            // 本体、只留尾号与「有没有 token」（见 `deepseek_web_accounts.rs`）
+            self.to_deepseek_web_public_account(record)
+        } else if record.provider() == super::DOUBAOWORK_PROVIDER_ID {
+            // 豆包工作：公开形态**必须走自己的一支** —— Cookie 列表与指纹是
+            // 真凭据，落到下面的 workbuddy 兜底形状会随响应下发（见
+            // `doubaowork_accounts.rs` 的 `to_doubaowork_public_account`）
+            self.to_doubaowork_public_account(record)
         } else if record.provider() == super::ANTIGRAVITY_PROVIDER_ID {
             // Antigravity（Google）：单一入口（粘贴 Google refresh token），
             // 公开形态去掉 token 本体、只留 refresh token 尾号与

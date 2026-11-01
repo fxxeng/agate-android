@@ -192,6 +192,36 @@ pub fn normalize_paste(payload: &Value) -> Result<Value, GatewayError> {
             "accessToken".to_string(),
             Value::String(access_token.clone()),
         );
+        // ── 别名键：先**搬运**到驼峰键，再删原键 ────────────────
+        // 本函数的口径是「统一成驼峰落盘」。只做 `insert("accessToken", …)`
+        // 而留下原始的 `access_token`，会让账号库里同时存在两个键（读取链
+        // 以驼峰优先，功能不受影响，但库里的形态与声明不符）。
+        //
+        // ⚠️ **必须先搬运再删**，不能只删：`refresh_token`（官方登录输出的
+        // 下划线形态）与 `refreshToken` 是两个不同的键，直接删掉前者会让
+        // 粘贴进来的续期令牌**彻底丢失** —— 读取链
+        // `pick(record, &["refreshToken", "refresh_token"])` 虽然也认下划线，
+        // 但键已经没了。症状是「账号能加、也能用，但一到临期就提示重新登录」，
+        // 且查库看不出原因（令牌字段真的不在）。
+        let refresh_token = pick(payload, &["refreshToken", "refresh_token"]);
+        if !refresh_token.is_empty() {
+            object.insert(
+                "refreshToken".to_string(),
+                Value::String(refresh_token),
+            );
+        }
+        // 搬运完成后删掉下划线原键，让落盘形态单一
+        object.remove("access_token");
+        object.remove("refresh_token");
+        // 其余别名同样搬运到驼峰（`user_id` / `avatar_url` 读取链认这两个驼峰名）
+        for (snake, camel) in [("user_id", "userId"), ("avatar_url", "avatarUrl")] {
+            if let Some(value) = object.get(snake).cloned() {
+                if object.get(camel).is_none() {
+                    object.insert(camel.to_string(), value);
+                }
+            }
+            object.remove(snake);
+        }
         // token_type 恒 Bearer，不落（没有消费方）
         object.remove("token_type");
         object.remove("tokenType");
@@ -305,10 +335,12 @@ mod tests {
         assert_eq!(secret.get("userId").and_then(Value::as_str), Some("42"));
         assert!(secret.get("refreshToken").is_none());
         assert!(secret.get("email").is_none());
-        // 没有 username / name 时展示名退回「AtomGit 账号 42」
+        // 展示名的取值链是 `username → name → user_id → "AtomGit 账号"`
+        // （见 `credentials::display_name`）：本例给了 `user_id="42"`，
+        // 因此显示名就是 "42" —— 中性兜底只在三者**全空**时才出现
         assert_eq!(
             secret.get("name").and_then(Value::as_str),
-            Some("AtomGit 账号 42")
+            Some("42")
         );
     }
 }

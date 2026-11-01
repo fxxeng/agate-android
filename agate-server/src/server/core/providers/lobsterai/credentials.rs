@@ -336,7 +336,9 @@ mod tests {
     fn identity_prefers_user_id() {
         assert_eq!(identity("7", "42", "tok"), "7");
         assert_eq!(identity("", "42", "tok"), "42");
-        assert_eq!(identity("", "", "abcdefghijklmn"), "tokabcdefghijklmn");
+        // 令牌尾取**末 12 个字符**（见 `identity` 的实现）："abcdefghijklmn"
+        // 共 14 字符 ⇒ 末 12 个是 "cdefghijklmn"，前缀 `tok`
+        assert_eq!(identity("", "", "abcdefghijklmn"), "tokcdefghijklmn");
     }
 
     /// JWT 的 exp 读得出来（`{"exp":1e9}` 的 base64url），非 JWT 解不出

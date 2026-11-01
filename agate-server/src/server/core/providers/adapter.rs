@@ -249,6 +249,24 @@ pub enum UpstreamResponse {
     AntigravityGemini,
     /// 智谱清言：SSE 帧混着增量与收尾全文快照（见 `providers::chatglm::plan`）
     ChatglmSnapshot,
+    /// DeepSeek **网页版**：SSE 帧是 **JSON-Pointer 风格的 patch 指令**
+    /// （`{"p":路径,"o":操作,"v":值}`），正文主体是**不带 `p` 的裸增量**，
+    /// 结束标志是 `response/status == FINISHED`（不是 `[DONE]`）。
+    ///
+    /// 与 ChatGLM 那台的关键差别：本家**不做任何差分**（裸增量就是净增量，
+    /// 从不发全文快照）。把 ChatGLM 那套差分照搬过来会把每个字都判成
+    /// 「与已发内容对不上」而全部丢弃 —— 详见
+    /// `protocol::deepseek_stream` 的模块头（有帧证据）。
+    ///
+    /// 走翻译层的理由与另外四台逐字相同：账号轮换、限额冷却、退避重试、
+    /// usage 记账与取消处理全部留在编排层，只有字节形态在翻译器里变。
+    DeepSeekWebSse,
+    /// 豆包工作：SSE 是**自有事件流**（事件名 + 增量可能藏在字符串化的 JSON
+    /// 里），既不是 OpenAI 的 `choices[].delta`，也不是 NDJSON 的行形态。
+    ///
+    /// 解析已在 `providers::doubaowork::chat::parse_event` 完成（含全套测试），
+    /// 本变体的翻译器把那台解析器接进下行管线。走翻译层的理由同上。
+    DoubaoworkSse,
 }
 
 /// 上游错误分类（架构文档 §4.2；三个动作的语义见模块头）。
@@ -1211,6 +1229,14 @@ pub fn adapter_for(kind: ProviderKind) -> &'static dyn ProviderAdapter {
         // + 免费 CodingPlan 领取（签到链）+ **轮询式**网页登录（回调在代理
         // 域名终结，不走适配器的回调钩子 —— 见 `atomcode/adapter.rs` 的模块头）。
         ProviderKind::Atomcode => &super::atomcode::ATOMCODE_ADAPTER,
+        // DeepSeek 网页版：无状态 + path-value SSE + **每次请求现解 PoW**。
+        // 两件异步准备（建会话 / 领题求解）挂在 `ensure_access_token`，
+        // 结果经 `deepseek::session` 的状态表交给同步的 `build_chat_request`
+        // （见该模块头的论证）。
+        ProviderKind::DeepSeekWeb => &super::deepseek::DEEPSEEK_WEB_ADAPTER,
+        // 豆包工作：无状态 + 自有 SSE 事件流；Cookie 凭据 + 桌面端伪装头；
+        // 有额度查询 / 签到 / 附件上传，**没有续期**（见 `doubaowork/mod.rs`）。
+        ProviderKind::Doubaowork => &super::doubaowork::DOUBAOWORK_ADAPTER,
     }
 }
 
@@ -1325,6 +1351,15 @@ pub fn implemented_kinds() -> Vec<ProviderKind> {
         // 列表里，否则目录刷新循环不会问它（症状是「账号加了、模型列表一直空着」，
         // 因为本家**没有**内置兜底清单可回落）。
         ProviderKind::Atomcode,
+        // DeepSeek 网页版：适配器已接真身（凭证 / 转发 / 目录 / 错误分类），
+        // 但 `supports_model_refresh()` 为 false（**静态两条清单**，
+        // 本家没有远程目录接口）—— 刷新循环对它是空操作。这与 ZCode 的
+        // 处置完全一致（见 `zcode/models.rs` 的模块头）。列进来是因为
+        // 「已实现」这个判定看的是**适配器真身**而不是「可刷新」。
+        ProviderKind::DeepSeekWeb,
+        // 豆包工作：适配器已接真身，且有远程目录（`/alice/slot/action_bar_v3/`
+        // `brief_list`）—— 必须在列表里，否则目录刷新循环不会问它。
+        ProviderKind::Doubaowork,
     ]
 }
 

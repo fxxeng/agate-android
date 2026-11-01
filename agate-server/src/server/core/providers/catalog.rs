@@ -224,6 +224,22 @@ pub(crate) fn refresh_meta(kind: ProviderKind) -> (bool, i64) {
             super::atomcode::models::remote_refreshed(),
             super::atomcode::models::last_refreshed_at(),
         ),
+        // DeepSeek 网页版：清单是**编译期常量两条**（网页版只有 flash / pro
+        // 两档），没有远程目录接口、也不接目录缓存（见
+        // `deepseek/models.rs` 的模块头）。
+        //
+        // ⚠️ 这里必须返回「有内容 = true」而不是走「刷新过没有」——
+        // 本家的 `false` 会让上层判成「这家清单空着」（`refresh_meta` 的返回值
+        // 被「清单有没有内容」的判据消费），于是界面把一家**明明有两条模型**的
+        // 家显示成空的。时间戳顺势给 0（**没有**刷新时刻可言 —— 编一个
+        // 「刚刚刷新过」的时间会是一条假信息）。
+        ProviderKind::DeepSeekWeb => (true, 0),
+        // 豆包工作：清单来自 `/alice/slot/action_bar_v3/brief_list`（有内置兜底
+        // 与落盘缓存，见 `doubaowork/models.rs`）
+        ProviderKind::Doubaowork => (
+            super::doubaowork::models::remote_refreshed(),
+            super::doubaowork::models::last_refreshed_at(),
+        ),
     }
 }
 

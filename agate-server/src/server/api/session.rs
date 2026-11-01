@@ -483,6 +483,22 @@ pub async fn login_start(State(state): State<ServerState>, body: Bytes) -> Respo
         };
         return management_error(400, message);
     }
+    // 豆包工作：登录是「**内嵌窗口打开官方登录页、由壳侧从窗口读 Cookie**」
+    // （与 AtomCode / ZCode 同一形态，见 `providers/doubaowork/mod.rs`），
+    // 因此它**不是**适配器回调换码那条链（`supports_web_login` 为 false）
+    // —— 落到下面的通用分支会回一句「这家不支持网页登录」，并把用户引向
+    // 「填写凭证」。那句文案在这里是错的：本家**能用**网页登录，只是那条
+    // 链的收尾（壳侧读 Cookie 再提交）尚未在 Android 客户端实现。
+    //
+    // 因此显式挡掉并指向**当前可用的**那条路（粘贴 Cookie）——
+    // 给一条会走空的路比不给更糟。
+    if kind == crate::server::core::providers::ProviderKind::Doubaowork {
+        return management_error(
+            400,
+            "豆包工作的网页登录需要壳侧从登录窗口读取 Cookie，该流程尚未接入；\
+             请改用「粘贴 Cookie」（登录 www.doubao.com 后从开发者工具复制完整 Cookie）",
+        );
+    }
     // WorkBuddy 的两个地区（国内版 / 国际版）：**地区取 provider id，不读请求
     // 里的 `edition`** —— 与下面 ZCode 那段同一条理由，而且这里更要紧：
     // 账号一旦落错家（国际版凭证进了国内版组），转发会稳定打错域名，

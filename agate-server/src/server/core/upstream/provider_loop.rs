@@ -1834,6 +1834,23 @@ async fn attempt_queue(
                         ctx.telemetry,
                     ),
                 ),
+                // DeepSeek 网页版的 path-value SSE（裸增量按当前片段类型分流，
+                // **不做差分** —— 见 `protocol::deepseek_stream` 的模块头）
+                UpstreamResponse::DeepSeekWebSse => Box::pin(
+                    super::translate::DeepSeekToChatStream::new(
+                        response,
+                        &wire_model,
+                        ctx.telemetry,
+                    ),
+                ),
+                // 豆包工作的自有 SSE 事件流（解析在 `doubaowork::chat::parse_event`）
+                UpstreamResponse::DoubaoworkSse => Box::pin(
+                    super::translate::DoubaoworkToChatStream::new(
+                        response,
+                        &wire_model,
+                        ctx.telemetry,
+                    ),
+                ),
                 UpstreamResponse::Chat => {
                     return Err(GatewayError::with_status(
                         500,

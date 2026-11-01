@@ -95,7 +95,16 @@ object AccountOps {
         if (!name.isNullOrBlank()) body.put("name", name)
         when (providerId) {
             "kuku" -> body.put("cookie", primary.trim())
+            // 豆包工作：粘贴 Cookie 整串（内核 `credentials::normalize_paste`
+            // 负责解成 Cookie 对并校验登录态；这里原样送出去，不在客户端
+            // 做半套解析 —— 两处各解析一次迟早会分叉）。
+            "doubaowork" -> body.put("cookie", primary.trim())
             "commandcode" -> body.put("apiKey", primary.trim())
+            // DeepSeek 网页版：粘贴 userToken（不是 Cookie，也不是 sk- 平台 Key
+            // —— 那种是另一套接口）。内核 `login::verify_token` 会先做一次
+            // 归一化（剥引号 / `userToken:` 整行 / localStorage JSON 的 .value）
+            // 再 best-effort 探活，所以这里原样送出即可。
+            "deepseek-web" -> body.put("accessToken", primary.trim())
             "antigravity" -> {
                 body.put("refreshToken", primary.trim())
                 if (!secondary.isNullOrBlank()) body.put("email", secondary.trim())

@@ -118,6 +118,13 @@ pub const SCOPE_LOBSTERAI: &str = "lobsterai";
 pub const SCOPE_ATOMCODE: &str = "atomcode";
 /// KukuAI（百度文库库库 AI；`GET /wenchain/genflowpro/model/list`）
 pub const SCOPE_KUKU: &str = "kuku";
+/// 豆包工作（`www.doubao.com`；`GET /alice/slot/action_bar_v3/brief_list`）
+///
+/// ⚠️ DeepSeek 网页版（`deepseek-web`）**不在**这里：它的模型清单是
+/// **编译期常量两条**（网页版只有 flash / pro 两档），没有远程目录接口，
+/// 因此不接目录缓存（给静态清单写缓存只会写出一条假的「刚刷新过」时间戳）。
+/// 同款先例是 `zcode`。详见 `providers::deepseek::models` 的模块头。
+pub const SCOPE_DOUBAOWORK: &str = "doubaowork";
 
 /// 全部 scope（事实来源：`cached_scopes` 按它遍历；新增一家时加在这里）。
 pub const ALL_SCOPES: &[&str] = &[
@@ -146,6 +153,7 @@ pub const ALL_SCOPES: &[&str] = &[
     SCOPE_LOBSTERAI,
     SCOPE_ATOMCODE,
     SCOPE_KUKU,
+    SCOPE_DOUBAOWORK,
 ];
 
 /// 一份清单缓存
@@ -305,7 +313,7 @@ mod tests {
     /// 只是没人报告）。改这个数字时要同时想一遍「新加的那家在数组里吗」。
     #[test]
     fn all_scopes_size_matches_declared_scopes() {
-        assert_eq!(ALL_SCOPES.len(), 25, "新增 scope 后请同步本数字与 ALL_SCOPES");
+        assert_eq!(ALL_SCOPES.len(), 26, "新增 scope 后请同步本数字与 ALL_SCOPES");
         for scope in ALL_SCOPES {
             assert!(!scope.trim().is_empty(), "scope 名不能为空");
         }

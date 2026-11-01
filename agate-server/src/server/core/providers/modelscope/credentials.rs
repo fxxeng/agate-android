@@ -86,7 +86,11 @@ mod tests {
     /// 尾号按字符取：多字节输入不许 panic
     #[test]
     fn tail_survives_multibyte_input() {
-        assert_eq!(token_tail("ms-中文结尾"), "文结尾");
+        // 取**末 4 个字符**（与 `store_util::token_tail` 的 `slice(-4)` 同口径）：
+        // "ms-中文结尾" 共 7 字符（m s - 中 文 结 尾）⇒ 末 4 个是「中文结尾」
+        assert_eq!(token_tail("ms-中文结尾"), "中文结尾");
+        // 多字节不被切坏（这正是本测试的要点：按字节回切会在汉字中间 panic）
+        assert_eq!(token_tail("中文"), "中文");
         assert_eq!(token_tail("ab"), "ab");
     }
 }

@@ -598,9 +598,14 @@ mod tests {
         };
         let cached = serde_json::to_value(&entry).unwrap_or(Value::Null);
         let manifest = to_manifest_value(&entry);
-        // 缓存形态用 Rust 字段名（`wireId`/`costMultiplier`），manifest 用展示键
-        assert!(cached.get("costMultiplier").is_some());
+        // 缓存形态用 **Rust 字段名**（`wire_id` / `cost_multiplier` —— `ModelEntry`
+        // 没有 `rename_all`，serde 用 snake_case），manifest 用展示键。
+        // 判据要落在「两者形态确实不同」上：manifest 的 `credits` 是渲染过的
+        // 标签（有损），缓存里不该出现它 —— 这正是「存结构体不存 manifest」的
+        // 理由（存 manifest 会在恢复时静默丢字段，见模块头）。
+        assert!(cached.get("cost_multiplier").is_some());
         assert!(cached.get("credits").is_none());
+        assert!(cached.get("wire_id").is_some());
         // manifest 把倍率渲染成标签
         assert_eq!(manifest.get("credits").and_then(Value::as_str), Some("x1.5"));
     }

@@ -433,6 +433,19 @@ pub async fn checkin_for(
             .map_err(|error| error.message);
             claim_result(id, name, &display, true, claim)
         }
+        "doubaowork" => {
+            // 豆包工作：先读当日签到态，再按活动条目领取奖励（见
+            // `providers::doubaowork::rewards` 的模块头）。「今天已签到」由
+            // 实现给 `alreadyCompleted:true` + 中性文案（措辞里**不含**
+            // 「已签到」三个字，否则会被 `checkin_completed_today` 当成当日已办
+            // —— 那是 LobsterAI 踩过的坑，同一个判据在这里复用）。
+            let claim = crate::server::core::providers::doubaowork::adapter::claim_for_account(
+                store, &id,
+            )
+            .await
+            .map_err(|error| error.message);
+            claim_result(id, name, &display, true, claim)
+        }
         // 兜底只服务默认那家（WorkBuddy 国内版）——**不是**「剩下所有家」。
         // 这里曾经是无所不包的 `_`：一个 provider 只要没在上面列出，就会拿自己的
         // 令牌去打腾讯的签到接口，稳定报错且看不出原因（Qoder 接入前正是这个处境）。

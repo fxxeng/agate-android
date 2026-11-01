@@ -200,12 +200,21 @@ fun AddProviderPage(onBack: () -> Unit, initialProviderId: String? = null) {
                 // 四个页签：Agent / Web / 预置 API / 自定义。
                 //
                 // ── 为什么 Agent 与 Web 要分成两段（2026-10-31）──────────
-                // 对齐上游 3.3 的分段：Agent 是「编程客户端 / CLI」那一类，
-                // 转发靠伪装官方客户端；Web 是「网页版对话站点」（智谱清言、
-                // DeepSeek 网页），登录靠 Cookie 或网页令牌。两类混在一张
-                // 列表里，用户按「我要用哪个客户端」找家时会先撞上一串网页站。
+                // 对齐上游 3.3 的分段。判据是上游插件包的 `provider_category`
+                // （见 pack.json），**不是**「这家有没有网页站」：
+                //   · `agent2api-providers` —— 不声明该字段，默认 agent（30 家）
+                //   · `agent2api-web-providers` —— `"provider_category": "web"`，
+                //     只有两家：智谱清言（chatglm）、DeepSeek 网页（deepseek-web）
+                // 所以本页 Web 段本就只有这两家，Agent 段是其余全部。
+                //
+                // ⚠️ 曾按产品形态反推过错判：把 ModelScope 两家和 LobsterAI 当成
+                // 「网页对话站」归进了 Web。它们的对话确实在网页上、登录也确实
+                // 靠网页令牌或浏览器授权，但三家的 `provider_category` 都是 agent。
+                // 「转发实现走哪条路」与「有没有网页站」是两件事 —— 别再凭形态猜。
+                //
                 // 归属由注册表的 `category` 声明（内核 `ProviderCategory` 是
-                // 唯一事实来源），本页只负责按它分段。
+                // 唯一事实来源，经 `/api/providers` 的 `category` 下发；本页因卡
+                // 片离线渲染而另存一份在 `PresetRegistry`），本页只负责按它分段。
                 //
                 // 为什么没有上游那个「导入 · 更多」：
                 // 上游的 `data-for` 只有 official / relay / custom 三个值，

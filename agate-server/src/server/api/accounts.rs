@@ -1073,6 +1073,81 @@ pub async fn add_account(state: &ServerState, body: &Bytes) -> Response {
                 };
             store.add_commandcode_account(&credentials, import_name, "manual")
         }
+        // DeepSeek 网页版（`chat.deepseek.com`）：**粘贴 userToken**
+        // → 本地归一化（剥引号 / `userToken:` 整行 / localStorage JSON 的
+        // `.value`）+ 形态检查（非空、无空白），随后一次 best-effort 探活
+        // （`create_pow_challenge` 的 401/403 才判无效）→ 落账号。
+        //
+        // `importDesktop` 不提供：本家的登录态在**浏览器 localStorage** 里，
+        // 不是桌面客户端的可读文件（与 Loomy / MonkeyCode 同一处境）。
+        Some(crate::server::core::providers::ProviderKind::DeepSeekWeb) => {
+            if import_desktop {
+                return management_error(
+                    400,
+                    "DeepSeek 网页版不支持导入桌面端登录态，请粘贴 userToken \
+                     （浏览器 localStorage 里的那一串）添加账号",
+                );
+            }
+            let raw = payload
+                .get("accessToken")
+                .or_else(|| payload.get("userToken"))
+                .or_else(|| payload.get("token"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let credentials =
+                match crate::server::core::providers::deepseek::login::verify_token(raw).await {
+                    Ok(credentials) => credentials,
+                    Err(error) => return management_error(error.status_code, error.message),
+                };
+            store.add_deepseek_web_account(&credentials, import_name, "manual")
+        }
+        // 豆包工作（`www.doubao.com`）：**粘贴 Cookie**（整串）或
+        // **导入 Cookie 文件**（DevTools 导出的 JSON 数组）。
+        //
+        // 归一化同时处理两种形态（`credentials::normalize_paste` 负责解出
+        // Cookie 对），风控参数（device_id / web_id / fp）可选地从 payload 里读
+        // —— 读不到时由 `endpoints::Fingerprint` 现派生（本家要求这几个参数
+        // 自洽，见 `doubaowork/endpoints.rs` 的模块头）。
+        //
+        // `importDesktop` 不提供：本家桌面端的登录态是 Windows 凭据库里的
+        // 加密块，Android 上无从读取（与 Kuku 同一处境）。
+        Some(crate::server::core::providers::ProviderKind::Doubaowork) => {
+            if import_desktop {
+                return management_error(
+                    400,
+                    "豆包工作不支持导入桌面端登录态，请粘贴 Cookie（整串）添加账号",
+                );
+            }
+            let cookie_input = payload
+                .get("cookies")
+                .or_else(|| payload.get("cookie"))
+                .or_else(|| payload.get("accessToken"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            if cookie_input.trim().is_empty() {
+                return management_error(
+                    400,
+                    "请粘贴豆包工作的 Cookie（登录 www.doubao.com 后从开发者工具复制）",
+                );
+            }
+            let normalize = |key: &str| -> Option<String> {
+                payload
+                    .get(key)
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|text| !text.is_empty())
+                    .map(str::to_string)
+            };
+            match crate::server::core::providers::doubaowork::credentials::normalize_paste(
+                cookie_input,
+                normalize("deviceId").as_deref(),
+                normalize("webId").as_deref(),
+                normalize("fp").as_deref(),
+            ) {
+                Ok(seed) => store.add_doubaowork_account(&seed, import_name, "manual"),
+                Err(error) => Err(AccountStoreError::new(error.message, error.status_code)),
+            }
+        }
         // Antigravity（Google 的 AI IDE）：**粘贴 Google refresh token**
         // → 本地归一化（剥引号 / `refresh_token=` 整行 / 空白；`1//` 是令牌本体，
         // 不剥）→ 打一次 Google token 端点做**真实校验**（refresh_token 没有可判

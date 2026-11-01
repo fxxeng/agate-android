@@ -132,6 +132,8 @@ pub mod codearts;
 /// **HTTP 恒 200**（错误在流内），因此走
 /// `UpstreamResponse::CommandCodeNdjson` 那条翻译层，见 `commandcode/mod.rs`。
 pub mod commandcode;
+pub mod deepseek;
+pub mod doubaowork;
 pub mod content_block;
 /// 自定义提供商的**运行期接线**（目录聚合的追加段 + Chat Completions 协议
 /// 转发）。它不进本文件的身份体系（`ProviderKind` / `PROVIDERS`，见
@@ -525,6 +527,38 @@ pub enum ProviderKind {
     /// 归 **Agent 分段**：它是编程客户端（与 WorkBuddy / Qoder 同一档），
     /// 不是网页对话站。
     Atomcode,
+    /// DeepSeek **网页版**（`chat.deepseek.com`）。
+    ///
+    /// ── 为什么是独立一家（而不是 DeepSeek 开放平台）──────────
+    /// 开放平台那条（`api.deepseek.com` + `sk-` Key）是**另一套**计费接口，
+    /// 与本家无关。本家走网页版自己的链路：领 PoW 题 → 本地求解 → 建会话 →
+    /// `chat/completion`（SSE），认证是浏览器 `localStorage` 里的 `userToken`。
+    /// 两者的凭据、端点、错误语义全不同，没有任何可共用的部分。
+    ///
+    /// ── 与其他「无状态 + 自定义流协议」家的关系 ──────────────
+    /// 与 Command Code（NDJSON）、ChatGLM（增量与快照混发的 SSE）并列，
+    /// 本家的 SSE 是 **path-value patch 结构**，因此另开一台翻译状态机
+    /// （见 `providers::deepseek` 与 `protocol::deepseek_stream` 的模块头）。
+    /// 本家额外有一件别家都没有的事：**每次转发前现解一道 PoW**
+    /// （见 `providers::deepseek::pow` / `session`）。
+    ///
+    /// 归 **Web 分段**：上游 web 插件包的成员只有 chatglm 与它两家。
+    DeepSeekWeb,
+    /// 豆包工作（`www.doubao.com`；字节跳动的桌面端 Agent）。
+    ///
+    /// ── 凭据是**一整套 Cookie**（不是单枚令牌）──────────────────
+    /// `sessionid` / `sid_guard` 一族，外加一整组风控 query 参数
+    /// （`aid` / `device_id` / `fp` / `web_tab_id` / …）。伪装的是**桌面客户端**
+    /// 而不是网页版 —— 这一处最容易照抄成网页版形态（见
+    /// `providers::doubaowork::endpoints` 的模块头）。
+    ///
+    /// ── 登录形态与 AtomCode / ZCode 同一档 ─────────────────────
+    /// 「内嵌窗口直接读 Cookie」，不是回调换码：`supports_web_login` 保持 false，
+    /// 由 `api::session::login_start` 在通用网页登录分支之前分流。
+    /// **没有续期**（Cookie 只能失效后重新登录）。
+    ///
+    /// 归 **Agent 分段**：本家在上游 agent 包里（该包不声明 provider_category）。
+    Doubaowork,
 }
 
 /// 一个提供商的静态元数据。
@@ -659,19 +693,27 @@ pub const PROVIDERS: &[ProviderMeta] = &[
     // MonkeyCode 同一理由 —— 同一条产品线的两个版本，中间隔着别家会让「找国际版」
     // 变成一次扫描）。国内版在前，与其余各家的排列一致。
     //
-    // 归 **Web 分段**：魔搭的对话在网页站（modelscope.cn）上，登录靠网页令牌 +
-    // Cookie，不是「伪装桌面客户端」那一类。上游 3.3 把网页提供商整体拆成独立
-    // 插件包，并把智谱清言明确归为 Web —— 本家同属这一类。
-    ProviderMeta::web("modelscope", "ModelScope 国内版"),
-    ProviderMeta::web("modelscope-intl", "ModelScope 国际版"),
+    // 归 **Agent 分段**：判据是上游插件包的 `provider_category`，**不是**「有没有
+    // 网页站」。上游把提供商拆成两个包 —— `agent2api-providers`（不声明
+    // `provider_category`，默认 agent，30 个 id）与 `agent2api-web-providers`
+    // （`"provider_category": "web"`，只有 chatglm + deepseek-web 两家）。
+    // 魔搭两个站点都在 **agent 包**里，所以是 Agent。
+    //
+    // ⚠️ 曾经的错判（别再犯）：本家对话确实在网页站上、登录也确实靠网页令牌，
+    // 于是被「看起来像网页站 ⇒ 归 Web」反推成了 Web。但 `provider_category`
+    // 表达的是**转发实现走哪条路**（伪装官方客户端 / 网页会话），与「有没有
+    // 网页站」是两件事。判据永远去读 pack.json，别按产品形态猜。
+    ProviderMeta::agent("modelscope", "ModelScope 国内版"),
+    ProviderMeta::agent("modelscope-intl", "ModelScope 国际版"),
     // LobsterAI（网易有道「有道龙虾」）：单一站点（`lobsterai.youdao.com`），
     // 没有地区 / 额度池之分。**只有浏览器登录一条入口**（粘贴给不出续期所需的
     // 载荷件，见 `api::accounts` 的 LobsterAI 分支）。排在末尾（2026-10 接入，
     // 后到居后，与 Kuku / Command Code 同一处置）。
     //
-    // 归 **Web 分段**：对话在网页站上，登录靠浏览器授权 —— 与智谱清言 / ModelScope
-    // 同一类（上游 3.3 的网页提供商那一档）。
-    ProviderMeta::web("lobsterai", "LobsterAI"),
+    // 归 **Agent 分段**：与 ModelScope 同一判据 —— 本家在 agent 包里
+    // （`agent2api-providers`）；上游 web 包只有 chatglm + deepseek-web。
+    // 登录走浏览器授权并不等于「网页提供商」，同上一条的错判说明。
+    ProviderMeta::agent("lobsterai", "LobsterAI"),
     // AtomCode（AtomGit 的编码 Agent）：三条平面（登录代理 / CodingPlan REST /
     // 聊天网关）。**轮询式网页登录**（回调在代理域名终结，不占本机端口 ——
     // 所以不需要 `needsGateway` 那条约束）+ 粘贴 accessToken / refreshToken
@@ -680,6 +722,20 @@ pub const PROVIDERS: &[ProviderMeta] = &[
     //
     // 归 **Agent 分段**：它是编程客户端，不是网页对话站。
     ProviderMeta::agent("atomcode", "AtomCode"),
+    // DeepSeek 网页版（`chat.deepseek.com`）：单一站点、单一入口（粘贴 userToken），
+    // 没有地区伴生。排在末尾（2026-11 接入，后到居后，与其余各家同一处置）。
+    //
+    // 归 **Web 分段**：判据是上游插件包的 `provider_category` —— 本家在上游的
+    // `agent2api-web-providers` 包里（该包声明 `"provider_category": "web"`，
+    // 与 chatglm 同包，**全包只有这两家**）。这不是按产品形态猜的：
+    // 上游 web 包的成员就这两个 id。
+    ProviderMeta::web("deepseek-web", "DeepSeek 网页"),
+    // 豆包工作（`www.doubao.com`）：单一站点、单一入口（内嵌窗口取 Cookie /
+    // 粘贴 Cookie），没有地区伴生、没有续期。排在末尾（2026-11 接入，后到居后）。
+    //
+    // 归 **Agent 分段**：本家在上游的 `agent2api-providers` 包里
+    // （该包不声明 `provider_category`，默认 agent）。
+    ProviderMeta::agent("doubaowork", "豆包工作"),
 ];
 
 /// provider id 在注册表里的下标（未知 id → None）。
@@ -769,6 +825,8 @@ pub fn kind_from_id(id: &str) -> Option<ProviderKind> {
         "chatglm" => Some(ProviderKind::Chatglm),
         "officeace" => Some(ProviderKind::OfficeAce),
         "orcaterm" => Some(ProviderKind::OrcaTerm),
+        "deepseek-web" => Some(ProviderKind::DeepSeekWeb),
+        "doubaowork" => Some(ProviderKind::Doubaowork),
         // 走到这里 = 上面的注册表判定已放行、这个 match 却没有对应分支：
         // 只可能是有人给 `PROVIDERS` 加了条目忘了加这里。开发期喊出来；
         // release 返回 None（见上：宁可为「未知」，不可误认成别家）。
@@ -816,6 +874,8 @@ pub const fn kind_id(kind: ProviderKind) -> &'static str {
         ProviderKind::ModelscopeIntl => "modelscope-intl",
         ProviderKind::LobsterAi => "lobsterai",
         ProviderKind::Atomcode => "atomcode",
+        ProviderKind::DeepSeekWeb => "deepseek-web",
+        ProviderKind::Doubaowork => "doubaowork",
     }
 }
 
