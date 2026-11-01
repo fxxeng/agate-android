@@ -7,26 +7,29 @@ import org.junit.Test
 
 class GatewayIntentTrackerTest {
     @Test
-    fun cleanupIsAllowedOnlyForTheExactCurrentStoppedGeneration() {
+    fun initialIdleStateCountsAsStoppedIntent() {
         val tracker = GatewayIntentTracker()
-        val stopped = tracker.requestStop()
 
-        assertTrue(tracker.mayCleanup(stopped))
-
-        tracker.requestStart()
-        assertFalse("a later START must invalidate old cleanup", tracker.mayCleanup(stopped))
+        // 从未 START：销毁兜底清理应放行（保持旧实例「系统杀服务时兜底停内核」语义）。
+        assertTrue(tracker.mayStopNow())
+        assertEquals(0L, tracker.snapshot().generation)
     }
 
     @Test
-    fun laterStopAlsoInvalidatesAnOlderCleanupSnapshot() {
+    fun stopIsAllowedOnlyWhileTheLastIntentIsAStop() {
         val tracker = GatewayIntentTracker()
-        val firstStop = tracker.requestStop()
+        val stopped = tracker.requestStop()
 
+        assertTrue(tracker.mayStopNow())
+        assertEquals(false, stopped.shouldRun)
+
+        // R11 实测场景：销毁/清理流程期间到达的新 START＝最后意图是启动，
+        // 迟到的 stop 必须跳过，不得杀死新 START 拉起的网关。
         tracker.requestStart()
-        tracker.requestStop()
+        assertFalse("a pending START must block the delayed stop", tracker.mayStopNow())
 
-        assertFalse("a newer STOP is handled by its own command", tracker.mayCleanup(firstStop))
-        assertTrue(tracker.mayCleanup(tracker.snapshot()))
+        tracker.requestStop()
+        assertTrue(tracker.mayStopNow())
     }
 
     @Test
@@ -37,6 +40,6 @@ class GatewayIntentTrackerTest {
 
         assertTrue(secondStart.generation > firstStart.generation)
         assertEquals(true, secondStart.shouldRun)
-        assertFalse(tracker.mayCleanup(firstStart))
+        assertTrue(tracker.snapshot().generation >= secondStart.generation)
     }
 }
