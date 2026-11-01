@@ -111,8 +111,39 @@ const REQUEST_TIMEOUT_MS: u64 = endpoints::CATALOG_TIMEOUT_MS;
 /// 上文那条 `doubao-seed-2-0-code-preview-260215` 也不收 —— 它同样落在
 /// lobsterai 的名字串里，无法证明是本家的模式名。
 ///
-/// `supportsImages` 给 `true`：本家支持图片输入（[二进制] `image` / `image_ori`
-/// / `attachment_block` 一族 + [Go参考] 的 `imageBlock`），这是**有依据**的。
+/// `supportsImages` 给 **`false`** —— 这一条是**修正过的**，改动理由必须写清：
+///
+/// ```text
+///   上游确实收图片（[二进制] image / image_ori / attachment_block 一族 +
+///   [Go参考] 的 imageBlock），**但本仓当前传不上去**：
+///   图片必须先 POST /alice/resource/prepare_upload 换成上游认的资源 uri
+///   （见 super::upload），而这一步是**异步**的，build_chat_request 是
+///   **同步**的 —— trait 里没有任何「能同时拿到 body 的异步钩子」
+///   （ensure_access_token 没有 body 参数；带 body 的 forward_conversation
+///   属于有状态路径，本家不该走那条，见 chat.rs 的模块头）。
+///   于是 chat::prepare_attachments 写好了却**没有调用点**，附件只能降级成
+///   文本标记 [Attached image 1: a.png]。
+/// ```
+///
+/// 广告成 `true` 而实际传不上图，是**给下游一个假承诺**：客户端会据此把
+/// 图片塞进请求，用户以为图生效了，而模型只看到一句 "[Attached image 1: …]"。
+/// 按本仓口径（「算不准就降级说法」），这里如实报 `false`。
+///
+/// 要真正开启，缺的是**一处结构改动**（不是补丁）：给 `ProviderAdapter` 加
+/// 一个异步钩子，例如
+/// `fn prepare_body<'a>(&'a self, account: &'a Value, body: &'a Value)
+///    -> Pin<Box<dyn Future<Output = Result<Option<Value>, GatewayError>> + Send + 'a>>`
+/// （默认返回 `Ok(None)` = 不改），由 `provider_loop` 在
+/// `ensure_access_token` 之后、`build_chat_request` 之前 await；
+/// doubaowork 覆写它去调 `prepare_attachments` 并把 `ref_file_ids` 放进 body。
+/// 那才是「这一类点的唯一入口」，也顺带解决将来别家的同类需求。
+/// **在那之前，这里的 false 是当前唯一诚实的答案。**
+///
+/// 收敛成一个常量：本文件有**两个**构建器会产出能力位
+/// （`to_manifest_value` 与 `fallback_models`），两处各写一份字面量必然漂移
+/// （一个改了另一个忘改，症状是「远程目录来的模型说支持图、兜底清单说不支持」）。
+pub const SUPPORTS_IMAGES: bool = false;
+
 /// `supportsReasoning` 按档位给（`off` 那一档为 false）。
 /// `supportsToolCall` 给 **false**：本家是**文本桥接**的工具调用
 /// （插件文档原话「Tool calls use a text bridge, not native function calling」），
@@ -193,8 +224,9 @@ fn map_entry(row: &Value) -> Option<Value> {
         // 本家是**文本桥接**的工具调用，不是原生 function calling ⇒ false
         // （见 FALLBACK_MODELS 的说明；这一条对所有条目一致，不逐条判）
         "supportsToolCall": false,
-        // 图片：本家支持图片输入（依据见 FALLBACK_MODELS 的说明）
-        "supportsImages": true,
+        // 图片：上游收图，但本仓**传不上去**（同步/异步接缝）
+        // ⇒ 如实报 false，不给假承诺（依据与彻底接线方案见 SUPPORTS_IMAGES）
+        "supportsImages": SUPPORTS_IMAGES,
     });
     if let Some(reasoning) = reasoning {
         if let Some(object) = entry.as_object_mut() {
@@ -326,7 +358,7 @@ fn fallback_models() -> Vec<Value> {
                 "name": name,
                 "supportsToolCall": false,
                 "supportsReasoning": *level != "off",
-                "supportsImages": true,
+                "supportsImages": SUPPORTS_IMAGES,
                 "maxInputTokens": context,
             })
         })
@@ -520,7 +552,9 @@ mod tests {
                 Some(&Value::Bool(false)),
                 "本家是文本桥接，广告成原生支持会让客户端发 tools 去换一个上游不认识"
             );
-            assert_eq!(item.get("supportsImages"), Some(&Value::Bool(true)));
+            // 上游收图但本仓传不上去（同步/异步接缝，见 SUPPORTS_IMAGES）：
+            // 广告成 true 会让客户端塞图进请求、用户以为生效了
+            assert_eq!(item.get("supportsImages"), Some(&Value::Bool(false)));
         }
     }
 
