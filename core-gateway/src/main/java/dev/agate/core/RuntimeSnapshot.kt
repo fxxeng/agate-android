@@ -69,6 +69,20 @@ sealed interface RuntimeStateEvent {
     ) : RuntimeStateEvent
 
     data class SchedulerObserved(val enabled: Boolean) : RuntimeStateEvent
+
+    /**
+     * Authoritative native snapshot, used only at a serialized reconciliation boundary
+     * (for example after a lifecycle JNI call or during explicit process recovery).
+     * Do not feed arbitrary polling results while a lifecycle command is in flight.
+     */
+    data class NativeStatusObserved(
+        val coreReady: Boolean,
+        val gatewayRunning: Boolean,
+        val port: Int,
+        val bindLan: Boolean,
+        val version: String,
+        val schedulerEnabled: Boolean,
+    ) : RuntimeStateEvent
 }
 
 /**
@@ -126,6 +140,15 @@ object RuntimeSnapshotReducer {
                 } else current
             }
             is RuntimeStateEvent.SchedulerObserved -> current.copy(schedulerEnabled = event.enabled)
+            is RuntimeStateEvent.NativeStatusObserved -> current.copy(
+                core = if (event.coreReady) CoreRuntimeState.Ready else CoreRuntimeState.NotInitialized,
+                gateway = if (event.gatewayRunning) {
+                    GatewayRuntimeState.Running(event.port, event.bindLan, event.version)
+                } else {
+                    GatewayRuntimeState.Stopped
+                },
+                schedulerEnabled = event.schedulerEnabled,
+            )
         }
 
         if (next == current) return current

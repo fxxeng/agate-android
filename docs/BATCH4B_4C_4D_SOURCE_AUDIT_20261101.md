@@ -175,3 +175,14 @@ Reducer 对无效/乱序完成事件与重复事件返回原快照；只有状�
 **边界：** 当前只是可测试状态模型，不是已接入的 RuntimeController 状态机；尚无唯一状态发布、Native reconcile、观察者订阅、进程重建恢复、旧异步回调 token 防护。`revision` 不替代 `GatewayIntentTracker.mayStopNow()`。
 
 **验证：** `RuntimeSnapshot.kt` 使用 kotlinc 1.9.0 独立编译通过。Gradle 单测命令因 Wrapper 下载 Gradle 8.11.1 时 DNS `UnknownHostException` 未能启动；不能记为 Gradle/JUnit 通过。GitHub CI、Instrumentation、真机均待验证。
+
+
+## 7. Batch 4B-2A：Native Status 对账事件（R16 基线 73f781a）
+
+新增 `RuntimeStateEvent.NativeStatusObserved`，将 Native status 的 `core/running/port/bindLan/version/scheduler` 事实表达为一个原子观测事件。Reducer 以该事件对账 Core、Gateway、Scheduler 三个维度；Gateway 停止不隐式重置 Core，scheduler 独立更新。重复相同观测不增加 revision。
+
+新增 4 项 JVM 测试，覆盖三维状态对账、Gateway stopped 保留 Core Ready、Core/Gateway 未就绪状态、相同 Native 观测幂等。原 8 项测试保留，目标总数 12。
+
+**关键约束：** `NativeStatusObserved` 是权威观测/恢复事件，不是命令。只有在 RuntimeController 串行控制边界内、没有未完成生命周期命令时才能应用；不能让任意周期轮询结果覆盖 Starting/Stopping 状态。该约束必须在 4B-2B 接线时落实。
+
+本批没有接入 RuntimeController/Service/UI/Repository，没有改 Gateway JNI、Rust、Gradle 或 workflow。当前环境无 `kotlinc` / Gradle 命令，所有新增测试与构建待 GitHub CI 验证；未执行 Cargo、APK、Instrumentation、真机测试。

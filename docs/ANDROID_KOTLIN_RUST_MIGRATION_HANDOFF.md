@@ -1176,7 +1176,7 @@ CheckinRun 专项另行估算：功能实现约 **85–90%**（执行台账、�
 
 **Batch 4C — Phase 1：Native Bridge 契约盘点**
 
-- 对 11 个 JNI 导出逐项列出输入校验、返回类型、空值、错误、线程、panic containment、资源释放与调用者。
+- 对 12 个 JNI 导出逐项列出输入校验、返回类型、空值、错误、线程、panic containment、资源释放与调用者。
 - 先形成契约表和测试缺口，不在本批贸然更改 JNI ABI。
 - 下一批再选择一个低风险入口实现统一错误表达/版本能力探测。
 
@@ -1248,8 +1248,8 @@ CheckinRun 专项另行估算：功能实现约 **85–90%**（执行台账、�
 
 ### 6. 下一批执行顺序
 
-1. **Batch 4B-1（下一批代码切片）：** 新增纯 Kotlin Core/Gateway 双状态模型与状态转移单测，不先改 Service/UI/JNI。
-2. **Batch 4B-2：** 将 RuntimeController 增加具名生命周期 API 和状态发布，再把 `AgateApp`、FGS、scheduler toggle 逐入口迁入；每一步保持 `mayStopNow()` + `Gateway.stop()` 原子串行关系。
+1. **Batch 4B-1：** 已在 R16 由 GitHub CI 验证并关闭；新增纯 Kotlin Core/Gateway 双状态模型与 8 项状态转移单测。
+2. **Batch 4B-2A：** Native `Gateway.Status` 事实到 RuntimeSnapshot 的显式 reconcile 事件与纯 JVM 测试；只建立状态对账规则，不接入调用方。**Batch 4B-2B：** RuntimeController 具名生命周期 API 与状态发布；再分批迁移 `AgateApp`、FGS、scheduler toggle，保持 `mayStopNow()` + `Gateway.stop()` 原子串行关系。
 3. **Batch 4C-1：** 优先处理 `nativeSetLogCallback` 返回值被忽略的问题，并补 Kotlin 侧契约测试；其余 JNI 入口先逐个补测试，不一次性改 ABI。
 4. **Batch 4D-1：** 审查 `sub_kernel` Android 能力与桌面导入 API 的平台语义；Core worker 清单另列，不与 RuntimeController 改造混批。
 5. **Batch 4E：** staging 双实例互斥仍独立处理，先审查真实 stage 脚本/工作流临界区。
@@ -1323,3 +1323,33 @@ CheckinRun 专项另行估算：功能实现约 **85–90%**（执行台账、�
 - Gradle `:core-gateway:testDebugUnitTest` 未启动：Gradle Wrapper 下载 8.11.1 时 DNS `UnknownHostException`。项目真实 JUnit、Android 构建、Rust tests、Instrumentation 均待 GitHub CI 验证。
 - 本批新增代码未接入任何生产调用路径；Phase 2 仍未完成。GitHub CI 通过前不得将 Batch 4B-1 标为关闭。
 - 下一批依赖本批 CI 结果：先做 Native `Gateway.Status` → 快照 reconcile 映射及测试，再接入 RuntimeController 具名生命周期 API；不可跳过验证直接迁移 Service/UI。
+
+
+## 2026-11-02：R16 Batch 4B-1 验证收官与 Batch 4B-2A
+
+### 1. R16 验证收官
+
+- 验证分支：`verify/arch-8faa5f5`；HEAD `73f781a`。
+- GitHub Actions Run：`41329110670`；`rust-tests` 与 `android-build` 双绿。
+- `:core-gateway:compileDebugUnitTestKotlin`、`:core-gateway:testDebugUnitTest`、`:app:testDebugUnitTest` 通过；新增 8 项 RuntimeSnapshot 单测由 CI 正式编译和执行。
+- Android Instrumentation 2/2 通过，0 skipped / 0 failed。
+- R16 源码对账确认：新增 `RuntimeSnapshot.kt` 与 `RuntimeSnapshotReducerTest.kt`；修改两份文档；无缺失或意外代码改动。
+- Batch 4B-1 正式关闭。状态模型仍未接入 RuntimeController，不代表 Phase 2 完成。
+- CI 纪律：速断/取消前必须查询同 workflow 最近成功运行的 per-step timing；不得用其他项目或印象中的整轮耗时设定 Instrumentation 超时。step 运行中无法取得日志时，只轮询状态，不把正常长耗时误判为卡死。
+
+### 2. Batch 4B-2A：Native Status 对账事件
+
+- 基线：R16 HEAD `73f781a`（用户提供的 GitHub archive；归档无 `.git`）。
+- 本批在 `RuntimeStateEvent` 增加 `NativeStatusObserved`，承载 Native `Gateway.Status` 的三个独立事实：`coreReady`、`gatewayRunning`（含 port/bindLan/version）和 `schedulerEnabled`。
+- Reducer 收到该事件时以 Native 观测事实对账三个状态维度：Core 映射为 Ready/NotInitialized；Gateway 映射为 Running/Stopped；scheduler 使用 Native 布尔值。Core 与 Gateway 仍独立表达，不从 Gateway stop 推导 Core shutdown。
+- 该事件是**权威观测/恢复事件**，不是生命周期命令。调用方必须在 RuntimeController 串行控制边界内、且没有未完成生命周期命令时使用；禁止将任意轮询结果与正在执行的 START/STOP 交错写入快照，否则旧观测可能覆盖 Transitional 状态。
+- 新增 4 项测试：三维状态联合对账；Gateway stopped 不重置 Ready Core；Native Core/Gateway 均未就绪的映射；相同 Native 状态不增加 revision。连同原有 8 项，目标 CI 测试数为 12。
+- 本批仍未把状态发布接入 RuntimeController、Application、FGS、Repository 或 UI；没有新增协程/StateFlow 依赖，没有改变 JNI ABI/Rust 代码。
+
+### 3. 验证状态与限制
+
+- 已完成源码级变更与文档更新。
+- 当前执行环境未提供可用 `kotlinc` / Gradle 命令，Gradle Wrapper 也未在本轮执行；因此 12 项测试、Gradle 编译、Rust tests、APK、Instrumentation 均**待 GitHub CI**。
+- 未运行真机测试。
+- 源码归档不含 `.git`，本地工作快照不宣称 Git commit SHA。
+- 下一步：上传本批快照，以 `73f781a` 为父提交触发 CI。通过后进入 4B-2B，先增加 RuntimeController 状态持有/快照读取与具名生命周期 API 的最小切片，再逐入口接入；不同时迁移所有调用方。

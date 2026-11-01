@@ -86,6 +86,105 @@ class RuntimeSnapshotReducerTest {
         assertEquals(GatewayRuntimeState.Failed("listen", "address_in_use", "busy"), failed.gateway)
     }
 
+
+    @Test
+    fun nativeStatusReconcilesAllThreeIndependentDimensions() {
+        val observed = reduce(
+            RuntimeSnapshot(
+                core = CoreRuntimeState.Initializing,
+                gateway = GatewayRuntimeState.Starting,
+                schedulerEnabled = null,
+            ),
+            RuntimeStateEvent.NativeStatusObserved(
+                coreReady = true,
+                gatewayRunning = true,
+                port = 8787,
+                bindLan = true,
+                version = "3.0.8",
+                schedulerEnabled = false,
+            ),
+            50,
+        )
+
+        assertEquals(CoreRuntimeState.Ready, observed.core)
+        assertEquals(GatewayRuntimeState.Running(8787, true, "3.0.8"), observed.gateway)
+        assertEquals(false, observed.schedulerEnabled)
+        assertEquals(1L, observed.revision)
+        assertEquals(50L, observed.updatedAtMillis)
+    }
+
+    @Test
+    fun nativeStoppedStatusDoesNotResetReadyCore() {
+        val current = RuntimeSnapshot(
+            core = CoreRuntimeState.Ready,
+            gateway = GatewayRuntimeState.Running(8787, false, "3.0.8"),
+            schedulerEnabled = true,
+        )
+        val observed = reduce(
+            current,
+            RuntimeStateEvent.NativeStatusObserved(
+                coreReady = true,
+                gatewayRunning = false,
+                port = 0,
+                bindLan = false,
+                version = "3.0.8",
+                schedulerEnabled = true,
+            ),
+            60,
+        )
+
+        assertEquals(CoreRuntimeState.Ready, observed.core)
+        assertEquals(GatewayRuntimeState.Stopped, observed.gateway)
+        assertEquals(true, observed.schedulerEnabled)
+    }
+
+    @Test
+    fun nativeStatusCanRepresentCoreNotReadyAndGatewayNotRunning() {
+        val observed = reduce(
+            RuntimeSnapshot(
+                core = CoreRuntimeState.Ready,
+                gateway = GatewayRuntimeState.Running(8787, false, "3.0.8"),
+                schedulerEnabled = true,
+            ),
+            RuntimeStateEvent.NativeStatusObserved(
+                coreReady = false,
+                gatewayRunning = false,
+                port = 0,
+                bindLan = false,
+                version = "3.0.8",
+                schedulerEnabled = false,
+            ),
+            70,
+        )
+
+        assertEquals(CoreRuntimeState.NotInitialized, observed.core)
+        assertEquals(GatewayRuntimeState.Stopped, observed.gateway)
+        assertEquals(false, observed.schedulerEnabled)
+    }
+
+    @Test
+    fun identicalNativeStatusDoesNotAdvanceRevision() {
+        val current = RuntimeSnapshot(
+            core = CoreRuntimeState.Ready,
+            gateway = GatewayRuntimeState.Running(8787, false, "3.0.8"),
+            schedulerEnabled = true,
+        )
+        val observed = reduce(
+            current,
+            RuntimeStateEvent.NativeStatusObserved(
+                coreReady = true,
+                gatewayRunning = true,
+                port = 8787,
+                bindLan = false,
+                version = "3.0.8",
+                schedulerEnabled = true,
+            ),
+            80,
+        )
+
+        assertSame(current, observed)
+    }
+
     private fun reduce(
         snapshot: RuntimeSnapshot,
         event: RuntimeStateEvent,
