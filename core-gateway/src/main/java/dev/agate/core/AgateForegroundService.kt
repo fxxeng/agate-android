@@ -16,6 +16,7 @@ import android.os.Looper
 import android.os.PowerManager
 import org.json.JSONObject
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.RejectedExecutionException
 
 /**
@@ -43,6 +44,10 @@ class AgateForegroundService : Service() {
         /** 后台受限降级通知（与网关常驻通知分开，见 [notifyBlocked]）。 */
         private const val CHANNEL_BLOCKED_ID = "agate_blocked"
         private const val NOTIFICATION_ID_BLOCKED = 1002
+
+        // 跨 Service 实例保存最近一次用户意图。旧实例的 onDestroy 可能晚于新
+        // START 的交付；此标记防止旧实例的兜底 Gateway.stop 越过新启动。
+        private val gatewayStartRequested = AtomicBoolean(false)
 
         /**
          * 拉起前台服务；**后台受限时不抛**，返回 false 由调用方决定下一步。
@@ -149,6 +154,7 @@ class AgateForegroundService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_STOP -> {
+                gatewayStartRequested.set(false)
                 // STOP 不必等排在 TICK 后面：先通过轻量 JNI 置合作式停止标志。
                 // 当前 Provider 请求自然结束后，Rust 会在账号边界阻止下一账号启动。
                 val ticksToStop = pendingTicks.snapshot()
@@ -216,6 +222,7 @@ class AgateForegroundService : Service() {
 
             else -> {
                 // ACTION_START，或 null intent（START_STICKY 被杀重启）
+                gatewayStartRequested.set(true)
                 enterForeground("启动中…")
                 enqueueCommand(ACTION_START) { runStart() }
                 return START_STICKY
@@ -486,13 +493,24 @@ class AgateForegroundService : Service() {
     // ── 通知 ─────────────────────────────────────────────────────
 
     override fun onDestroy() {
-        // 兜底：服务销毁（进程被杀除外）时尽量带走内核与锁。
-        // 排在已提交命令之后执行，避免与正在进行的 start/tick 并发；shutdown()
-        // 采用 orderly 模式，已接收的清理任务会继续排空，不中断正在等待的 JNI。
+        // 兜底清理必须服从进程级最新启动意图。旧实例可能因 stopSelfResult()
+        // 销毁，而一个新的 START 已经交付/正在交付；无条件 Gateway.stop() 会在
+        // 新实例 START 之后异步落地，造成「Gateway 起来后又被旧 onDestroy 停掉」。
+        // 显式 ACTION_STOP 已在命令队列中同步停止 Gateway；只有当前仍是停止意图
+        // 时，销毁兜底才补做 stop。检查放在线程执行时，而不是入队时，缩小竞态窗。
         try {
             commandExecutor.execute {
                 try {
-                    RuntimeController.runSerialized { Gateway.stop() }
+                    RuntimeController.runSerialized {
+                        // 将意图检查放进同一个生命周期串行区：若新 START 已先排入
+                        // RuntimeController，则跳过；若 STOP 清理先取得串行位，它
+                        // 必然先于随后排入的 START 完成，不会出现 stop 越过 start。
+                        if (!gatewayStartRequested.get()) {
+                            Gateway.stop()
+                        } else {
+                            android.util.Log.i("Agate", "跳过旧 Service 实例清理：已有新的 START 意图")
+                        }
+                    }
                 } catch (t: Throwable) {
                     android.util.Log.w("Agate", "Service 销毁时停止内核失败", t)
                 } finally {

@@ -130,3 +130,46 @@ Round 8 已明确发现 settle 门失效。先修复镜像与门禁并观察一�
 6. AOSP Emulator 上 Instrumentation 真正开始运行；测试结果需单独判断，
    不以 Emulator 成功启动代替 JNI/Service 测试通过。
 
+
+
+## Batch 3-A：ForegroundService STOP → START 销毁竞态修复（CI-Fix8）
+
+Round 9（run `41263307363`，源码基线 `f8253a6`）首次在 AOSP x86_64
+Emulator 上真实运行 Instrumentation：Native Core/Router/Gateway 用例通过；
+`foregroundServicePreservesStartAfterStopOrderingBarrier` 失败，表现为新
+START 已短暂启动 Gateway，随后 Gateway 又停止。CI 启动、adb root、PSI
+settle 均已通过，本轮按应用时序缺陷处理，不再调整 Emulator 基建。
+
+### 根因边界
+
+`ACTION_STOP` 的 Gateway.stop 与同一实例命令队列中的 START 本身是串行的。
+但 `onDestroy()` 另有一条无条件兜底 `Gateway.stop()`：旧实例被
+`stopSelfResult(startId)` 销毁后，该清理任务可能晚于新实例的 START 执行，
+从而停止新实例刚启动的 Gateway。单靠 `RuntimeController` 串行化不能表达
+「这个 stop 属于哪个 Service 实例/哪次用户意图」。
+
+### CI-Fix8 修改
+
+- `AgateForegroundService` 增加进程级 `gatewayStartRequested` 原子标记，
+  跨 Service 实例记录最近一次 START/STOP 意图。
+- 收到 ACTION_START 或 START_STICKY 的 null intent 时置为 true；收到
+  ACTION_STOP 时置为 false。
+- `onDestroy()` 的兜底线程在真正执行时读取该标记：已有更新的 START 意图
+  时跳过旧实例的 Gateway.stop；当前仍是 STOP 意图时才执行兜底 stop。
+- 显式 ACTION_STOP 仍在原命令队列中同步执行 Gateway.stop；命令队列、
+  RuntimeController、JNI/Rust API、WakeLock 获取/释放逻辑均不改。
+- 不引入延时 sleep、重试或全局重构；保留现有 Instrumentation 测试作为
+  STOP→START 回归门禁。
+
+### 第 10 轮验收
+
+1. Rust tests 保持全绿。
+2. `nativeLibraryCoreRouterAndGatewayLifecycleWork` 通过。
+3. `foregroundServicePreservesStartAfterStopOrderingBarrier` 通过，且新 START
+   后 Gateway 在断言窗口内持续 running。
+4. 检查 logcat：若旧实例销毁清理遇到新 START，应出现
+   `跳过旧 Service 实例清理：已有新的 START 意图`；不得出现其后的旧清理
+   停止新 Gateway。
+5. 正式 Debug/Release 仍只打包 arm64-v8a；x86_64 仅用于 Instrumentation。
+6. 若仍失败，保留 per-test logcat 与 service lifecycle 日志，再根据实际顺序
+   继续定位；不先调整 CI settle 参数。
