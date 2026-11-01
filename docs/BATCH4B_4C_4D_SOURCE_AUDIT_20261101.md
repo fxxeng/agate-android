@@ -165,3 +165,13 @@ sealed interface GatewayRuntimeState {
 - Kotlin 声明与 Rust 导出源码静态计数均为 12，名称一一匹配；未实际运行 `verify-jni-exports.py`，因为需要构建产物 `.so` 与 `nm`。
 - 未运行 Cargo、Gradle、Instrumentation 或真机测试。
 - 本轮不修改 Kotlin/Rust 运行逻辑；只更新交接与审计文档。
+
+## 6. Batch 4B-1 实施记录（R15 基线 9182025）
+
+本批在审计建议基础上新增纯 Kotlin `RuntimeSnapshot`、Core/Gateway 独立状态 sealed interface、`RuntimeStateEvent` 与纯函数 `RuntimeSnapshotReducer`，并新增 8 项 JVM 单元测试。只新增两个 Kotlin 文件；没有修改 RuntimeController、Gateway、Service、JNI、Rust、Gradle 依赖或 CI workflow。
+
+Reducer 对无效/乱序完成事件与重复事件返回原快照；只有状态变化才递增 revision 并更新调用方提供的时间戳。`schedulerEnabled` nullable 表示尚未观测 Native 实际值。Core/Gateway 不互相隐式改变状态。
+
+**边界：** 当前只是可测试状态模型，不是已接入的 RuntimeController 状态机；尚无唯一状态发布、Native reconcile、观察者订阅、进程重建恢复、旧异步回调 token 防护。`revision` 不替代 `GatewayIntentTracker.mayStopNow()`。
+
+**验证：** `RuntimeSnapshot.kt` 使用 kotlinc 1.9.0 独立编译通过。Gradle 单测命令因 Wrapper 下载 Gradle 8.11.1 时 DNS `UnknownHostException` 未能启动；不能记为 Gradle/JUnit 通过。GitHub CI、Instrumentation、真机均待验证。

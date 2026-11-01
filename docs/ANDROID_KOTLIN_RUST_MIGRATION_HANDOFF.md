@@ -1260,3 +1260,66 @@ CheckinRun 专项另行估算：功能实现约 **85–90%**（执行台账、�
 - 本轮仅更新文档与审计记录，没有 Kotlin/Rust 运行代码改动。
 - 本轮未执行 Cargo、Gradle、Instrumentation 或真机测试；静态计数不是 `.so` 符号核验。
 - 下一批状态模型必须先通过 GitHub CI，再接入调用方；未执行的测试不得标为通过。
+
+## 2026-11-01：R15 Batch 4B-1（纯 Kotlin 双生命周期状态模型）
+
+### 1. 基线与批次边界
+
+- 基线：验证分支 `verify/arch-8faa5f5`，R15 HEAD `9182025`（用户提供 GitHub archive；归档本身不含 `.git`）。
+- R15 GitHub Actions：Run `41309768641`，attempt 2；`rust-tests` + `android-build` 双绿，Instrumentation 2/2。attempt 1 在 Emulator boot 阶段 `Broken pipe (32)` / adb exit 224，未执行 app 测试；同 commit failed-job 重跑通过。该基线验证结果见第 15 轮报告。
+- 本批只新增纯 Kotlin 状态模型与 JVM 单元测试，并更新文档；不改 `RuntimeController`、`Gateway`、`AgateForegroundService`、JNI、Rust、Gradle 依赖或 workflow。
+- 本批没有把状态模型接入运行路径。当前 RuntimeController 仍是串行执行器；状态唯一发布、Native reconcile、UI 订阅均未实现。
+
+### 2. 新增状态模型
+
+新增 `core-gateway/src/main/java/dev/agate/core/RuntimeSnapshot.kt`：
+
+- `RuntimeSnapshot` 是不可变快照，分开表达 `core`、`gateway` 与 nullable `schedulerEnabled`；`null` 明确表示尚未观测到 Native 调度器状态，不把 SharedPreferences 期望值伪装成实际值。
+- Core 状态：`NotInitialized`、`Initializing`、`Ready`、`Failed(stage, code, message)`。
+- Gateway 状态：`Stopped`、`Starting`、`Running(port, bindLan, version)`、`Stopping`、`Failed(stage, code, message)`。
+- `revision` 仅在快照实际变化时递增；`updatedAtMillis` 由调用方传入，Reducer 不直接读取系统时钟，便于确定性测试。
+- `RuntimeStateEvent` 表达命令执行过程的状态事件/结果，不直接调用 JNI，也不是命令 API。
+- `RuntimeSnapshotReducer.reduce(current, event, nowMillis)` 为纯函数；非法/过期完成事件和重复状态事件不改变快照，不增加 revision。
+
+### 3. 测试覆盖
+
+新增 `RuntimeSnapshotReducerTest.kt`，包含 8 项测试：
+
+1. Core 与 Gateway 生命周期独立；
+2. Core 失败保留 stage/code/message 且允许重试；
+3. Gateway start/stop 状态转换保留 Native 运行信息；
+4. Scheduler 初始未知且独立观测；
+5. 无对应进行态的乱序完成事件被忽略；
+6. 重复 start/stop 事件幂等；
+7. revision/timestamp 只在状态变化时更新；
+8. Gateway 失败保留结构化原因。
+
+### 4. 重要设计边界
+
+- Reducer 不负责命令串行化、不负责发布观察者、不负责 Native `status()` reconcile，也不负责 Service/进程重建恢复。
+- 乱序完成事件忽略只能保护纯状态模型；真正的异步旧结果防护仍需由后续 RuntimeController 在控制队列内实施，不能用 `revision` 取代 `GatewayIntentTracker.mayStopNow()`。
+- 当前 `Gateway.status()` 仍是 Native 运行事实来源；后续应增加显式 reconcile/observed 事件，支持 Application/Service 重建后从 Native 事实恢复快照。
+- Core 初始化成功不隐式将 Gateway 标记 Running；Gateway stop 不将 Core 标记 NotInitialized；scheduler 状态独立。
+- 本批没有新增 StateFlow/coroutines 依赖，也没有向 RuntimeController 添加具名 API。
+
+### 5. 本地验证与 CI 状态
+
+- `kotlinc` 1.9.0 对 `RuntimeSnapshot.kt` 独立编译：通过。
+- `./gradlew :core-gateway:testDebugUnitTest --no-daemon`：未能启动 Gradle 构建。Wrapper 需要下载 Gradle 8.11.1，但当前执行环境 DNS 无法解析 `mirrors.cloud.tencent.com`（`UnknownHostException`）；这不是编译/测试失败，也不能记为通过。
+- JUnit 测试源码已新增，但本地未执行 JUnit；GitHub CI 尚待用户上传本批快照触发。
+- Cargo、Android APK、Instrumentation、真机测试均未执行；本批没有 Rust/Android 运行代码改动。
+
+### 6. 下一批
+
+- Batch 4B-2A：定义 Native `Gateway.Status` 到 `RuntimeSnapshot` 的显式 reconcile 映射与纯 JVM 测试，先不接 UI。
+- Batch 4B-2B：在 RuntimeController 控制队列中增加具名 `coreInit/start/stop/schedulerSet` 包装与状态事件更新；保持 `mayStopNow()` + `Gateway.stop()` 在同一 `runSerialized` 区间连续执行。
+- Batch 4B-2C：再选择单一调用方（优先 Application 初始化或 FGS start）接入；每个入口独立 CI。
+- Batch 4C-1 / 4D-1 仍独立排期，不与本批混改。
+
+### 7. Batch 4B-1 本地实现快照补记（待 GitHub 验证）
+
+- 在 R15 基线 `9182025` 上形成了一个未提交的工作快照：新增 `RuntimeSnapshot.kt` 与 `RuntimeSnapshotReducerTest.kt`；源码归档不含 `.git`，因此本工作快照不宣称有 Git commit SHA。
+- 纯模型编译：`kotlinc` 1.9.0 独立编译通过；另用临时 JUnit API 兼容 shim 编译并反射执行新增 8 个测试，8/8 通过。该 shim 只用于本地逻辑/测试源码快速验证，**不等价于项目 Gradle/JUnit 执行**。
+- Gradle `:core-gateway:testDebugUnitTest` 未启动：Gradle Wrapper 下载 8.11.1 时 DNS `UnknownHostException`。项目真实 JUnit、Android 构建、Rust tests、Instrumentation 均待 GitHub CI 验证。
+- 本批新增代码未接入任何生产调用路径；Phase 2 仍未完成。GitHub CI 通过前不得将 Batch 4B-1 标为关闭。
+- 下一批依赖本批 CI 结果：先做 Native `Gateway.Status` → 快照 reconcile 映射及测试，再接入 RuntimeController 具名生命周期 API；不可跳过验证直接迁移 Service/UI。
