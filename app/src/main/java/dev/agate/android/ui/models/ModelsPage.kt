@@ -340,10 +340,30 @@ fun ModelsPage(
         scope.launch {
             val r = ModelOps.fetchManage()
             if (r.ok) {
-                manage = ModelOps.ManageModelRow.parse(r.data)
+                val fresh = ModelOps.ManageModelRow.parse(r.data)
+                // ── 对账：乐观值 vs 权威值（2026-11-02）──────────────────
+                // 乐观值只该「抢跑几百毫秒」。权威数据一到就比对：不一致说明
+                // **内核没接受这次修改**（provider/id 对不上、规则没写进去…）。
+                // 旧实现只是 `optimistic = emptyMap()` 静默清掉，于是开关自己
+                // 弹回去、什么解释都没有 —— 那正是「点了没反应」最气人的形态。
+                // 现在：回退 + 明确告诉你哪一条没生效。
+                val freshByKey = fresh.associateBy {
+                    "${it.provider.lowercase()}|${it.id.lowercase()}"
+                }
+                val rejected = optimistic.filter { (key, wanted) ->
+                    freshByKey[key]?.enabled?.let { it != wanted } == true
+                }
+                manage = fresh
                 manageError = null
-                // 权威数据到手：撤掉本地「刚点过」的临时覆盖（它只为补异步窗口）
                 optimistic = emptyMap()
+                if (rejected.isNotEmpty()) {
+                    val which = rejected.keys.first().replace("|", " / ")
+                    Toast.makeText(
+                        ctx,
+                        "内核未接受这次修改（$which 已恢复原状）",
+                        Toast.LENGTH_LONG,
+                    ).show()
+                }
             } else {
                 manageError = r.error ?: "模型状态加载失败"
             }
@@ -413,8 +433,15 @@ fun ModelsPage(
      * （`/api/session` 的 models、以及 `list-view` 的推演计数）是另一个出口 ——
      * 关掉一个模型后「客户端会看到几个」要跟着变，所以两边都得刷。
      *
-     * 不做乐观更新：开关回弹比慢半秒更让人困惑（而且内核可能拒绝，比如 tid
-     * 不属于任何已知提供商）。`toggling` 期间禁用本行，避免连点打架。
+     * ── 为什么现在**点下就改**（2026-11-02 修「点了没反应」）──────
+     * 旧实现是「等内核回话之后」才动开关，而 `toggling` 立刻把这一行置灰
+     * （`ModelToggle` 的 `enabled = !busy`）。于是点击后有一到两秒**完全没有任何
+     * 视觉变化**：开关既没拨动、也不能再点 —— 用户看到的就是「点了没反应」。
+     * 现在改为**先本地落位（乐观）再发请求**：
+     *   · 手感：点下立刻拨动；
+     *   · 诚实：请求失败 → 回退并 Toast；请求成功但内核不认账 → `loadManage()`
+     *     回来时数值与乐观值不一致，**同样回退并明确提示「未生效」**。
+     *     所以乐观状态只是抢跑几百毫秒，绝不掩盖真实结果。
      */
     fun toggle(row: GatewayRepository.ModelRow) {
         // 会话清单里的 id 在 provider 形态下带 `provider/` 前缀，
@@ -422,6 +449,10 @@ fun ModelsPage(
         val bare = if ('/' in row.id) row.id.substringAfter('/') else row.id
         val key = "${row.provider}|$bare"
         if (toggling != null) return
+        val target = !row.enabled
+        val optKey = "${row.provider.lowercase()}|${bare.lowercase()}"
+        // ① 先落位：点下立刻可见（见上文的说明）
+        optimistic = optimistic + (optKey to target)
         toggling = key
         scope.launch {
             // ⚠️ `finally` 不是装饰：没有它，协程被取消（切页 / 组合重算）时
@@ -429,18 +460,17 @@ fun ModelsPage(
             // 而且 `toggle()` 开头的 `if (toggling != null) return` 会把之后
             // **所有**点击吞掉 —— 症状是「这个模型关不掉，别的也点不动」。
             try {
-                val target = !row.enabled
                 val r = ModelOps.setState(bare, target, row.provider.ifBlank { null })
                 if (r.ok) {
-                    // 先让开关**立刻**停在新位置（补 manage 回话前的几帧），
-                    // 再拉权威数据；`loadManage()` 成功会清掉这层覆盖。
-                    optimistic = optimistic +
-                        ("${row.provider.lowercase()}|${bare.lowercase()}" to target)
-                    // 管理视图立刻刷新（权威）；会话清单随 `refreshOnce` 稍后对齐
+                    // 管理视图立刻刷新（权威）；会话清单随 `refreshOnce` 稍后对齐。
+                    // `loadManage()` 成功时会比对乐观值：不一致 = 内核没接受，
+                    // 那时会回退并提示（见该函数的「对账」段）。
                     loadManage()
                     loadListView()
                     GatewayRepository.refreshOnce()
                 } else {
+                    // 请求没成功：把乐观值撤掉，让开关回到内核的真实状态
+                    optimistic = optimistic - optKey
                     Toast.makeText(ctx, r.error ?: "切换失败", Toast.LENGTH_SHORT).show()
                 }
             } finally {
