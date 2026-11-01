@@ -151,11 +151,6 @@ class AgateForegroundService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        // R11-Fix10 诊断日志：定位 FGS ordering 失败的交错路径（正式修复后移除）。
-        android.util.Log.i(
-            "Agate",
-            "onStartCommand action=${intent?.action ?: "<null-sticky>"} startId=$startId 交付前=${gatewayIntent.snapshot()}",
-        )
         when (intent?.action) {
             ACTION_STOP -> {
                 gatewayIntent.requestStop()
@@ -202,20 +197,14 @@ class AgateForegroundService : Service() {
                 enqueueCommand("$ACTION_STOP#$startId") {
                     var skipStop = false
                     try {
-                        android.util.Log.i("Agate", "STOP 命令：执行 stop startId=$startId 执行前=${gatewayIntent.snapshot()}")
                         skipStop = !RuntimeController.runSerialized {
                             // 执行时刻为准：排队期间若有新 START 交付（FIFO 排在
                             // 本命令之后），此刻 stop 会杀死 START 命令体即将重建
                             // 的网关——跳过，让排队的 START 自然接管（幂等重启）。
                             val shouldStop = gatewayIntent.mayStopNow()
-                            if (shouldStop) {
-                                Gateway.stop()
-                            } else {
-                                android.util.Log.i("Agate", "STOP 命令：跳过 stop，已有更新的 START 交付（现=${gatewayIntent.snapshot()}）")
-                            }
+                            if (shouldStop) Gateway.stop()
                             shouldStop
                         }
-                        android.util.Log.i("Agate", "STOP 命令：stop 返回 startId=$startId 执行后=${gatewayIntent.snapshot()}")
                     } catch (t: Throwable) {
                         android.util.Log.e("Agate", "内核停止异常", t)
                     }
@@ -284,7 +273,6 @@ class AgateForegroundService : Service() {
 
     private fun runStart() {
         val bindLan = GatewayPrefs.bindLan(this)
-        android.util.Log.i("Agate", "START 命令：执行 runStart 执行前=${gatewayIntent.snapshot()}")
         val result = try {
             RuntimeController.runSerialized {
                 Gateway.start(
@@ -505,7 +493,6 @@ class AgateForegroundService : Service() {
     private fun stopIfCurrentStart(startId: Int) {
         mainHandler.post {
             val stopped = stopSelfResult(startId)
-            android.util.Log.i("Agate", "stopIfCurrentStart：startId=$startId stopSelfResult=$stopped 现快照=${gatewayIntent.snapshot()}")
             if (stopped) {
                 stopForeground(STOP_FOREGROUND_REMOVE)
             }
@@ -515,25 +502,16 @@ class AgateForegroundService : Service() {
     // ── 通知 ─────────────────────────────────────────────────────
 
     override fun onDestroy() {
-        // 捕获本次销毁时的意图快照（诊断对照用）；真正的守卫在清理执行时刻
-        // 读 mayStopNow()——放行条件是「最后意图仍是停止」，而非快照相等。
-        val destroyIntent = gatewayIntent.snapshot()
-        android.util.Log.i("Agate", "onDestroy：捕获清理快照=$destroyIntent")
+        // 真正的守卫在清理执行时刻读取 mayStopNow()；不使用捕获快照相等比较。
         try {
             commandExecutor.execute {
                 try {
                     RuntimeController.runSerialized {
                         // 兜底清理以「执行时刻」的最后意图为准：stopSelf 触发的
                         // 销毁流程期间可能到达新 START（重新拉起实例/投递 pending
-                        // intent），此时最后意图是启动，停内核会杀死刚重建的网关
-                        // ——跳过；destroyIntent 仅留作诊断对照。
+                        // intent），此时最后意图是启动，停内核会杀死刚重建的网关——跳过。
                         val shouldStop = gatewayIntent.mayStopNow()
-                        if (shouldStop) {
-                            android.util.Log.i("Agate", "销毁清理：最后意图为停止，执行 stop（捕获=$destroyIntent 现快照=${gatewayIntent.snapshot()}）")
-                            Gateway.stop()
-                        } else {
-                            android.util.Log.i("Agate", "跳过 Service 销毁清理：最后意图为启动（捕获=$destroyIntent 现快照=${gatewayIntent.snapshot()}）")
-                        }
+                        if (shouldStop) Gateway.stop()
                     }
                 } catch (t: Throwable) {
                     android.util.Log.w("Agate", "Service 销毁时停止内核失败", t)

@@ -1108,9 +1108,93 @@ CheckinRun 专项另行估算：功能实现约 **85–90%**（执行台账、�
 
 ### Batch 3 小批量并行工作（基于 385cc04 快照）
 
-- Phase 3：将 `AgateForegroundService` 的进程级 `AtomicBoolean` 意图标记升级为 `GatewayIntentTracker` 代次快照。旧 `onDestroy()` 只在其捕获快照仍是当前代次且状态为 stopped 时，才可执行兜底 `Gateway.stop()`；新增 3 个纯 JVM 单元测试。
+- Phase 3（历史尝试，已被 R13 纠正）：Batch 3 曾将 `AtomicBoolean` 升级为 `GatewayIntentTracker` 代次快照，但 R11 红跑证明「捕获快照后比较相等」仍无法防止迟到的 `onDestroy()` stop。最终修复见本文末尾 R13 记录：废弃快照相等守卫，改为执行时刻检查最后意图。
 - Phase 2：静态盘点 `AgateApp`、`AgateForegroundService`、`GatewayControlPage` 的生产生命周期入口，当前可见 `coreInit/start/stop/schedulerSet` 均经过 `RuntimeController`。Boot/Alarm 通过 Service 转发，不直接调用 JNI。完整状态机、进程重建与动态压力验收仍未完成。
 - Phase 1：Kotlin `Gateway.kt` 的 11 个 external 声明与 Rust `jni_bridge.rs` 的 11 个 JNI 导出对应；CI 已有 JNI export 对照门禁。空 Java String 分配失败时返回 null、统一 NativeResult/API version、panic containment 与长任务释放契约仍需继续审计。
 - Phase 4：Android/JNI 适配主要集中在 `jni_bridge.rs`、`lib.rs` Android cfg、`server/logging.rs` Android 日志适配和 `paths.rs` 数据目录覆盖；未发现 Rust Core 直接持有 Android Context/Service。环境变量、HOME/USERPROFILE、文件系统、网络和信号语义仍需逐项审计。
 - 本批新增代码和文档尚未通过 Gradle/Android CI。当前执行环境没有 Cargo/Rustc；Gradle Wrapper 下载 Gradle 8.11.1 时 DNS 失败。只有静态检查通过，不得将本批新改动标为构建或测试通过。
 - 新批次交付以 `Agate_Verification_Source_8faa5f5_CI-Fix9_Batch3` 源码快照为准；它基于 Round 10 验证快照，不代表原 `architecture/kotlin-rust-core` 分支的 Git 历史，也不包含 `.git`。
+
+
+## 2026-11-01：Round 3 R11–R13 根因闭环、Phase 3 迟到 stop 修复与交接更新
+
+### 1. 当前验证分支基线
+
+- 验证分支：`verify/arch-8faa5f5`。
+- 最新验证提交：`72ed23baca4c5458c851d82a2dfcbe694d2c6029`（短 SHA `72ed23b`）。
+- GitHub Actions Run：`41293598053`。
+- 结果：`rust-tests` 与 `android-build` 双绿；真实 x86_64 Emulator Instrumentation 2/2 通过；`:core-gateway:testDebugUnitTest` 通过。
+- 本节只代表该提交与该轮 CI 覆盖范围，不代表 Phase 1/2/3 整体验收，也不代表真机、Doze、进程回收或多 ROM 验收完成。
+- 对应源码归档：`Agate_Verification_Source_8faa5f5_72ed23b.zip` SHA256 `c0b28b87b96ce73f38197b9c5245284f01b24a069d5dbb50a8b4a99471ec5fe1`；`Agate_Verification_Source_8faa5f5_72ed23b.tar.gz` SHA256 `cb0c9b2f2d7a07d617bd7bd32c473a464cbd1e874d4c67721807a417353d2fa8`。
+
+### 2. R11–R13 根因与修复结论
+
+- R11（`a8ecd9d`）重跑时，`foregroundServicePreservesStartAfterStopOrderingBarrier` 失败；失败不是 Emulator 基建问题，而是旧 STOP 在新 START 已投递后，仍可能由 `onDestroy()` 兜底清理再次执行 `Gateway.stop()`。
+- R12（`8c6d8d6`）只增加诊断日志，没有改变逻辑。R12 双绿不能证明守卫有效，因为当轮销毁清理分支没有执行。
+- 红跑日志闭环显示：旧 STOP 的 `stopSelfResult(startId)` 先成功触发销毁；新 START 随后到达并将进程级意图更新为 shouldRun=true；新 START 命令先拉起 Gateway；旧实例的销毁清理任务随后执行，快照相等判断仍成立，最终把新 Gateway 停掉。
+- R13（`72ed23b`）废弃「捕获意图快照—执行时比较快照相等」模式。`GatewayIntentTracker.mayStopNow()` 在 `RuntimeController.runSerialized` 串行区内，于实际执行 STOP 的时刻读取最新意图；只有最新意图为停止时才执行 `Gateway.stop()`。STOP 命令体与 `onDestroy()` 兜底清理共用该守卫。
+- 跳过 STOP 时保留 Gateway；旧 Service 自身持有的 KeepAwake 锁仍由该实例销毁收尾释放，新 Service 如已接管则持有自己的锁句柄。
+- 新增/重写 `GatewayIntentTrackerTest`：初始 idle 可停止；新 START 阻止迟到 STOP；每次接受的意图都递增 generation。
+- R13 的 Instrumentation 2/2 通过，ordering 用例 40.9s；单测通过。实际日志序列为 1 UP + 1 DOWN。
+
+### 3. 证据边界与未完成风险
+
+- R13 双绿期间竞态窗口没有再次触发（服务未销毁、清理分支未执行）。因此不能把两次连续绿灯当作竞态被真实重现后通过的证明。
+- 当前修复的主要证据是：执行时刻守卫的单元测试，以及报告对两个实际 `Gateway.stop()` 调用点的穷尽审查；Instrumentation 仍提供端到端顺序回归，但没有每轮都触发销毁竞态。
+- `mayStopNow()` 必须继续在 `RuntimeController.runSerialized` 内与 `Gateway.stop()` 连续执行。任何新增的 Gateway stop 调用点都必须纳入同一守卫和串行契约；禁止在守卫外直接 stop。
+- `GatewayIntentTracker` 是进程级意图，不等同于完整 RuntimeController 状态机。它不能替代 Phase 2 的 `StateFlow`/状态权威来源、Core/Gateway 双生命周期建模、取消和 Service/进程重建验收。
+- R12/R13 临时诊断日志曾保留在服务路径。本次后续清理批次仅删除带快照/代次的竞态诊断输出，保留启动失败、Native 异常、签到结果、资源拒绝等业务诊断日志；该清理属于无逻辑变更，仍需单独 CI 验证。
+
+### 4. Phase 0–6 当前状态（以原始主线为准）
+
+| 阶段 | 最新状态 | 已有证据 | 主要剩余门槛 |
+|---|---|---|---|
+| Phase 0 构建基线 | 基本建立，仍非最终验收 | 多轮 GitHub Actions Rust/Android 双 Job 通过；APK/Native 检查；R13 双绿 | staging 进程互斥；干净环境可复现；依赖/ABI/Release 门禁完整性 |
+| Phase 1 Native Bridge | 部分完成 | JNI 导出对照；部分错误透传；API Key override 与 Rust 测试进入 CI | 全入口错误/空值/panic/线程/释放契约；Native API 版本和统一错误码；并发与重启契约测试 |
+| Phase 2 RuntimeController | 第一版已接入主要入口，未收口 | 单线程生命周期执行器、主要 Native 生命周期调用串行化；Boot/Alarm 转发到 FGS | 状态机与 StateFlow、唯一状态来源、Core/Gateway 分离、取消/过期请求、Service/进程重建测试 |
+| Phase 3 Service/Scheduler | 迟到 STOP 逻辑修复已由 R13 构建/单测/仪器测试验证，阶段未完成 | R13 双绿；ordering + native lifecycle 两条 Instrumentation；mayStopNow 单测 | 临时诊断日志清理后复验；重复/快速命令矩阵；executor 关闭与拒绝；长 tick/STOP；WakeLock；Doze/重启/进程回收；真机 ROM |
+| Phase 4 Rust Core 解耦 | 持续实施中 | Android API Key 与数据目录运行时覆盖已有抽象；CheckinRun 多项可靠性实现 | 全量平台依赖清单；Runtime/config/path/event/cancel/shutdown 边界；desktop/headless 构建和行为回归 |
+| Phase 5 JNI vs UniFFI | 未开始 | 无 spike/ADR 证据 | 先盘点 JNI，再做最小 DTO/同步 API spike 和 ADR；不预设迁移 |
+| Phase 6 可观测性/压力/发布门禁 | 局部基础 | CI 报告、局部生命周期日志和测试 | 关联 ID、耗时/状态指标、并发与长稳、FD/线程/WakeLock 泄漏、SSE、真机与 Release 清单 |
+
+阶段完成度不能仅按 CI 绿灯或提交数量计算。R13 只提升 Phase 3 中一个高风险竞态项的证据等级，不据此把 Phase 3 标成完成，也不将整体架构迁移百分比大幅上调。此前 46% 为粗估快照，后续应按验收项逐条计数并注明证据等级，而非把它当成精确工程度量。
+
+### 5. 下一批小批量并行计划（Batch 4）
+
+**Batch 4A — Phase 3：临时竞态诊断日志清理（本快照实施）**
+
+- 删除 R12/R13 用于定位特定时序的快照、generation、stopSelfResult 诊断日志和仅供日志使用的快照变量。
+- 保留真实运行故障日志、签到结果日志、Native 异常日志和资源拒绝日志。
+- 不改变 `mayStopNow()`、`RuntimeController.runSerialized`、Gateway.stop 调用顺序或 WakeLock 所有权。
+- 验收：diff 证明无行为代码变化；`git diff --check`；GitHub Rust/Android 双 Job 与 Instrumentation 2/2 通过。
+
+**Batch 4B — Phase 2：RuntimeController 状态机设计/实现切片**
+
+- 先定义状态模型与事件来源：Core 与 Gateway 分开表达，明确 Starting/Running/Stopping/Stopped/Failed 的转换和错误原因。
+- 状态必须由 RuntimeController 单一发布；Service/UI/Receiver 只能提交命令或观察状态，不各自维护“权威运行状态”。
+- 先增加纯 JVM 状态转移测试，再分批接入调用方；不得在同一批同时重构所有 UI、Receiver 和 Rust Core。
+
+**Batch 4C — Phase 1：Native Bridge 契约盘点**
+
+- 对 11 个 JNI 导出逐项列出输入校验、返回类型、空值、错误、线程、panic containment、资源释放与调用者。
+- 先形成契约表和测试缺口，不在本批贸然更改 JNI ABI。
+- 下一批再选择一个低风险入口实现统一错误表达/版本能力探测。
+
+**Batch 4D — Phase 4：Rust 平台依赖审计**
+
+- 搜索 `std::env`、HOME/USERPROFILE、路径、时间、网络监听、后台线程/定时器、信号、Android cfg/JNI 引用。
+- 按 Core / platform adapter / CLI 启动层分类，给出每项的实际调用路径和 desktop/headless 回归测试。
+- 仅先做清单与风险排序，避免把跨模块重构和 Phase 1/2 混在一起。
+
+**Batch 4E — Phase 0：staging 互斥设计**
+
+- 第 10 轮记录的双实例 stage 竞争仍是工具链流程风险；事后全量 SHA 对账不能替代互斥。
+- 先审查实际 stage 脚本/工作流，确定互斥锁覆盖快照解码、复制、校验、打包的完整临界区，再独立实施。
+- 不与 Android Service 逻辑修改放在同一提交。
+
+### 6. 执行纪律
+
+- 继续使用 `verify/arch-8faa5f5` 验证分支；不动 main、不合并。
+- 每个 Batch 都基于用户最近上传并由 GitHub 验证的源码快照；不把本地导入 ZIP 的提交计数冒充 GitHub 历史。
+- 代码变更、文档更新、静态检查、Gradle/Rust 构建、Instrumentation、真机验证分别记录；没有实际执行的检查必须标为未执行。
+- 每批小范围独立交付；文档更新必须同步写入本文件的阶段状态、验证证据、未完成项和下一步，不改变 Phase 0–6 的原始目标。
