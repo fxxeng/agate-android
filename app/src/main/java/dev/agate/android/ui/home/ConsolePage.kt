@@ -148,8 +148,23 @@ fun ConsolePage(
             Spacer(Modifier.height(10.dp))
         }
 
-        // ── 新手 3 步向导（accent 边框；三步完成自动收起，✕ 永久关闭）──
-        val wizardDone = running && snap.upstreamConfigured == true && snap.requestsToday > 0
+        // ── 新手 3 步向导（accent 边框；有账号即自动收起，✕ 永久关闭）──
+        //
+        // ── 完成的判据（2026-11-01 改口径）────────────────────────────
+        // **添加过任意账号（accountsTotal > 0）就不再显示**。
+        //   旧判据是 `upstreamConfigured && requestsToday > 0`：
+        //   · `upstreamConfigured` 读的是**内核默认登录态**（env 凭证那条，
+        //     `get_config_summary().configured`），与「有没有添加过账号」是两回事 ——
+        //     用户加了账号后它仍可能为 false，向导赖着不走；
+        //   · `requestsToday > 0` 还要求「今天发过请求」，账号加了、只是还没
+        //     用，向导也一直挂着。
+        //   两条件合起来就是「有登录账号还显示向导」——本条要修的正是这个。
+        // 现在的口径：
+        //   accountsTotal > 0（含禁用：加过就算「不是新手」）
+        //   ‖ upstreamConfigured（本机 LAN 模式没账号也可能跑通，老语义保留）
+        //   `running` 保留：网关没起时三步一步都做不了，向导反而该在。
+        val wizardDone = running &&
+            (snap.accountsTotal > 0 || snap.upstreamConfigured == true)
         var wizardDismissed by remember { mutableStateOf(GatewayPrefs.wizardDismissed(ctx)) }
         if (!wizardDone && !wizardDismissed) {
             WizardCard(onNavigate = onNavigate, onDismiss = {
