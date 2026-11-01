@@ -96,6 +96,7 @@ jobs:
           target: google_apis
           arch: x86_64
           disable-animations: true
+          emulator-boot-timeout: 900
           # Keep the emulator diagnostics even when Gradle/instrumentation fails.
           # `set +e` is intentional: the EXIT trap must run after a non-zero test result.
           script: bash .github/scripts/run-instrumentation.sh
