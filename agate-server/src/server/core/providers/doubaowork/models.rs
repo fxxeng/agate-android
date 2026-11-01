@@ -111,38 +111,34 @@ const REQUEST_TIMEOUT_MS: u64 = endpoints::CATALOG_TIMEOUT_MS;
 /// 上文那条 `doubao-seed-2-0-code-preview-260215` 也不收 —— 它同样落在
 /// lobsterai 的名字串里，无法证明是本家的模式名。
 ///
-/// `supportsImages` 给 **`false`** —— 这一条是**修正过的**，改动理由必须写清：
+/// `supportsImages`：**唯一事实来源**（两个构建器都读它，避免两处各写一份漂移）。
 ///
+/// ## 现在是 `true` —— 上传链路已接通（2026-11-01 第二轮）
+///
+/// 上游收图片（[二进制] `image` / `image_ori` / `attachment_block` 一族 +
+/// [Go参考] 的 `imageBlock`），而本仓现在**真能把图传上去**：
 /// ```text
-///   上游确实收图片（[二进制] image / image_ori / attachment_block 一族 +
-///   [Go参考] 的 imageBlock），**但本仓当前传不上去**：
-///   图片必须先 POST /alice/resource/prepare_upload 换成上游认的资源 uri
-///   （见 super::upload），而这一步是**异步**的，build_chat_request 是
-///   **同步**的 —— trait 里没有任何「能同时拿到 body 的异步钩子」
-///   （ensure_access_token 没有 body 参数；带 body 的 forward_conversation
-///   属于有状态路径，本家不该走那条，见 chat.rs 的模块头）。
-///   于是 chat::prepare_attachments 写好了却**没有调用点**，附件只能降级成
-///   文本标记 [Attached image 1: a.png]。
+///   1. 编排层在 ensure_access_token 之后、build_chat_request 之前
+///      await `ProviderAdapter::prepare_body`（本轮新增的钩子）；
+///   2. 豆包覆写它 → chat::prepare_attachments_for_session
+///      → 逐张 POST /alice/resource/prepare_upload 换成上游资源 uri；
+///   3. 结果按账号 id 存进 chat.rs 的中转表；
+///   4. 同步的 build_chat_request 取走它 → plan::build 生成真实的
+///      image_block / file_block 消息块。
 /// ```
 ///
-/// 广告成 `true` 而实际传不上图，是**给下游一个假承诺**：客户端会据此把
-/// 图片塞进请求，用户以为图生效了，而模型只看到一句 "[Attached image 1: …]"。
-/// 按本仓口径（「算不准就降级说法」），这里如实报 `false`。
+/// ## 为什么曾经是 `false`（历史，别退回这个状态）
 ///
-/// 要真正开启，缺的是**一处结构改动**（不是补丁）：给 `ProviderAdapter` 加
-/// 一个异步钩子，例如
-/// `fn prepare_body<'a>(&'a self, account: &'a Value, body: &'a Value)
-///    -> Pin<Box<dyn Future<Output = Result<Option<Value>, GatewayError>> + Send + 'a>>`
-/// （默认返回 `Ok(None)` = 不改），由 `provider_loop` 在
-/// `ensure_access_token` 之后、`build_chat_request` 之前 await；
-/// doubaowork 覆写它去调 `prepare_attachments` 并把 `ref_file_ids` 放进 body。
-/// 那才是「这一类点的唯一入口」，也顺带解决将来别家的同类需求。
-/// **在那之前，这里的 false 是当前唯一诚实的答案。**
+/// 第一轮落地时还没有 `prepare_body` 钩子：上传是**异步**的、而
+/// `build_chat_request` 是**同步**的，trait 里没有任何「能同时拿到 body 的
+/// 异步钩子」（`ensure_access_token` 没有 body 参数；`forward_conversation`
+/// 有 body 但属有状态路径，本家不该走）。于是 `prepare_attachments` 写好了
+/// 却**没有调用点**，附件只能降级成文本标记 `[Attached image 1: a.png]`。
+/// 那时广告成 `true` 就是给下游一个假承诺，所以当时如实报了 `false`。
 ///
-/// 收敛成一个常量：本文件有**两个**构建器会产出能力位
-/// （`to_manifest_value` 与 `fallback_models`），两处各写一份字面量必然漂移
-/// （一个改了另一个忘改，症状是「远程目录来的模型说支持图、兜底清单说不支持」）。
-pub const SUPPORTS_IMAGES: bool = false;
+/// ⚠️ **判断这一位该不该为 true，看的是「上传链路有没有调用点」，不是
+/// 「上游收不收图」。** 上游一直收图；缺的一直是这条链。
+pub const SUPPORTS_IMAGES: bool = true;
 
 /// `supportsReasoning` 按档位给（`off` 那一档为 false）。
 /// `supportsToolCall` 给 **false**：本家是**文本桥接**的工具调用
@@ -225,7 +221,7 @@ fn map_entry(row: &Value) -> Option<Value> {
         // （见 FALLBACK_MODELS 的说明；这一条对所有条目一致，不逐条判）
         "supportsToolCall": false,
         // 图片：上游收图，但本仓**传不上去**（同步/异步接缝）
-        // ⇒ 如实报 false，不给假承诺（依据与彻底接线方案见 SUPPORTS_IMAGES）
+        // ⇒ 上传链路已接通，如实报 true（判据见 SUPPORTS_IMAGES 的说明）
         "supportsImages": SUPPORTS_IMAGES,
     });
     if let Some(reasoning) = reasoning {
@@ -552,9 +548,9 @@ mod tests {
                 Some(&Value::Bool(false)),
                 "本家是文本桥接，广告成原生支持会让客户端发 tools 去换一个上游不认识"
             );
-            // 上游收图但本仓传不上去（同步/异步接缝，见 SUPPORTS_IMAGES）：
-            // 广告成 true 会让客户端塞图进请求、用户以为生效了
-            assert_eq!(item.get("supportsImages"), Some(&Value::Bool(false)));
+            // 上传链路已接通（prepare_body → prepare_attachments），如实报 true。
+            // 判据见 SUPPORTS_IMAGES 的说明：看「链路有没有调用点」，不是「上游收不收图」
+            assert_eq!(item.get("supportsImages"), Some(&Value::Bool(true)));
         }
     }
 

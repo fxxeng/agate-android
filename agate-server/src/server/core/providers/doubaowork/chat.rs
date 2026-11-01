@@ -521,6 +521,90 @@ pub async fn prepare_attachments(
     Ok(ready)
 }
 
+// ─── 异步上传结果的中转（`prepare_body` → `build_chat_request`）──────────
+//
+// 为什么要一张表：上传是**异步**的（`prepare_attachments` 要发网络请求），
+// 而 `build_chat_request` 是**同步**的。编排层在两者之间 await 了
+// `ProviderAdapter::prepare_body`（见 trait 文档），本模块就在那里把结果
+// 存进来、在这里取走。
+//
+// 键是**账号 id**（两个钩子拿到的 `account` 是同一个会话形态，`id` 都在）。
+// 取走即删（同一次转发只该用一份结果；留着会让下一次请求误用上一轮的图）。
+// 另设 TTL 兜底：万一 `build_chat_request` 因故没被调到，条目不会一直留着。
+static PREPARED_ATTACHMENTS: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<String, (ReadyAttachments, i64)>>,
+> = std::sync::OnceLock::new();
+
+/// 准备结果的有效期（毫秒）。两个钩子是相邻两步，正常间隔毫秒级；
+/// 60 秒是宽松上限，超过即丢弃（宁可让本轮退回文本标记，也不用上一轮的图）。
+const PREPARED_TTL_MS: i64 = 60_000;
+
+fn prepared_table(
+) -> &'static std::sync::Mutex<std::collections::HashMap<String, (ReadyAttachments, i64)>> {
+    PREPARED_ATTACHMENTS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// 会话形态里的账号 id（两个钩子都用它做键）
+fn account_id_of_session(account: &Value) -> String {
+    account
+        .get("id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or("")
+        .to_string()
+}
+
+/// **异步准备**：把这一轮 body 里的图片 / 文件真正传到上游，结果存进中转表。
+///
+/// 由 `DoubaoWorkAdapter::prepare_body` 调用（编排层在 `ensure_access_token`
+/// 之后、`build_chat_request` 之前 await 它）。
+///
+/// ── 没有附件时零成本 ────────────────────────────────────────
+/// `prepare_attachments` 自己在「没有可传的附件」时立刻返回空结果，
+/// 这里也只在**真有东西**时才写表 —— 纯文本请求不受任何影响。
+pub async fn prepare_attachments_for_session(
+    account: &Value,
+    body: &Value,
+) -> Result<(), GatewayError> {
+    let credentials = credentials_from_session(account)?;
+    let ready = prepare_attachments(&credentials, body).await?;
+    if ready.images.is_empty() && ready.files.is_empty() {
+        return Ok(());
+    }
+    let key = account_id_of_session(account);
+    if key.is_empty() {
+        // 没有 id 就没法在同步侧对上号：不写表（本轮退回文本标记，不会静默丢）
+        crate::server::logging::verbose(
+            "[DoubaoWork]",
+            "附件已上传，但会话里没有账号 id，无法交给同步构造路径（本轮按文本标记处理）",
+        );
+        return Ok(());
+    }
+    let now = crate::server::logging::now_ms();
+    let mut guard = match prepared_table().lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    guard.insert(key, (ready, now));
+    Ok(())
+}
+
+/// 取走中转表里的附件结果（取走即删，过期即弃）。
+fn take_prepared_attachments(account_id: &str) -> Option<ReadyAttachments> {
+    if account_id.is_empty() {
+        return None;
+    }
+    let mut guard = match prepared_table().lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    let (ready, at) = guard.remove(account_id)?;
+    if crate::server::logging::now_ms().saturating_sub(at) > PREPARED_TTL_MS {
+        return None;
+    }
+    Some(ready)
+}
+
 /// 构造 `POST /chat/completion` 的请求计划（**同步**，见模块头关于附件的说明）。
 ///
 /// `account` 是会话形态（`store.get_session_by_id` 的返回值）；本家的凭证是
@@ -531,8 +615,20 @@ pub fn build_chat_request(
     _client_headers: &HeaderMap,
 ) -> Result<ChatRequestPlan, GatewayError> {
     let credentials = credentials_from_session(account)?;
-    // 同步路径拿不到上传结果（见模块头）。附件**以文本标记**表达，
-    // 绝不让它静默消失 —— 用户看得见「图没生效」，而静默丢弃会让他以为生效了。
+    // ── 先取「异步上传结果」（由 `prepare_body` 存下，见下）────────────
+    // 拿到就是**真附件**（图片 / 文件已换成上游资源 uri，见 `super::upload`），
+    // 直接交给 `plan::build` 生成真实的消息块。
+    //
+    // 取不到（没有附着附件、或调用方没走 `prepare_body` 钩子）才退回文本标记
+    // —— 那条路**不会静默丢附件**：用户看得见「图没生效」，而静默丢弃会让他
+    // 以为生效了。两条路的取舍见模块头「附件的异步上传」那段。
+    let prepared = take_prepared_attachments(&account_id_of_session(account));
+    if let Some(ready) = prepared.as_ref() {
+        if !ready.images.is_empty() || !ready.files.is_empty() {
+            let built = plan::build(&credentials, body, ready)?;
+            return Ok(ChatRequestPlan::chat(built.url, built.headers, built.body));
+        }
+    }
     let marker_text = attachment_markers(body);
     let (input, ready) = if marker_text.is_empty() {
         (body.clone(), ReadyAttachments::default())
@@ -1005,4 +1101,64 @@ mod tests {
         });
         assert!(credentials_from_session(&nested).is_ok());
     }
+
+    // ── 附件中转表（`prepare_body` → `build_chat_request`）──────────────
+
+    /// 取走即删：同一次转发只能消费一份结果（留着会让下一轮误用上一轮的图）
+    #[test]
+    fn prepared_attachments_are_consumed_once() {
+        let key = "test-account-once";
+        {
+            let mut guard = match prepared_table().lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            guard.insert(
+                key.to_string(),
+                (ReadyAttachments::default(), crate::server::logging::now_ms()),
+            );
+        }
+        assert!(take_prepared_attachments(key).is_some(), "第一次应取得到");
+        assert!(take_prepared_attachments(key).is_none(), "第二次必须取不到");
+    }
+
+    /// 过期结果被丢弃（宁可本轮退回文本标记，也不用上一轮的图）
+    #[test]
+    fn prepared_attachments_expire() {
+        let key = "test-account-expired";
+        {
+            let mut guard = match prepared_table().lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            guard.insert(
+                key.to_string(),
+                (
+                    ReadyAttachments::default(),
+                    crate::server::logging::now_ms() - PREPARED_TTL_MS - 1_000,
+                ),
+            );
+        }
+        assert!(take_prepared_attachments(key).is_none(), "过期结果不得返回");
+    }
+
+    /// 空账号 id 不参与中转（没有键就没法在同步侧对上号）
+    #[test]
+    fn empty_account_id_never_reads_the_table() {
+        assert!(take_prepared_attachments("").is_none());
+    }
+
+    /// 会话形态里能读出账号 id（两个钩子都靠它做键）
+    #[test]
+    fn account_id_is_read_from_session() {
+        assert_eq!(
+            account_id_of_session(&json!({ "id": "doubaowork-abc" })),
+            "doubaowork-abc"
+        );
+        // 没有 id → 空串（调用方据此跳过中转）
+        assert_eq!(account_id_of_session(&json!({})), "");
+        // 前后空白被裁掉
+        assert_eq!(account_id_of_session(&json!({ "id": "  x  " })), "x");
+    }
+
 }

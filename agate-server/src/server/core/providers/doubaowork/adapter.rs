@@ -245,6 +245,30 @@ impl ProviderAdapter for DoubaoWorkAdapter {
         })
     }
 
+    /// **发送前的异步准备**：把 body 里的图片 / 文件真正传到上游。
+    ///
+    /// 本家是第一个需要这个钩子的家：`prepare_upload` 是异步的，而
+    /// `build_chat_request` 是同步的，且「要传哪些图」只有读了 body 才知道
+    /// （见 `ProviderAdapter::prepare_body` 的文档与 `chat.rs` 的中转表）。
+    ///
+    /// 返回 `Ok(None)` = **body 不用改**：上传结果通过中转表交给
+    /// `build_chat_request`，由它决定怎么组装消息块 —— 这样「怎么组装」只写在
+    /// `plan::build` 一处，不必在这里再拼一次。
+    ///
+    /// 纯文本请求零成本（`prepare_attachments` 自己会立刻返回空）。
+    fn prepare_body<'a>(
+        &'a self,
+        account: &'a Value,
+        body: &'a Value,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Option<Value>, GatewayError>> + Send + 'a>,
+    > {
+        Box::pin(async move {
+            chat::prepare_attachments_for_session(account, body).await?;
+            Ok(None)
+        })
+    }
+
     // ── 网页登录（内嵌窗口取 Cookie）──────────────────────────────
     //
     // 与 KukuAI / OrcaTerm 同一形态：**没有授权码**，凭证就是登录后写进

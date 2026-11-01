@@ -1021,6 +1021,29 @@ async fn attempt_queue(
             // 会把它渲染成「无结果记录」）—— 明明有一个明确的失败原因。
             // 所以先给明细定稿，再把错误抛出：明细条数与 attempts 的一一对应
             // 在此也成立（那是本字段的全部前提，见模块头）。
+            // ── 发送前的异步准备（`prepare_body`）────────────────────────
+            // 有的家必须先发一次网络请求才能把 body 准备好，而且「要准备什么」
+            // 只有读了 body 才知道（豆包工作：图片要先上传换成资源 uri）。
+            // 放在这里是因为：`ensure_access_token` 已经跑完（凭证就绪）、
+            // `build_chat_request` 还没跑（body 尚未定稿），且离真正发送最近 ——
+            // 失败时这一轮还没消耗上游配额。
+            //
+            // 默认实现返回 `Ok(None)`（不改 body），因此其余 31 家的行为与
+            // 改造前逐字一致，也不多一次深拷贝。
+            let prepared_body: Option<serde_json::Value> =
+                match adapter.prepare_body(&session, body).await {
+                    Ok(prepared) => prepared,
+                    Err(error) => {
+                        // 与 `build_chat_request` 的失败同一档：**本地**发不出去，
+                        // 不是上游拒绝。先把明细定稿再抛，避免留下悬空记录。
+                        ctx.telemetry.finish_last_attempt(
+                            Some(i64::from(error.status_code)),
+                            Some(&error.message),
+                        );
+                        return Err(error);
+                    }
+                };
+            let body: &serde_json::Value = prepared_body.as_ref().unwrap_or(body);
             let plan = match adapter.build_chat_request(&session, body, ctx.client_headers) {
                 Ok(plan) => plan,
                 Err(error) => {

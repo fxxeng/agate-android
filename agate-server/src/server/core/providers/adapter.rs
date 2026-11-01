@@ -454,6 +454,45 @@ pub trait ProviderAdapter: Send + Sync {
         client_headers: &HeaderMap,
     ) -> Result<ChatRequestPlan, GatewayError>;
 
+    /// **发送前的异步准备**：需要「先发网络请求才能把 body 准备好」的家用它。
+    ///
+    /// ── 为什么需要这个钩子（同步/异步的接缝）──────────────────────
+    /// [`Self::build_chat_request`] 是**同步**的（只拼 URL / 头 / 体），而有些家
+    /// 在发正式请求前必须先做一件**异步**的事，且那件事**依赖 body**：
+    /// ```text
+    ///   豆包工作：图片 / 文件要先 POST /alice/resource/prepare_upload
+    ///             换成上游认的资源 uri，才能写进消息块；
+    ///             要传哪些图，只有读了 body 才知道。
+    /// ```
+    /// 既有的 [`Self::ensure_access_token`] 帮不上忙：它拿不到 body（只给
+    /// store + account_id）。因此这里补一个**同时拿到 account 与 body** 的
+    /// 异步钩子，由编排层在 `ensure_access_token` 之后、`build_chat_request`
+    /// 之前 await。
+    ///
+    /// ── 返回值语义（`Option` 而不是直接 `Value`）──────────────────
+    /// - `Ok(None)` = **请求体不用改**（默认实现恒如此，因此现有 31 家的行为
+    ///   逐字不变，也不会多一次深拷贝）；
+    /// - `Ok(Some(body))` = 用返回的这个 body 继续往下走。
+    ///
+    /// 需要「把异步结果交给同步的 build_chat_request」的家（豆包工作是第一个）
+    /// 可以在这里把结果存进自己的状态表、返回 `Ok(None)` —— 与本仓
+    /// `deepseek::session` 的处理同源（那家是反过来的：结果在 ensure 阶段产生）。
+    /// 两种做法都成立，选哪个取决于「准备动作要不要读 body」。
+    ///
+    /// ── 失败语义 ──────────────────────────────────────────────
+    /// 返回 `Err` 表示这一轮**发不出去**（不是「上游拒绝」）：编排层记一条
+    /// 明细后按本地失败处理（与 `build_chat_request` 的失败同一档），
+    /// 不会拿半成品 body 去发。
+    fn prepare_body<'a>(
+        &'a self,
+        _account: &'a Value,
+        _body: &'a Value,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Option<Value>, GatewayError>> + Send + 'a>,
+    > {
+        Box::pin(async { Ok(None) })
+    }
+
     /// 把「映射上绑的思考等级」翻译成本家上游认识的字段与取值（模块头扩展 10）。
     ///
     /// ── 调用时机与调用者 ────────────────────────────────────────
