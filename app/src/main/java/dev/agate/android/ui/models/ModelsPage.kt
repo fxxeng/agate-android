@@ -390,14 +390,22 @@ fun ModelsPage(
         if (toggling != null) return
         toggling = key
         scope.launch {
-            val r = ModelOps.setState(bare, !row.enabled, row.provider.ifBlank { null })
-            toggling = null
-            if (r.ok) {
-                loadManage()
-                loadListView()
-                GatewayRepository.refreshOnce()
-            } else {
-                Toast.makeText(ctx, r.error ?: "切换失败", Toast.LENGTH_SHORT).show()
+            // ⚠️ `finally` 不是装饰：没有它，协程被取消（切页 / 组合重算）时
+            // `toggling` 会**永远停在**这一行 ⇒ 该行开关变灰（`busy=true`），
+            // 而且 `toggle()` 开头的 `if (toggling != null) return` 会把之后
+            // **所有**点击吞掉 —— 症状是「这个模型关不掉，别的也点不动」。
+            try {
+                val r = ModelOps.setState(bare, !row.enabled, row.provider.ifBlank { null })
+                if (r.ok) {
+                    // 管理视图立刻刷新（权威）；会话清单随 `refreshOnce` 稍后对齐
+                    loadManage()
+                    loadListView()
+                    GatewayRepository.refreshOnce()
+                } else {
+                    Toast.makeText(ctx, r.error ?: "切换失败", Toast.LENGTH_SHORT).show()
+                }
+            } finally {
+                toggling = null
             }
         }
     }
@@ -578,7 +586,17 @@ fun ModelsPage(
         val byKey = manage.associateBy { "${it.provider.lowercase()}|${it.id.lowercase()}" }
         val fromSession = models.map { m ->
             val mg = byKey["${m.provider.lowercase()}|${bare(m.id).lowercase()}"]
-            m.copy(enabled = true, official = mg?.official)
+            // ── 启停状态**以管理视图为准**（2026-11-01 修「关不掉」）──────
+            // 旧写法 `enabled = true` 是错的：会话清单是**上一次轮询的快照**，
+            // 关掉一个模型后它在快照里还在（快照要等下一轮 / `refreshOnce`
+            // 才更新），而这里硬说它 enabled ⇒ 开关当场弹回 ON。
+            // 用户看到的就是「点了没反应、这个模型关不掉」——而内核其实已经关了。
+            //
+            // 管理视图（`/api/models/manage`）是启停状态的唯一权威：它给全量
+            // 条目 + 真实 enabled。会话清单只用来补富数据（上下文 / 能力位）。
+            // 只有管理视图里确实没有这条（理论上不该发生）才退回 true ——
+            // 那时它在会话清单里，说明内核认为它可用。
+            m.copy(enabled = mg?.enabled ?: true, official = mg?.official)
         }
         val present = fromSession
             .map { "${it.provider.lowercase()}|${bare(it.id).lowercase()}" }
