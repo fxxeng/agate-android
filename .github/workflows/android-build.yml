@@ -93,10 +93,10 @@ jobs:
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 35
-          target: google_apis
+          target: default
           arch: x86_64
           disable-animations: true
-          emulator-boot-timeout: 900
+          emulator-boot-timeout: 1200
           # Keep the emulator diagnostics even when Gradle/instrumentation fails.
           # `set +e` is intentional: the EXIT trap must run after a non-zero test result.
           script: bash .github/scripts/run-instrumentation.sh

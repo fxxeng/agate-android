@@ -95,3 +95,38 @@ now includes this diagnostics directory.
 - Whether it passes or fails, the artifact contains the captured diagnostics
   whenever the emulator is available to the runner script.
 - The original instrumentation exit code remains the step result.
+
+## CI-Fix7：Emulator 冷启动稳定性门禁修复（Round 8 后）
+
+本轮仅调整 CI Emulator 镜像与启动脚本，不修改应用、Rust、JNI、Gateway、
+Service、数据库或 Instrumentation 测试业务代码。
+
+### 变更
+
+- `android-build.yml`：`target: google_apis` 改为 `target: default`（AOSP），
+  `emulator-boot-timeout` 从 900 提高到 1200 秒。正式 arm64 Debug/Release
+  构建与 ABI 策略不变。
+- `run-instrumentation.sh`：启动测试前执行 `adb root`、`adb wait-for-device`，
+  并检查 `id -u == 0`。
+- PSI 检查改为 fail-closed：不可读、格式异常、avg10 消失均停止本轮，
+  不再静默等待到 cap 后继续。
+- 要求 CPU PSI `some avg10 < 20` 连续 3 次（每次间隔 5 秒），最长等待 480 秒。
+  超时则失败并通过 EXIT trap 上传诊断，不启动 Gradle。
+- 保留原始 Gradle/settle 退出码；诊断增加 `adb-devices.txt` 和 `emulator-id.txt`。
+
+### 为什么本轮不加自动重试
+
+Round 8 已明确发现 settle 门失效。先修复镜像与门禁并观察一次真实运行，
+避免自动重试掩盖首次启动失败，也避免把基础设施不稳定误报成测试通过。
+若 AOSP + root + PSI 门后仍出现纯瞬时系统 ANR，再单独引入一次重试。
+
+### 验收标准
+
+1. 日志出现 `adb root confirmed (uid=0)`。
+2. `psi-cpu.txt` 不再是 Permission denied。
+3. 出现 3 次连续 `CPU pressure ... quiet 1/3 ... 3/3`。
+4. 只有 settle gate 成功后才启动 Gradle。
+5. 若 gate 失败，诊断 artifact 仍上传，退出码非零。
+6. AOSP Emulator 上 Instrumentation 真正开始运行；测试结果需单独判断，
+   不以 Emulator 成功启动代替 JNI/Service 测试通过。
+
