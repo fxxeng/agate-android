@@ -60,15 +60,16 @@ object ProviderIcons {
         // （与 chatglm 同包 —— 那两个包就是按「网页 / Agent」分开的）。
         // 单一站点，无变体。
         "deepseek-web" to R.drawable.provider_deepseek_web,
-        // ⚠️ 豆包工作（`doubaowork`）**没有图标**：上游 agent 插件包只发
-        // `bin/` 与 `pack.json`、**不含 assets**（图标随网页包发布），而网页包里
-        // 没有这一家；agent 二进制里也没有内嵌 PNG（查过魔数，只有一个来自
-        // image crate 测试数据的无关块）。
+        // 豆包工作：取自上游 beta 桌面项目 `desktop-tauri/ui/assets/providers/
+        // doubaowork.png`（256×256，蓝色旋涡 + 白色缺口，即官方应用图标）。
         //
-        // 因此本家走**两字母头像兜底**（`AgateAvatar` 的默认路径），而不是
-        // 随便找一张图顶上：一张不对的图标比没有图标更误导（用户会以为自己
-        // 加错了家）。将来上游补了图标，在 `drawable-nodpi` 放一张
-        // `provider_doubaowork.png` 并在此加一行映射即可。
+        // ── 为什么之前是「如实留白」，现在有了 ────────────────────
+        // 当时只查了插件包二进制：agent 包只发 `bin/` + `pack.json`、**不含
+        // assets**（图标随网页包发布），而网页包里只有 chatglm / deepseek-web，
+        // 二进制里也没有内嵌 PNG。后来找到上游 beta 的桌面源码，图标就在它的
+        // UI 资源目录里 —— 有据可依才补上，不是"随便找一张图顶上"
+        // （一张不对的图标比没有图标更误导：用户会以为自己加错了家）。
+        "doubaowork" to R.drawable.provider_doubaowork,
     )
 
     /**

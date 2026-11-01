@@ -53,6 +53,16 @@ data class ProviderPreset(
     val pasteSecondaryHint: String? = null,
     /** 粘贴框是否多行（整份 JSON / Cookie 串）。 */
     val pasteMultiline: Boolean = false,
+    /**
+     * 网页登录的收尾方式是否为「**壳侧读登录窗口的 Cookie 再交回**」。
+     *
+     * true 的家没有授权码可收（凭证就在 Cookie 里）：登录窗口轮询
+     * `CookieManager` 读到登录态 Cookie 后，把整串 Cookie 作为
+     * `callbackUrl` 交给内核的 `/api/session/login/callback`
+     * （契约与上游 beta 一致，见内核 `providers/doubaowork/adapter.rs`）。
+     * false 的家仍走原来的「拦自定义 scheme / 等 loopback 回调」那条路。
+     */
+    val webLoginCookies: Boolean = false,
     /** 能力标签：是否支持自动签到（来自内核 CHECKIN_PROVIDERS）。 */
     val supportsCheckin: Boolean = false,
     /**
@@ -354,10 +364,21 @@ object PresetRegistry {
         // 「内嵌窗口取 Cookie」，但那条链在 Android 侧的收尾（从 WebView 读
         // Cookie 再提交）尚未在客户端实现，因此**只提供粘贴入口** ——
         // 给一个点了没反应的通道比少给一条更糟。
+        // 通道与上游 beta 的 `add-doubaowork-config.ts` 对齐：
+        //   网页登录（内嵌窗口自动读 Cookie）/ 填写凭证 / 导入凭证文件。
+        //   ⚠️ 上游还有「导入桌面端登录态」，它要读本机豆包客户端的 Cookie
+        //   （且客户端得带 `--remote-debugging-port=9342` 启动）—— Android 上
+        //   没有这回事，与其余各家同一处置：枚举里保留、UI 里过滤掉
+        //   （见 AddProviderPage 的 `usable`）。
         ProviderPreset(
-            "doubaowork", "豆包工作", "www.doubao.com · 粘贴 Cookie", LoginKind.PASTE,
-            listOf(AuthChannel.PASTE),
-            pasteHint = "Cookie 整串（含 sessionid；登录 www.doubao.com 后复制）",
+            "doubaowork", "豆包工作", "www.doubao.com · 网页登录 / 粘贴 Cookie",
+            LoginKind.WEBVIEW,
+            listOf(AuthChannel.EMBEDDED, AuthChannel.PASTE, AuthChannel.IMPORT_FILE),
+            webLoginCookies = true,
+            // 粘贴框三种形态都收（与内核 `login::normalize_import` 一致）：
+            // Cookie 头串 / Cookie JSON 数组 / 扁平键值对象（上游 beta 的
+            // 说明里也写了「也支持 Cookie JSON 数组或对象」）
+            pasteHint = "Cookie 整串（必须含 sessionid），也支持 Cookie JSON 数组或对象",
             pasteMultiline = true,
             supportsCheckin = true,
         ),

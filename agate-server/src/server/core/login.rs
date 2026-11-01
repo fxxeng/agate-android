@@ -981,6 +981,54 @@ impl LoginService {
                 .await
                 .map(LoginCallbackSubmission::Completed);
         }
+        // 豆包工作：`callbackUrl` 里装的**不是 URL，而是 Cookie 载荷**
+        // （JSON 行数组 / `{"cookies":[…]}` / Cookie 头串）。
+        //
+        // ── 为什么沿用 callbackUrl 这个字段（而不是新开一个端点）────────
+        // 上游 beta 的壳侧就是这么交回的：`doubaowork_login::cookie()` 把窗口
+        // Cookie 折成 `{"cookies":[…]}` 字符串，再经 `submit_callback` 塞进
+        // `callbackUrl` POST 到 `/api/session/login/callback`（见
+        // `desktop-tauri/src-tauri/src/login.rs`）。本仓跟随同一契约 ——
+        // 客户端（Android 的登录窗口）因此不需要第二套提交通道。
+        //
+        // ⚠️ 必须**先于**下面那些 `url::Url::parse` 的分支判断：本家载荷不是
+        // URL，走到通用尾部会被判成「该登录任务不接收授权码回调」。
+        if kind == ProviderKind::Doubaowork {
+            // 归一 + 落账号全在适配器的 `exchange_login_code` 里（那里还负责
+            // 把 Cookie 头串 / JSON 两种形态收敛成同一个 seed，见
+            // `providers::doubaowork::login` 的模块头）。
+            return match adapter_for(kind)
+                .exchange_login_code(&self.store, callback_url, state)
+                .await
+            {
+                Ok(account_id) => {
+                    // 与 Antigravity 分支逐字同款：任务落定 + 写入 session 载荷，
+                    // 前端的 `/wait` 才能立刻拿到 done（否则会等到 5 分钟超时）
+                    let session = json!({
+                        "accountUid": account_id,
+                        "nickname": Value::Null,
+                        "edition": task.edition,
+                        "provider": task.provider,
+                    });
+                    handle.update(|task| {
+                        task.done = true;
+                        task.session = Some(session);
+                        task.finished_at = Some(logging::now_ms());
+                    });
+                    Ok(LoginCallbackSubmission::Completed(account_id))
+                }
+                Err(error) => {
+                    // 失败要**落定**任务错误，否则前端一直空等到超时，
+                    // 用户看不到任何可行动的原因
+                    finish_task_error(&handle, &error.message);
+                    logging::log(
+                        "[Login]",
+                        &format!("❌ 豆包工作网页登录换取凭证失败: {}", error.message),
+                    );
+                    Err(error)
+                }
+            };
+        }
         // CatPaw 正常情况下由服务端 poll-token 兜底完成；若上游仍把 token
         // 放进可复制的查询串，这里也复用 public callback 的收尾逻辑。
         if kind == ProviderKind::CatPaw {

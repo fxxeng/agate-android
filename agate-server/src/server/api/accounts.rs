@@ -1118,16 +1118,33 @@ pub async fn add_account(state: &ServerState, body: &Bytes) -> Response {
                     "豆包工作不支持导入桌面端登录态，请粘贴 Cookie（整串）添加账号",
                 );
             }
-            let cookie_input = payload
-                .get("cookies")
-                .or_else(|| payload.get("cookie"))
-                .or_else(|| payload.get("accessToken"))
-                .and_then(Value::as_str)
-                .unwrap_or("");
+            // ── 三条入口都收（对照上游 beta 的 add-doubaowork-config.ts）──
+            //   填写凭证   → payload.cookie / cookies / accessToken
+            //   导入凭证文件 → authFileContent（文本 JSON）
+            //   网页登录   → 不走这里（走 login/callback，见 adapter 的说明）
+            // 归一在 `providers::doubaowork::login::normalize_import` 一处完成：
+            // 它认 Cookie 头串 / `{"cookies":[…]}` / 扁平键值对象三种形态。
+            let file_content = auth_file_content.as_deref().unwrap_or("").trim();
+            if auth_file_b64.is_some() && file_content.is_empty() {
+                return management_error(
+                    400,
+                    "豆包工作的凭证是**文本 Cookie**（JSON 或 Cookie 头串），                     不支持二进制凭证文件；请选择 .json 文件或改用「填写凭证」",
+                );
+            }
+            let cookie_input = if !file_content.is_empty() {
+                file_content
+            } else {
+                payload
+                    .get("cookies")
+                    .or_else(|| payload.get("cookie"))
+                    .or_else(|| payload.get("accessToken"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+            };
             if cookie_input.trim().is_empty() {
                 return management_error(
                     400,
-                    "请粘贴豆包工作的 Cookie（登录 www.doubao.com 后从开发者工具复制）",
+                    "请粘贴豆包工作的 Cookie（登录 www.doubao.com 后从开发者工具复制），                     或选择包含 Cookie 的 JSON 文件",
                 );
             }
             let normalize = |key: &str| -> Option<String> {
@@ -1138,13 +1155,25 @@ pub async fn add_account(state: &ServerState, body: &Bytes) -> Response {
                     .filter(|text| !text.is_empty())
                     .map(str::to_string)
             };
-            match crate::server::core::providers::doubaowork::credentials::normalize_paste(
-                cookie_input,
-                normalize("deviceId").as_deref(),
-                normalize("webId").as_deref(),
-                normalize("fp").as_deref(),
-            ) {
-                Ok(seed) => store.add_doubaowork_account(&seed, import_name, "manual"),
+            // 三种输入形态（Cookie 头串 / Cookie JSON 数组 / 扁平对象）统一在
+            // `login::normalize_import` 里收敛 —— 与**网页登录**走同一个函数，
+            // 两条入口不会在「认哪种形态」上分叉。
+            // 风控参数（deviceId / webId / fp）是可选补充：粘贴与文件导入通常
+            // 拿不到它们（那三个值只在登录窗口里），读到时补进 fingerprint
+            let device_id = normalize("deviceId");
+            let web_id = normalize("webId");
+            let fp = normalize("fp");
+            match crate::server::core::providers::doubaowork::login::normalize_import(cookie_input) {
+                Ok(seed) => {
+                    let seed = crate::server::core::providers::doubaowork::login::attach_fingerprint(
+                        seed,
+                        device_id.as_deref(),
+                        web_id.as_deref(),
+                        fp.as_deref(),
+                    );
+                    let source = if file_content.is_empty() { "manual" } else { "file" };
+                    store.add_doubaowork_account(&seed, import_name, source)
+                }
                 Err(error) => Err(AccountStoreError::new(error.message, error.status_code)),
             }
         }

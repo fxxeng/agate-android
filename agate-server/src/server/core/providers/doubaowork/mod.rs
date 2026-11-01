@@ -75,6 +75,7 @@ pub mod adapter;
 pub mod chat;
 pub mod credentials;
 pub mod endpoints;
+pub mod login;
 pub mod models;
 pub mod plan;
 pub mod quota;

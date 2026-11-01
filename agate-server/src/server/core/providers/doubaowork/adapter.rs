@@ -58,7 +58,7 @@ use crate::server::core::providers::{content_block, ProviderKind};
 use crate::server::errors::GatewayError;
 use crate::server::logging;
 
-use super::{chat, credentials, models, plan, quota, rewards};
+use super::{chat, credentials, login, models, plan, quota, rewards};
 
 /// 一家豆包工作适配器（**单一站点**，没有地区之分）
 pub struct DoubaoWorkAdapter;
@@ -245,6 +245,63 @@ impl ProviderAdapter for DoubaoWorkAdapter {
         })
     }
 
+    // ── 网页登录（内嵌窗口取 Cookie）──────────────────────────────
+    //
+    // 与 KukuAI / OrcaTerm 同一形态：**没有授权码**，凭证就是登录后写进
+    // `www.doubao.com` 域的那一整套 Cookie。区别只在「谁来读」——
+    // 那两家由壳侧读 Cookie 后 POST 各自的 `*/complete` 专用端点；
+    // 本家沿用上游 beta 的契约：把 **Cookie 的 JSON 字符串**塞进
+    // `POST /api/session/login/callback` 的 `callbackUrl` 交回
+    // （见 `desktop-tauri/src-tauri/src/login.rs` 的 `submit_callback`
+    // 与 `doubaowork_login::cookie` 的产物形状），由
+    // `core::login::submit_login_callback` 的 doubaowork 分支收尾。
+    fn supports_web_login(&self) -> bool {
+        true
+    }
+
+    /// 打开官方站点首页（登录态写在 `www.doubao.com` 的 Cookie 上）。
+    ///
+    /// 上游 beta 的壳侧会校验这个地址**必须是 `www.doubao.com`**
+    /// （`doubaowork_login::allowed` + host 相等判定），本仓在这边就固定成它，
+    /// 不通过参数放开 —— 登录窗口指向别处等于把用户口令送到别的域。
+    fn build_login_url(&self) -> Option<(String, String)> {
+        Some((login::login_page_url(), login::new_login_state()))
+    }
+
+    /// 收尾：`code` 是壳侧交回的 **Cookie 载荷**（JSON 或 Cookie 头串）。
+    ///
+    /// 落账号走本家既有的 `add_doubaowork_account` —— 与「填写凭证」同一条路，
+    /// 不另写落盘逻辑（否则两条路的 id 派生、备注名、优先级会慢慢分叉）。
+    fn exchange_login_code<'a>(
+        &'a self,
+        store: &'a AccountStore,
+        code: &'a str,
+        _state: &'a str,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<String, GatewayError>> + Send + 'a>,
+    > {
+        Box::pin(async move {
+            let seed = login::normalize_import(code)?;
+            let account = store
+                .add_doubaowork_account(&seed, None, "web")
+                .map_err(|error| GatewayError::with_status(error.status_code, error.message))?;
+            let account_id = account
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let label = account
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("豆包工作账号");
+            crate::server::logging::log(
+                "[Login]",
+                &format!("✅ 豆包工作网页登录成功：{label}（{account_id}）"),
+            );
+            Ok(account_id)
+        })
+    }
+
     /// **没有续期手段**（Cookie 不续期、上游无 refresh 接口）——
     /// 维护任务不问本家，也就不会每次白跑一趟并往日志里灌失败记录。
     fn supports_refresh(&self) -> bool {
@@ -351,10 +408,17 @@ mod tests {
         assert!(DOUBAOWORK_ADAPTER.refresh_uses_account());
         // ⚠️ 本家**没有**续期接口（Cookie 失效只能重新登录）
         assert!(!DOUBAOWORK_ADAPTER.supports_refresh());
-        // ⚠️ 本家登录是「内嵌窗口取 Cookie」，不是回调换码 —— 标成 true
-        // 会让通用网页登录分支去等一个永远不来的本机回调
-        assert!(!DOUBAOWORK_ADAPTER.supports_web_login());
-        assert_eq!(DOUBAOWORK_ADAPTER.build_login_url(), None);
+        // 网页登录**是支持的**（2026-11 接入）：内嵌窗口打开 www.doubao.com，
+        // 壳侧读 Cookie 后经 `/api/session/login/callback` 交回。
+        // 注意它不是「回调换码」那一套 —— `exchange_login_code` 收到的 code
+        // 是**Cookie 载荷**而不是授权码（见该方法的文档）。
+        assert!(DOUBAOWORK_ADAPTER.supports_web_login());
+        let (url, state) = DOUBAOWORK_ADAPTER
+            .build_login_url()
+            .expect("应能给出登录地址");
+        // 登录地址必须是官方站点：壳侧（以及上游 beta 的实现）都校验这一点
+        assert_eq!(url, "https://www.doubao.com");
+        assert_eq!(state.len(), 32, "一次性 state 应是 32 位十六进制");
         // 无状态（一次 HTTP 请求 = 一次答复）
         assert!(!DOUBAOWORK_ADAPTER.is_stateful());
     }

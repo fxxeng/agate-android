@@ -40,6 +40,22 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
+/**
+ * Cookie 串里有没有**登录态**（`sessionid` / `sessionid_ss` / `sid_guard` 之一）。
+ *
+ * 与内核 `doubaowork::credentials::SESSION_COOKIE_NAMES` 同一组名字 ——
+ * 客户端先判一次只是为了「别在用户在登录页上还没登录成功时就交回空 Cookie」，
+ * 真正的判定仍在内核（那边是唯一权威，见 `login::ensure_has_session`）。
+ */
+private fun hasSessionCookie(cookie: String): Boolean {
+    val names = listOf("sessionid", "sessionid_ss", "sid_guard")
+    return cookie.split(';').any { part ->
+        val name = part.substringBefore('=').trim()
+        val value = part.substringAfter('=', "").trim()
+        name in names && value.isNotEmpty()
+    }
+}
+
 /** 登录会话参数：AddProviderSheet 点卡片 → start 成功后产生。 */
 data class LoginSession(
     val providerId: String,
@@ -73,12 +89,32 @@ fun AuthWebViewSheet(
     var finished by remember { mutableStateOf(false) }
 
     val label = PresetRegistry.labelOf(session.providerId)
+    // 这家是不是「靠读登录窗口的 Cookie 收尾」（见 ProviderPreset.webLoginCookies）
+    val cookieLogin = PresetRegistry.byId(session.providerId)?.webLoginCookies == true
+    // Cookie 只交回一次（登录成功后页面还会继续导航，每拍都交会重复 POST；
+    // 内核那边虽然幂等，但没必要反复发）
+    val cookieSubmitted = remember { mutableStateOf(false) }
 
     // 完成检测：wait 轮询；结果只报一次（finished 防重复）。
     LaunchedEffect(session.state) {
         val deadline = System.currentTimeMillis() + 300_000L
         while (isActive && !finished && System.currentTimeMillis() < deadline) {
             delay(1_800L)
+            // ── 壳侧读 Cookie（cookieLogin 的家）───────────────────────
+            // 这类家没有授权码可拦：凭证就是登录后写进站点域的那套 Cookie。
+            // CookieManager 读得到 HttpOnly 的会话 Cookie（`sessionid` 就是），
+            // 因此这里读的是「完整 Cookie 串」，拼成 HTTP 头形态直接交回内核
+            // （内核 `login::normalize_import` 认这个形态）。
+            if (cookieLogin && !cookieSubmitted.value) {
+                val cookie = runCatching {
+                    CookieManager.getInstance().getCookie(session.authUrl)
+                }.getOrNull()
+                if (cookie != null && hasSessionCookie(cookie) && !cookieSubmitted.value) {
+                    cookieSubmitted.value = true
+                    status = "已获取登录态，正在加入账号…"
+                    LoginClient.forwardCallback(session.state, cookie)
+                }
+            }
             when (val r = LoginClient.wait(session.state)) {
                 LoginClient.WaitResult.Pending -> Unit
                 is LoginClient.WaitResult.Done -> {
