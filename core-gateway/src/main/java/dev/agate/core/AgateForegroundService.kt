@@ -151,6 +151,11 @@ class AgateForegroundService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // R11-Fix10 诊断日志：定位 FGS ordering 失败的交错路径（正式修复后移除）。
+        android.util.Log.i(
+            "Agate",
+            "onStartCommand action=${intent?.action ?: "<null-sticky>"} startId=$startId 交付前=${gatewayIntent.snapshot()}",
+        )
         when (intent?.action) {
             ACTION_STOP -> {
                 gatewayIntent.requestStop()
@@ -196,7 +201,9 @@ class AgateForegroundService : Service() {
                 // 实际执行的最后一条 start 请求，否则重复命令可能让服务无法退出。
                 enqueueCommand("$ACTION_STOP#$startId") {
                     try {
+                        android.util.Log.i("Agate", "STOP 命令：执行 stop startId=$startId 执行前=${gatewayIntent.snapshot()}")
                         RuntimeController.runSerialized { Gateway.stop() }
+                        android.util.Log.i("Agate", "STOP 命令：stop 返回 startId=$startId 执行后=${gatewayIntent.snapshot()}")
                     } catch (t: Throwable) {
                         android.util.Log.e("Agate", "内核停止异常", t)
                     }
@@ -264,6 +271,7 @@ class AgateForegroundService : Service() {
 
     private fun runStart() {
         val bindLan = GatewayPrefs.bindLan(this)
+        android.util.Log.i("Agate", "START 命令：执行 runStart 执行前=${gatewayIntent.snapshot()}")
         val result = try {
             RuntimeController.runSerialized {
                 Gateway.start(
@@ -483,7 +491,9 @@ class AgateForegroundService : Service() {
      */
     private fun stopIfCurrentStart(startId: Int) {
         mainHandler.post {
-            if (stopSelfResult(startId)) {
+            val stopped = stopSelfResult(startId)
+            android.util.Log.i("Agate", "stopIfCurrentStart：startId=$startId stopSelfResult=$stopped 现快照=${gatewayIntent.snapshot()}")
+            if (stopped) {
                 stopForeground(STOP_FOREGROUND_REMOVE)
             }
         }
@@ -496,6 +506,7 @@ class AgateForegroundService : Service() {
         // 即失效；检查放在 RuntimeController 串行区内，避免检查与 Gateway.stop
         // 之间插入另一个生命周期变更。显式 ACTION_STOP 仍由其命令负责执行。
         val destroyIntent = gatewayIntent.snapshot()
+        android.util.Log.i("Agate", "onDestroy：捕获清理快照=$destroyIntent")
         try {
             commandExecutor.execute {
                 try {
@@ -503,9 +514,10 @@ class AgateForegroundService : Service() {
                         // 比较完整代次，而非只看布尔状态：旧实例销毁后只要出现
                         // 任何新生命周期意图，这份兜底清理就不能再代表当前状态。
                         if (gatewayIntent.mayCleanup(destroyIntent)) {
+                            android.util.Log.i("Agate", "销毁清理：代次匹配，执行 stop（捕获=$destroyIntent 现快照=${gatewayIntent.snapshot()}）")
                             Gateway.stop()
                         } else {
-                            android.util.Log.i("Agate", "跳过过期 Service 销毁清理：网关意图已更新")
+                            android.util.Log.i("Agate", "跳过过期 Service 销毁清理：网关意图已更新（捕获=$destroyIntent 现快照=${gatewayIntent.snapshot()}）")
                         }
                     }
                 } catch (t: Throwable) {
