@@ -1018,6 +1018,36 @@ async fn require_api_key(mut request: Request, next: Next) -> Response {
         return next.run(request).await;
     }
 
+    // ── 管理面（`/api/*`）来自**本机回环**时不受下游密钥门禁约束 ────────
+    //
+    // ⚠️ 这一段修的是一个「建密钥即变砖」的缺陷（2026-11-01）：
+    // 旧逻辑是「**只要有任意一把 Key，所有请求都要带 Key**」。于是用户在
+    // 「访问密钥」页点了「新建密钥」之后：
+    //   · 客户端（本机形态从不带 Key，见 KeysPage 的「本机访问无需填 Key」）
+    //     发出的 `/api/session`、`/api/accounts`… 全部 401；
+    //   · 界面上表现为**账号全没了、APP 不可用**（其实是请求被拒，数据没丢）；
+    //   · 更糟的是**删掉那把 Key 的接口本身也被 401 挡住** —— 用户无法自救，
+    //     只能清数据重装。
+    //
+    // 语义上 Key 是给**下游客户端调用 `/v1`** 用的凭证，不该连坐「本机管理台」。
+    // 管理面的鉴权有自己的两条链，且都在上面先跑过：
+    //   · 注册过管理员（headless / 开启局域网时）→ `panel_auth` 分支已按
+    //     「会话 cookie 或 Key」拦过一次；
+    //   · 未注册（headless）→ `panel_gate` 分支已拦。
+    // 剩下的形态就是「本机桌面/Android 单机」——它只监听回环，能连上来的
+    // 只可能是本机进程，因此按**对端地址**放行，而不是按路径盲放：
+    // 局域网来的 `/api/*` 依然要走 Key（对端不是回环）。
+    //
+    // 用对端地址而不是 `host.is_loopback()`：后者在中间件里拿不到（`from_fn`
+    // 没有 state），而 `ConnectInfo` 由 `into_make_service_with_connect_info`
+    // 灌进请求扩展，正好是「这一次连接从哪来」的第一手事实。
+    let peer_is_loopback = request
+        .extensions()
+        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+        .map(|info| info.0.ip().is_loopback())
+        .unwrap_or(false);
+    let management_from_loopback = peer_is_loopback && path.starts_with("/api/");
+
     if keys.is_empty() {
         // 免鉴权模式。公网形态下 /v1/* fail-closed：没有 Key 可校验时，
         // 把模型额度对全网开放是不可接受的 —— 拒绝服务并引导去面板建 Key
@@ -1026,6 +1056,10 @@ async fn require_api_key(mut request: Request, next: Next) -> Response {
         if crate::server::access::v1_fail_closed() && path.starts_with("/v1/") {
             return errors::v1_fail_closed_response();
         }
+        return next.run(request).await;
+    }
+    if management_from_loopback {
+        // 见上：本机管理台不因「存在下游 Key」而被锁死
         return next.run(request).await;
     }
 
