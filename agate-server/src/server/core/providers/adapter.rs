@@ -1381,6 +1381,17 @@ pub fn implemented_kinds() -> Vec<ProviderKind> {
         // 因为本家**没有**内置兜底清单可回落）。
         ProviderKind::Modelscope,
         ProviderKind::ModelscopeIntl,
+        // 智谱清言（ChatGLM）：适配器已接真身（登录态 / 凭据 / 目录 / 转发），
+        // 且 `supports_model_refresh()` 为 **true**、`refresh_models` 也实现了
+        // —— 它**必须**在本列表里。
+        //
+        // ⚠️ 这一条是补上的漏项（2026-11-01 审计发现）：此前它在注册表里、
+        // 适配器也接了，却**不在本列表**。后果是**静默**的 ——
+        // 后台目录刷新循环（`refresh_implemented` ← `spawn_catalog_refresh`
+        // 与 `bootstrap`）从不问它，界面上点「刷新模型」对本家是空操作，
+        // 清单永远是内置兜底那几条（`chatglm::models::FALLBACK_MODELS`）。
+        // 不崩、不报错，只是模型列表再也不更新 —— 最难被发现的那一类。
+        ProviderKind::Chatglm,
         // LobsterAI：适配器已接真身（账号 / 续期 / 目录 / 转发 / 积分 / 签到），
         // 且有远程目录（`GET /api/models/available`）—— 必须在列表里，否则目录
         // 刷新循环不会问它（症状是「账号加了、模型列表一直是 19 条兜底」）。
@@ -1706,3 +1717,68 @@ pub async fn refresh_implemented_forced(
 // 两家先后接上真身（W5-T-d4 / W4b-T-c2）后，占位实现不再有任何生产调用点，
 // W6 收尾时连文件一起删除 —— 现在加 provider 的过渡方案是：先在
 // `adapter_for` 里给一个最小实现，而不是重新引入一层占位结构。
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::server::core::providers::kind_id;
+
+    /// **注册表里的每一家都必须在 `implemented_kinds()` 里。**
+    ///
+    /// ── 为什么要钉这一条（2026-11-01 的真实漏项）──────────────
+    /// `chatglm` 曾经在注册表里、适配器也接好了，却**不在**这份列表里。
+    /// 后果完全静默：后台目录刷新循环从不问它，界面上点「刷新模型」是空操作，
+    /// 模型清单永远停在内置兜底那几条 —— 不崩、不报错、日志里也看不出异常。
+    /// 这类「接线漏一处」的错误靠人眼审注册表是审不出来的（31 家 × 5 张表），
+    /// 所以钉成测试：加一家时忘了登记 `implemented_kinds` 会**立刻**红。
+    ///
+    /// 反过来说：如果哪天确实需要「注册但暂不实现」的家，必须在
+    /// `implemented_kinds` 的文档里写清例外，而不是让这条测试失效。
+    #[test]
+    fn every_registered_provider_is_implemented() {
+        let implemented: std::collections::HashSet<String> =
+            implemented_kinds().iter().map(|kind| kind_id(*kind).to_string()).collect();
+        let mut missing: Vec<&str> = Vec::new();
+        for meta in super::super::PROVIDERS.iter() {
+            if !implemented.contains(meta.id) {
+                missing.push(meta.id);
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "这些家已在注册表里、却不在 implemented_kinds()：{missing:?}\n\
+             症状是「目录刷新循环从不过问、模型清单永远停在兜底」——静默故障。"
+        );
+    }
+
+    /// `implemented_kinds` 里不许有重复（重复会让目录刷新多跑一趟）
+    #[test]
+    fn implemented_kinds_has_no_duplicates() {
+        let kinds = implemented_kinds();
+        let unique: std::collections::HashSet<_> = kinds.iter().collect();
+        assert_eq!(kinds.len(), unique.len(), "implemented_kinds 里有重复项");
+    }
+
+    /// 默认的 `prepare_body` 是「不改 body」（这是其余 31 家零行为变化的前提）
+    #[test]
+    fn default_prepare_body_leaves_the_body_untouched() {
+        use crate::server::core::providers::deepseek::DEEPSEEK_WEB_ADAPTER;
+        let adapter = &DEEPSEEK_WEB_ADAPTER;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build();
+        let Ok(runtime) = runtime else {
+            return; // 没有可用运行时：跳过（验证环境问题，不是逻辑问题）
+        };
+        let body = serde_json::json!({ "messages": [{ "role": "user", "content": "hi" }] });
+        let result = runtime.block_on(adapter.prepare_body(&serde_json::json!({}), &body));
+        match result {
+            Ok(prepared) => assert!(
+                prepared.is_none(),
+                "默认实现必须返回 None（不改 body），否则会给其余家引入无谓的深拷贝"
+            ),
+            Err(error) => panic!("默认实现不该失败：{}", error.message),
+        }
+    }
+}
