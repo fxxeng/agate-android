@@ -1198,3 +1198,65 @@ CheckinRun 专项另行估算：功能实现约 **85–90%**（执行台账、�
 - 每个 Batch 都基于用户最近上传并由 GitHub 验证的源码快照；不把本地导入 ZIP 的提交计数冒充 GitHub 历史。
 - 代码变更、文档更新、静态检查、Gradle/Rust 构建、Instrumentation、真机验证分别记录；没有实际执行的检查必须标为未执行。
 - 每批小范围独立交付；文档更新必须同步写入本文件的阶段状态、验证证据、未完成项和下一步，不改变 Phase 0–6 的原始目标。
+
+
+## 2026-11-01：R14 Batch 4A 收官与 Batch 4B/4C/4D 源码审计
+
+### 1. 最新验证基线
+
+- 分支：`verify/arch-8faa5f5`；R14 HEAD：`53758d9`。
+- GitHub Actions Run：`41305086716`；`rust-tests` 与 `android-build` 双 Job 成功。
+- Android Instrumentation：2/2 通过，0 failed；`foregroundServicePreservesStartAfterStopOrderingBarrier` 与 `nativeLibraryCoreRouterAndGatewayLifecycleWork` 均通过。
+- R14 删除 Batch4A 临时诊断日志后仍通过，Batch 4A 正式关闭。`GatewayIntentTracker.mayStopNow()` 两个调用点、tracker、测试与 workflow 未改。
+- 证据限制：R14 是一次 CI 观测，不能保证迟到 STOP 竞态窗口实际触发；它为 R13 的修复补充无诊断日志条件下的独立证据。
+- R14 报告记录的源码归档 SHA256 前缀：ZIP `539235e3f4ed33da`，TAR.GZ `8e18110ee83f515a`；本次用户上传 tar.gz 作为源码审计输入，不含 `.git`。
+
+### 2. Batch 4B：RuntimeController 审计结论（设计阶段，未改运行代码）
+
+- 当前 `RuntimeController` 是单线程串行执行器，不是完整状态机；已有重入、中断等待、异常透传与异步提交。
+- Core 与 Gateway 在 Rust 侧是两个独立生命周期；scheduler 又是 Core 内独立开关。Kotlin 当前没有对应的统一快照/状态发布，多个 UI/Repository/Tile 仍直接读取 `Gateway.status()`。
+- `GatewayIntentTracker` 仅负责最新 START/STOP 意图防止过期 STOP，不等同于 RuntimeController 状态机，必须保留 `mayStopNow()` 在同一串行区内与 `Gateway.stop()` 连续执行的要求。
+- 推荐先增加纯 Kotlin `RuntimeSnapshot` 与状态转移器、JVM 测试，再分批迁入 `coreInit/start/stop/schedulerSet/status` 具名入口；暂不整体改造 Service/UI。
+- `core-gateway` 当前未显式依赖 kotlinx-coroutines；不能假设 App 的协程依赖自然成为 core 模块 API 契约。状态发布方案需先决定 listener/snapshot 或显式新增依赖。
+- 详细字段、状态迁移规则、调用面与测试缺口见 `docs/BATCH4B_4C_4D_SOURCE_AUDIT_20261101.md`。
+
+### 3. Batch 4C：JNI 入口数量更正与审计
+
+- 更正旧计划：当前 `Gateway.kt` 有 **12 个** `private external fun`，`jni_bridge.rs` 有 12 个同名 JNI 导出；`verify-jni-exports.py` 会从 Kotlin 声明动态提取并与 `.so` 导出符号精确比较。旧文档“11 个入口”是过时计数。
+- 12 个入口为 `nativeStart`、`nativeStop`、`nativeStatus`、`nativeTriggerTask`、`nativeCoreInit`、`nativeSchedulerSet`、`nativeCheckinRunNow`、`nativeCheckinRunAndWait`、`nativeRequestCheckinStop`、`nativeVersion`、`nativeSetLogCallback`、`nativeApiCall`。
+- 横切风险：JNI 导出没有统一 panic containment；Release profile 为 `panic=abort`，不能承诺 `catch_unwind` 能恢复；`json_reply`/`nativeVersion` 在 Java String 分配失败时可能返回 null；Kotlin `setLogListener()` 忽略 `nativeSetLogCallback()` 返回的 JSON；错误结构与线程契约尚未统一。
+- 本轮只完成源码盘点，未改 JNI ABI，也未运行 `.so` 符号核验脚本。
+
+### 4. Batch 4D：Rust 平台依赖审计扩展
+
+- 本轮对 `agate-server/src` 检索平台相关调用，得到 296 条匹配行（含测试/注释，非生产依赖数量）。按语义分类为 CLI 启动参数、数据目录、Provider env、桌面导入、Windows 系统命令、子内核进程管理、TCP 监听、Core 后台任务、线程与时间/临时目录。
+- 新增优先风险：`sub_kernel/runtime.rs` 实际 spawn 外部二进制并调用平台杀进程命令；Android 是否支持子内核必须独立确认 ABI、执行权限、SELinux、存储与进程监督。桌面账号导入手动 API 也需检查 Android unsupported 语义。
+- Tokio 定时器/provider worker/自动签到属于 Rust Core 业务能力，原则上保留 Rust；后续重点审计其启动者、取消句柄、shutdown 等待与 Gateway stop 的边界。
+- 未修改 Rust 平台逻辑，未运行 Cargo/Gradle/真机验证。
+
+### 5. Phase 0–6 状态修订（以原始主线为准）
+
+| 阶段 | 当前状态 | 新证据/修订 | 主要剩余门槛 |
+|---|---|---|---|
+| Phase 0 构建基线 | 基本建立，未最终验收 | R14 双 Job；JNI export 校验步骤在 CI 通过 | staging 互斥、干净环境可复现、Release/ABI 门禁完整性 |
+| Phase 1 Native Bridge | 部分完成 | 入口数量更正为 12；契约表完成源码盘点 | 统一错误/版本、null、panic 风险、回调错误反馈、每入口测试 |
+| Phase 2 RuntimeController | 第一版串行执行器已接入，状态机未实现 | 明确当前无状态快照/唯一状态发布；设计方案形成 | 纯 Kotlin 状态模型与测试、具名 API 收口、状态观察统一、重建恢复 |
+| Phase 3 Service/Scheduler | R13 STOP 竞态修复 + R14 清理后复验已完成对应切片，阶段未完成 | R14 2/2 instrumentation；Batch4A 关闭 | 多轮竞态压力、executor 关闭/拒绝、长 TICK/STOP、WakeLock、Doze、进程回收、真机 ROM |
+| Phase 4 Rust Core 解耦 | 持续实施中 | 平台依赖分类扩展，识别子内核进程管理与 Core worker 生命周期边界 | 子内核 Android 能力决策、桌面导入 unsupported、任务取消/shutdown 抽象、desktop/headless 回归 |
+| Phase 5 JNI vs UniFFI | 未开始 | 先有 12 入口 JNI 契约盘点 | 选取 DTO/同步 API 做 spike 与 ADR；不预设迁移 |
+| Phase 6 可观测性/压力/发布门禁 | 局部基础 | R14 CI 与 instrumentation 报告 | 长稳/多轮竞态、关联 ID、Native 耗时、线程/FD/WakeLock 泄漏、真机与 Release 门禁 |
+
+### 6. 下一批执行顺序
+
+1. **Batch 4B-1（下一批代码切片）：** 新增纯 Kotlin Core/Gateway 双状态模型与状态转移单测，不先改 Service/UI/JNI。
+2. **Batch 4B-2：** 将 RuntimeController 增加具名生命周期 API 和状态发布，再把 `AgateApp`、FGS、scheduler toggle 逐入口迁入；每一步保持 `mayStopNow()` + `Gateway.stop()` 原子串行关系。
+3. **Batch 4C-1：** 优先处理 `nativeSetLogCallback` 返回值被忽略的问题，并补 Kotlin 侧契约测试；其余 JNI 入口先逐个补测试，不一次性改 ABI。
+4. **Batch 4D-1：** 审查 `sub_kernel` Android 能力与桌面导入 API 的平台语义；Core worker 清单另列，不与 RuntimeController 改造混批。
+5. **Batch 4E：** staging 双实例互斥仍独立处理，先审查真实 stage 脚本/工作流临界区。
+
+### 7. 执行与验证纪律
+
+- 继续 `verify/arch-8faa5f5`；不动 `main`、不合并。
+- 本轮仅更新文档与审计记录，没有 Kotlin/Rust 运行代码改动。
+- 本轮未执行 Cargo、Gradle、Instrumentation 或真机测试；静态计数不是 `.so` 符号核验。
+- 下一批状态模型必须先通过 GitHub CI，再接入调用方；未执行的测试不得标为通过。
