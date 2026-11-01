@@ -1041,11 +1041,19 @@ async fn require_api_key(mut request: Request, next: Next) -> Response {
     // 用对端地址而不是 `host.is_loopback()`：后者在中间件里拿不到（`from_fn`
     // 没有 state），而 `ConnectInfo` 由 `into_make_service_with_connect_info`
     // 灌进请求扩展，正好是「这一次连接从哪来」的第一手事实。
+    //
+    // ⚠️ `unwrap_or(true)` 而不是 false：**没有 `ConnectInfo` 就等于进程内直调**。
+    // Android 的管理请求根本不走 socket —— 客户端 `CoreTransport` →
+    // `Gateway.apiCall`（JNI）→ `jni_bridge::api_call` 直接把 Request 喂给
+    // `router`，这条路上不会有 `ConnectInfo`（它由
+    // `into_make_service_with_connect_info` 按连接注入）。第一版把缺省当 false，
+    // 于是「建了密钥之后 APP 仍然全 401」——修复等于没生效。
+    // 语义上这也站得住：拿不到对端地址的唯一可能就是「没有对端」。
     let peer_is_loopback = request
         .extensions()
         .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
         .map(|info| info.0.ip().is_loopback())
-        .unwrap_or(false);
+        .unwrap_or(true);
     let management_from_loopback = peer_is_loopback && path.starts_with("/api/");
 
     if keys.is_empty() {
