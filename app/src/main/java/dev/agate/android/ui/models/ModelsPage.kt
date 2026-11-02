@@ -231,6 +231,8 @@ fun ModelsPage(
     var manage by remember { mutableStateOf<List<ModelOps.ManageModelRow>>(emptyList()) }
     // 管理视图加载失败的原因（null = 正常）。页面顶部会显示一行可点重试的提示。
     var manageError by remember { mutableStateOf<String?>(null) }
+    /** manage 的 `mappings[]`（别名 → 上游 id）；模型页据此补「别名承载者」候选。 */
+    var manageMappings by remember { mutableStateOf<List<ModelOps.MappingRow>>(emptyList()) }
     /**
      * 「刚点过、等 manage 回话」的临时覆盖：`"provider|id" -> enabled`。
      *
@@ -341,6 +343,7 @@ fun ModelsPage(
             val r = ModelOps.fetchManage()
             if (r.ok) {
                 val fresh = ModelOps.ManageModelRow.parse(r.data)
+                manageMappings = ModelOps.parseMappings(r.data)
                 // ── 对账：乐观值 vs 权威值（2026-11-02）──────────────────
                 // 乐观值只该「抢跑几百毫秒」。权威数据一到就比对：不一致说明
                 // **内核没接受这次修改**（provider/id 对不上、规则没写进去…）。
@@ -446,7 +449,9 @@ fun ModelsPage(
     fun toggle(row: GatewayRepository.ModelRow) {
         // 会话清单里的 id 在 provider 形态下带 `provider/` 前缀，
         // 而启停接口要的是**上游裸 id**。
-        val bare = if ('/' in row.id) row.id.substringAfter('/') else row.id
+        // 别名行的 `id` 是对外名（用于分组），真正要启停的是上游 id（见 ModelRow.upstreamId）
+        val bare = row.upstreamId
+            ?: (if ('/' in row.id) row.id.substringAfter('/') else row.id)
         val key = "${row.provider}|$bare"
         if (toggling != null) return
         // 不在管理视图里的行：内核按 (provider, id) 存规则，而清单里没有这个 id
@@ -661,7 +666,8 @@ fun ModelsPage(
     //
     // 结果 = 会话清单那些（补上 official）+ 只存在于管理视图的那些（已禁用）。
     // 关掉的模型因此仍留在页面上（置灰），这正是「全部列出、关掉的置灰」。
-    val allRows: List<GatewayRepository.ModelRow> = remember(models, manage, customProviders) {
+    val allRows: List<GatewayRepository.ModelRow> =
+        remember(models, manage, customProviders, manageMappings, optimistic) {
         fun bare(id: String) = if ('/' in id) id.substringAfter('/') else id
         val byKey = manage.associateBy { "${it.provider.lowercase()}|${it.id.lowercase()}" }
         // ── 自定义家（`custom-xxxx`）**不走 manage 的启停** ──────────────
@@ -699,7 +705,50 @@ fun ModelsPage(
         val extra = manage
             .filter { "${it.provider.lowercase()}|${it.id.lowercase()}" !in present }
             .map { it.toModelRow() }
-        fromSession + extra
+        // ── 别名承载者：补进「对外名」那张卡的候选里（2026-11-02）────────
+        // 路由是真的会把 `glm-5.3` 派给小浣熊的（`forwarding_providers` 逐家跑
+        // `builtin_target`，认别名），但这一行在 `/v1/models` 里**看不到** ——
+        // 那份清单为了不给客户端重复名字，同名只留第一家。于是界面漏报了一个
+        // 真实候选（用户看到的 `glm-5.3` 只有 7 家，实际有 8 家）。
+        //
+        // 这里按 manage 的 `mappings[]` 把「别名 → (家, 上游 id)」补成一行：
+        //   · `id` 用**对外名**（决定并进哪张卡）；
+        //   · `upstreamId` 用真实上游 id（启停与转发的实际名字）；
+        //   · 启停状态 / 能力位从该上游 id 的 manage 行取（同一条规则）。
+        val aliasRows = manageMappings.mapNotNull { mapping ->
+            val owner = mapping.provider ?: return@mapNotNull null
+            val alias = mapping.alias.trim()
+            val target = mapping.target.trim()
+            // 默认绑定（alias == target）不是别名；关掉的映射不构成候选
+            if (alias.isEmpty() || target.isEmpty() || mapping.isDefault) return@mapNotNull null
+            if (alias.equals(target, ignoreCase = true) || !mapping.enabled) return@mapNotNull null
+            val ownerKey = owner.lowercase()
+            val cardKey = "$ownerKey|${alias.lowercase()}"
+            // 这一家在「这个对外名」下已经有一行了（原生同名）就不再补
+            if (cardKey in present) return@mapNotNull null
+            val upstream = byKey["$ownerKey|${target.lowercase()}"]
+            val upstreamKey = "$ownerKey|${target.lowercase()}"
+            GatewayRepository.ModelRow(
+                id = alias,
+                provider = owner,
+                providerLabel = PresetRegistry.labelOf(owner),
+                name = null,
+                credits = upstream?.credits,
+                maxInput = upstream?.maxInput,
+                maxOutput = upstream?.maxOutput,
+                toolCall = upstream?.toolCall ?: false,
+                images = upstream?.images ?: false,
+                reasoning = upstream?.reasoning ?: false,
+                isDefault = false,
+                // 启停跟**上游 id** 走（同一条规则）：临时覆盖 > manage > 默认开
+                enabled = optimistic[upstreamKey] ?: upstream?.enabled ?: true,
+                official = upstream?.official,
+                // 上游 id 不在清单里 = 这条别名指向一个不存在的模型，开关置灰
+                inCatalog = upstream != null,
+                upstreamId = target,
+            )
+        }
+        fromSession + extra + aliasRows
     }
     // 范围内的行（计数与列表都以此为准，避免「全部 10/48」出现在单家页上）
     val scopeRows = remember(allRows, listScope) {

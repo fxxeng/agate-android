@@ -152,6 +152,22 @@ object ModelOps {
         }
     }
 
+    /**
+     * 解析 manage 响应的 `mappings[]`（别名 → 上游 id）。
+     *
+     * 模型页用它补「别名承载者」这一层候选：`/api/models/manage` 的 `models[]`
+     * 只列上游 id，别名全在 `mappings[]` 里 —— 不解析这份，界面就看不到
+     * 「`glm-5.3` 其实也能由小浣熊承载」（2026-11-02）。
+     */
+    fun parseMappings(data: JSONObject?): List<MappingRow> {
+        val arr = data?.optJSONArray("mappings") ?: return emptyList()
+        val out = ArrayList<MappingRow>(arr.length())
+        for (i in 0 until arr.length()) {
+            arr.optJSONObject(i)?.let { out += MappingRow.from(it) }
+        }
+        return out
+    }
+
     /** 强制刷新模型清单（不带 accounts/providers = 刷新所有已实现家）。 */
     suspend fun refresh(accounts: List<String>? = null, providers: List<String>? = null): OpResult {
         val body = JSONObject()
