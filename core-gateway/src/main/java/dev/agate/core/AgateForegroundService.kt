@@ -274,14 +274,12 @@ class AgateForegroundService : Service() {
     private fun runStart() {
         val bindLan = GatewayPrefs.bindLan(this)
         val result = try {
-            RuntimeController.runSerialized {
-                Gateway.start(
-                    filesDir.resolve("agate").absolutePath,
-                    port = GatewayPrefs.port(this),
-                    bindLan = bindLan,
-                    apiKey = GatewayPrefs.apiKey(this),
-                )
-            }
+            RuntimeController.start(
+                dataDir = filesDir.resolve("agate").absolutePath,
+                port = GatewayPrefs.port(this),
+                bindLan = bindLan,
+                apiKey = GatewayPrefs.apiKey(this),
+            )
         } catch (t: Throwable) {
             android.util.Log.e("Agate", "内核启动异常（.so 加载失败？）", t)
             null

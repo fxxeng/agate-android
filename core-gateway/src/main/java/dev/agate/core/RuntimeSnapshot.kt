@@ -117,7 +117,13 @@ object RuntimeSnapshotReducer {
                 } else current
             }
             RuntimeStateEvent.GatewayStartStarted -> {
-                if (current.gateway is GatewayRuntimeState.Stopped || current.gateway is GatewayRuntimeState.Failed) {
+                // A prior STOP may not yet have been migrated to RuntimeController.
+                // A fresh START must therefore be able to replace a stale Running
+                // snapshot with Starting before its Native result is applied.
+                if (current.gateway is GatewayRuntimeState.Stopped ||
+                    current.gateway is GatewayRuntimeState.Running ||
+                    current.gateway is GatewayRuntimeState.Failed
+                ) {
                     current.copy(gateway = GatewayRuntimeState.Starting)
                 } else current
             }

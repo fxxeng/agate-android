@@ -353,3 +353,50 @@ R19 审查发现 HANDOFF 正文早期章节包含原方案分支 `architecture/k
 - Batch 4B-2B-6：单独迁移 `Gateway.stop()`；`mayStopNow()` 检查与 `Gateway.stop()` 必须在同一个 `runSerialized` 区间内执行，不能把守卫和 stop 拆成两个 API 调用。
 - Batch 4B-2B-7：单独迁移 `schedulerSet()`，审计偏好值、Native 实际值和 RuntimeSnapshot 的失败恢复语义。
 - 之后进行 Phase 2 生产入口总审计；本批只完成 Core 初始化两条生产调用路径的接入，不代表 Phase 2 已完成。
+
+
+## 12. R21 Batch 4B-2B-4 收官与 Batch 4B-2B-5 实施审计（2026-11-02）
+
+### 12.1 R21 CI / 源码对账收官
+
+- R21 最终 HEAD `e539580b21bacf85a8fbc68529c97acbebc7808c`，父基线 R20 `44b8be8`，GitHub Actions Run `41422134668` attempt 2 双绿。
+- attempt 1 `android-build` 在 Instrumentation 启动前被 CPU PSI settle 门禁拦截，零 `INSTRUMENTATION_STATUS`；attempt 2 rerun failed job 后 settle 成功，`:app:connectedDebugAndroidTest` BUILD SUCCESSFUL，Instrumentation 2/2，双 APK artifacts 正常。
+- R21 验证报告记录远端 tree 与 stage8 756 文件字节级一致；本轮 CI 结果不代表真机长期稳定性验证。
+- Batch 4B-2B-4 正式关闭；Application `onCreate()` 与 FGS `runTick()` 两条生产 Core 初始化调用均使用 `RuntimeController.coreInit()`。
+
+### 12.2 Batch 4B-2B-5：Gateway.start() 接入（当前工作快照，待 CI）
+
+基线 R21 `e539580b`。本批修改范围限定为：
+- `RuntimeController.kt`：新增 `startWith()` 内部测试缝与 `start(dataDir, port, bindLan, apiKey)` 具名 API。
+- `AgateForegroundService.kt`：`runStart()` 改为调用 `RuntimeController.start()`。
+- `RuntimeControllerTest.kt`：覆盖成功、`already_running`、Native 失败结果、旧 Running 快照下失败恢复和异常传播；`RuntimeSnapshot.kt` 调整 GatewayStartStarted 的可接受前态；`RuntimeSnapshotReducerTest.kt` 新增旧 Running → Starting → Running 转换测试。
+- HANDOFF 与本 Source Audit：追加 R21 收官和本批实施记录。
+
+### 12.3 状态语义与关键兼容点
+
+- Rust `start_gateway()` 在网关已运行时返回 `ok=false`、`error="already_running"`，并提供当前 `port`、`bind_lan`、`version`。这不是启动失败；RuntimeController 将 `ok || error == "already_running"` 视为可发布 Running 状态的结果。
+- `already_running` 特殊分支仍留在 `AgateForegroundService.runStart()`，继续按现有结果对齐 KeepAwake 锁和通知；本批没有合并/重写 Service 分支。
+- 其它失败结果记录 `GatewayFailed(stage, null, error)` 并原样返回；抛出的异常记录 `GatewayFailed("start", null, message)` 后原样抛出。
+- 成功/已运行结果的 `StartResult` 已包含快照所需字段，因此 `RuntimeController.start()` 不额外执行 `Gateway.status()`。避免额外 JNI 失败将已成功启动误报为失败，也避免第二次状态读取覆盖刚记录的结果。
+- `GatewayStartStarted` / `GatewayStartSucceeded` / `GatewayFailed` 事件被复用；`GatewayStartStarted` 现在也允许从 Running 进入 Starting，以覆盖 STOP 尚未迁移期间可能残留的旧 Running 快照；未增加新的状态枚举，也未改 NativeStatusObserved 的 reconcile 规则。
+
+### 12.4 不变量与禁止扩展
+
+- `runStart()` 仍在 Service 原有单线程命令队列执行，RuntimeController 仍是内层生命周期串行控制面；未改变命令 coalescer。
+- 启动参数来源保持：`filesDir/agate`、`GatewayPrefs.port(this)`、`GatewayPrefs.bindLan(this)`、`GatewayPrefs.apiKey(this)`。
+- `runStart()` 原有异常捕获、失败通知、alert 通知、成功通知、KeepAwake 锁获取/释放及 already_running 分支均保留。
+- STOP 仍由原来的 `runSerialized` 区间执行，`mayStopNow()` 与 `Gateway.stop()` 连续处于同一闭包；本批未改该代码。
+- 不改 `runTick()`、`onDestroy()`、schedulerSet、JNI ABI、Rust、Gradle、CI workflow；不引入 StateFlow/协程/新线程池。
+
+### 12.5 测试与验证状态
+
+- `RuntimeControllerTest` 从 R21 基线 10 项增加 5 项，当前工作快照静态计数为 15 项；`RuntimeSnapshotReducerTest` 从 13 项增加 1 项，当前为 14 项。
+- 保留 `import org.junit.Assert.assertFalse`。
+- 当前容器未执行 Gradle/Kotlin 编译、JUnit、Rust tests、APK、Instrumentation 或真机测试；所有执行性验证待 CI/设备。不得将静态审阅写成测试通过。
+- 当前快照不含 `.git`，不宣称 Git commit。上传父提交必须为 `e539580b`，目标分支 `verify/arch-8faa5f5`；不动 `main`，不合并。
+
+### 12.6 下一批
+
+- Batch 4B-2B-6：只迁移 `Gateway.stop()`。`mayStopNow()` 判断与 `Gateway.stop()` 必须在同一 `RuntimeController.runSerialized` 闭包中连续执行，保留 R13 START/STOP 意图竞争修复。
+- Batch 4B-2B-7：只迁移 `Gateway.schedulerSet()`，先审计偏好值写入时机与 Native 返回失败语义。
+- 两批完成后再进行生产调用点总审计；不得把当前进度描述为 Phase 2 已完成。

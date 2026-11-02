@@ -60,6 +60,24 @@ class RuntimeSnapshotReducerTest {
     }
 
     @Test
+    fun startCanReconcileAStaleRunningSnapshotBeforeNativeResult() {
+        val running = RuntimeSnapshot(
+            core = CoreRuntimeState.Ready,
+            gateway = GatewayRuntimeState.Running(8787, false, "old"),
+            schedulerEnabled = true,
+        )
+        val starting = reduce(running, RuntimeStateEvent.GatewayStartStarted, 2)
+        assertEquals(GatewayRuntimeState.Starting, starting.gateway)
+
+        val refreshed = reduce(
+            starting,
+            RuntimeStateEvent.GatewayStartSucceeded(8899, true, "new"),
+            3,
+        )
+        assertEquals(GatewayRuntimeState.Running(8899, true, "new"), refreshed.gateway)
+    }
+
+    @Test
     fun duplicateStartAndStopEventsAreIdempotent() {
         val starting = reduce(RuntimeSnapshot(), RuntimeStateEvent.GatewayStartStarted, 1)
         assertSame(starting, reduce(starting, RuntimeStateEvent.GatewayStartStarted, 2))

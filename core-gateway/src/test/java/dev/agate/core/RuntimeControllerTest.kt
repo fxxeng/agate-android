@@ -237,6 +237,153 @@ class RuntimeControllerTest {
     }
 
     @Test
+    fun gatewayStartPublishesRunningStateFromSuccessfulNativeResult() {
+        prepareStoppedGatewaySnapshot()
+        val nativeResult = Gateway.StartResult(
+            ok = true,
+            port = 8899,
+            bindLan = true,
+            version = "start-test",
+            stage = null,
+            error = null,
+        )
+
+        val result = RuntimeController.startWith(
+            start = { nativeResult },
+            nowMillis = { 4500L },
+        )
+
+        assertSame(nativeResult, result)
+        assertEquals(
+            GatewayRuntimeState.Running(8899, true, "start-test"),
+            RuntimeController.snapshot().gateway,
+        )
+        assertEquals(4500L, RuntimeController.snapshot().updatedAtMillis)
+    }
+
+    @Test
+    fun alreadyRunningStartResultIsTreatedAsIdempotentSuccess() {
+        prepareStoppedGatewaySnapshot()
+        val nativeResult = Gateway.StartResult(
+            ok = false,
+            port = 8788,
+            bindLan = false,
+            version = "already-running-test",
+            stage = null,
+            error = "already_running",
+        )
+
+        val result = RuntimeController.startWith(
+            start = { nativeResult },
+            nowMillis = { 4600L },
+        )
+
+        assertSame(nativeResult, result)
+        assertEquals(
+            GatewayRuntimeState.Running(8788, false, "already-running-test"),
+            RuntimeController.snapshot().gateway,
+        )
+    }
+
+    @Test
+    fun failedGatewayStartPublishesFailureAndReturnsNativeResult() {
+        prepareStoppedGatewaySnapshot()
+        val nativeResult = Gateway.StartResult(
+            ok = false,
+            port = 0,
+            bindLan = false,
+            version = "",
+            stage = "bind",
+            error = "address_in_use",
+        )
+
+        val result = RuntimeController.startWith(
+            start = { nativeResult },
+            nowMillis = { 4700L },
+        )
+
+        assertSame(nativeResult, result)
+        assertEquals(
+            GatewayRuntimeState.Failed("bind", null, "address_in_use"),
+            RuntimeController.snapshot().gateway,
+        )
+    }
+
+    @Test
+    fun failedGatewayStartReplacesAStaleRunningSnapshot() {
+        RuntimeController.runSerialized {
+            RuntimeController.recordStateEvent(
+                RuntimeStateEvent.NativeStatusObserved(
+                    coreReady = true,
+                    gatewayRunning = true,
+                    port = 8787,
+                    bindLan = false,
+                    version = "stale-running",
+                    schedulerEnabled = true,
+                ),
+                nowMillis = 4750L,
+            )
+        }
+        val nativeResult = Gateway.StartResult(
+            ok = false,
+            port = 0,
+            bindLan = false,
+            version = "",
+            stage = "bind",
+            error = "address_in_use",
+        )
+
+        RuntimeController.startWith(
+            start = { nativeResult },
+            nowMillis = { 4775L },
+        )
+
+        assertEquals(
+            GatewayRuntimeState.Failed("bind", null, "address_in_use"),
+            RuntimeController.snapshot().gateway,
+        )
+    }
+
+    @Test
+    fun gatewayStartExceptionPublishesFailureAndRethrowsOriginal() {
+        prepareStoppedGatewaySnapshot()
+        val expected = IllegalStateException("jni-start-failed")
+
+        val actual = try {
+            RuntimeController.startWith(
+                start = { throw expected },
+                nowMillis = { 4800L },
+            )
+            null
+        } catch (failure: Throwable) {
+            failure
+        }
+
+        assertSame(expected, actual)
+        assertEquals(
+            GatewayRuntimeState.Failed("start", null, "jni-start-failed"),
+            RuntimeController.snapshot().gateway,
+        )
+    }
+
+    private fun prepareStoppedGatewaySnapshot() {
+        RuntimeController.runSerialized {
+            val current = RuntimeController.snapshot()
+            RuntimeController.recordStateEvent(
+                RuntimeStateEvent.NativeStatusObserved(
+                    coreReady = current.core is CoreRuntimeState.Ready,
+                    gatewayRunning = false,
+                    port = 0,
+                    bindLan = false,
+                    version = "controller-test",
+                    schedulerEnabled = current.schedulerEnabled ?: false,
+                ),
+                nowMillis = 4400L,
+            )
+        }
+    }
+
+    @Test
     fun refreshStatusWaitsBehindPreviouslyQueuedLifecycleWork() {
         val blockerEntered = CountDownLatch(1)
         val releaseBlocker = CountDownLatch(1)

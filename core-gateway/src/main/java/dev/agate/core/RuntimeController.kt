@@ -128,6 +128,71 @@ object RuntimeController {
             readStatus = { Gateway.status() },
         )
 
+    /**
+     * Execute Gateway.start and publish its lifecycle outcome on the same serialized
+     * worker. `already_running` is an idempotent success from the caller's perspective:
+     * Rust returns ok=false but includes the authoritative running endpoint details.
+     *
+     * StartResult itself contains the fields needed for the snapshot, so this operation
+     * does not add a second JNI status call or risk replacing a successful start with a
+     * stale observation.
+     */
+    internal fun startWith(
+        start: () -> Gateway.StartResult,
+        nowMillis: () -> Long = { System.currentTimeMillis() },
+    ): Gateway.StartResult = runSerialized {
+        recordStateEvent(RuntimeStateEvent.GatewayStartStarted, nowMillis())
+        val result = try {
+            start()
+        } catch (failure: Throwable) {
+            recordStateEvent(
+                RuntimeStateEvent.GatewayFailed(
+                    stage = "start",
+                    code = null,
+                    message = failure.message ?: failure.javaClass.simpleName,
+                ),
+                nowMillis(),
+            )
+            throw failure
+        }
+
+        if (result.ok || result.error == "already_running") {
+            recordStateEvent(
+                RuntimeStateEvent.GatewayStartSucceeded(
+                    port = result.port,
+                    bindLan = result.bindLan,
+                    version = result.version,
+                ),
+                nowMillis(),
+            )
+        } else {
+            recordStateEvent(
+                RuntimeStateEvent.GatewayFailed(
+                    stage = result.stage,
+                    code = null,
+                    message = result.error ?: "Native Gateway start failed",
+                ),
+                nowMillis(),
+            )
+        }
+        result
+    }
+
+    /** Public Gateway start entry point; callers must already be on a background thread. */
+    fun start(
+        dataDir: String,
+        port: Int,
+        bindLan: Boolean,
+        apiKey: String?,
+    ): Gateway.StartResult = startWith {
+        Gateway.start(
+            dataDir = dataDir,
+            port = port,
+            bindLan = bindLan,
+            apiKey = apiKey,
+        )
+    }
+
     /** Public status refresh; observation is performed only on the lifecycle worker. */
     fun refreshStatus(): Gateway.Status = refreshStatusWith(readStatus = { Gateway.status() })
 
