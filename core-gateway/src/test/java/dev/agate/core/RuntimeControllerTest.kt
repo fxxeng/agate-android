@@ -93,4 +93,65 @@ class RuntimeControllerTest {
         }
         assertSame(expected, actual)
     }
+
+    @Test
+    fun runtimeSnapshotCanBeReadWithoutEnteringLifecycleQueue() {
+        val before = RuntimeController.snapshot()
+        assertSame(before, RuntimeController.snapshot())
+    }
+
+    @Test
+    fun runtimeSnapshotUpdatesAreRestrictedToLifecycleWorker() {
+        val error = try {
+            RuntimeController.recordStateEvent(
+                RuntimeStateEvent.NativeStatusObserved(
+                    coreReady = true,
+                    gatewayRunning = true,
+                    port = 8787,
+                    bindLan = false,
+                    version = "test",
+                    schedulerEnabled = false,
+                ),
+                nowMillis = 10,
+            )
+            null
+        } catch (failure: IllegalStateException) {
+            failure
+        }
+        assertTrue("state update outside lifecycle worker must be rejected", error != null)
+    }
+
+    @Test
+    fun runtimeSnapshotIsPublishedAfterSerializedStateReduction() {
+        val before = RuntimeController.snapshot()
+        val event = RuntimeStateEvent.NativeStatusObserved(
+            coreReady = before.core !is CoreRuntimeState.Ready,
+            gatewayRunning = before.gateway !is GatewayRuntimeState.Running,
+            port = 8787,
+            bindLan = true,
+            version = "controller-test",
+            schedulerEnabled = before.schedulerEnabled != true,
+        )
+
+        RuntimeController.runSerialized {
+            RuntimeController.recordStateEvent(event, nowMillis = 1234)
+        }
+
+        val after = RuntimeController.snapshot()
+        assertEquals(before.revision + 1, after.revision)
+        assertEquals(1234L, after.updatedAtMillis)
+        assertEquals(
+            if (event.coreReady) CoreRuntimeState.Ready else CoreRuntimeState.NotInitialized,
+            after.core,
+        )
+        assertEquals(
+            if (event.gatewayRunning) {
+                GatewayRuntimeState.Running(8787, true, "controller-test")
+            } else {
+                GatewayRuntimeState.Stopped
+            },
+            after.gateway,
+        )
+        assertEquals(event.schedulerEnabled, after.schedulerEnabled)
+    }
 }

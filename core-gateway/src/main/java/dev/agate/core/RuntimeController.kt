@@ -18,6 +18,31 @@ import java.util.concurrent.atomic.AtomicReference
  */
 object RuntimeController {
     private val worker = AtomicReference<Thread?>()
+    private val runtimeSnapshot = AtomicReference(RuntimeSnapshot())
+
+    /**
+     * Thread-safe immutable view of the latest Kotlin runtime state.
+     *
+     * Reads never enter the lifecycle queue. Mutations are restricted to the lifecycle
+     * worker through [recordStateEvent], so observers cannot publish competing state.
+     */
+    fun snapshot(): RuntimeSnapshot = runtimeSnapshot.get()
+
+    /**
+     * Reduce and publish one lifecycle outcome/authoritative observation.
+     *
+     * This is deliberately internal and worker-confined. NativeStatusObserved must only
+     * be recorded at a serialized reconciliation boundary with no lifecycle command in
+     * flight; callers must not feed arbitrary status polling results here.
+     */
+    internal fun recordStateEvent(event: RuntimeStateEvent, nowMillis: Long) {
+        check(Thread.currentThread() === worker.get()) {
+            "Runtime state may only be updated on the lifecycle worker"
+        }
+        val current = runtimeSnapshot.get()
+        runtimeSnapshot.set(RuntimeSnapshotReducer.reduce(current, event, nowMillis))
+    }
+
     private val executor = Executors.newSingleThreadExecutor(
         ThreadFactory { runnable ->
             Thread(runnable, "AgateNativeLifecycle").apply {

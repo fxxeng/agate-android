@@ -1240,7 +1240,7 @@ CheckinRun 专项另行估算：功能实现约 **85–90%**（执行台账、�
 |---|---|---|---|
 | Phase 0 构建基线 | 基本建立，未最终验收 | R14 双 Job；JNI export 校验步骤在 CI 通过 | staging 互斥、干净环境可复现、Release/ABI 门禁完整性 |
 | Phase 1 Native Bridge | 部分完成 | 入口数量更正为 12；契约表完成源码盘点 | 统一错误/版本、null、panic 风险、回调错误反馈、每入口测试 |
-| Phase 2 RuntimeController | 第一版串行执行器已接入，状态机未实现 | 明确当前无状态快照/唯一状态发布；设计方案形成 | 纯 Kotlin 状态模型与测试、具名 API 收口、状态观察统一、重建恢复 |
+| Phase 2 RuntimeController | 串行执行器 + 已验证纯 Kotlin 状态模型；状态快照开始由 RuntimeController 持有 | R16/R17 验证状态 Reducer 与 NativeStatusObserved；Batch 4B-2B-1 增加只读快照和 worker-confined 更新入口（待 CI） | 具名生命周期 API、命令/观测接线、订阅/统一观察、重建恢复、过期结果保护 |
 | Phase 3 Service/Scheduler | R13 STOP 竞态修复 + R14 清理后复验已完成对应切片，阶段未完成 | R14 2/2 instrumentation；Batch4A 关闭 | 多轮竞态压力、executor 关闭/拒绝、长 TICK/STOP、WakeLock、Doze、进程回收、真机 ROM |
 | Phase 4 Rust Core 解耦 | 持续实施中 | 平台依赖分类扩展，识别子内核进程管理与 Core worker 生命周期边界 | 子内核 Android 能力决策、桌面导入 unsupported、任务取消/shutdown 抽象、desktop/headless 回归 |
 | Phase 5 JNI vs UniFFI | 未开始 | 先有 12 入口 JNI 契约盘点 | 选取 DTO/同步 API 做 spike 与 ADR；不预设迁移 |
@@ -1353,3 +1353,46 @@ CheckinRun 专项另行估算：功能实现约 **85–90%**（执行台账、�
 - 未运行真机测试。
 - 源码归档不含 `.git`，本地工作快照不宣称 Git commit SHA。
 - 下一步：上传本批快照，以 `73f781a` 为父提交触发 CI。通过后进入 4B-2B，先增加 RuntimeController 状态持有/快照读取与具名生命周期 API 的最小切片，再逐入口接入；不同时迁移所有调用方。
+
+
+## 2026-11-02：R17 Batch 4B-2A 验证收官与 Batch 4B-2B-1
+
+### 1. R17 验证收官
+
+- 验证分支：`verify/arch-8faa5f5`；R17 HEAD `414dd67`（完整提交 `414dd6706d2f889f913068b907b3dc26aca651ab`）。
+- GitHub Actions Run：`41360505254`，一次过双绿；`rust-tests` 约 2 分钟，`android-build` 约 26.6 分钟。
+- `:core-gateway:compileDebugUnitTestKotlin`、`:core-gateway:testDebugUnitTest`、`:app:testDebugUnitTest` 成功；RuntimeSnapshot 相关测试源码计数 12。
+- Android Instrumentation XML：2 tests、0 failures、0 errors、0 skipped；双 APK 与 `.so` 校验产物正常。
+- R17 源码对账：基线 `73f781a`，756 文件；新增/删除 0，修改 4（RuntimeSnapshot、RuntimeSnapshotReducerTest、两份文档），与声明一致。
+- Batch 4B-2A 正式关闭。其 NativeStatusObserved 仍是调用方责任的串行 reconcile 事件；没有接入 RuntimeController 前，不代表真实状态对账链路已经启用。
+
+### 2. Batch 4B-2B-1：RuntimeController 快照持有与读取（本轮工作快照，待 CI）
+
+基线：R17 HEAD `414dd67`。本批只修改 `RuntimeController.kt`、`RuntimeControllerTest.kt` 和两份交接/审计文档，不迁移 Application、FGS、scheduler toggle，不调用新的 JNI，不改 Rust/Gradle/CI。
+
+实现内容：
+- RuntimeController 新增进程内 `AtomicReference<RuntimeSnapshot>`，作为 Kotlin 运行状态快照的唯一存储位置。
+- 新增线程安全只读 `snapshot()`；读取不进入生命周期队列，不阻塞控制命令。
+- 新增 `internal recordStateEvent(event, nowMillis)`；只允许 RuntimeController 的生命周期 worker 调用，其他线程调用立即失败，避免多个调用方并发写状态。
+- 状态更新仍由既有纯函数 `RuntimeSnapshotReducer` 完成；不在本批增加 StateFlow、协程或观察者订阅。
+- `NativeStatusObserved` 的串行边界仍需调用方遵守：只有在生命周期控制队列内、没有未完成命令时才能记录。当前尚无具名 API，因此本批不主动调用该事件。
+
+新增 3 项 RuntimeController 测试：
+1. 快照可从控制队列外读取，重复读取返回同一不可变快照实例；
+2. 控制 worker 外的状态写入被拒绝；
+3. 在 `runSerialized` 内记录 NativeStatusObserved 后，快照 revision、时间戳和三个状态维度正确发布。
+
+**边界：** 本批建立唯一快照存储和受控写入边界，但还没有把 `Gateway.coreInit/start/stop/schedulerSet/status` 接入，也没有 UI 订阅、Repository 统一观察、进程恢复或 stale-result token。`RuntimeController` 的具名生命周期 API 留到后续切片。
+
+### 3. 本批验证状态
+
+- 本地环境未提供 `kotlinc` / `gradle`，本批未执行 Kotlin 编译或 JUnit。
+- 归档文件对账、源码静态审查与归档完整性检查完成；Gradle、Rust、APK、Instrumentation、真机均待 GitHub CI。
+- 本批工作快照不含 `.git`，不得将其称为已提交 Git commit。
+- 上传目标：`verify/arch-8faa5f5`，父提交必须是 R17 `414dd67`；不动 main、不合并。
+
+### 4. 下一批建议
+
+- Batch 4B-2B-2：增加 `coreInit()` 与 `refreshStatus()` 最小具名入口；`coreInit` 的开始/成功/失败事件与 Native status reconcile 必须在同一个控制队列任务内完成。
+- 明确 `refreshStatus()` 仅是显式受控 reconcile，不提供任意线程轮询写入口；若存在 START/STOP 在途操作，status 观察必须排在命令之后。
+- 再独立实施 start/stop/schedulerSet；STOP 的 `mayStopNow()` 与 `Gateway.stop()` 必须继续在同一个 `runSerialized` 区间内连续执行。

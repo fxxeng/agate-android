@@ -19,7 +19,7 @@ R14 报告确认 Run `41305086716` / commit `53758d9` 的 `rust-tests`、`androi
 - `runSerialized()` 将调用提交到单线程线程池；同一 worker 线程内直接执行，避免嵌套等待死锁。
 - 等待期间收到 `InterruptedException` 时不取消已提交任务，而是继续等待任务真实结果，最后恢复调用线程 interrupt 标记。
 - `submitSerialized()` 在控制线程执行操作，并在同一控制线程执行 `onComplete`；回调异常被 `runCatching` 隔离。
-- 当前没有 Core/Gateway 状态数据模型、状态发布订阅、失败快照、状态版本或 reconcile API。
+- R17 后已有纯 Kotlin `RuntimeSnapshot` / Reducer / `NativeStatusObserved` 模型；Batch 4B-2B-1 工作快照进一步让 RuntimeController 持有 `AtomicReference<RuntimeSnapshot>`，提供只读 `snapshot()` 与 worker-confined `recordStateEvent()`（待 CI）。尚无状态发布订阅，也尚未接入 Gateway 生命周期 JNI 调用。
 - 当前 Executor 使用 `newSingleThreadExecutor`，底层队列无界；没有关闭 API、队列长度/拒绝策略/等待时长指标。
 
 ### 2.2 当前调用面
@@ -186,3 +186,28 @@ Reducer 对无效/乱序完成事件与重复事件返回原快照；只有状�
 **关键约束：** `NativeStatusObserved` 是权威观测/恢复事件，不是命令。只有在 RuntimeController 串行控制边界内、没有未完成生命周期命令时才能应用；不能让任意周期轮询结果覆盖 Starting/Stopping 状态。该约束必须在 4B-2B 接线时落实。
 
 本批没有接入 RuntimeController/Service/UI/Repository，没有改 Gateway JNI、Rust、Gradle 或 workflow。当前环境无 `kotlinc` / Gradle 命令，所有新增测试与构建待 GitHub CI 验证；未执行 Cargo、APK、Instrumentation、真机测试。
+
+
+## 8. R17 Batch 4B-2A 验证收官与 Batch 4B-2B-1 实施记录
+
+### 8.1 R17 Batch 4B-2A 关闭
+
+- R17 HEAD `414dd67`，完整提交 `414dd6706d2f889f913068b907b3dc26aca651ab`；GitHub Actions Run `41360505254` 一次过双绿。
+- `:core-gateway:compileDebugUnitTestKotlin`、`:core-gateway:testDebugUnitTest`、`:app:testDebugUnitTest` 成功；RuntimeSnapshot 相关 `@Test` 共 12 项。
+- Instrumentation XML 为 2 tests / 0 failures / 0 errors / 0 skipped；双 APK 与 `.so` 校验产物正常。
+- R17 对账基线 `73f781a` 共 756 文件；新增/删除 0，修改 4 个文件（RuntimeSnapshot、RuntimeSnapshotReducerTest、HANDOFF、审计文档），与声明一致。
+- NativeStatusObserved 映射已由 CI 编译/测试，但尚未由生产调用方触发；不能把它描述为运行时状态恢复已完成。
+
+### 8.2 Batch 4B-2B-1 工作快照
+
+基线 R17 `414dd67`。修改：
+- `RuntimeController.kt`：新增 `AtomicReference<RuntimeSnapshot>` 作为唯一快照存储；`snapshot()` 提供线程安全只读访问；`recordStateEvent()` 限制只能由生命周期 worker 调用，再交给纯 Reducer 更新。
+- `RuntimeControllerTest.kt`：新增 3 项测试，覆盖快照只读读取、worker 外写入拒绝、串行 worker 内事件更新与 revision/timestamp 发布。
+- 本批没有增加 listener/Flow/协程依赖，没有新增具名 JNI 生命周期入口，没有迁移 App/FGS/Repository/UI，也没有改 `GatewayIntentTracker` 或 Service STOP 逻辑。
+
+**并发边界：**
+- 快照读可在任意线程执行；写只能由 `runSerialized` 的 worker 执行。
+- `recordStateEvent()` 的线程检查只保证单写者，不自动证明 `NativeStatusObserved` 时机正确。调用方仍必须确保没有 START/STOP 命令在途；任意轮询结果不得直接写入。
+- `mayStopNow()` 与 `Gateway.stop()` 的既有同一串行区间不变，后续具名 stop API 必须保留该原子顺序。
+
+**验证状态：** 本地无 Kotlin/Gradle 工具，本批未执行编译/JUnit；GitHub CI、Rust tests、APK、Instrumentation 与真机均待验证。工作归档不含 `.git`，没有 Git commit SHA。
