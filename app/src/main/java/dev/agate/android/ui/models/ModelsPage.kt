@@ -769,19 +769,22 @@ fun ModelsPage(
         annotated + aliasRows
     }
     // 范围内的行（计数与列表都以此为准，避免「全部 10/48」出现在单家页上）
-    // ── 已改名的原名行，**任何视图都不显示**（2026-11-03 用户澄清）──────
-    // 我第一版只在全局视图隐藏、单家视图留着并标小字，理由是「原名仍可用」。
-    // 用户明确否掉：**没有必要显示两张卡**，也不存在旧客户端还在用原名的场景。
-    // 于是规则简化为一条，两个视图共用：
-    //   · 有启用别名的原名行 → 隐藏；
-    //   · 别名行（`upstreamId != null`）→ 显示，它就是改名后的那张卡；
-    //   · 映射关掉 ⇒ `aliases` 变空 ⇒ 原名卡自动恢复（实时算，不是一次性标记）。
-    val shownRows = remember(allRows) {
-        allRows.filter { it.upstreamId != null || it.aliases.isEmpty() }
-    }
-    val scopeRows = remember(shownRows, listScope) {
+    // ── 两个视图各看一个名字（2026-11-03 用户定的口径）──────────────
+    //   · **全局聚合**（`listScope == null`）→ 看**别名**：已改名的原名行隐藏，
+    //     只剩 `glm-5.3` 那张卡，卡里聚合所有能承载这个名字的家；
+    //   · **单家视图**（选中某家）→ 看**原名**：这一家的上游清单原样列出
+    //     （`sn-glm-5-3`），别名卡不在这里出现 —— 别名是聚合视图的概念。
+    //
+    // 两个判据都是**实时算的**（`aliases` 由当前 mappings 推出）：
+    // 映射一关掉，`aliases` 变空 ⇒ 原名卡在全局视图自动恢复、别名卡消失。
+    val scopeRows = remember(allRows, listScope) {
         val s0 = listScope
-        if (s0 == null) shownRows else shownRows.filter { it.provider == s0 }
+        if (s0 == null) {
+            allRows.filter { it.upstreamId != null || it.aliases.isEmpty() }
+        } else {
+            // 单家：只要原名行（`upstreamId == null`），别名卡属于聚合视图
+            allRows.filter { it.provider == s0 && it.upstreamId == null }
+        }
     }
     val enabledCount = scopeRows.count { it.enabled }
 
