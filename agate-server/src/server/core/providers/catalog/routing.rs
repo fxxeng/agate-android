@@ -176,3 +176,78 @@ pub fn default_model_catalog() -> Vec<Value> {
 pub fn default_model_usable(model: &str) -> bool {
     entry_id_in_manifest(&default_model_catalog(), model).is_some()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::server::core::model_rules::ModelRules;
+
+    /// 构造一份只含 mappings 的规则（不碰全局 config）
+    fn rules_with(mappings: Value) -> ModelRules {
+        let raw = serde_json::json!({ "modelRules": { "mappings": mappings } })
+            .as_object()
+            .cloned()
+            .unwrap_or_default();
+        ModelRules::from_raw(&raw)
+    }
+
+    /// **别名必须能把请求名解析回本家的上游 id**。
+    ///
+    /// 这是「映射改名后能不能用」的核心事实：用户把小浣熊的 `sn-glm-5-3`
+    /// 映射成 `glm-5.3` 之后，客户端发 `glm-5.3`，网关在这一家必须发
+    /// `sn-glm-5-3`（上游只认这个）。
+    ///
+    /// 2026-11-02：用户报「加了映射还是单独显示、没归入候选」。功能这一层
+    /// 实际是通的（本测试证明），问题在**模型页的展示口径**（`manage_view`
+    /// 的 `models[]` 只列上游 id，别名只在 `mappings[]` 里）—— 两个事实
+    /// 分开钉住，免得下次又去改一个本来就对的解析。
+    #[test]
+    fn alias_resolves_to_upstream_id_within_the_same_provider() {
+        let rules = rules_with(serde_json::json!([
+            { "alias": "glm-5.3", "target": "sn-glm-5-3", "provider": "raccoon", "enabled": true }
+        ]));
+        let manifest = vec![serde_json::json!({ "id": "sn-glm-5-3" })];
+        let resolved = builtin_target(&rules, ProviderKind::Raccoon, &manifest, "glm-5.3");
+        assert_eq!(
+            resolved.map(|target| target.model),
+            Some("sn-glm-5-3".to_string()),
+            "别名 glm-5.3 在小浣熊家必须解析成上游 id sn-glm-5-3"
+        );
+        // 原始 id 仍然可直接用（映射是追加别名，不是替换）
+        assert_eq!(
+            builtin_target(&rules, ProviderKind::Raccoon, &manifest, "sn-glm-5-3")
+                .map(|target| target.model),
+            Some("sn-glm-5-3".to_string())
+        );
+    }
+
+    /// 别名**在别家解析不出来**（这一家没有这个上游 id）—— 这正是「同名多家
+    /// 主备」的前提：每家各自解析得了，路由才可能把同名请求分给它。
+    #[test]
+    fn alias_does_not_leak_into_a_provider_without_that_target() {
+        let rules = rules_with(serde_json::json!([
+            { "alias": "glm-5.3", "target": "sn-glm-5-3", "provider": "raccoon", "enabled": true }
+        ]));
+        // WorkBuddy 的清单里没有 sn-glm-5-3
+        let other = vec![serde_json::json!({ "id": "glm-5.3" })];
+        let resolved = builtin_target(&rules, ProviderKind::WorkBuddy, &other, "glm-5.3");
+        // 它靠自己的原生 id 命中（而不是借小浣熊那条映射）
+        assert_eq!(
+            resolved.map(|target| target.model),
+            Some("glm-5.3".to_string())
+        );
+    }
+
+    /// 关掉的映射不参与解析（用户关掉 = 这个名字在这一家失效）
+    #[test]
+    fn disabled_alias_does_not_resolve() {
+        let rules = rules_with(serde_json::json!([
+            { "alias": "glm-5.3", "target": "sn-glm-5-3", "provider": "raccoon", "enabled": false }
+        ]));
+        let manifest = vec![serde_json::json!({ "id": "sn-glm-5-3" })];
+        assert!(
+            builtin_target(&rules, ProviderKind::Raccoon, &manifest, "glm-5.3").is_none(),
+            "关闭的映射不该把 glm-5.3 解析成 sn-glm-5-3"
+        );
+    }
+}
