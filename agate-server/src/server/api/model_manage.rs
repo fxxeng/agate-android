@@ -337,7 +337,16 @@ pub async fn set_state(State(state): State<ServerState>, body: Bytes) -> Respons
     };
     let what = if enabled == Some(true) { "已启用" } else { "已禁用" };
     logging::log("[Models]", &format!("模型 {subject} {what}"));
-    ok_json(catalog::manage_view(state.store()))
+    // ── 写后回读诊断（2026-11-02）───────────────────────────────
+    // 用户报「日志里一直在写已禁用、界面开关却一直是开」。那只有两种可能：
+    //   · 清单里**没有这一行**（规则写进去了，但没有行可以回读它）——
+    //     典型是目录里已删除、但会话清单/映射还指着它的「悬空」模型；
+    //   · 有这一行，但 `default_enabled` 仍为 true（规则没落进读侧）。
+    // 两种成因的修法完全不同，而界面看起来一模一样。所以在这里把结论
+    // 直接打进日志：下一次点击就能判断是哪一种，不必再猜。
+    let view = catalog::manage_view(state.store());
+    diagnose_read_back(&view, provider_opt, &id, enabled);
+    ok_json(view)
 }
 
 /// POST /api/models/mappings
@@ -658,4 +667,47 @@ pub async fn set_capabilities(State(state): State<ServerState>, body: Bytes) -> 
         .join(", ");
     logging::log("[Models]", &format!("保存模型能力 [{provider}] {id}: {summary}"));
     ok_json(catalog::manage_view(state.store()))
+}
+
+/// 把「写完之后回读对不上」的两种成因写进日志。
+///
+/// 只在**确实对不上**时打一行警告：启停是低频操作，但这段代码在每个请求末尾，
+/// 正常路径不能产生日志噪音。
+fn diagnose_read_back(view: &Value, provider: Option<&str>, id: &str, wanted: Option<bool>) {
+    let Some(wanted) = wanted else { return };
+    let Some(provider) = provider else { return };
+    let found = view
+        .get("models")
+        .and_then(Value::as_array)
+        .and_then(|rows| {
+            rows.iter().find(|row| {
+                row.get("provider").and_then(Value::as_str) == Some(provider)
+                    && row
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .is_some_and(|row_id| row_id.eq_ignore_ascii_case(id))
+            })
+        });
+    match found {
+        None => logging::log(
+            "[Models]",
+            &format!(
+                "⚠️ 回读失败：[{provider}] {id} **不在当前目录清单里**（规则已写入，但没有行可回读）\
+                 —— 目录条目可能已被删除（与映射页的「悬空」同源）；\
+                 启停对它无效，请先「拉取模型」刷新目录"
+            ),
+        ),
+        Some(row) => {
+            let actual = row.get("enabled").and_then(Value::as_bool);
+            if actual != Some(wanted) {
+                logging::log(
+                    "[Models]",
+                    &format!(
+                        "⚠️ 回读不一致：[{provider}] {id} 期望 enabled={wanted}、\
+                         回读为 {actual:?}（规则写进去了但读侧没生效，检查 model_rules 的匹配口径）"
+                    ),
+                );
+            }
+        }
+    }
 }

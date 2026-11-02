@@ -449,6 +449,17 @@ fun ModelsPage(
         val bare = if ('/' in row.id) row.id.substringAfter('/') else row.id
         val key = "${row.provider}|$bare"
         if (toggling != null) return
+        // 不在管理视图里的行：内核按 (provider, id) 存规则，而清单里没有这个 id
+        // 就没有一行可回读 ⇒ 写了也看不到（日志里会一直刷「已禁用」但界面不变）。
+        // 这正是「点了没反应」的最后一种成因，直接说明，不再白写一次盘。
+        if (!row.inCatalog) {
+            Toast.makeText(
+                ctx,
+                "这个模型不在当前目录清单里，启停对它无效（可先「拉取模型」刷新目录）",
+                Toast.LENGTH_LONG,
+            ).show()
+            return
+        }
         val target = !row.enabled
         val optKey = "${row.provider.lowercase()}|${bare.lowercase()}"
         // ① 先落位：点下立刻可见（见上文的说明）
@@ -670,6 +681,8 @@ fun ModelsPage(
                 // 临时覆盖 > 管理视图 > 默认开（见 optimistic 的说明）
                 enabled = optimistic[key] ?: mg?.enabled ?: true,
                 official = mg?.official,
+                // 管理视图里**没有**这一行 ⇒ 启停无从写起（见 inCatalog 的说明）
+                inCatalog = mg != null,
             )
         }
         val present = fromSession
@@ -2210,7 +2223,24 @@ private fun ModelAggregateCard(
                 )
                 m.credits?.let { CreditsTag(it) }
                 Spacer(Modifier.width(6.dp))
-                ModelToggle(enabled = m.enabled, busy = busy, onToggle = { onToggle(m) })
+                if (!m.inCatalog) {
+                    // 不在目录清单里：开关点了也没用（见 ModelRow.inCatalog）。
+                    // 与其让它反复弹回，不如直接说清「为什么」。
+                    Text(
+                        "不在目录清单",
+                        color = C.textDim,
+                        fontSize = 9.sp,
+                        modifier = Modifier
+                            .padding(end = 6.dp)
+                            .border(1.dp, C.border, RoundedCornerShape(6.dp))
+                            .padding(horizontal = 4.dp, vertical = 1.dp),
+                    )
+                }
+                ModelToggle(
+                    enabled = m.enabled,
+                    busy = busy || !m.inCatalog,
+                    onToggle = { onToggle(m) },
+                )
             }
         }
 
