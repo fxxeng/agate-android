@@ -197,13 +197,11 @@ class AgateForegroundService : Service() {
                 enqueueCommand("$ACTION_STOP#$startId") {
                     var skipStop = false
                     try {
-                        skipStop = !RuntimeController.runSerialized {
-                            // 执行时刻为准：排队期间若有新 START 交付（FIFO 排在
-                            // 本命令之后），此刻 stop 会杀死 START 命令体即将重建
-                            // 的网关——跳过，让排队的 START 自然接管（幂等重启）。
-                            val shouldStop = gatewayIntent.mayStopNow()
-                            if (shouldStop) Gateway.stop()
-                            shouldStop
+                        skipStop = !RuntimeController.stopIfAllowed {
+                            // 守卫在 RuntimeController 的串行任务执行时刻读取；
+                            // 必须与 Gateway.stop() 保持在同一个原子区间。
+                            // 若队列期间已有新 START 意图，则跳过旧 STOP。
+                            gatewayIntent.mayStopNow()
                         }
                     } catch (t: Throwable) {
                         android.util.Log.e("Agate", "内核停止异常", t)
@@ -502,12 +500,10 @@ class AgateForegroundService : Service() {
         try {
             commandExecutor.execute {
                 try {
-                    RuntimeController.runSerialized {
-                        // 兜底清理以「执行时刻」的最后意图为准：stopSelf 触发的
-                        // 销毁流程期间可能到达新 START（重新拉起实例/投递 pending
-                        // intent），此时最后意图是启动，停内核会杀死刚重建的网关——跳过。
-                        val shouldStop = gatewayIntent.mayStopNow()
-                        if (shouldStop) Gateway.stop()
+                    RuntimeController.stopIfAllowed {
+                        // 兜底清理以「执行时刻」的最后意图为准；守卫与 Native
+                        // STOP 由 RuntimeController 在同一个串行任务中连续执行。
+                        gatewayIntent.mayStopNow()
                     }
                 } catch (t: Throwable) {
                     android.util.Log.w("Agate", "Service 销毁时停止内核失败", t)

@@ -1581,3 +1581,58 @@ CheckinRun 专项另行估算：功能实现约 **85–90%**（执行台账、�
 - Batch 4B-2B-6：单独迁移 `Gateway.stop()`。必须把 `GatewayIntentTracker.mayStopNow()` 判断与 `Gateway.stop()` 保持在同一个 `RuntimeController.runSerialized { ... }` 原子区间；不得拆成两个具名调用。
 - Batch 4B-2B-7：单独迁移 `Gateway.schedulerSet()`，明确 Native 返回失败、偏好值与快照的对齐/恢复语义。
 - 完成 4B-2B-6/7 后，再做生产生命周期调用点总审计；不得提前宣称 Phase 2 完成。
+
+
+## 13. R22 Batch 4B-2B-5 验证收官与 Batch 4B-2B-6 实施记录（2026-11-03）
+
+### 13.1 R22 验证收官
+
+- 验证分支：`verify/arch-8faa5f5`。Batch 4B-2B-5 首次提交 `7cd6366d`；修复提交 `77c289c8`。
+- GitHub Actions：Run `41441934576` 首次因 Kotlin 编译错误失败；Run `41445770982` 在修复后首跑遇到 Instrumentation 启动前 CPU PSI settle 超时，rerun failed 后全绿。
+- 编译错误根因：`checkRuntimeStale(...).onSuccess` 的参数类型是 `RuntimeCheckResult`，不能直接取 `.key`。修复为通过 `gateKey(...)` 获取 key；报告确认两个重载、三个调用点合规。
+- 最终 `77c289c8`：Rust tests、Gradle tests、APK + ELF/JNI 核对通过；x86_64 Instrumentation 2/2，0 skipped / 0 failed。
+- 第一次 settle 超时发生在 Instrumentation 启动前；同环境对照显示 runner CPU 压力/启动耗时异常，rerun 后通过。保留原 480s settle 门禁，不因单次环境抖动放宽。
+- Batch 4B-2B-5 正式关闭：FGS `runStart()` 已使用 `RuntimeController.start()`；`already_running` 仍按幂等成功处理。CI 通过不替代真机 START 冒烟。
+
+### 13.2 R22 后生产调用点复核与计划澄清
+
+R22 CI 报告建议用户安装 APK，完成 Gateway START 真机冒烟后进入 Batch 4C。但对 R22 源码归档执行生产 Kotlin 调用点检索后，仍发现：
+- `AgateForegroundService` 普通 STOP 命令路径仍直接执行 `Gateway.stop()`；
+- `AgateForegroundService.onDestroy()` 清理路径仍直接执行 `Gateway.stop()`；
+- `GatewayControlPage` 仍直接执行 `Gateway.schedulerSet(on)`。
+
+因此，R22 的“Batch 4B-2B 全部 CI 就绪”只代表当轮实现与 CI 链路通过，不能解释为 RuntimeController 已经收口全部生产 Gateway 生命周期操作。为保持本交接文档既定的逐切片路线，继续完成 4B-2B-6（STOP）和 4B-2B-7（Scheduler），再做生产调用点总审计。R22 报告提出的真机 START 冒烟仍是必须门槛：应在用户安装 R22 APK 后执行并记录；它不被本轮源码静态审计替代，也不应因后续小批次而被遗忘。
+
+### 13.3 Batch 4B-2B-6：STOP 接入 RuntimeController（当前工作快照，待 CI）
+
+基线：R22 `77c289c8`。本批只迁移 FGS 的两个 Gateway STOP 调用点：
+- Service STOP 命令路径；
+- `onDestroy()` 异步兜底清理路径。
+
+RuntimeController 新增：
+- `stopWith(mayStopNow, stop, nowMillis)` 内部测试缝；
+- `stopIfAllowed(mayStopNow)` 生产具名 API。
+
+关键契约：
+1. `mayStopNow()` 在 RuntimeController lifecycle worker 内、Native STOP 前即时读取。
+2. 意图守卫与 `Gateway.stop()` 在同一个 `runSerialized` 任务内连续执行；不能拆成“先检查、再调用 stop”两个独立 API。此约束保留 R13 START/STOP 竞争修复。
+3. 守卫返回 false 时不调用 JNI、不改快照，返回 false；Service 原有 `skipStop = !...` 语义保持。
+4. Native `{ok:true}` 记录 GatewayStopSucceeded；`{ok:false,error:"not_running"}` 按幂等停止成功处理；其它 Native 失败记录 `GatewayFailed(stage="stop", ...)`，但返回值仍表示守卫是否批准 STOP，避免改变原 Service 的锁释放/服务停止决策。
+5. JNI/调用异常记录 GatewayFailed 后原样抛出，由 Service 既有 catch 处理。
+6. 不额外读取 `Gateway.status()`；不改变 Core 与 Scheduler 状态。
+
+### 13.4 本批边界与测试
+
+- 修改 5 个文件：`RuntimeController.kt`、`AgateForegroundService.kt`、`RuntimeControllerTest.kt`、HANDOFF、Source Audit；0 新增、0 删除。
+- 两处 FGS 调用均改为 `RuntimeController.stopIfAllowed { gatewayIntent.mayStopNow() }`；守卫执行时机仍在生命周期串行任务内。
+- 新增 5 项 RuntimeController 测试：守卫与 JNI STOP 在同一 worker；守卫拒绝时跳过 Native；`not_running` 幂等成功；Native 失败发布状态但不改变 guard decision；异常记录并原样传播。
+- `RuntimeControllerTest` 静态 `@Test` 数量：R22 基线 15，本批后 20；保留 `import org.junit.Assert.assertFalse`。
+- 未修改 `GatewayIntentTracker`、命令队列/coalescer、STOP/TICK startId 处理、WakeLock、通知、`runTick()`、`runStart()`、`onDestroy()` 清理调度结构；未修改 JNI ABI、Rust、Gradle、CI workflow。
+- 本地完成源码静态审阅与补丁/归档检查；未执行 Kotlin/Gradle/JUnit/Rust/APK/Instrumentation/真机测试，全部等待 CI 或设备验证。
+- 当前快照不含 `.git`，不是 Git commit。上传必须以 R22 `77c289c8` 为父提交，目标 `verify/arch-8faa5f5`；不动 `main`、不合并。
+
+### 13.5 下一步
+
+- Batch 4B-2B-7：单独迁移 `Gateway.schedulerSet()`，先审计 `GatewayControlPage` 的偏好值写入顺序、Native 失败返回和快照回滚/重对账语义。
+- 随后进行 RuntimeController 生产调用点总审计：`Gateway.start/stop/schedulerSet/coreInit`、状态读取入口、所有 Service/UI/Repository/Receiver 调用路径。
+- 真机 START 冒烟仍须完成并记录；STOP/Scheduler 真机验证也需覆盖。完成上述工作后再决定 Phase 2 是否收官以及进入 Batch 4C。不得仅凭 CI 绿灯宣布 Android 生命周期迁移完成。

@@ -366,6 +366,134 @@ class RuntimeControllerTest {
         )
     }
 
+    @Test
+    fun gatewayStopGuardAndNativeCallRunInOneSerializedTask() {
+        prepareRunningGatewaySnapshot()
+        val callerThread = Thread.currentThread()
+        val guardThread = AtomicReference<Thread?>()
+        val stopThread = AtomicReference<Thread?>()
+        val calls = mutableListOf<String>()
+
+        val allowed = RuntimeController.stopWith(
+            mayStopNow = {
+                guardThread.set(Thread.currentThread())
+                calls += "guard"
+                true
+            },
+            stop = {
+                stopThread.set(Thread.currentThread())
+                calls += "stop"
+                RuntimeController.StopOutcome(ok = true)
+            },
+            nowMillis = { 5100L },
+        )
+
+        assertTrue(allowed)
+        assertEquals(listOf("guard", "stop"), calls)
+        assertSame(guardThread.get(), stopThread.get())
+        assertTrue(guardThread.get() !== callerThread)
+        assertEquals(GatewayRuntimeState.Stopped, RuntimeController.snapshot().gateway)
+        assertEquals(5100L, RuntimeController.snapshot().updatedAtMillis)
+    }
+
+    @Test
+    fun gatewayStopSkipsNativeCallWhenLatestIntentDisallowsStop() {
+        prepareRunningGatewaySnapshot()
+        var stopCalled = false
+
+        val allowed = RuntimeController.stopWith(
+            mayStopNow = { false },
+            stop = {
+                stopCalled = true
+                RuntimeController.StopOutcome(ok = true)
+            },
+            nowMillis = { 5200L },
+        )
+
+        assertFalse(allowed)
+        assertFalse(stopCalled)
+        assertEquals(
+            GatewayRuntimeState.Running(8787, true, "stop-test"),
+            RuntimeController.snapshot().gateway,
+        )
+    }
+
+    @Test
+    fun gatewayStopTreatsNotRunningAsIdempotentSuccess() {
+        prepareRunningGatewaySnapshot()
+
+        val allowed = RuntimeController.stopWith(
+            mayStopNow = { true },
+            stop = { RuntimeController.StopOutcome(ok = false, error = "not_running") },
+            nowMillis = { 5300L },
+        )
+
+        assertTrue(allowed)
+        assertEquals(GatewayRuntimeState.Stopped, RuntimeController.snapshot().gateway)
+    }
+
+    @Test
+    fun gatewayStopPublishesNativeFailureWithoutChangingCallerDecision() {
+        prepareRunningGatewaySnapshot()
+
+        val allowed = RuntimeController.stopWith(
+            mayStopNow = { true },
+            stop = {
+                RuntimeController.StopOutcome(
+                    ok = false,
+                    code = "state_poisoned",
+                    error = "state poisoned",
+                )
+            },
+            nowMillis = { 5400L },
+        )
+
+        assertTrue("guard approval remains the return value", allowed)
+        assertEquals(
+            GatewayRuntimeState.Failed("stop", "state_poisoned", "state poisoned"),
+            RuntimeController.snapshot().gateway,
+        )
+    }
+
+    @Test
+    fun gatewayStopExceptionPublishesFailureAndRethrowsOriginal() {
+        prepareRunningGatewaySnapshot()
+        val expected = IllegalStateException("jni-stop-failed")
+
+        val actual = try {
+            RuntimeController.stopWith(
+                mayStopNow = { true },
+                stop = { throw expected },
+                nowMillis = { 5500L },
+            )
+            null
+        } catch (failure: Throwable) {
+            failure
+        }
+
+        assertSame(expected, actual)
+        assertEquals(
+            GatewayRuntimeState.Failed("stop", null, "jni-stop-failed"),
+            RuntimeController.snapshot().gateway,
+        )
+    }
+
+    private fun prepareRunningGatewaySnapshot() {
+        RuntimeController.runSerialized {
+            RuntimeController.recordStateEvent(
+                RuntimeStateEvent.NativeStatusObserved(
+                    coreReady = true,
+                    gatewayRunning = true,
+                    port = 8787,
+                    bindLan = true,
+                    version = "stop-test",
+                    schedulerEnabled = true,
+                ),
+                nowMillis = 5050L,
+            )
+        }
+    }
+
     private fun prepareStoppedGatewaySnapshot() {
         RuntimeController.runSerialized {
             val current = RuntimeController.snapshot()

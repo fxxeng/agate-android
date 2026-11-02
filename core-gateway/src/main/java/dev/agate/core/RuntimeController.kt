@@ -178,6 +178,70 @@ object RuntimeController {
         result
     }
 
+    /**
+     * Evaluate the latest Service intent and, only when permitted, stop Gateway in the
+     * same serialized lifecycle task. The guard and Native stop must never be split:
+     * a newer START intent arriving while this task is queued must prevent stale STOP.
+     *
+     * `not_running` is an idempotent stopped outcome. Other Native failures are
+     * published to the snapshot but returned unchanged to the existing caller path.
+     */
+    internal data class StopOutcome(
+        val ok: Boolean,
+        val error: String? = null,
+        val code: String? = null,
+    )
+
+    internal fun stopWith(
+        mayStopNow: () -> Boolean,
+        stop: () -> StopOutcome,
+        nowMillis: () -> Long = { System.currentTimeMillis() },
+    ): Boolean = runSerialized {
+        if (!mayStopNow()) return@runSerialized false
+
+        recordStateEvent(RuntimeStateEvent.GatewayStopStarted, nowMillis())
+        val result = try {
+            stop()
+        } catch (failure: Throwable) {
+            recordStateEvent(
+                RuntimeStateEvent.GatewayFailed(
+                    stage = "stop",
+                    code = null,
+                    message = failure.message ?: failure.javaClass.simpleName,
+                ),
+                nowMillis(),
+            )
+            throw failure
+        }
+
+        if (result.ok || result.error == "not_running") {
+            recordStateEvent(RuntimeStateEvent.GatewayStopSucceeded, nowMillis())
+        } else {
+            recordStateEvent(
+                RuntimeStateEvent.GatewayFailed(
+                    stage = "stop",
+                    code = result.code,
+                    message = result.error ?: "Native Gateway stop failed",
+                ),
+                nowMillis(),
+            )
+        }
+        true
+    }
+
+    /** Production STOP entry point; intent validation and JNI stop are atomic. */
+    fun stopIfAllowed(mayStopNow: () -> Boolean): Boolean = stopWith(
+        mayStopNow = mayStopNow,
+        stop = {
+            val result = Gateway.stop()
+            StopOutcome(
+                ok = result.optBoolean("ok", false),
+                error = result.optString("error").takeIf { it.isNotEmpty() },
+                code = result.optString("code").takeIf { it.isNotEmpty() },
+            )
+        },
+    )
+
     /** Public Gateway start entry point; callers must already be on a background thread. */
     fun start(
         dataDir: String,
