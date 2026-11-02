@@ -154,4 +154,148 @@ class RuntimeControllerTest {
         )
         assertEquals(event.schedulerEnabled, after.schedulerEnabled)
     }
+
+    @Test
+    fun coreInitRunsAndReconcilesNativeStatusInOneSerializedTask() {
+        val calls = mutableListOf<String>()
+        val before = RuntimeController.snapshot()
+        val expectedStatus = Gateway.Status(
+            running = before.gateway !is GatewayRuntimeState.Running,
+            port = 8787,
+            bindLan = true,
+            uptimeSec = 0,
+            version = "core-init-test",
+            core = before.core !is CoreRuntimeState.Ready,
+            scheduler = before.schedulerEnabled != true,
+        )
+
+        val result = RuntimeController.coreInitWith(
+            initialize = {
+                calls += "coreInit"
+                "native-ok"
+            },
+            isSuccessful = { it == "native-ok" },
+            failureEvent = { error("failure mapper must not run") },
+            readStatus = {
+                calls += "status"
+                expectedStatus
+            },
+            nowMillis = { 2000L },
+        )
+
+        assertEquals("native-ok", result)
+        assertEquals(listOf("coreInit", "status"), calls)
+        val snapshot = RuntimeController.snapshot()
+        assertEquals(
+            if (expectedStatus.core) CoreRuntimeState.Ready else CoreRuntimeState.NotInitialized,
+            snapshot.core,
+        )
+        assertEquals(
+            if (expectedStatus.running) {
+                GatewayRuntimeState.Running(8787, true, "core-init-test")
+            } else {
+                GatewayRuntimeState.Stopped
+            },
+            snapshot.gateway,
+        )
+        assertEquals(expectedStatus.scheduler, snapshot.schedulerEnabled)
+        assertEquals(2000L, snapshot.updatedAtMillis)
+    }
+
+    @Test
+    fun failedCoreInitReconcilesNativeStatusAndRetainsBootstrapFailure() {
+        var statusRead = false
+        var failureMapped = false
+
+        val result = RuntimeController.coreInitWith(
+            initialize = { "native-error" },
+            isSuccessful = { false },
+            failureEvent = {
+                failureMapped = true
+                RuntimeStateEvent.CoreInitializationFailed(
+                    stage = "bootstrap",
+                    code = null,
+                    message = it,
+                )
+            },
+            readStatus = {
+                statusRead = true
+                Gateway.Status(false, 0, false, 0L, "failure-test", false, false)
+            },
+            nowMillis = { 3000L },
+        )
+
+        assertEquals("native-error", result)
+        assertTrue(failureMapped)
+        assertTrue(statusRead)
+        assertEquals(
+            CoreRuntimeState.Failed("bootstrap", null, "native-error"),
+            RuntimeController.snapshot().core,
+        )
+        assertEquals(false, RuntimeController.snapshot().schedulerEnabled)
+    }
+
+    @Test
+    fun refreshStatusWaitsBehindPreviouslyQueuedLifecycleWork() {
+        val blockerEntered = CountDownLatch(1)
+        val releaseBlocker = CountDownLatch(1)
+        RuntimeController.submitSerialized(
+            operation = {
+                blockerEntered.countDown()
+                releaseBlocker.await(2, TimeUnit.SECONDS)
+            },
+            onComplete = {},
+        )
+        assertTrue("blocking operation did not start", blockerEntered.await(2, TimeUnit.SECONDS))
+
+        val before = RuntimeController.snapshot()
+        val expectedStatus = Gateway.Status(
+            running = before.gateway !is GatewayRuntimeState.Running,
+            port = 8787,
+            bindLan = false,
+            uptimeSec = 0,
+            version = "refresh-test",
+            core = before.core !is CoreRuntimeState.Ready,
+            scheduler = before.schedulerEnabled != true,
+        )
+        val statusRead = CountDownLatch(1)
+        val result = AtomicReference<Gateway.Status?>()
+        val caller = Thread {
+            result.set(
+                RuntimeController.refreshStatusWith(
+                    readStatus = {
+                        statusRead.countDown()
+                        expectedStatus
+                    },
+                    nowMillis = { 4000L },
+                ),
+            )
+        }
+        caller.start()
+
+        assertFalse("status must remain queued behind prior lifecycle work",
+            statusRead.await(100, TimeUnit.MILLISECONDS))
+        releaseBlocker.countDown()
+        assertTrue("queued status reconciliation did not execute",
+            statusRead.await(2, TimeUnit.SECONDS))
+        caller.join(2000)
+
+        assertEquals("refresh-test", result.get()?.version)
+        val snapshot = RuntimeController.snapshot()
+        assertEquals(
+            if (expectedStatus.core) CoreRuntimeState.Ready else CoreRuntimeState.NotInitialized,
+            snapshot.core,
+        )
+        assertEquals(
+            if (expectedStatus.running) {
+                GatewayRuntimeState.Running(8787, false, "refresh-test")
+            } else {
+                GatewayRuntimeState.Stopped
+            },
+            snapshot.gateway,
+        )
+        assertEquals(expectedStatus.scheduler, snapshot.schedulerEnabled)
+        assertEquals(4000L, snapshot.updatedAtMillis)
+    }
+
 }

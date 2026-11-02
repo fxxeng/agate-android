@@ -94,6 +94,13 @@ object Gateway {
         companion object {
             fun parse(raw: String): Status {
                 val j = JSONObject(raw)
+                // status_json() wraps lock/Native failures as {ok:false,error:...}.
+                // Never turn that error envelope into a plausible all-false runtime
+                // snapshot through optBoolean defaults.
+                check(j.optBoolean("ok", false)) {
+                    j.optString("error").takeIf { it.isNotEmpty() }
+                        ?: "Native status query failed"
+                }
                 return Status(
                     j.optBoolean("running"),
                     j.optInt("port", 0),

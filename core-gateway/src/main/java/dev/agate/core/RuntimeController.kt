@@ -9,9 +9,9 @@ import java.util.concurrent.atomic.AtomicReference
 /**
  * Android 进程内 Native Core 生命周期操作的唯一串行入口。
  *
- * 仅串行化会改变 Core / Gateway 生命周期状态的控制面操作：coreInit、start、
- * stop、schedulerSet。长耗时业务请求（apiCall / checkinRunNow）和只读 status
- * 不在此队列中，避免一次签到或管理请求阻塞网关启停。
+ * 串行化会改变 Core / Gateway 生命周期状态的控制面操作，以及显式的
+ * refreshStatus() 对账。长耗时业务请求（apiCall / checkinRunNow）不在此队列，
+ * 避免一次签到或管理请求阻塞网关启停。页面的普通 status 读取尚未全部迁移。
  *
  * 调用方不得在主线程直接执行 JNI；当前入口是同步的，调用方必须来自后台线程。
  * 同一控制线程内允许重入，避免组合操作自我等待造成死锁。
@@ -42,6 +42,103 @@ object RuntimeController {
         val current = runtimeSnapshot.get()
         runtimeSnapshot.set(RuntimeSnapshotReducer.reduce(current, event, nowMillis))
     }
+
+    /**
+     * Initialize the native Core and reconcile its authoritative status in one
+     * lifecycle-queue task. A failed native result is returned unchanged; thrown
+     * JNI/parse failures are published as CoreInitializationFailed and rethrown.
+     *
+     * This internal seam keeps the queue/state contract JVM-testable without loading
+     * the Android JNI library. Production callers should use [coreInit].
+     */
+    internal fun <T> coreInitWith(
+        initialize: () -> T,
+        isSuccessful: (T) -> Boolean,
+        failureEvent: (T) -> RuntimeStateEvent,
+        readStatus: () -> Gateway.Status,
+        nowMillis: () -> Long = { System.currentTimeMillis() },
+    ): T = runSerialized {
+        recordStateEvent(RuntimeStateEvent.CoreInitializationStarted, nowMillis())
+        val result = try {
+            initialize()
+        } catch (failure: Throwable) {
+            recordStateEvent(
+                RuntimeStateEvent.CoreInitializationFailed(
+                    stage = "core_init",
+                    code = null,
+                    message = failure.message ?: failure.javaClass.simpleName,
+                ),
+                nowMillis(),
+            )
+            throw failure
+        }
+
+        if (!isSuccessful(result)) {
+            // A failed coreInit can mean bootstrap failed, or Core exists but the
+            // scheduler alignment failed. Reconcile Native facts first; if Core is
+            // still absent, retain the structured initialization failure afterward.
+            val status = try {
+                readStatus()
+            } catch (statusFailure: Throwable) {
+                recordStateEvent(failureEvent(result), nowMillis())
+                throw statusFailure
+            }
+            recordStateEvent(status.toRuntimeStateEvent(), nowMillis())
+            if (!status.core) {
+                recordStateEvent(failureEvent(result), nowMillis())
+            }
+            return@runSerialized result
+        }
+
+        recordStateEvent(RuntimeStateEvent.CoreInitializationSucceeded, nowMillis())
+        // Keep the Native observation in the same serialized task as coreInit.
+        // This prevents a later status result from interleaving with another
+        // lifecycle command and overwriting its transitional state.
+        val status = readStatus()
+        recordStateEvent(status.toRuntimeStateEvent(), nowMillis())
+        result
+    }
+
+    /**
+     * Explicit, serialized Native status reconciliation. Since this is queued behind
+     * previously submitted lifecycle commands, the observation cannot overtake them.
+     */
+    internal fun refreshStatusWith(
+        readStatus: () -> Gateway.Status,
+        nowMillis: () -> Long = { System.currentTimeMillis() },
+    ): Gateway.Status = runSerialized {
+        val status = readStatus()
+        recordStateEvent(status.toRuntimeStateEvent(), nowMillis())
+        status
+    }
+
+    /** Public Core initialization entry point; no Android Context is retained here. */
+    fun coreInit(dataDir: String, port: Int, schedulerOn: Boolean): org.json.JSONObject =
+        coreInitWith(
+            initialize = { Gateway.coreInit(dataDir, port, schedulerOn) },
+            isSuccessful = { it.optBoolean("ok", false) },
+            failureEvent = { result ->
+                RuntimeStateEvent.CoreInitializationFailed(
+                    stage = result.optString("stage").takeIf { it.isNotEmpty() },
+                    code = result.optString("code").takeIf { it.isNotEmpty() },
+                    message = result.optString("error").takeIf { it.isNotEmpty() }
+                        ?: "Native Core initialization failed",
+                )
+            },
+            readStatus = { Gateway.status() },
+        )
+
+    /** Public status refresh; observation is performed only on the lifecycle worker. */
+    fun refreshStatus(): Gateway.Status = refreshStatusWith(readStatus = { Gateway.status() })
+
+    private fun Gateway.Status.toRuntimeStateEvent() = RuntimeStateEvent.NativeStatusObserved(
+        coreReady = core,
+        gatewayRunning = running,
+        port = port,
+        bindLan = bindLan,
+        version = version,
+        schedulerEnabled = scheduler,
+    )
 
     private val executor = Executors.newSingleThreadExecutor(
         ThreadFactory { runnable ->

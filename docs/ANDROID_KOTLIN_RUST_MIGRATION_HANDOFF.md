@@ -1396,3 +1396,61 @@ CheckinRun 专项另行估算：功能实现约 **85–90%**（执行台账、�
 - Batch 4B-2B-2：增加 `coreInit()` 与 `refreshStatus()` 最小具名入口；`coreInit` 的开始/成功/失败事件与 Native status reconcile 必须在同一个控制队列任务内完成。
 - 明确 `refreshStatus()` 仅是显式受控 reconcile，不提供任意线程轮询写入口；若存在 START/STOP 在途操作，status 观察必须排在命令之后。
 - 再独立实施 start/stop/schedulerSet；STOP 的 `mayStopNow()` 与 `Gateway.stop()` 必须继续在同一个 `runSerialized` 区间内连续执行。
+
+
+## 2026-11-02：R18 Batch 4B-2B-1 验证收官与 Batch 4B-2B-2 实施记录
+
+### 1. R18 验证收官
+
+- 验证分支：`verify/arch-8faa5f5`；R18 HEAD `238d9f39eeea1ea475db7a8516ccef10b3a51c94`（short `238d9f3`）。
+- GitHub Actions Run：`41366079448`，`rust-tests` 与 `android-build` 一次过双绿。
+- `:core-gateway:testDebugUnitTest`、`:app:testDebugUnitTest` 成功；`RuntimeControllerTest` 源码 `@Test` 计数 7（既有 4 + Batch 4B-2B-1 新增 3）。
+- Instrumentation XML：2 tests、0 failures、0 errors、0 skipped；双 APK artifact 正常。
+- R18 源码快照 756 个文件；相对 `414dd67` 基线 ADD/DEL 0、UPD 4；patch dry-run、实跑和逐 blob 对账均匹配。
+- Batch 4B-2B-1 正式关闭。其快照写入尚无生产调用方，真实生命周期状态链路仍待具名 API 接入。
+
+### 2. Batch 4B-2B-2：Core 初始化与显式状态刷新入口（当前工作快照，待 CI）
+
+基线：R18 HEAD `238d9f3`。本批目标是建立两个最小具名入口，不迁移 Application/FGS/Repository/UI 调用方，不接入 start/stop/schedulerSet。
+
+实现内容：
+- `RuntimeController.coreInit(dataDir, port, schedulerOn)`：在一个 `runSerialized` 控制任务中记录 CoreInitializationStarted，调用 `Gateway.coreInit()`；成功和 Native `ok=false` 两条结果路径都会在同一任务中读取 `Gateway.status()` 并应用 NativeStatusObserved。成功路径随后记录 CoreInitializationSucceeded；失败路径先对账 Native 三维事实，若 Core 仍未就绪，再记录结构化 CoreInitializationFailed，最后原样返回 Native JSONObject。JNI/初始化调用抛异常时记录失败事件后原样抛出。
+- `RuntimeController.refreshStatus()`：显式调用 `Gateway.status()` 并在同一个串行任务中应用 NativeStatusObserved；因此观察请求排在此前已入队的生命周期命令之后，不提供任意线程直接写快照的入口。
+- `coreInitWith()` / `refreshStatusWith()` 是 internal 测试缝，允许 JVM 测试注入 Native 操作与时钟，不加载 JNI；生产 API 仍固定调用 Gateway 门面。
+- Native status 映射保持单一函数：`core`→Core Ready/NotInitialized，`running`→Gateway Running/Stopped（携带 port/bindLan/version），`scheduler`→schedulerEnabled。
+- `Gateway.Status.parse()` 现在显式要求 Native status envelope 的 `ok=true`；若 Rust 返回 `{ok:false,error:...}`（例如状态锁 poisoned），抛出明确异常，不再通过 `optBoolean` 默认值伪造“Core/Gateway/Scheduler 全部关闭”。
+- 没有修改 Gateway JNI ABI、Rust、Gradle、CI workflow；没有新增协程/StateFlow；没有改 `GatewayIntentTracker.mayStopNow()` 与 STOP 清理区间。
+
+### 3. 关键契约与边界
+
+- `coreInit()` 是同步 API，调用方必须在后台线程调用；它不持有 Android Context，也不启动 Android Service。
+- `coreInit` 的 Native 初始化调用、开始/成功/失败状态事件，以及成功/Native `ok=false` 两条结果路径的 Native status reconcile，均在同一个 `runSerialized` 任务内完成。status 不会插队覆盖该任务中间状态。
+- `refreshStatus()` 是显式串行 reconcile，不是高频 UI 轮询 API。控制队列已有的 START/STOP 命令先执行，刷新再读取 Native 状态；后续不得从任意线程直接调用 `recordStateEvent(NativeStatusObserved)`。
+- 当前本批不迁移既有 `AgateApp.onCreate()` 和 FGS `runTick()` 中的 `runSerialized { Gateway.coreInit(...) }` 调用；它们仍串行，但暂时不写入 RuntimeSnapshot。下一批单独迁移一个生产调用入口，再逐个迁移其他入口，避免本批扩大改动面。
+- 当前 `refreshStatus()` 只返回 Native `Gateway.Status` 并更新 RuntimeSnapshot；它不负责 UI 订阅、轮询节奏、Repository 聚合或进程重建通知。
+- 若 `coreInit` Native 返回 `ok=false`，本实现仍在同一控制任务中读取 Native status：若 Native Core 已就绪（例如 scheduler 对齐失败），快照以 Native 实际状态为准；若 Core 未就绪，则在对账后保留结构化 CoreInitializationFailed。若 status 读取本身失败，则记录初始化失败并传播 status 异常。
+- 若 `Gateway.status()` 在成功或失败结果路径返回错误 envelope 或 JNI 异常，`Gateway.Status.parse()` 会抛出，不会把错误误记为 `core=false/running=false/scheduler=false`；记录对应初始化失败信息后，status 异常向调用方传播。成功路径中 CoreInitializationSucceeded 已记录，status reconcile 未完成。
+- `RuntimeSnapshot` 仍是进程内 Kotlin 快照，不替代 Native 状态；revision 也不替代 `GatewayIntentTracker.mayStopNow()`。
+
+### 4. 新增测试（目标 CI）
+
+- `coreInitRunsAndReconcilesNativeStatusInOneSerializedTask`：验证初始化成功与 status 读取在同一串行任务按顺序发生，并验证三维快照。
+- `failedCoreInitReconcilesNativeStatusAndRetainsBootstrapFailure`：验证 Native 失败结果仍执行 status reconcile，并在 Core 仍未就绪时保留结构化失败原因。
+- `RuntimeSnapshotReducerTest` 新增 `coreFailureCanFollowAnAuthoritativeNotInitializedObservation`，覆盖 Native 对账后保留本次初始化失败原因。
+- `refreshStatusWaitsBehindPreviouslyQueuedLifecycleWork`：用队列阻塞任务证明显式 status reconcile 不会越过此前生命周期任务。
+- 原有 `RuntimeControllerTest` 7 项保留；本批目标为 10 项 `RuntimeControllerTest`。RuntimeSnapshotReducerTest 在 R18 基础上新增 1 项；全项目其他测试数量以 CI 实际报告为准。
+
+### 5. 本批验证状态
+
+- 已完成源码修改、静态审阅、文件范围对账与归档生成。
+- 当前执行容器没有 `kotlinc` / `gradle`，本批 Kotlin 编译、JUnit 均未执行。
+- Rust tests、Android APK、Instrumentation、JNI 导出脚本、真机测试均未执行；本批未修改 Rust/JNI/Gradle。
+- 本工作快照不含 `.git`，不得宣称为 Git commit。必须以 R18 `238d9f3` 为父提交上传 `verify/arch-8faa5f5` 后触发 CI。
+- 不动 `main`，不合并。
+
+### 6. 下一批建议
+
+- Batch 4B-2B-3：只迁移一个生产 Core 初始化调用方（优先 `AgateApp.onCreate()`），由 `RuntimeController.coreInit()` 接管；FGS `runTick()` 暂时保持旧调用，独立下一批迁移。
+- Batch 4B-2B-4：接入 `Gateway.start()` 及其 transitional/success/failure 状态事件；保留 Service 现有命令队列和意图追踪。
+- Batch 4B-2B-5：接入 stop，必须把 `mayStopNow()` 判断与 `Gateway.stop()` 保持在同一个 `runSerialized` 原子区间。
+- Batch 4B-2B-6：接入 schedulerSet；确认偏好值、Native 实际值和状态快照之间的失败恢复语义。

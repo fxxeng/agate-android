@@ -190,4 +190,28 @@ class RuntimeSnapshotReducerTest {
         event: RuntimeStateEvent,
         nowMillis: Long,
     ): RuntimeSnapshot = RuntimeSnapshotReducer.reduce(snapshot, event, nowMillis)
+
+    @Test
+    fun coreFailureCanFollowAnAuthoritativeNotInitializedObservation() {
+        val observed = reduce(
+            RuntimeSnapshot(),
+            RuntimeStateEvent.NativeStatusObserved(
+                coreReady = false,
+                gatewayRunning = false,
+                port = 0,
+                bindLan = false,
+                version = "test",
+                schedulerEnabled = false,
+            ),
+            1,
+        )
+        val failed = reduce(
+            observed,
+            RuntimeStateEvent.CoreInitializationFailed("bootstrap", null, "denied"),
+            2,
+        )
+
+        assertEquals(CoreRuntimeState.Failed("bootstrap", null, "denied"), failed.core)
+        assertEquals(false, failed.schedulerEnabled)
+    }
 }

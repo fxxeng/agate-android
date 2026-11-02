@@ -3,9 +3,9 @@ package dev.agate.core
 /**
  * Immutable Kotlin-side view of the two-level native runtime.
  *
- * This is deliberately a pure state model: it does not call JNI, own Android objects,
- * serialize lifecycle commands, or publish to UI observers. RuntimeController integration
- * is a later batch. Native Gateway.status() remains the source of observed runtime facts.
+ * This is a pure state model: it does not call JNI, own Android objects, or publish to UI
+ * observers. RuntimeController owns the process-local snapshot and applies events on its
+ * serialized lifecycle worker. Native Gateway.status() remains the source of observed facts.
  */
 data class RuntimeSnapshot(
     val core: CoreRuntimeState = CoreRuntimeState.NotInitialized,
@@ -108,7 +108,11 @@ object RuntimeSnapshotReducer {
                 } else current
             }
             is RuntimeStateEvent.CoreInitializationFailed -> {
-                if (current.core is CoreRuntimeState.Initializing) {
+                // NativeStatusObserved may have reconciled a failed bootstrap to
+                // NotInitialized immediately before this command's failure detail.
+                if (current.core is CoreRuntimeState.Initializing ||
+                    current.core is CoreRuntimeState.NotInitialized
+                ) {
                     current.copy(core = CoreRuntimeState.Failed(event.stage, event.code, event.message))
                 } else current
             }

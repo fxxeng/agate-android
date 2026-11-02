@@ -211,3 +211,55 @@ Reducer 对无效/乱序完成事件与重复事件返回原快照；只有状�
 - `mayStopNow()` 与 `Gateway.stop()` 的既有同一串行区间不变，后续具名 stop API 必须保留该原子顺序。
 
 **验证状态：** 本地无 Kotlin/Gradle 工具，本批未执行编译/JUnit；GitHub CI、Rust tests、APK、Instrumentation 与真机均待验证。工作归档不含 `.git`，没有 Git commit SHA。
+
+
+## 9. R18 Batch 4B-2B-1 验证收官与 Batch 4B-2B-2 源码审计
+
+### 9.1 R18 关闭证据
+
+- R18 HEAD `238d9f3`，完整 SHA `238d9f39eeea1ea475db7a8516ccef10b3a51c94`；Run `41366079448` 一次过双绿。
+- Rust tests / Android build 均成功；`RuntimeControllerTest` 7 项、`:app:testDebugUnitTest` 成功；Instrumentation 2/2，双 APK 正常。
+- 相对 R17 `414dd67`：756 文件，ADD/DEL 0，UPD 4；文档、快照 diff 和 patch 逐字节对账一致。
+- Batch 4B-2B-1 关闭，但没有生产状态写入调用方；不代表状态链路已接通。
+
+### 9.2 当前 RuntimeController 具名 API 增量
+
+本工作快照在 R18 `238d9f3` 上新增：
+- `coreInit(dataDir, port, schedulerOn): JSONObject`
+- `refreshStatus(): Gateway.Status`
+- internal `coreInitWith()` 与 `refreshStatusWith()` 测试缝，以及 `Gateway.Status`→`NativeStatusObserved` 的单一映射。
+
+`coreInitWith` 在一个 `runSerialized` 任务内：
+1. 记录 CoreInitializationStarted；
+2. 执行 Native Core 初始化；
+3. Native `ok=false` 时仍读取 status 并应用 NativeStatusObserved；若 Native Core 仍未就绪，再记录结构化 CoreInitializationFailed；若 Core 已就绪（例如 scheduler 对齐失败），快照保留 Native 实际状态；
+4. 初始化调用抛异常时记录 CoreInitializationFailed 并原样抛出；
+5. Native `ok=true` 时记录 CoreInitializationSucceeded，随后读取 Gateway.status 并应用 NativeStatusObserved；
+6. 返回 Native 初始化 JSONObject。
+
+成功和 Native `ok=false` 两条结果路径的 status reconcile 都在同一个串行任务内，不能被其他生命周期命令插入。若失败路径 status 读取自身抛异常，先记录 Native 初始化失败，再传播 status 异常。
+
+`refreshStatusWith` 把 status 读取和快照写入包在 `runSerialized` 内，排在此前已提交的控制命令之后。API 不暴露通用 `recordStateEvent` 给生产调用方，后者仍为 internal 且 worker-confined。
+
+### 9.3 Gateway Native 契约核实
+
+源码 `agate-server/src/jni_bridge.rs`：
+- `core_init(data_dir, port, scheduler_on)` 先 `ensure_core()`；失败返回 `{ok:false, stage:"bootstrap", error:...}`；成功后返回 `scheduler_set(scheduler_on)`。
+- `scheduler_set()` 在 Core 未就绪时返回 `{ok:false,error:"core_not_ready"}`；成功返回 `{ok:true,scheduler:on}`。
+- `status_json()` 在 Core 存在时返回 `core:true` 和 scheduler 实际值；Gateway running 独立返回 `running/port/bind_lan/uptime_sec`；Gateway stopped 时仍可 `core:true`，并提供 `version`。
+- 因此 `coreInit` 成功后读取 `Gateway.status()` 是获取 Core/Gateway/Scheduler 真实联合状态的合适路径；不能仅根据 `coreInit` 的 `scheduler` 字段构造全部状态。
+- Native `status_json()` 锁错误会返回 `{ok:false,error:"state poisoned"}`；本批同步修正 Kotlin `Gateway.Status.parse()`：必须 `ok=true`，否则抛出带 Native error 的异常。这样 refreshStatus 不会把锁错误伪装为可信 `core=false`。更完整的 NativeResult/error-code 契约仍留在 Phase 1 后续批次。
+
+### 9.4 调用方迁移边界
+
+- `AgateApp.onCreate()` 当前在自建后台线程中调用 `RuntimeController.runSerialized { Gateway.coreInit(...) }`。
+- `AgateForegroundService.runTick()` 当前也以 `runSerialized { Gateway.coreInit(...) }` 做兜底。
+- 本批只新增 RuntimeController API，不迁移上述调用方；因此快照的首次生产写入仍未发生。
+- 下一批建议只迁移 `AgateApp.onCreate()`，并保留 FGS tick 旧调用，随后独立迁移 FGS。这样可以单独验证 RuntimeController API 的第一条真实生产写入路径。
+- `Gateway.status()` 仍有多个页面/Repository 直接读取；本批 `refreshStatus()` 不代表所有只读调用已收口。
+
+### 9.5 本批新增测试与未验证项
+
+新增 3 项 RuntimeController 测试：成功初始化后同队列 status reconcile；失败 JSON 仍做 status reconcile 并保留 bootstrap 失败；refreshStatus 排在已入队生命周期工作之后。RuntimeController 测试目标计数 10（原 7 + 新 3）。另新增 1 项 RuntimeSnapshotReducer 测试，覆盖 Native NotInitialized 对账后保留本次 Core 初始化失败原因。
+
+当前容器无 `kotlinc` / Gradle，新增测试没有本地执行。Rust/Android/Instrumentation/真机均未执行，等待 GitHub CI。工作快照无 `.git`，不声明 commit SHA。
