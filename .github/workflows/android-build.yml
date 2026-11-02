@@ -38,7 +38,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Rust toolchain (Android arm64)
+      - name: Rust toolchain (Android arm64 + x86_64)
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android,x86_64-linux-android
@@ -51,6 +51,10 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+      # CI-Fix9: cache the Gradle wrapper and dependency caches across runs
+      # (previously every run re-downloaded the distribution and all deps).
+      - name: Gradle cache
+        uses: gradle/actions/setup-gradle@v4
       - name: Install Android NDK r27c and cargo-ndk
         run: |
           SDKMANAGER="$(command -v sdkmanager || true)"
@@ -60,8 +64,12 @@ jobs:
           yes | "$SDKMANAGER" --install "ndk;27.2.12479018" > /dev/null
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"
           cargo install cargo-ndk --locked
-      - name: Build Rust Android library
-        run: bash scripts/build-android-so.sh arm64-v8a
+      # CI-Fix9: build both ABIs in ONE cargo invocation (shared dependency
+      # compilation). APK ABI purity is guaranteed by ndk.abiFilters in
+      # app/build.gradle.kts, not by build order, so having the x86_64 .so
+      # in jniLibs early is safe.
+      - name: Build Rust Android libraries (arm64-v8a + x86_64)
+        run: bash scripts/build-android-so.sh arm64-v8a x86_64
       - name: Verify JNI exports against Kotlin declarations
         run: |
           NDK_BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
@@ -69,10 +77,12 @@ jobs:
             --kotlin core-gateway/src/main/java/dev/agate/core/Gateway.kt \
             --library core-gateway/src/main/jniLibs/arm64-v8a/libagate_server.so \
             --nm "$NDK_BIN/llvm-nm"
-      - name: Gradle tests
-        run: ./gradlew :app:testDebugUnitTest :core-gateway:testDebugUnitTest --no-daemon
-      - name: Build Debug and Release APKs
-        run: ./gradlew :app:assembleDebug :app:assembleRelease --no-daemon
+      # CI-Fix9: single Gradle invocation for tests + both APKs (reuses one
+      # configuration phase and one JVM instead of two cold starts).
+      - name: Gradle tests and APK builds
+        run: >-
+          ./gradlew :app:testDebugUnitTest :core-gateway:testDebugUnitTest
+          :app:assembleDebug :app:assembleRelease --no-daemon
       - name: Verify APK contents and native ELF architecture
         run: |
           python3 scripts/verify-android-apks.py \
@@ -85,10 +95,7 @@ jobs:
           path: app/build/outputs/apk/*/*.apk
           if-no-files-found: error
           retention-days: 14
-      # x86_64 仅用于 GitHub Android Emulator 的真实 JNI/Service Instrumentation。
-      # 正式 Debug/Release APK 已在上面按默认 arm64-v8a 构建并校验，不受此步骤影响。
-      - name: Build Rust Android library for x86_64 instrumentation
-        run: bash scripts/build-android-so.sh x86_64
+      # x86_64 .so is already built in the single dual-ABI Rust step above.
       - name: Android Instrumentation (x86_64 emulator)
         uses: reactivecircus/android-emulator-runner@v2
         with:

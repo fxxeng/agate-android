@@ -82,7 +82,7 @@ echo "[settle] CPU PSI readable"
 echo "[settle] waiting for CPU pressure avg10 < 20 for 3 consecutive samples..."
 quiet_streak=0
 psi_ok=0
-for i in $(seq 1 96); do
+for i in $(seq 1 48); do
   psi="$(adb shell cat /proc/pressure/cpu 2>&1)"
   psi_status=$?
   [ "$psi_status" -eq 0 ] || fail 27 "CPU PSI became unreadable: ${psi}"
@@ -103,7 +103,7 @@ for i in $(seq 1 96); do
     quiet_streak=0
     echo "[settle] CPU pressure avg10=${avg10}, still busy; streak reset (iteration ${i})"
   fi
-  sleep 5
+  sleep 10
 done
 
 [ "$psi_ok" = "1" ] || fail 30 "CPU pressure did not settle below threshold within 480s"
