@@ -184,14 +184,16 @@ object RuntimeController {
         port: Int,
         bindLan: Boolean,
         apiKey: String?,
-    ): Gateway.StartResult = startWith {
-        Gateway.start(
-            dataDir = dataDir,
-            port = port,
-            bindLan = bindLan,
-            apiKey = apiKey,
-        )
-    }
+    ): Gateway.StartResult = startWith(
+        start = {
+            Gateway.start(
+                dataDir = dataDir,
+                port = port,
+                bindLan = bindLan,
+                apiKey = apiKey,
+            )
+        },
+    )
 
     /** Public status refresh; observation is performed only on the lifecycle worker. */
     fun refreshStatus(): Gateway.Status = refreshStatusWith(readStatus = { Gateway.status() })
