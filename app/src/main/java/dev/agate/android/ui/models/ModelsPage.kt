@@ -769,20 +769,19 @@ fun ModelsPage(
         annotated + aliasRows
     }
     // 范围内的行（计数与列表都以此为准，避免「全部 10/48」出现在单家页上）
-    val scopeRows = remember(allRows, listScope) {
+    // ── 已改名的原名行，**任何视图都不显示**（2026-11-03 用户澄清）──────
+    // 我第一版只在全局视图隐藏、单家视图留着并标小字，理由是「原名仍可用」。
+    // 用户明确否掉：**没有必要显示两张卡**，也不存在旧客户端还在用原名的场景。
+    // 于是规则简化为一条，两个视图共用：
+    //   · 有启用别名的原名行 → 隐藏；
+    //   · 别名行（`upstreamId != null`）→ 显示，它就是改名后的那张卡；
+    //   · 映射关掉 ⇒ `aliases` 变空 ⇒ 原名卡自动恢复（实时算，不是一次性标记）。
+    val shownRows = remember(allRows) {
+        allRows.filter { it.upstreamId != null || it.aliases.isEmpty() }
+    }
+    val scopeRows = remember(shownRows, listScope) {
         val s0 = listScope
-        if (s0 == null) {
-            // ── 全局视图：**已改名的原名行不显示**（2026-11-02 用户定的口径）──
-            // 加映射的意图就是「以后用别名这个名字」，原名卡在全局视图里是噪音。
-            // 判据是 `aliases`（按当前规则实时算出）而不是一次性标记：
-            // 映射一关掉，`aliases` 变空 ⇒ 原名卡**自动恢复**。
-            // 别名行（`upstreamId != null`）本身要留 —— 它就是改名后的那张卡。
-            allRows.filter { it.upstreamId != null || it.aliases.isEmpty() }
-        } else {
-            // 单家视图：这一家的**完整**清单（含已改名的原名行），
-            // 每行用小字标出别名（见卡片里的渲染）。
-            allRows.filter { it.provider == s0 }
-        }
+        if (s0 == null) shownRows else shownRows.filter { it.provider == s0 }
     }
     val enabledCount = scopeRows.count { it.enabled }
 
@@ -2281,16 +2280,16 @@ private fun ModelAggregateCard(
                         },
                         fontSize = 12.sp,
                     )
-                    // ── 小字：这一条还挂着哪些**启用的别名**（2026-11-02）──
-                    // 全局视图里已改名的原名行被隐藏了，用户只能在单家视图看到它；
-                    // 不标这一行，他会以为「加了映射之后原名就不能用了」。
-                    // 别名是从当前规则实时算的：映射一关，这行小字自动消失。
-                    if (m.aliases.isNotEmpty()) {
-                        Text(
-                            "别名 ${m.aliases.joinToString(" / ")}",
-                            color = C.textDim,
-                            fontSize = 9.sp,
-                        )
+                    // ── 小字：这条在**上游叫什么**（2026-11-03）──────────
+                    // 原名卡已被隐藏，别名卡若只显示 `glm-5.3`，用户就不知道
+                    // 它其实是小浣熊的 `sn-glm-5-3` —— 排查「到底打到哪个模型」
+                    // 时这行就是唯一线索。所以别名行标上游 id、原名行标别名
+                    // （后者只在映射被关掉前后短暂出现，留作兜底）。
+                    val note = m.upstreamId?.let { "上游 $it" }
+                        ?: m.aliases.takeIf { it.isNotEmpty() }
+                            ?.let { "别名 ${it.joinToString(" / ")}" }
+                    if (note != null) {
+                        Text(note, color = C.textDim, fontSize = 9.sp)
                     }
                 }
                 if (m.official == false) {
