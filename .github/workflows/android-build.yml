@@ -95,6 +95,19 @@ jobs:
           path: app/build/outputs/apk/*/*.apk
           if-no-files-found: error
           retention-days: 14
+      # CI-Fix10: keep full unit-test reports so red runs come with real stack traces.
+      - name: Upload unit test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-reports
+          path: |
+            core-gateway/build/reports/tests/
+            core-gateway/build/test-results/
+            app/build/reports/tests/
+            app/build/test-results/
+          if-no-files-found: ignore
+          retention-days: 14
       # x86_64 .so is already built in the single dual-ABI Rust step above.
       - name: Android Instrumentation (x86_64 emulator)
         uses: reactivecircus/android-emulator-runner@v2
