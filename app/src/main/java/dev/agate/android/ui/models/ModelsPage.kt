@@ -1017,7 +1017,21 @@ fun ModelsPage(
             } else {
                 // ── 按模型聚合（v44 #view-model）──
                 val byId = filtered.groupBy { it.id }
-                byId.forEach { (id, list) ->
+                // ── 卡片顺序：**启用的靠上**（2026-11-03 用户要求）──────────
+                // 旧顺序 = `groupBy` 的插入顺序，也就是「会话清单里的先、管理视图
+                // 里已禁用的后」+「别名卡追加在最末」。于是同一张卡（比如
+                // `glm-5.3`）会随它是原生条目还是别名条目，忽而排中间、忽而排末尾
+                // ——用户看到的「一会儿在中间一会儿在末尾」就是这个。
+                //
+                // 现在按**卡片自身是否可用**排序：卡里只要有一家启用就算「启用中」
+                // 排前面；全关的排后面。同组内按 id 字母序 —— 保证同一份数据
+                // 每次渲染顺序一致（不稳定的顺序会让人以为开关点错了）。
+                val cards = byId.entries.sortedWith(
+                    compareByDescending<Map.Entry<String, List<GatewayRepository.ModelRow>>> {
+                        entry -> entry.value.any { row -> row.enabled }
+                    }.thenBy { entry -> entry.key.lowercase() }
+                )
+                cards.forEach { (id, list) ->
                     ModelAggregateCard(
                         id = id,
                         providers = list,
