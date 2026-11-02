@@ -478,6 +478,84 @@ class RuntimeControllerTest {
         )
     }
 
+    @Test
+    fun schedulerSetPublishesNativeEffectiveValueOnLifecycleWorker() {
+        val callerThread = Thread.currentThread()
+        val nativeThread = AtomicReference<Thread?>()
+        val result = RuntimeController.schedulerSetWith(
+            set = {
+                nativeThread.set(Thread.currentThread())
+                org.json.JSONObject()
+                    .put("ok", true)
+                    .put("scheduler", false)
+            },
+            nowMillis = { 5600L },
+        )
+
+        assertTrue(result.optBoolean("ok"))
+        assertTrue(nativeThread.get() !== callerThread)
+        assertEquals(false, RuntimeController.snapshot().schedulerEnabled)
+        assertEquals(5600L, RuntimeController.snapshot().updatedAtMillis)
+    }
+
+    @Test
+    fun failedSchedulerSetPreservesLastKnownEffectiveState() {
+        RuntimeController.runSerialized {
+            RuntimeController.recordStateEvent(
+                RuntimeStateEvent.SchedulerObserved(true),
+                nowMillis = 5650L,
+            )
+        }
+        val before = RuntimeController.snapshot()
+        val result = RuntimeController.schedulerSetWith(
+            set = {
+                org.json.JSONObject()
+                    .put("ok", false)
+                    .put("error", "core_not_ready")
+            },
+            nowMillis = { 5700L },
+        )
+
+        assertFalse(result.optBoolean("ok"))
+        assertSame(before, RuntimeController.snapshot())
+        assertEquals(true, RuntimeController.snapshot().schedulerEnabled)
+    }
+
+    @Test
+    fun schedulerSetExceptionPropagatesWithoutChangingSnapshot() {
+        val before = RuntimeController.snapshot()
+        val expected = IllegalStateException("jni-scheduler-failed")
+        val actual = try {
+            RuntimeController.schedulerSetWith(
+                set = { throw expected },
+                nowMillis = { 5800L },
+            )
+            null
+        } catch (failure: Throwable) {
+            failure
+        }
+
+        assertSame(expected, actual)
+        assertSame(before, RuntimeController.snapshot())
+    }
+
+    @Test
+    fun schedulerSetRejectsSuccessfulReplyWithoutEffectiveValue() {
+        val before = RuntimeController.snapshot()
+        val actual = try {
+            RuntimeController.schedulerSetWith(
+                set = { org.json.JSONObject().put("ok", true) },
+                nowMillis = { 5900L },
+            )
+            null
+        } catch (failure: IllegalStateException) {
+            failure
+        }
+
+        assertTrue(actual?.message?.contains("scheduler") == true)
+        assertSame(before, RuntimeController.snapshot())
+    }
+
     private fun prepareRunningGatewaySnapshot() {
         RuntimeController.runSerialized {
             RuntimeController.recordStateEvent(

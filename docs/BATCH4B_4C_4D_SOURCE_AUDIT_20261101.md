@@ -4,6 +4,8 @@
 > 基线：`verify/arch-8faa5f5`，GitHub 验证 HEAD `53758d9`（R14 / Run `41305086716`）  
 > 本文是源码审计与设计决策记录，不代表本批已经修改 RuntimeController/JNI/Rust 业务代码。源码归档不含 `.git`，因此不能从归档本身验证 Git commit 身份；身份来自用户提供的 R14 CI 报告。
 
+> **当前验证分支状态（R23 / 2026-11-03）**：verify HEAD 已推进至 `c8049b4e`；Batch 4B-2B-6 的 `c31f3a88` 已 CI 双绿，随后 CI-Fix9 `c8049b4e` 亦双绿。最新 Batch 4B-2B-7 以 `c8049b4e` 为目标基线；当前提供的完整源码归档仅为 `c31f3a88`，本批补丁不包含 CI 文件，需在真实 `c8049b4e` Git 仓库应用。
+
 ## 1. Batch 4A 关闭记录
 
 R14 报告确认 Run `41305086716` / commit `53758d9` 的 `rust-tests`、`android-build` 双 Job 成功，Android Instrumentation 2/2 通过。诊断日志清理仅修改 `AgateForegroundService.kt` 与交接文档；`mayStopNow()`、`GatewayIntentTracker`、单测与 workflow 未变。
@@ -444,3 +446,53 @@ R19 审查发现 HANDOFF 正文早期章节包含原方案分支 `architecture/k
 ### 13.4 变更范围核对与下一步
 
 预期 5 个文件修改、0 新增、0 删除：RuntimeController.kt、AgateForegroundService.kt、RuntimeControllerTest.kt、HANDOFF、Source Audit。下一批仅迁移 `GatewayControlPage` 的 `schedulerSet()`；必须先核对 UI 当前是否先写 Preference、Native 失败如何呈现、快照如何对齐，不能盲目把单行调用替换成具名 API。
+
+
+## 14. R23 STOP 收官与 Batch 4B-2B-7 Scheduler 迁移审计（2026-11-03）
+
+### 14.1 R23 验证证据与版本边界
+
+- Batch 4B-2B-6：提交 `c31f3a88`，Run `41485850670` success；Rust 与 Android 双绿。
+- CI-Fix9：验证方提交 `c8049b4e`，CI 双绿；当前 verify HEAD 为 `c8049b4e`。优化涉及多 ABI Rust 构建、Gradle setup/cache + tests/assemble 合并、PSI 采样 5s→10s（总等待仍 480s，阈值和三连静默判定不变）。CI 耗时对比及归因见 R23 报告；不可把无 KVM 模拟器自然波动全部算作优化收益。
+- R23 对账确认 STOP 变更与 main 侧 113 文件改动交集为 0。verify/main 已显著分叉，未来合并必须单独进行双向对账。
+- 本轮收到归档为 c31f3a88，非 c8049b4e 最终 HEAD；本批补丁不触及 CI 文件，可在 c8049b4e 上应用，但尚未取得 c8049b4e 全量归档，故不声称全树匹配。
+
+### 14.2 Scheduler 生产路径现状
+
+R23 源码 `GatewayControlPage` 当前逻辑顺序：
+1. `schedulerOn = on`：Compose Toggle 立即反映用户操作；
+2. `GatewayPrefs.setSchedulerOn(ctx, on)`：立即持久化用户期望值；
+3. `RuntimeController.submitSerialized { Gateway.schedulerSet(on) }`：异步排入生命周期串行队列；
+4. 完成回调切回主线程追加结果文本。
+
+Rust `scheduler_set(on)`：
+- CORE 锁 poisoned → `{ok:false,error:"state poisoned"}`；
+- Core 不存在 → `{ok:false,error:"core_not_ready"}`；
+- 成功时启动/停止 `auto_checkin`，更新 `core.scheduler_on`，返回 `{ok:true,scheduler:on}`。
+`core_init(..., scheduler_on)` 会在 `ensure_core()` 成功后调用 `scheduler_set(scheduler_on)`，所以 UI 在 Core 未就绪时保存的期望值可在后续 Core 初始化时应用。
+
+### 14.3 设计结论：Preference 是 desired，RuntimeSnapshot 是 effective
+
+- `GatewayPrefs.schedulerOn` 是跨进程/重启保存的用户期望配置；`RuntimeSnapshot.schedulerEnabled` 是 Native 最近一次确认的有效状态。二者不能混为一谈。
+- 因此 Native `core_not_ready` 不应导致 Preference 回滚；否则用户刚保存的设置会丢失，后续 Core 初始化也无法按用户期望对齐。
+- Native 成功返回时必须以回复中的 Boolean `scheduler` 作为快照值；不能只根据输入参数 `on` 推断成功。
+- Native 返回失败或调用异常时不发布 `SchedulerObserved`，保留 last-known effective state；UI 明确报告“期望值已保存但当前未应用”，并说明下次 Core 初始化会按 Preference 对齐。
+- 成功回复缺少 Boolean `scheduler` 属协议异常，不能使用 `optBoolean("scheduler", on)` 默认值伪造有效状态。
+
+### 14.4 本批实施边界与验证
+
+- `RuntimeController` 新增 `schedulerSetWith()` 与公开 `schedulerSet(on)`；Native 调用与快照更新处于同一个 `runSerialized` 任务。
+- `GatewayControlPage` 只把 Native 调用改为具名 API；保留 Toggle 乐观更新、Preference 先写入、submitSerialized 异步回调。
+- 新增 4 项 `RuntimeControllerTest`：成功状态从 Native 回复发布、失败保留快照、异常传播、缺失实际值拒绝伪成功。
+- 当前测试计数：RuntimeControllerTest 24；RuntimeSnapshotReducerTest 14。静态计数不代表已执行。
+- 未改 GatewayPrefs、Rust/JNI、AgateApp、FGS、START/STOP、CI workflow；不引入 StateFlow/协程/新线程池。
+- 本轮未执行 Gradle/JUnit/Rust/APK/Instrumentation/真机测试；待 CI/设备验证。
+
+### 14.5 下一步审计清单
+
+1. 在真实 c8049b4e 仓库应用补丁，确认 CI-Fix9 的 `.github` 与 scripts 文件不变。
+2. CI 通过后，关闭 Batch 4B-2B-7。
+3. 初步静态检索显示 `Gateway.coreInit/start/stop/schedulerSet` 直接生产调用已收敛在 RuntimeController；`Gateway.status()` 仍分散在 KeepalivePrefs、GatewayRepository、AgateNavHost、AssistantPage、ConsolePage、GatewayControlPage、AgateTileService、FGS runTick finally 等只读路径。下一轮逐点审计线程上下文、频率和是否需要 `refreshStatus()`。
+4. 审计 `submitSerialized`/`runSerialized` 的线程调用契约，确认没有 UI 主线程同步 JNI。
+5. 完成 Gateway START 真机冒烟；增加 STOP/START 意图竞争和 Scheduler 开关 / Core 未就绪恢复验证。
+6. 不因这批 CI 绿灯宣称 Phase 2 完成，也不提前进入 Phase 4C。

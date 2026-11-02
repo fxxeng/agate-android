@@ -259,6 +259,33 @@ object RuntimeController {
         },
     )
 
+    /**
+     * Apply the Native scheduler setting and publish only the effective value returned by
+     * Rust. A failed Native result leaves the last-known effective snapshot unchanged:
+     * the Android preference is the desired setting and may already be persisted by the UI.
+     *
+     * This internal seam keeps result/state behavior testable without loading JNI.
+     */
+    internal fun schedulerSetWith(
+        set: () -> org.json.JSONObject,
+        nowMillis: () -> Long = { System.currentTimeMillis() },
+    ): org.json.JSONObject = runSerialized {
+        val result = set()
+        if (result.optBoolean("ok", false)) {
+            val enabled = result.opt("scheduler") as? Boolean
+                ?: throw IllegalStateException(
+                    "Native schedulerSet returned ok=true without a boolean scheduler value",
+                )
+            recordStateEvent(RuntimeStateEvent.SchedulerObserved(enabled), nowMillis())
+        }
+        result
+    }
+
+    /** Public scheduler control entry point; callers must already be on a background thread. */
+    fun schedulerSet(on: Boolean): org.json.JSONObject = schedulerSetWith(
+        set = { Gateway.schedulerSet(on) },
+    )
+
     /** Public status refresh; observation is performed only on the lifecycle worker. */
     fun refreshStatus(): Gateway.Status = refreshStatusWith(readStatus = { Gateway.status() })
 

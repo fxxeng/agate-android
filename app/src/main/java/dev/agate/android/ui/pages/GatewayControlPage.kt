@@ -255,13 +255,22 @@ fun GatewayControlPage(modifier: Modifier = Modifier, onOpenDrawer: () -> Unit =
             schedulerOn = on
             GatewayPrefs.setSchedulerOn(ctx, on)
             RuntimeController.submitSerialized(
-                operation = { Gateway.schedulerSet(on) },
+                operation = { RuntimeController.schedulerSet(on) },
                 onComplete = { result ->
                     val reply = result.getOrNull()
                     Handler(Looper.getMainLooper()).post {
+                        val actual = reply?.opt("scheduler") as? Boolean
                         append(
-                            if (reply?.optBoolean("ok") == true) "后台调度 = $on"
-                            else "后台调度 = $on（内核未响应：${reply?.optString("error") ?: result.exceptionOrNull()?.message ?: "无 Core"}）",
+                            when {
+                                reply?.optBoolean("ok") == true && actual == on ->
+                                    "后台调度 = $on（内核已应用）"
+                                reply?.optBoolean("ok") == true ->
+                                    "后台调度设置已保存为 $on，但内核实际状态为 $actual"
+                                else ->
+                                    "后台调度设置已保存为 $on；当前内核未应用：" +
+                                        "${reply?.optString("error")?.takeIf { it.isNotEmpty() } ?: result.exceptionOrNull()?.message ?: "无 Core"}。" +
+                                        "下次 Core 初始化会按已保存设置对齐。"
+                            },
                         )
                     }
                 },
