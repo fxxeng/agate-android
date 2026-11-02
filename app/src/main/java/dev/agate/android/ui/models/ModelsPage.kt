@@ -748,16 +748,45 @@ fun ModelsPage(
                 upstreamId = target,
             )
         }
-        fromSession + extra + aliasRows
+        // ── 每条上游 id 的**启用别名**（供两处用：全局视图隐藏原名卡、
+        //    单家视图给原名行标小字）。键用「家|真实上游 id」。
+        val aliasesByTarget: Map<String, List<String>> = manageMappings
+            .filter { !it.isDefault && it.enabled }
+            .filter { mapping ->
+                val alias = mapping.alias.trim()
+                val target = mapping.target.trim()
+                alias.isNotEmpty() && target.isNotEmpty() &&
+                    !alias.equals(target, ignoreCase = true)
+            }
+            .groupBy { "${it.provider?.lowercase()}|${it.target.lowercase()}" }
+            .mapValues { (_, list) -> list.map { it.alias } }
+
+        val annotated = (fromSession + extra).map { row ->
+            val key = "${row.provider.lowercase()}|" +
+                (row.upstreamId ?: bare(row.id)).lowercase()
+            row.copy(aliases = aliasesByTarget[key].orEmpty())
+        }
+        annotated + aliasRows
     }
     // 范围内的行（计数与列表都以此为准，避免「全部 10/48」出现在单家页上）
     val scopeRows = remember(allRows, listScope) {
         val s0 = listScope
-        if (s0 == null) allRows else allRows.filter { it.provider == s0 }
+        if (s0 == null) {
+            // ── 全局视图：**已改名的原名行不显示**（2026-11-02 用户定的口径）──
+            // 加映射的意图就是「以后用别名这个名字」，原名卡在全局视图里是噪音。
+            // 判据是 `aliases`（按当前规则实时算出）而不是一次性标记：
+            // 映射一关掉，`aliases` 变空 ⇒ 原名卡**自动恢复**。
+            // 别名行（`upstreamId != null`）本身要留 —— 它就是改名后的那张卡。
+            allRows.filter { it.upstreamId != null || it.aliases.isEmpty() }
+        } else {
+            // 单家视图：这一家的**完整**清单（含已改名的原名行），
+            // 每行用小字标出别名（见卡片里的渲染）。
+            allRows.filter { it.provider == s0 }
+        }
     }
     val enabledCount = scopeRows.count { it.enabled }
 
-    val filtered = allRows.filter {
+    val filtered = scopeRows.filter {
         query.isBlank() ||
             it.id.contains(query, ignoreCase = true) ||
             it.providerLabel.contains(query, ignoreCase = true)
@@ -2242,16 +2271,28 @@ private fun ModelAggregateCard(
                 Modifier.fillMaxWidth().padding(vertical = 2.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(
-                    m.providerLabel,
-                    color = when {
-                        !m.enabled -> C.textDim
-                        i == 0 && usable.size > 1 -> C.green
-                        else -> C.textSub
-                    },
-                    fontSize = 12.sp,
-                    modifier = Modifier.weight(1f),
-                )
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        m.providerLabel,
+                        color = when {
+                            !m.enabled -> C.textDim
+                            i == 0 && usable.size > 1 -> C.green
+                            else -> C.textSub
+                        },
+                        fontSize = 12.sp,
+                    )
+                    // ── 小字：这一条还挂着哪些**启用的别名**（2026-11-02）──
+                    // 全局视图里已改名的原名行被隐藏了，用户只能在单家视图看到它；
+                    // 不标这一行，他会以为「加了映射之后原名就不能用了」。
+                    // 别名是从当前规则实时算的：映射一关，这行小字自动消失。
+                    if (m.aliases.isNotEmpty()) {
+                        Text(
+                            "别名 ${m.aliases.joinToString(" / ")}",
+                            color = C.textDim,
+                            fontSize = 9.sp,
+                        )
+                    }
+                }
                 if (m.official == false) {
                     Text(
                         "桌面端未列",
