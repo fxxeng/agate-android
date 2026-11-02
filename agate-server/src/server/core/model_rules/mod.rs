@@ -1213,6 +1213,19 @@ fn is_opaque_raccoon_id(id: &str) -> bool {
 ///     同一对外名由多家承载正是主备路由的常态。
 const EXTRA_ALIASES: &[(&str, &str, &str)] = &[
     ("raccoon", "sn-deepseek-v4-1-flash", "deepseek-v4.1-flash"),
+    // ── 小浣熊的 glm 两条（2026-11-02 补）────────────────────────
+    // 与上面 deepseek 那条是**同一条命名规律**：小浣熊把版本号的点写成连字符
+    // （上游 id `sn-glm-5-3`），而下游习惯点号（`glm-5.3`）。缺了这两条，
+    // 用户想用点号名就会被逼着自己建映射 —— 而手建时几乎一定跟着上游写成
+    // 连字符 `glm-5-3`，于是**与别家的 `glm-5.3` 撞不上名**，主备队列也就
+    // 合并不起来（用户报的正是这个：改了名却还是各走各的）。
+    //
+    // 为什么不写成「`sn-` 前缀 + 连字符数字自动还原成点号」的通用规则：
+    // 无法保证每个 `sn-a-b-c` 都该变成 `a.b.c`（上游还有 `sn-xxx-2-pro`
+    // 这类把版本号与档位混写的 id），猜错就是**给用户凭空造出错误别名**。
+    // 点名表每一条都有实测依据（清单里确实存在同名的另一家），可审计。
+    ("raccoon", "sn-glm-5-3", "glm-5.3"),
+    ("raccoon", "sn-glm-5-3-flash", "glm-5.3-flash"),
     // 两家 provider id 从 `Pool` 推导，别处已无 `"cline"` 这个 id（见
     // `providers::PROVIDERS` 的 cline-free / cline-pass 两条）
     ("cline-free", "cline-free/deepseek-v4.1-flash", "deepseek-v4.1-flash"),
@@ -1645,4 +1658,47 @@ fn seed_default_enabled(
         disabled_added.len(),
         disabled_added.join(", ")
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `EXTRA_ALIASES` 的表级约束（不依赖全局配置，纯表检查）。
+    ///
+    /// ── 为什么要钉（2026-11-02 的真实反馈）──────────────────────
+    /// 用户把小浣熊的 `sn-glm-5-3` 手动映射成 `glm-5-3`（连字符），而别家的
+    /// 模型叫 `glm-5.3`（点号）—— 名字差一个字符，主备队列就合不起来，
+    /// 而他以为「改了名就会进同一队列」。根因是这张表**漏了 glm 两条**
+    /// （deepseek 那条早就有了），用户被迫手建、又被上游的连字符带偏。
+    /// 这两条断言保证：表里每条都是「上游 id 与别名不同」，且 glm 系在表内。
+    #[test]
+    fn extra_alias_table_covers_raccoon_dotted_names() {
+        // 别名不能与上游 id 相同（那是默认绑定，不是额外别名）
+        for (owner, target, alias) in EXTRA_ALIASES {
+            assert!(
+                !alias.eq_ignore_ascii_case(target),
+                "EXTRA_ALIASES 里 [{owner}] {target} 的别名与上游 id 相同，那条映射没有意义"
+            );
+            assert!(
+                !alias.contains("sn-") || !alias.starts_with("sn-"),
+                "[{owner}] {target} 的别名「{alias}」不该带小浣熊的 sn- 前缀"
+            );
+        }
+        // 小浣熊的 glm 两条必须在场（deepseek 那条的同款规律）
+        for (target, alias) in [
+            ("sn-glm-5-3", "glm-5.3"),
+            ("sn-glm-5-3-flash", "glm-5.3-flash"),
+            ("sn-deepseek-v4-1-flash", "deepseek-v4.1-flash"),
+        ] {
+            assert!(
+                EXTRA_ALIASES
+                    .iter()
+                    .any(|(owner, id, name)| owner == &"raccoon"
+                        && id.eq_ignore_ascii_case(target)
+                        && name.eq_ignore_ascii_case(alias)),
+                "小浣熊的 {target} 缺额外别名 {alias} —— 用户会被迫手建成连字符，                 与别家点号名撞不上，主备队列合不起来"
+            );
+        }
+    }
 }
