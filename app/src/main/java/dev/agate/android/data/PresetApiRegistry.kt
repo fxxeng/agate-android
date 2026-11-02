@@ -218,8 +218,15 @@ object PresetApiRegistry {
             balanceScheme = "new_api",
         ),
         Preset(
+            // ── 地址已随商汤官方迁移（2026-11-02 实测）────────────────
+            // 旧地址 `api.sensenova.cn/compatible-mode/v1` 现在 `GET /models`
+            // 回 **404 NOT_FOUND**（端点没了）；官方文档当前的 Base URL 是
+            // `https://token.sensenova.cn/v1`，实测该地址 `GET /models`
+            // 回 **401 Authorization Not Found**（端点存在、只差 Key）。
+            // 上游 beta 的预置卡仍写着旧地址 —— 那份定义**已过时**，
+            // 这里以实测为准，不照抄。
             key = "sensenova", name = "商汤日日新", iconRes = R.drawable.preset_sensenova,
-            protocol = OPENAI, baseUrl = "https://api.sensenova.cn/compatible-mode/v1",
+            protocol = OPENAI, baseUrl = "https://token.sensenova.cn/v1",
             hint = "商汤日日新的 OpenAI 兼容端点；余额查询走控制台账号密码",
             balanceScheme = "sensenova",
         ),

@@ -1465,6 +1465,25 @@ pub async fn fetch_upstream_models(
             // 摘要取前 200 字符：够定位（大多数错误体一两行），又不至于把
             // 一整页 HTML 灌进错误提示
             let summary: String = text.trim().chars().take(200).collect();
+            // ── 404 / 405：这家上游**不提供模型清单**（2026-11-02）────────
+            // 商汤日日新（`api.sensenova.cn/compatible-mode/v1`）就是这种：
+            // OpenAI 兼容端点只做对话，没有 `/models`，回 404 NOT_FOUND。
+            // 上游 beta 的预置卡同样是这个地址、没有静态清单 —— 也就是说
+            // 「拉取不到」不是本仓的缺陷，但把一句生硬的 404 抛给用户
+            // 也没解决他的问题：他真正要做的是**手工登记模型**。
+            // 所以这两种状态码给出可行动的指引（其余状态码照旧，因为
+            // 那多半是鉴权/限流/上游故障，不是「不支持」）。
+            if matches!(status, 404 | 405) {
+                let detail = format!(
+                    "这家上游不提供模型清单接口（GET {url} 返回 {status}）：\
+                     请改用「登记模型」手工添加（模型 id 见商汤控制台的模型列表）"
+                );
+                logging::log(
+                    "[CustomProvider]",
+                    &format!("ℹ️ 账号「{label}」拉取不支持（{status}，GET {url}）"),
+                );
+                return Err(detail);
+            }
             let detail = format!("上游返回 {status}（GET {url}）: {summary}");
             if matches!(status, 401 | 403 | 429) {
                 // 凭证被拒 / 限流是**账号级**失败 —— 换下一个账号再试。
@@ -1873,10 +1892,24 @@ pub fn is_opencode_zen_account(provider_id: &str, base_url_override: Option<&str
 /// `is_opencode` 是**显式开关**（调用方传记录的 `clientEmulation`）：只对
 /// 「按 OpenCode 客户端形状伪装」的记录动手，别家填了同名字符串也不改 ——
 /// 与 `client_emulation` 整体的 opt-in 取向一致。
+/// 商汤日日新的**旧** Base URL（上游 beta 的预置卡写的还是它）。
+///
+/// 2026-11-02 实测：这个地址的 `GET /models` 回 **404 NOT_FOUND** ——
+/// 商汤已把 OpenAI 兼容端点迁到 [`SENSENOVA_BASE_URL`]。因此读到旧值时
+/// 自动迁移（与 OpenCode 旧端点同一处理），**不让用户为官方换域名买单**。
+const LEGACY_SENSENOVA_BASE_URL: &str = "https://api.sensenova.cn/compatible-mode/v1";
+
+/// 商汤日日新当前的 Base URL（官方文档口径；`GET /models` 回 401 而非 404）
+pub const SENSENOVA_BASE_URL: &str = "https://token.sensenova.cn/v1";
+
 pub fn migrate_base_url(raw: &str, is_opencode: bool) -> String {
     let text = raw.trim();
     if is_opencode && text.trim_end_matches('/').eq_ignore_ascii_case(LEGACY_OPENCODE_BASE_URL) {
         return OPENCODE_BASE_URL.to_string();
+    }
+    // 商汤：与 is_opencode 无关，纯按地址判（存量记录里存的是旧域名）
+    if text.trim_end_matches('/').eq_ignore_ascii_case(LEGACY_SENSENOVA_BASE_URL) {
+        return SENSENOVA_BASE_URL.to_string();
     }
     text.to_string()
 }
@@ -1994,4 +2027,42 @@ fn validate_balance_scheme(value: Option<&Value>) -> Result<String, String> {
         "balanceScheme 只支持 {}（留空表示不查询余额）",
         BALANCE_SCHEMES.join(" / ")
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 商汤旧地址必须被迁移到新地址。
+    ///
+    /// 这是一条**防回退**测试：商汤 2026-11-02 前后把 OpenAI 兼容端点从
+    /// `api.sensenova.cn/compatible-mode/v1` 迁到 `token.sensenova.cn/v1`
+    /// （旧地址 `GET /models` = 404 NOT_FOUND，新地址 = 401 缺 Key）。
+    /// 存量用户的记录里存的还是旧域名，靠 [`migrate_base_url`] 在读侧自动搬。
+    /// 谁要是把这段迁移删了，这条测试立刻红 —— 否则症状会以
+    /// 「商汤建好之后一直拉不到模型 / 转发 404」的形式在真机上出现。
+    #[test]
+    fn sensenova_legacy_base_url_is_migrated() {
+        // 旧 → 新（不带尾斜杠、带尾斜杠都要认）
+        assert_eq!(
+            migrate_base_url(LEGACY_SENSENOVA_BASE_URL, false),
+            SENSENOVA_BASE_URL
+        );
+        assert_eq!(
+            migrate_base_url(&format!("{LEGACY_SENSENOVA_BASE_URL}/"), false),
+            SENSENOVA_BASE_URL
+        );
+        // 新值原样保留（幂等）
+        assert_eq!(migrate_base_url(SENSENOVA_BASE_URL, false), SENSENOVA_BASE_URL);
+        // 别家地址不受影响（迁移只认商汤这一个字面量）
+        assert_eq!(
+            migrate_base_url("https://api.openai.com/v1", false),
+            "https://api.openai.com/v1"
+        );
+        // 与 opencode 的迁移互不干扰
+        assert_eq!(
+            migrate_base_url(LEGACY_SENSENOVA_BASE_URL, true),
+            SENSENOVA_BASE_URL
+        );
+    }
 }
