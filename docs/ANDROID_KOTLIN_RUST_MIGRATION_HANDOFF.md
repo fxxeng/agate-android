@@ -1,5 +1,8 @@
 # Agate Android：Kotlin + Rust 双层架构改造交接文档
 
+
+> **状态基准声明（重要）**：本文正文早期章节包含原方案分支（如 `architecture/kotlin-rust-core`）的历史实施记录与提交台账（包括 `cc7c868`、`d6004e3`、`90d419a` 等）。这些内容**不代表**验证分支 `verify/arch-8faa5f5` 的当前代码状态。验证分支的真实状态，以本文后部按轮次追加的 R* 验证/实施记录及 `docs/BATCH4B_4C_4D_SOURCE_AUDIT_20261101.md` 中对应批次记录为准；不得将方案分支的历史接线描述当作验证分支已完成的生产迁移。
+
 > 文档用途：供后续开发者接手、评审和持续推进 Android 架构改造。
 >
 > 当前工作分支：`architecture/kotlin-rust-core`（仅在本地工作副本建立）  
@@ -1454,3 +1457,41 @@ CheckinRun 专项另行估算：功能实现约 **85–90%**（执行台账、�
 - Batch 4B-2B-4：接入 `Gateway.start()` 及其 transitional/success/failure 状态事件；保留 Service 现有命令队列和意图追踪。
 - Batch 4B-2B-5：接入 stop，必须把 `mayStopNow()` 判断与 `Gateway.stop()` 保持在同一个 `runSerialized` 原子区间。
 - Batch 4B-2B-6：接入 schedulerSet；确认偏好值、Native 实际值和状态快照之间的失败恢复语义。
+
+
+## 2026-11-02：R19 Batch 4B-2B-2 验证收官与 Batch 4B-2B-3 实施记录
+
+### 1. R19 验证收官
+
+- 验证分支：`verify/arch-8faa5f5`；R19 HEAD `40801fcaf9c8e35cb61d6ce57618c6083bdd65b3`（short `40801fc`），父基线 `238d9f3`。
+- GitHub Actions Run：`41387453485`，`rust-tests` 与 `android-build` 双绿。前一次推送因 `RuntimeControllerTest.kt` 缺少 `assertFalse` import 编译失败；验证方仅补入该 import 后再次运行双绿。下一批必须保留 `import org.junit.Assert.assertFalse`。
+- `RuntimeControllerTest` 10 项、`RuntimeSnapshotReducerTest` 10 项；Instrumentation `NativeRuntimeInstrumentedTest` 2/2，无 failures/errors/skipped；双 APK 与 instrumentation report artifacts 正常。
+- 相对 R18 `238d9f3`：756 blobs，ADD/DEL 0，UPD 7；文档、diff、patch 与关键代码文件 blob 对账一致。
+- Batch 4B-2B-2 正式关闭。`coreInit()` / `refreshStatus()` 已成为 RuntimeController 具名 API，但在本批结束时尚无生产调用方；本轮 Batch 4B-2B-3 才开始迁移第一个生产入口。
+- R19 报告指出 HANDOFF 正文早期方案分支记录容易与验证分支现实混淆。本次在本文标题后增加状态基准声明，明确两套历史的适用范围。
+
+### 2. Batch 4B-2B-3：仅迁移 AgateApp.onCreate()（本轮工作快照，待 CI）
+
+基线：R19 HEAD `40801fc`。本批只迁移 `AgateApp.onCreate()` 中的 Core 初始化调用，不迁移 FGS `runTick()`，不改 Service 生命周期调用、JNI、Rust、Gradle、CI workflow。
+
+实现：
+- 原生产调用：`RuntimeController.runSerialized { Gateway.coreInit(dataDir, port, schedulerOn) }`。
+- 新生产调用：`RuntimeController.coreInit(dataDir, port, schedulerOn)`。
+- 保留 `AgateApp.onCreate()` 的后台 `Thread`，因此 JNI/Core 初始化仍不在 Android 主线程执行。
+- 数据目录仍为 `filesDir/agate`；port 与 schedulerOn 仍从 `GatewayPrefs` 读取；Application 异常仍由原有 catch 记录 logcat。
+- 移除 `AgateApp` 对 `Gateway` 门面的直接依赖；Core 初始化及其状态事件、Native status reconcile 现在由 RuntimeController 的同一串行任务统一执行。
+- `AgateForegroundService.runTick()` 仍直接调用 `RuntimeController.runSerialized { Gateway.coreInit(...) }`（旧路径），保留给下一独立批次；Instrumentation 测试中的直接 Gateway 初始化调用属于测试夹具，不是生产调用方迁移目标。
+- 保留 R19 验证修复的 `import org.junit.Assert.assertFalse`，未改动 `RuntimeControllerTest`。
+
+### 3. 本批边界与验证状态
+
+- 仅修改 `app/src/main/java/dev/agate/android/AgateApp.kt` 与两份交接/审计文档；预期 3 个文件修改，0 新增、0 删除。
+- 不新增状态订阅、StateFlow、协程、线程池或 Application 生命周期机制；不改变初始化参数、后台线程、错误处理及“Gateway 仍由用户手动启动”的产品行为。
+- 本批没有迁移 FGS `runTick()`，没有迁移 start/stop/schedulerSet，没有改变 `GatewayIntentTracker.mayStopNow()`。
+- 本地环境未执行 Gradle/Kotlin/Android 编译、JUnit、Rust、APK、Instrumentation 或真机测试；这些均待 GitHub CI/后续设备验证。静态源码核对不能替代构建验证。
+- 源码快照不含 `.git`，不宣称为 Git commit。下一批验证基线必须是 R19 `40801fc`，上传到 `verify/arch-8faa5f5`；不动 `main`，不合并。
+
+### 4. 下一批建议
+
+- Batch 4B-2B-4：只迁移 FGS `runTick()` 的 Core 初始化调用到 `RuntimeController.coreInit()`；保留签到等待在生命周期队列之外，不让长签到阻塞 Core/Gateway 生命周期命令。
+- 随后独立接入 Gateway `start()`、`stop()`、`schedulerSet()`；STOP 的 `mayStopNow()` 与 `Gateway.stop()` 必须继续处于同一个串行执行区间。

@@ -1,9 +1,8 @@
 package dev.agate.android
 
 import android.app.Application
-import dev.agate.core.Gateway
-import dev.agate.core.RuntimeController
 import dev.agate.core.GatewayPrefs
+import dev.agate.core.RuntimeController
 
 /**
  * 进程入口（B 包 · 两级内核）：任何组件起来（MainActivity / FGS / 闹钟）
@@ -19,13 +18,11 @@ class AgateApp : Application() {
         super.onCreate()
         Thread {
             try {
-                RuntimeController.runSerialized {
-                    Gateway.coreInit(
-                        filesDir.resolve("agate").absolutePath,
-                        GatewayPrefs.port(this),
-                        GatewayPrefs.schedulerOn(this),
-                    )
-                }
+                RuntimeController.coreInit(
+                    filesDir.resolve("agate").absolutePath,
+                    GatewayPrefs.port(this),
+                    GatewayPrefs.schedulerOn(this),
+                )
             } catch (t: Throwable) {
                 android.util.Log.e("Agate", "Core 初始化异常（.so 加载失败？）", t)
             }
