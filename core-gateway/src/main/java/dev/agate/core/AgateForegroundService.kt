@@ -330,13 +330,11 @@ class AgateForegroundService : Service() {
             // F2：tick 不再拉起网关 —— Core 态直调签到执行体，网关保持原状
             //（没在跑就继续没在跑；Core 未就绪时这里兜底初始化）
             val init = try {
-                RuntimeController.runSerialized {
-                    Gateway.coreInit(
-                        filesDir.resolve("agate").absolutePath,
-                        GatewayPrefs.port(this),
-                        GatewayPrefs.schedulerOn(this),
-                    )
-                }
+                RuntimeController.coreInit(
+                    filesDir.resolve("agate").absolutePath,
+                    GatewayPrefs.port(this),
+                    GatewayPrefs.schedulerOn(this),
+                )
             } catch (t: Throwable) {
                 android.util.Log.e("Agate", "coreInit 异常", t)
                 null

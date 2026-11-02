@@ -1465,7 +1465,7 @@ CheckinRun 专项另行估算：功能实现约 **85–90%**（执行台账、�
 
 - 验证分支：`verify/arch-8faa5f5`；R19 HEAD `40801fcaf9c8e35cb61d6ce57618c6083bdd65b3`（short `40801fc`），父基线 `238d9f3`。
 - GitHub Actions Run：`41387453485`，`rust-tests` 与 `android-build` 双绿。前一次推送因 `RuntimeControllerTest.kt` 缺少 `assertFalse` import 编译失败；验证方仅补入该 import 后再次运行双绿。下一批必须保留 `import org.junit.Assert.assertFalse`。
-- `RuntimeControllerTest` 10 项、`RuntimeSnapshotReducerTest` 10 项；Instrumentation `NativeRuntimeInstrumentedTest` 2/2，无 failures/errors/skipped；双 APK 与 instrumentation report artifacts 正常。
+- `RuntimeControllerTest` 10 项、`RuntimeSnapshotReducerTest` 13 项；Instrumentation `NativeRuntimeInstrumentedTest` 2/2，无 failures/errors/skipped；双 APK 与 instrumentation report artifacts 正常。
 - 相对 R18 `238d9f3`：756 blobs，ADD/DEL 0，UPD 7；文档、diff、patch 与关键代码文件 blob 对账一致。
 - Batch 4B-2B-2 正式关闭。`coreInit()` / `refreshStatus()` 已成为 RuntimeController 具名 API，但在本批结束时尚无生产调用方；本轮 Batch 4B-2B-3 才开始迁移第一个生产入口。
 - R19 报告指出 HANDOFF 正文早期方案分支记录容易与验证分支现实混淆。本次在本文标题后增加状态基准声明，明确两套历史的适用范围。
@@ -1495,3 +1495,49 @@ CheckinRun 专项另行估算：功能实现约 **85–90%**（执行台账、�
 
 - Batch 4B-2B-4：只迁移 FGS `runTick()` 的 Core 初始化调用到 `RuntimeController.coreInit()`；保留签到等待在生命周期队列之外，不让长签到阻塞 Core/Gateway 生命周期命令。
 - 随后独立接入 Gateway `start()`、`stop()`、`schedulerSet()`；STOP 的 `mayStopNow()` 与 `Gateway.stop()` 必须继续处于同一个串行执行区间。
+
+
+## 2026-11-02：R20 Batch 4B-2B-3 验证收官与 Batch 4B-2B-4 实施记录
+
+### 1. R20 验证收官
+
+- 验证分支：`verify/arch-8faa5f5`；R20 HEAD `44b8be8af228...`，父基线 R19 `40801fc`。
+- GitHub Actions Run：`41406380716`，`rust-tests` 与 `android-build` 一次过双绿。
+- 相对 R19 基线：756 blobs，ADD 0 / DEL 0 / UPD 3；仅 `AgateApp.kt` 与两份交接/审计文档修改。
+- `AgateApp.onCreate()` 已通过 `RuntimeController.coreInit()` 进入统一 Core 初始化/状态对账入口；后台 Thread、初始化参数和错误日志边界保持不变。
+- R20 正式关闭 Batch 4B-2B-3。CI 证明本批代码编译与工作流通过，不等同于真机后台长期运行验证。
+- 更正 R19 测试计数：`RuntimeControllerTest` 为 10 项，`RuntimeSnapshotReducerTest` 实测为 13 项。该更正依据 R20 验证方对 `44b8be8` 对象中 `@Test` 的计数。
+
+### 2. Batch 4B-2B-4：仅迁移 FGS runTick() 的 Core 初始化调用（当前工作快照，待 CI）
+
+基线：R20 HEAD `44b8be8`。本批仅迁移 `core-gateway/src/main/java/dev/agate/core/AgateForegroundService.kt` 中 `runTick()` 的 Core 初始化调用，并更新本文及 Source Audit；不迁移 FGS start/stop/schedulerSet，不改变 Service 队列或 Rust 签到业务执行。
+
+实现：
+- 原调用：`RuntimeController.runSerialized { Gateway.coreInit(dataDir, port, schedulerOn) }`。
+- 新调用：`RuntimeController.coreInit(dataDir, port, schedulerOn)`。
+- 初始化参数保持不变：`filesDir/agate`、`GatewayPrefs.port(this)`、`GatewayPrefs.schedulerOn(this)`。
+- `RuntimeController.coreInit()` 内部仍通过同一个 `runSerialized` 任务完成 CoreInitializationStarted、Native `Gateway.coreInit()`、成功/失败事件和 Native status reconcile；FGS 不再自行组合底层初始化调用。
+- `runTick()` 原有 `try/catch(Throwable)`、失败通知、签到结果通知和错误日志保持不变。
+
+### 3. 必须保持的 FGS / 业务边界
+
+- WakeLock 仍在 Core 初始化前获取，并在 `finally` 中释放；不改变其覆盖整个签到轮次的语义。
+- `Gateway.checkinRunAndWait()` 仍在 `RuntimeController` 生命周期队列之外执行。它是可能长时间运行的业务等待，不得放进 `runSerialized` 阻塞 Core/Gateway 生命周期命令。
+- `pendingTicks.complete(startId)`、`finally` 中的 Gateway 状态读取及 `stopIfCurrentStart(startId)` 保持原顺序。
+- 不改变 `GatewayIntentTracker.mayStopNow()`；不改变 STOP 命令和 `Gateway.stop()` 的原子区间；不修改 `onDestroy()` 清理。
+- 不增加网关自动启动行为；Tick 仍只确保 Core 可用并执行签到，不因本批改变 Gateway running 状态。
+- 本批不改 JNI ABI、Rust、Gradle、CI workflow、测试文件，不引入 StateFlow/协程。
+
+### 4. 静态审计与验证边界
+
+- 静态检索应确认 `AgateForegroundService.runTick()` 不再直接出现 `Gateway.coreInit()`；RuntimeController 内部 `Gateway.coreInit()` 是封装实现，Instrumentation 中的直接调用属于测试夹具。
+- 本批源码修改、文档更新、基线文件对账和归档完整性检查完成后，仍须以 GitHub CI 验证 Kotlin/Gradle 编译、Rust tests、APK、Instrumentation。
+- 本地未执行的编译、JUnit、Rust、APK、Instrumentation 和真机测试不得标为通过。
+- 本工作快照不含 `.git`，不宣称 Git commit；下一轮上传必须以 R20 `44b8be8` 为父提交，目标分支 `verify/arch-8faa5f5`，不动 `main`、不合并。
+
+### 5. 下一批建议
+
+- Batch 4B-2B-5：单独接入 Gateway `start()` 的状态转换；保留现有 Service 命令队列和意图追踪。
+- Batch 4B-2B-6：单独接入 Gateway `stop()`；`mayStopNow()` 判断与 `Gateway.stop()` 必须在同一个 `runSerialized` 区间内连续执行。
+- Batch 4B-2B-7：单独接入 `schedulerSet()`，审计偏好值、Native 实际值和 RuntimeSnapshot 失败恢复语义。
+- 完成上述切片后，再做生产调用入口总审计；不得将本批描述为 Phase 2 已完成。
