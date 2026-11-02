@@ -1444,7 +1444,13 @@ pub async fn fetch_upstream_models(
             Err(error) => {
                 // 出网失败可能是**账号级**的（代理只配在这一条账号上），
                 // 换下一个账号再试；全失败时把最后的网络错误报出去
-                let detail = format!("上游请求失败: {}", egress::describe_error_detail(&error));
+                // 文案带上 URL：拉取失败时用户第一件想知道的就是「打的是哪个地址」——
+                // 地址抄错（少一段路径、用了非兼容端点）是最常见的一类原因，
+                // 而旧文案只有「请求失败」，用户无从自查。
+                let detail = format!(
+                    "上游请求失败（GET {url}）: {}",
+                    egress::describe_error_detail(&error)
+                );
                 logging::log(
                     "[CustomProvider]",
                     &format!("⚠️ 账号「{label}」拉取失败：{detail}，尝试下一个账号"),
@@ -1459,7 +1465,7 @@ pub async fn fetch_upstream_models(
             // 摘要取前 200 字符：够定位（大多数错误体一两行），又不至于把
             // 一整页 HTML 灌进错误提示
             let summary: String = text.trim().chars().take(200).collect();
-            let detail = format!("上游返回 {status}: {summary}");
+            let detail = format!("上游返回 {status}（GET {url}）: {summary}");
             if matches!(status, 401 | 403 | 429) {
                 // 凭证被拒 / 限流是**账号级**失败 —— 换下一个账号再试。
                 // 队首 Key 被上游禁用时（`API key is disabled`），名下其它

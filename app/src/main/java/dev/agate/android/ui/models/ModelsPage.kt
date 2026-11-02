@@ -661,9 +661,16 @@ fun ModelsPage(
     //
     // 结果 = 会话清单那些（补上 official）+ 只存在于管理视图的那些（已禁用）。
     // 关掉的模型因此仍留在页面上（置灰），这正是「全部列出、关掉的置灰」。
-    val allRows: List<GatewayRepository.ModelRow> = remember(models, manage) {
+    val allRows: List<GatewayRepository.ModelRow> = remember(models, manage, customProviders) {
         fun bare(id: String) = if ('/' in id) id.substringAfter('/') else id
         val byKey = manage.associateBy { "${it.provider.lowercase()}|${it.id.lowercase()}" }
+        // ── 自定义家（`custom-xxxx`）**不走 manage 的启停** ──────────────
+        // 它们的「有没有」由自己的登记表决定，启停也在自己记录里
+        // （`custom_providers::set_models_enabled`）。内核的 `manage_view`
+        // 只遍历内置适配器，因此自定义家的行在里面**必然缺席** ——
+        // 不能据此判成「不在清单」（那会让商汤日日新这类预置 API 家的
+        // 开关全部置灰，2026-11-02 误伤过一次）。
+        val customIds = customProviders.map { it.id.lowercase() }.toSet()
         val fromSession = models.map { m ->
             val mg = byKey["${m.provider.lowercase()}|${bare(m.id).lowercase()}"]
             // ── 启停状态**以管理视图为准**（2026-11-01 修「关不掉」）──────
@@ -681,8 +688,9 @@ fun ModelsPage(
                 // 临时覆盖 > 管理视图 > 默认开（见 optimistic 的说明）
                 enabled = optimistic[key] ?: mg?.enabled ?: true,
                 official = mg?.official,
-                // 管理视图里**没有**这一行 ⇒ 启停无从写起（见 inCatalog 的说明）
-                inCatalog = mg != null,
+                // 管理视图里没有这一行 **且** 不是自定义家 ⇒ 启停无从写起
+                // （见 inCatalog 的说明；自定义家的判据见上面 customIds）
+                inCatalog = mg != null || m.provider.lowercase() in customIds,
             )
         }
         val present = fromSession
