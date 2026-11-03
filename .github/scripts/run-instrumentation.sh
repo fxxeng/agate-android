@@ -76,13 +76,14 @@ echo "[settle] CPU PSI readable"
 
 # ---- CPU settle gate ---------------------------------------------------------
 # PSI avg10 is a rolling percentage. Require 3 consecutive samples below 20
-# (5s apart) so one transient low reading cannot open the gate.
-# Maximum wait is 480s. If still busy, fail before Gradle rather than launch
+# (10s apart) so one transient low reading cannot open the gate.
+# Maximum wait is 900s (CI-Fix11; R26 green run needed 379s, R27 timed out
+# at 480s on slower hosts). If still busy, fail before Gradle rather than launch
 # instrumentation into the same system-wide ANR storm seen in Round 8.
 echo "[settle] waiting for CPU pressure avg10 < 20 for 3 consecutive samples..."
 quiet_streak=0
 psi_ok=0
-for i in $(seq 1 48); do
+for i in $(seq 1 90); do
   psi="$(adb shell cat /proc/pressure/cpu 2>&1)"
   psi_status=$?
   [ "$psi_status" -eq 0 ] || fail 27 "CPU PSI became unreadable: ${psi}"
@@ -106,7 +107,7 @@ for i in $(seq 1 48); do
   sleep 10
 done
 
-[ "$psi_ok" = "1" ] || fail 30 "CPU pressure did not settle below threshold within 480s"
+[ "$psi_ok" = "1" ] || fail 30 "CPU pressure did not settle below threshold within 900s"
 
 sleep 10
 echo "[settle] guest is ready; launching Android Instrumentation"
