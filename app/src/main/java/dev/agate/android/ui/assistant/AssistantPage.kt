@@ -45,8 +45,8 @@ import dev.agate.android.ui.components.AgatePageHeader
 import dev.agate.android.ui.components.agateCard
 import dev.agate.android.ui.theme.AgateType
 import dev.agate.android.ui.theme.agateColors
-import dev.agate.core.Gateway
 import dev.agate.core.GatewayPrefs
+import dev.agate.core.RuntimeController
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -109,7 +109,7 @@ fun AssistantPage(
 
     LaunchedEffect(Unit) {
         gatewayRunning = withContext(Dispatchers.IO) {
-            runCatching { Gateway.status().running }.getOrDefault(false)
+            runCatching { RuntimeController.readStatus().running }.getOrDefault(false)
         }
         val r = AssistantOps.config()
         if (r.ok) config = r.data else error = r.error

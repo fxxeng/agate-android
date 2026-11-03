@@ -183,8 +183,8 @@ fun GatewayControlPage(modifier: Modifier = Modifier, onOpenDrawer: () -> Unit =
                 )
             }
         }
-        RowButton("Gateway.status()") {
-            bg { "status → " + runCatching { Gateway.status().toString() }.getOrElse { "异常 ${it.message}" } }
+        RowButton("RuntimeController.readStatus()") {
+            bg { "status → " + runCatching { RuntimeController.readStatus().toString() }.getOrElse { "异常 ${it.message}" } }
         }
         RowButton("GET /health") { bg { probe("GET /health") } }
         RowButton("GET /v1/models") { bg { probe("GET /v1/models") } }

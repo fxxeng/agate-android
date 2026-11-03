@@ -2,7 +2,7 @@ package dev.agate.android.data
 
 import dev.agate.android.data.dto.AccountDto
 import dev.agate.android.data.dto.AccountDtos
-import dev.agate.core.Gateway
+import dev.agate.core.RuntimeController
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -293,12 +293,12 @@ object GatewayRepository {
      * 探活并同步 `started`：网关在跑就起 SSE + 拉快照，停了就置错误。
      *
      * 幂等、可频繁调用 —— 壳层每几秒调一次即可。原本这段逻辑写在控制台页的
-     * `LaunchedEffect` 里（`Gateway.status()` + [onGatewayRunning]），搬到这里
+     * `LaunchedEffect` 里（`RuntimeController.readStatus()` + [onGatewayRunning]），搬到这里
      * 是因为**页面不保证被访问**：用户在提供商页时那条循环根本不存在。
      */
     fun syncGatewayRunning() {
         scope.launch {
-            val status = runCatching { Gateway.status() }.getOrNull()
+            val status = runCatching { RuntimeController.readStatus() }.getOrNull()
             onGatewayRunning(status?.running == true)
             // 探活到「在跑」但快照还是空的（比如进程刚拉起来、或上一次全失败
             // 留下的空值）：立刻补拉一次，用户不必等下一个 5 秒刻度。

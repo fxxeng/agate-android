@@ -1686,3 +1686,60 @@ RuntimeController 新增：
 - 随后执行 RuntimeController 生产调用点总审计：`coreInit/start/stop/schedulerSet/status`，并区分 lifecycle 控制调用、业务调用、只读状态读取及测试夹具。
 - 真机 Gateway START 冒烟仍待用户安装 APK 后执行；并补充 STOP 竞争、Scheduler 开关、Core 未就绪后再次初始化的设备验证。CI 双绿不等于真机验收完成。
 - 只有生产入口总审计和设备门槛完成后，才评估 Phase 2 收官与 Batch 4C。
+
+
+## 15. R25 Batch 4B-2B-7 验证收官与 Batch 4B-2B-8 只读状态边界收口（2026-11-03）
+
+### 15.1 R25 验证收官
+
+- 验证分支：`verify/arch-8faa5f5`；Batch 4B-2B-7 最终基线 `a82339a69d748e1e15896992048225f01ecf8bf5`（短哈希 `a82339a6`）。
+- R25 GitHub Actions Run `41550532331`：`android-build` 与 `rust-tests` 双绿；`core-gateway:testDebugUnitTest` 48/48、0 失败；Rust tests 55/55。
+- R24 红跑的 3 项失败已由验证方诊断为 Android `android.jar` 的 JVM JSON stub 与 JUnit4 单例 RuntimeSnapshot 跨测试残留；依赖修复和测试 seed 修复后收绿。CI-Fix10 的 `unit-test-reports` artifact（`if: always()`、14 天保留）保留，后续红跑优先读取 XML 断言 message 与完整 stack trace。
+- 必须保留 `core-gateway/build.gradle.kts` 的 `testImplementation("org.json:json:20240303")`。依赖单例 RuntimeSnapshot 前序状态的测试必须自行 seed；不得假设 JUnit4 测试顺序或 no-op reducer 会推进 `updatedAtMillis`。
+- R25 报告给出的源码归档基线为 `a82339a6`。收到的 TAR.GZ SHA256：`eda68fec3b36a6d37aa68725449801914b9995b6eec005e13e65a15948659615`；归档不含 `.git`，此处提交身份以 CI 报告为依据，不把归档本身描述为 Git 仓库。
+
+### 15.2 Batch 4B-2B-8：只读 Native 状态读取边界（当前工作快照，待 CI）
+
+基线：R25 `a82339a6`。本批处理的是 `Gateway.status()` 的调用边界，不把所有状态读取强行串行化，也不改变 Native status 的数据语义。
+
+新增 `RuntimeController.readStatus()`：
+- 仅执行只读 `Gateway.status()`，在调用线程直接读取，不进入生命周期单线程队列。
+- 不写 `RuntimeSnapshot`，不产生 `NativeStatusObserved`，不改变 `revision` / `updatedAtMillis`。
+- 调用方必须在后台线程调用；它不是主线程安全的异步 API。
+- 与 `refreshStatus()` 明确区分：`readStatus()` 用于高频探活、页面展示和诊断；`refreshStatus()` 是显式串行 reconcile，排在生命周期队列后执行并更新 RuntimeSnapshot。
+- `readStatusWith()` 是 internal 测试缝，用于验证直读不会等待生命周期队列。
+
+生产调用迁移：
+- `GatewayRepository.syncGatewayRunning()`：5 秒级探活，不应因 start/stop/Core 初始化排队而延迟整个仓库轮询。
+- `ConsolePage`：5 秒级状态展示，原本已在 `Dispatchers.IO`。
+- `AssistantPage`：初始化时的一次状态读取，原本已在 `Dispatchers.IO`。
+- `KeepalivePrefs.serviceRunning()`：设置页系统实况，调用方 `SettingsPage` 原本已切到 `Dispatchers.IO`。
+- `GatewayControlPage`：运维诊断按钮，原本通过 IO scope 执行。
+- `AgateTileService`：磁贴回调原本已使用独立后台线程。
+- `AgateForegroundService.runTick()` finally：原本在 Service 命令 executor 后台线程。
+- `AgateNavHost` 仅有历史注释提及 `Gateway.status()`，没有实际 JNI 调用；Instrumentation 中直接 `Gateway.status()` 是测试夹具，保留直接调用以测试 Gateway Native 契约。
+
+### 15.3 为什么不把只读 status 全部迁入 refreshStatus()
+
+- `GatewayRepository` 与 `ConsolePage` 都有 5 秒级状态读取。若全部调用 `refreshStatus()`，这些只读探测会进入生命周期队列；Core 初始化、Gateway start/stop 等同步 JNI 操作执行较久时，轮询将被排队，反而影响 UI 状态刷新与服务探活。
+- Native `status_json()` 只分别读取 `CORE`、`RUNNING` 锁保护的快照，不做网络探活或业务 I/O；两个快照读取并非跨锁原子事务。因此只读结果是一次 Native 观察，不应被宣称为跨生命周期操作的线性化快照。
+- 高频读数仅供 UI/探活，不写入 RuntimeSnapshot，避免旧读数在稍后回写覆盖 Starting/Stopping 等过渡状态。
+- 需要更新 RuntimeSnapshot 的明确对账场景仍使用 `refreshStatus()`；Core 初始化内部继续在同一个生命周期任务内执行 status reconcile。
+- 不为“统一入口”而把 `Gateway.status()` 的高频轮询塞进生命周期队列，也不把 `readStatus()` 当成生命周期状态变更入口。
+
+### 15.4 本批变更与验证边界
+
+- 修改 11 个文件：9 个 Kotlin 文件（`RuntimeController.kt`、`RuntimeControllerTest.kt`、`GatewayRepository.kt`、`KeepalivePrefs.kt`、`AssistantPage.kt`、`ConsolePage.kt`、`GatewayControlPage.kt`、`AgateForegroundService.kt`、`AgateTileService.kt`）及 2 份交接/审计文档。
+- 新增 1 项 `RuntimeControllerTest`：生命周期队列被阻塞时，只读 status 仍在调用线程直接执行，且不改变 RuntimeSnapshot。R25 基线 `RuntimeControllerTest` 24 项，本批源码静态 `@Test` 计数为 25；全模块测试总数以 CI 报告为准。
+- 生产 Kotlin 源码中的直接 `Gateway.status()` 调用收敛到 `RuntimeController.kt` 内部：`coreInit` reconcile、`readStatus`、`refreshStatus`。Instrumentation 测试和注释不计为生产直接调用。
+- 不改 JNI ABI、Rust、Gateway Native status 结构、Service 命令队列、STOP 原子区间、Preference、UI 轮询频率、CI workflow。保留 R25 的 org.json 测试依赖与 CI-Fix10。
+- 本轮仅完成源码审阅、静态调用点核对和补丁准备；未执行 Gradle/Kotlin/JUnit/Rust/APK/Instrumentation/真机测试。不得标记为编译或测试通过。
+- 本批补丁以 R25 `a82339a6` 为基线，必须在真实 `verify/arch-8faa5f5` 仓库执行 `git apply --check` 后应用；不得覆盖 CI-Fix10，不动 `main`，不合并。
+
+### 15.5 下一步
+
+1. 在真实 `a82339a6` 验证分支应用本批补丁，确认 CI-Fix10 与 `org.json` 依赖保留。
+2. 执行 CI：Rust tests、Android unit tests、Debug/Release APK、Instrumentation；红跑先下载 `unit-test-reports` artifact。
+3. CI 通过后，关闭 Batch 4B-2B-8；仍需设备验证 Gateway START/STOP 竞争、Scheduler 开关、Core 未就绪后恢复。
+4. 继续检查 RuntimeController 的提交/回调契约、状态快照消费者，以及 `Gateway.status()` 读取频率是否有重复轮询；不要将只读 status 强制串行化。
+5. Phase 2 尚不能收官：真实设备 START/STOP/Scheduler 回归、Service 销毁/进程回收等门槛仍未完成。Phase 4C 不提前启动。

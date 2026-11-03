@@ -496,3 +496,51 @@ Rust `scheduler_set(on)`：
 4. 审计 `submitSerialized`/`runSerialized` 的线程调用契约，确认没有 UI 主线程同步 JNI。
 5. 完成 Gateway START 真机冒烟；增加 STOP/START 意图竞争和 Scheduler 开关 / Core 未就绪恢复验证。
 6. 不因这批 CI 绿灯宣称 Phase 2 完成，也不提前进入 Phase 4C。
+
+
+## 15. R25 Batch 4B-2B-7 收官与 Batch 4B-2B-8 只读状态边界审计（2026-11-03）
+
+### 15.1 R25 验证证据
+
+- R25 报告：Batch 4B-2B-7 修复后 Run `41550532331` 双绿；Android 单测 48/48，Rust tests 55/55。
+- R24 attempt 1 的 org.json stub 假阳性通过 `testImplementation("org.json:json:20240303")` 修复；剩余时间戳断言失败来自 JUnit4 方法顺序不确定与 RuntimeSnapshot 单例状态残留，测试通过显式 seed 修复。
+- CI-Fix10 报告 Artifact 上传常驻；下一次单测红跑应读取 XML 的 assertion message 与 stack trace。
+- 归档 `a82339a6` SHA256 `eda68fec3b36a6d37aa68725449801914b9995b6eec005e13e65a15948659615`。归档无 `.git`；提交 hash 来自 R25 CI 报告。
+
+### 15.2 R25 归档中的状态读取调用点
+
+对 R25 源码 Kotlin 文件进行全量检索，生产代码的实际 `Gateway.status()` 调用分布为：
+- `RuntimeController.coreInit()` 的成功/失败后对账；
+- `RuntimeController.refreshStatus()` 的显式串行 reconcile；
+- `AgateForegroundService.runTick()` finally；
+- `AgateTileService` 后台磁贴状态读取；
+- `GatewayRepository.syncGatewayRunning()` 高频探活；
+- `KeepalivePrefs.serviceRunning()` 设置页读数；
+- `GatewayControlPage` 运维诊断按钮；
+- `ConsolePage` 5 秒级状态展示；
+- `AssistantPage` 初始化状态读取。
+`AgateNavHost` 只有注释；`NativeRuntimeInstrumentedTest` 的直接调用属于测试夹具。
+
+### 15.3 设计判断
+
+Rust `status_json()` 分别获取 `CORE` 和 `RUNNING` 锁内快照，并返回 JSON；它不做网络 I/O。两个锁读取不构成一个跨生命周期操作的原子快照。故：
+- 高频探活/展示不应写 RuntimeSnapshot，也不应等待生命周期队列；
+- 仅在明确需要权威对账时调用 `refreshStatus()`；
+- Core init 的对账继续留在 `coreInitWith()` 同一生命周期任务内；
+- 生产只读读取通过 `RuntimeController.readStatus()` 命名收口，但该函数保持调用线程直读，不隐式排队、不更新快照；
+- 所有生产调用方原本都在后台执行：Repository IO scope、Console/Assistant Dispatchers.IO、Keepalive 设置页 Dispatchers.IO、GatewayControlPage IO scope、Tile 独立后台线程、FGS command executor。
+
+### 15.4 Batch 4B-2B-8 改动范围
+
+- 新增 `RuntimeController.readStatus()` 与 internal `readStatusWith()`，明确只读、不串行、不写快照的契约。
+- 将 7 个生产调用方迁移到具名读取入口：`GatewayRepository`、`KeepalivePrefs`、`AssistantPage`、`ConsolePage`、`GatewayControlPage`、`AgateForegroundService`、`AgateTileService`。
+- 新增 1 项 RuntimeController 单测，验证生命周期队列阻塞时 readStatus 仍在调用线程执行，且 RuntimeSnapshot 对象不变。
+- 预计 9 个 Kotlin 文件 + 2 个文档文件，共 11 个文件修改；0 新增、0 删除。测试数量 `RuntimeControllerTest` 24→25。
+- 不改 JNI/Rust/Gradle/CI、Native 状态 schema、轮询间隔、Service 队列或生命周期操作语义。
+- 当前仅完成静态审阅与变更准备，未运行 Gradle/JUnit/Rust/APK/Instrumentation/真机测试。必须以 R25 `a82339a6` 为基线提交 CI 验证。
+
+### 15.5 下一步
+
+- 在真实验证仓库应用补丁，确保 R25 `org.json` 测试依赖与 CI-Fix10 未被覆盖。
+- CI 双绿后关闭 Batch 4B-2B-8；再继续状态消费者审计与设备回归，不以 CI 代替真机。
+- 不将只读 status 轮询迁入生命周期队列；不提前宣布 Phase 2 完成或启动 Phase 4C。

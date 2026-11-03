@@ -10,8 +10,9 @@ import java.util.concurrent.atomic.AtomicReference
  * Android 进程内 Native Core 生命周期操作的唯一串行入口。
  *
  * 串行化会改变 Core / Gateway 生命周期状态的控制面操作，以及显式的
- * refreshStatus() 对账。长耗时业务请求（apiCall / checkinRunNow）不在此队列，
- * 避免一次签到或管理请求阻塞网关启停。页面的普通 status 读取尚未全部迁移。
+ * refreshStatus() 对账。高频/只读 status 通过 readStatus() 在调用线程读取，
+ * 不进入生命周期队列且不写 RuntimeSnapshot。长耗时业务请求（apiCall / checkinRunNow）
+ * 同样不在此队列，避免阻塞 start/stop。
  *
  * 调用方不得在主线程直接执行 JNI；当前入口是同步的，调用方必须来自后台线程。
  * 同一控制线程内允许重入，避免组合操作自我等待造成死锁。
@@ -286,7 +287,19 @@ object RuntimeController {
         set = { Gateway.schedulerSet(on) },
     )
 
-    /** Public status refresh; observation is performed only on the lifecycle worker. */
+    /**
+     * Read Native status for polling/diagnostics without entering the lifecycle queue.
+     *
+     * This is intentionally different from [refreshStatus]: frequent read-only probes
+     * must not queue behind a long Core/start/stop operation, nor publish a potentially
+     * stale observation into RuntimeSnapshot. Callers must use a background thread.
+     */
+    internal fun readStatusWith(readStatus: () -> Gateway.Status): Gateway.Status = readStatus()
+
+    /** Read-only Native status; does not serialize or mutate RuntimeSnapshot. */
+    fun readStatus(): Gateway.Status = readStatusWith { Gateway.status() }
+
+    /** Public authoritative status reconcile; observation runs on the lifecycle worker. */
     fun refreshStatus(): Gateway.Status = refreshStatusWith(readStatus = { Gateway.status() })
 
     private fun Gateway.Status.toRuntimeStateEvent() = RuntimeStateEvent.NativeStatusObserved(

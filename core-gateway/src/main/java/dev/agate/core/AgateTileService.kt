@@ -60,7 +60,7 @@ class AgateTileService : TileService() {
     }
 
     private fun currentStatus(): Gateway.Status? = try {
-        Gateway.status()
+        RuntimeController.readStatus()
     } catch (t: Throwable) {
         android.util.Log.w("Agate", "读取网关状态失败", t)
         null

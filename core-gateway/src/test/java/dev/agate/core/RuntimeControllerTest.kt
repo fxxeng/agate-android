@@ -96,6 +96,56 @@ class RuntimeControllerTest {
     }
 
     @Test
+    fun readOnlyStatusDoesNotWaitForLifecycleQueueOrPublishSnapshot() {
+        val blockerEntered = CountDownLatch(1)
+        val releaseBlocker = CountDownLatch(1)
+        RuntimeController.submitSerialized(
+            operation = {
+                blockerEntered.countDown()
+                releaseBlocker.await(2, TimeUnit.SECONDS)
+                Unit
+            },
+            onComplete = {},
+        )
+        assertTrue("blocking lifecycle operation did not start", blockerEntered.await(2, TimeUnit.SECONDS))
+
+        val expected = Gateway.Status(
+            running = true,
+            port = 8787,
+            bindLan = false,
+            uptimeSec = 12,
+            version = "status-read-test",
+            core = true,
+            scheduler = true,
+        )
+        val before = RuntimeController.snapshot()
+        val actualThread = AtomicReference<Thread?>()
+        val result = AtomicReference<Gateway.Status?>()
+        val statusCompleted = CountDownLatch(1)
+        val caller = Thread {
+            result.set(
+                RuntimeController.readStatusWith {
+                    actualThread.set(Thread.currentThread())
+                    expected
+                },
+            )
+            statusCompleted.countDown()
+        }
+        caller.start()
+
+        val completedBeforeLifecycleRelease = statusCompleted.await(500, TimeUnit.MILLISECONDS)
+        releaseBlocker.countDown()
+        assertTrue(
+            "read-only status was queued behind lifecycle work",
+            completedBeforeLifecycleRelease,
+        )
+        assertTrue("read-only status caller did not finish", statusCompleted.await(2, TimeUnit.SECONDS))
+        assertSame(expected, result.get())
+        assertSame("read-only status must execute on its caller thread", caller, actualThread.get())
+        assertSame("read-only status must not publish RuntimeSnapshot", before, RuntimeController.snapshot())
+    }
+
+    @Test
     fun runtimeSnapshotCanBeReadWithoutEnteringLifecycleQueue() {
         val before = RuntimeController.snapshot()
         assertSame(before, RuntimeController.snapshot())

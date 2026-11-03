@@ -51,6 +51,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.agate.core.AgateForegroundService
 import dev.agate.core.Gateway
+import dev.agate.core.RuntimeController
 import dev.agate.core.GatewayPrefs
 import dev.agate.android.data.GatewayRepository
 import dev.agate.android.navigation.Routes
@@ -98,7 +99,7 @@ fun ConsolePage(
     // `gw` 这颗仍保留：本页要显示内核 uptime / 端口 / 调度器开关这些控件级读数。
     LaunchedEffect(Unit) {
         while (true) {
-            gw = withContext(Dispatchers.IO) { runCatching { Gateway.status() }.getOrNull() }
+            gw = withContext(Dispatchers.IO) { runCatching { RuntimeController.readStatus() }.getOrNull() }
             delay(5_000L)
         }
     }

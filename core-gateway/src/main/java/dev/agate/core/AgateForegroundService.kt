@@ -365,7 +365,7 @@ class AgateForegroundService : Service() {
             // 原先 Core 初始化失败分支直接 return，会跳过这里之后的前台清理，
             // 留下一个没有网关运行、却长期挂着的 START_STICKY 前台服务。
             val gatewayRunning = try {
-                Gateway.status().running
+                RuntimeController.readStatus().running
             } catch (_: Throwable) {
                 false
             }

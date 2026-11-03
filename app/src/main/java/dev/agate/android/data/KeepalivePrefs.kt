@@ -3,8 +3,8 @@ package dev.agate.android.data
 import android.content.Context
 import dev.agate.core.AlarmScheduler
 import dev.agate.core.BatteryWhitelist
-import dev.agate.core.Gateway
 import dev.agate.core.GatewayPrefs
+import dev.agate.core.RuntimeController
 
 /**
  * 「保活与通知」组的**读层**（设置页第 10 组）。
@@ -49,11 +49,11 @@ object KeepalivePrefs {
     /**
      * 网关是否在跑。
      *
-     * 用 `Gateway.status().running` 而不是问 Service 自身：前台服务可能
+     * 用 `RuntimeController.readStatus().running` 而不是问 Service 自身：前台服务可能
      * 因为「一次性 tick」短暂存在（`runTick` 末尾会 `stopSelf`），那时
      * 服务对象活着但网关没在跑。「常驻」对用户而言是**网关在跑**。
      */
-    fun serviceRunning(): Boolean = runCatching { Gateway.status().running }
+    fun serviceRunning(): Boolean = runCatching { RuntimeController.readStatus().running }
         .getOrDefault(false)
 
     /** 忽略电池优化的授权实况。 */
