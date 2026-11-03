@@ -482,6 +482,16 @@ class RuntimeControllerTest {
     fun schedulerSetPublishesNativeEffectiveValueOnLifecycleWorker() {
         val callerThread = Thread.currentThread()
         val nativeThread = AtomicReference<Thread?>()
+        // JUnit4 method order is unspecified and the singleton snapshot carries
+        // over between tests. Seed schedulerEnabled=true first so the observed
+        // transition is a real state change; otherwise reduce() returns the same
+        // instance unchanged and updatedAtMillis would not advance.
+        RuntimeController.runSerialized {
+            RuntimeController.recordStateEvent(
+                RuntimeStateEvent.SchedulerObserved(true),
+                nowMillis = 5550L,
+            )
+        }
         val result = RuntimeController.schedulerSetWith(
             set = {
                 nativeThread.set(Thread.currentThread())
