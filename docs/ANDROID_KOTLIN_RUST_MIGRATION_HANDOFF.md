@@ -1743,3 +1743,60 @@ RuntimeController 新增：
 3. CI 通过后，关闭 Batch 4B-2B-8；仍需设备验证 Gateway START/STOP 竞争、Scheduler 开关、Core 未就绪后恢复。
 4. 继续检查 RuntimeController 的提交/回调契约、状态快照消费者，以及 `Gateway.status()` 读取频率是否有重复轮询；不要将只读 status 强制串行化。
 5. Phase 2 尚不能收官：真实设备 START/STOP/Scheduler 回归、Service 销毁/进程回收等门槛仍未完成。Phase 4C 不提前启动。
+
+## 16. R26/R27 验证收官与 Batch 4B-2B-10（2026-11-03）
+
+### 16.1 R26 / Batch 4B-2B-8 验证收官
+
+- 验证分支：`verify/arch-8faa5f5`；R26 最终 HEAD `c4cc512f`，基线 `a82339a6`。
+- GitHub Actions Run `41573332916` success：Android Build、Rust tests 通过；JVM 单测 80/80；RuntimeControllerTest 25/25；Instrumentation 2/2。
+- 交付物对账 756 文件：745 与基线一致、11 个差异全部对应声明的 9 个 Kotlin + 2 个文档文件；patch dry-run、实际应用、11/11 SHA-256 匹配闭环。R26 关闭 Batch 4B-2B-8。
+
+### 16.2 R27 / Batch 4B-2B-9 验证收官
+
+- R27 代码提交 `cff1b42f`，CI-Fix11 提交 `1d96372605`；最终验证基线更新为 **`1d96372605`**。不要继续使用 `c4cc512f` 作为新批次基线。
+- GitHub Actions 最终 Run `41636386777` success（30.3 min）：Android Build 通过、Rust tests 通过、JVM 单测 80/80、Instrumentation 2/2。
+- R27 将 `syncGatewayRunning()` 探活循环从页面级收敛到 `AgateNavHost` 导航壳。`GatewayRepository` 负责幂等探活、状态发布与 `onGatewayRunning()`；`ConsolePage` 只订阅共享 `gatewayStatus`。这修复了用户不访问控制台页时，页面级探活循环不存在、started/SSE 无法被该循环维护的缺口。
+- R27 最终交付文件以用户上传源码包 `Agate_Verification_Source_8faa5f5_1d963726.tar.gz` 为准；归档不含 `.git`，提交身份以 CI 报告为依据。
+
+### 16.3 CI-Fix11 记录
+
+- `.github/scripts/run-instrumentation.sh` 的 PSI settle 预算从 480s 调整为 900s；采样间隔 10s、阈值 `<20`、连续 3 次采样开门及 fail-closed 语义不变。
+- R27 的 480s 超时是慢宿主模拟器启动/settle 容量问题，不是 Kotlin 交付物失败；CI-Fix11 的最终 run 证明 900s 预算可覆盖本次约 360s settle 轨迹。
+- 后续凡涉及 `.github/`，必须以远端最新 `1d96372605` 拉取/对账，不能从旧 stage 快照覆盖 CI-Fix11。
+- 推送前必须对“送审文件”和“实际上传文件”逐个 SHA-256 对账，防止 stage 路径错误造成旧快照误推。误推 `e0d47700` 已被取消，不属于验证基线。
+
+### 16.4 Batch 4B-2B-10：Native status 探测失败语义修正（当前工作快照，待 CI）
+
+基线：`1d96372605`。本批只修正状态探测结果的三态语义，不改 JNI ABI、Rust、Service 生命周期队列、SSE 协议或 5s 探活频率。
+
+源码审计发现 R27 的以下逻辑存在错误语义：
+
+```kotlin
+val status = runCatching { RuntimeController.readStatus() }.getOrNull()
+_gatewayStatus.value = status
+onGatewayRunning(status?.running == true)
+```
+
+当 Native status 查询抛异常时，`getOrNull()` 将异常折叠为 `null`，随后 `status?.running == true` 变成 `false`。这把“状态暂时不可读取”误判成“Native 已明确报告 Gateway stopped”，进而可能调用 `GatewayRepository.stop()` 断开 SSE、清除 started。Native `Gateway.Status.parse()` 已明确将 `{ok:false,error:...}` 作为异常抛出，因此这不是理论上的空值路径。
+
+本批修正：
+- 新增 `GatewayStatusObservation`：`Available(status)` 与 `Unavailable(cause)` 两种结果。合法的 `running=false` 仍是 Available；读取异常是 Unavailable，不伪造 stopped 值。
+- `syncGatewayRunning()` 只有在 Available 时才更新 `_gatewayStatus`、清除探测错误并调用 `onGatewayRunning(status.running)`。
+- Unavailable 时保留最近一次有效 `gatewayStatus` 与现有 SSE/started 状态，记录 `_gatewayStatusError` 并写 Android warning log，等待下一轮 5s 探测重试。
+- 新增 JVM 单测覆盖：合法 stopped 状态仍作为有效观测；Native status 失败被表示为 Unavailable，并保留原异常。
+
+### 16.5 本批边界与验证状态
+
+- 本批修改 3 个 Kotlin 文件 + 2 份文档：`GatewayRepository.kt`、新增 `GatewayStatusObservation.kt`、新增 `GatewayStatusObservationTest.kt`、HANDOFF、`BATCH4B_4C_4D_SOURCE_AUDIT_20261101.md`。若最终打包文件数或 diff 与此不一致，必须先复核再交付。
+- 预计 JVM 单测在 R27 80 项基础上新增 2 项；实际总数以 R28 CI 报告为准。
+- 不改变 `RuntimeController.readStatus()` 的线程/队列契约；不将高频 status 轮询迁入生命周期队列；不改变 Native status 格式；不把 Preference desired state 写入 RuntimeSnapshot。
+- 当前仅完成源码实现与静态检查；未执行 Gradle、Kotlin 编译、JUnit、Rust、APK、Instrumentation 或真机测试。Batch 4B-2B-10 等待 GitHub CI，不得标记为已验证。
+- 本快照无 `.git`，不是 Git commit。补丁基线为真实验证分支 `1d96372605`，只允许推送 `verify/arch-8faa5f5`，不动 `main`，不合并。
+
+### 16.6 下一步
+
+1. 在真实 `1d96372605` 仓库应用本批 patch，确认 `.github/scripts/run-instrumentation.sh` 的 900s settle、CI-Fix10 unit-test artifact 与 `org.json` 测试依赖均保留。
+2. R28 CI 验证通过后关闭 Batch 4B-2B-10。
+3. 下一批优先审计 RuntimeController `submitSerialized()` 的回调线程、异常隔离、排队/拒绝语义，并检查 GatewayRepository 生命周期操作与状态探测的并发边界；不要把长时间业务请求放入生命周期队列。
+4. Phase 2 仍未收官：真实设备 START/STOP/Scheduler、Service 销毁/进程回收验证未完成；Phase 3 Doze、WakeLock、Alarm/WorkManager 与 ROM 长稳测试仍需推进。不能以 CI 双绿替代设备验收。

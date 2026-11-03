@@ -544,3 +544,28 @@ Rust `status_json()` 分别获取 `CORE` 和 `RUNNING` 锁内快照，并返回 
 - 在真实验证仓库应用补丁，确保 R25 `org.json` 测试依赖与 CI-Fix10 未被覆盖。
 - CI 双绿后关闭 Batch 4B-2B-8；再继续状态消费者审计与设备回归，不以 CI 代替真机。
 - 不将只读 status 轮询迁入生命周期队列；不提前宣布 Phase 2 完成或启动 Phase 4C。
+
+---
+
+## 2026-11-03 R27 收官与 Batch 4B-2B-10 审计补记
+
+### R27 验证基线
+
+- R27 代码 `cff1b42f` + CI-Fix11 `1d96372605`；最终 GitHub Actions Run `41636386777` success。
+- JVM 80/80、Instrumentation 2/2、Rust tests 与 Android build 均通过。CI-Fix11 将模拟器 PSI settle 预算 480s 调整为 900s，阈值/连续采样/fail-closed 规则不变。
+- 最新源码基线为 `1d96372605`。所有后续 `.github/` 改动必须先对账远端 CI-Fix11，不得从旧归档覆盖。
+
+### 新发现：Native status 查询异常被误判为 Gateway stopped
+
+R27 `GatewayRepository.syncGatewayRunning()` 使用 `runCatching(...).getOrNull()`，随后无条件执行 `onGatewayRunning(status?.running == true)`。`Gateway.status()` 的 `Status.parse()` 对 `{ok:false,error:...}` 明确抛异常；异常被折叠为 null 后会变成 `running=false`，进而停止 SSE。这混淆了两个不同事实：
+
+- `Available(Status(running=false))`：Native 明确报告 Gateway 已停止，可以执行停止态同步。
+- `Unavailable(Throwable)`：status 当前无法读取，不足以推断 Gateway 已停止；应保留 last-known 状态并重试。
+
+Batch 4B-2B-10 已在当前工作快照中新增 typed `GatewayStatusObservation`，并让 `GatewayRepository` 只在 Available 时更新状态/调用 `onGatewayRunning`；Unavailable 只记录错误并保留现有 SSE/started 与最后有效状态。新增 2 个 JVM 测试覆盖有效 stopped 与查询异常两种结果。
+
+### 审计边界
+
+- 本修正只处理 status 读取失败的错误分类，不证明跨 Native lifecycle 操作的读取具备原子快照语义。
+- `readStatus()` 仍是调用线程只读探测，不进入 RuntimeController lifecycle queue；不要将高频轮询改为 `refreshStatus()`。
+- Batch 4B-2B-10 尚未 CI 验证；没有执行本地 Gradle/JUnit/Rust/APK/Instrumentation/真机测试。

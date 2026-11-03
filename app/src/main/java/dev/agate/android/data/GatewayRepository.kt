@@ -1,5 +1,6 @@
 package dev.agate.android.data
 
+import android.util.Log
 import dev.agate.android.data.dto.AccountDto
 import dev.agate.android.data.dto.AccountDtos
 import dev.agate.core.Gateway
@@ -149,6 +150,7 @@ object GatewayRepository {
      * 由 [configure] 从 `GatewayPrefs.port` 灌入；未灌入时按默认 8787。
      */
     @Volatile private var port: Int = 8787
+    private const val TAG = "GatewayRepository"
     private const val MAX_EVENTS = 20
     private const val MAX_SSE_FAILURES = 4
     private const val SNAPSHOT_INTERVAL_MS = 5_000L
@@ -161,6 +163,10 @@ object GatewayRepository {
     /** Latest Native lifecycle observation, shared by the navigation shell and pages. */
     private val _gatewayStatus = MutableStateFlow<Gateway.Status?>(null)
     val gatewayStatus: StateFlow<Gateway.Status?> = _gatewayStatus
+
+    /** Last status-probe error; a failure does not imply that the Gateway stopped. */
+    private val _gatewayStatusError = MutableStateFlow<String?>(null)
+    val gatewayStatusError: StateFlow<String?> = _gatewayStatusError
 
     private val _events = MutableStateFlow<List<RecentEvent>>(emptyList())
     val events: StateFlow<List<RecentEvent>> = _events
@@ -308,12 +314,25 @@ object GatewayRepository {
         if (!syncingGatewayStatus.compareAndSet(false, true)) return
         scope.launch {
             try {
-                val status = runCatching { RuntimeController.readStatus() }.getOrNull()
-                _gatewayStatus.value = status
-                onGatewayRunning(status?.running == true)
-                // 探活到「在跑」但快照还是空的（比如进程刚拉起来、或上一次全失败
-                // 留下的空值）：立刻补拉一次，用户不必等下一个 5 秒刻度。
-                if (started && _snapshot.value.fetchedAtMs == 0L) refreshOnce()
+                when (val observation = observeGatewayStatus { RuntimeController.readStatus() }) {
+                    is GatewayStatusObservation.Available -> {
+                        val status = observation.status
+                        _gatewayStatus.value = status
+                        _gatewayStatusError.value = null
+                        onGatewayRunning(status.running)
+                        // 探活到「在跑」但快照还是空的（比如进程刚拉起来、或上一次全失败
+                        // 留下的空值）：立刻补拉一次，用户不必等下一个 5 秒刻度。
+                        if (started && _snapshot.value.fetchedAtMs == 0L) refreshOnce()
+                    }
+                    is GatewayStatusObservation.Unavailable -> {
+                        // status 查询失败不是「网关已停止」：保留 last-known status 和 SSE，
+                        // 等下一轮探活重试，避免一次锁竞争/Native 瞬时异常就断开事件流。
+                        val message = observation.cause.message
+                            ?: observation.cause.javaClass.simpleName
+                        _gatewayStatusError.value = message
+                        Log.w(TAG, "Native status probe failed; retaining last-known gateway state", observation.cause)
+                    }
+                }
             } finally {
                 syncingGatewayStatus.set(false)
             }
