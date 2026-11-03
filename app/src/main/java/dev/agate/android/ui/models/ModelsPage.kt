@@ -670,6 +670,12 @@ fun ModelsPage(
         remember(models, manage, customProviders, manageMappings, optimistic) {
         fun bare(id: String) = if ('/' in id) id.substringAfter('/') else id
         val byKey = manage.associateBy { "${it.provider.lowercase()}|${it.id.lowercase()}" }
+        // 上游 id 的全集（manage 就是「这家有哪些上游模型」的权威清单）。
+        // 别名反查表据此回避一种撞名：某家的**原生** id 恰好与一条别名逐字相同
+        // （`glm-5.3` 既是别家的别名、又是这家的原生 id）—— 那种情况下会话行
+        // 是原生模型，不该被当成别名去改写启停目标（内核那边同样不把这条
+        // 原生 id 从清单里拿掉，见 `renamed_away_pairs`）。
+        val nativeKeys = manage.map { "${it.provider.lowercase()}|${it.id.lowercase()}" }.toHashSet()
         // ── 自定义家（`custom-xxxx`）**不走 manage 的启停** ──────────────
         // 它们的「有没有」由自己的登记表决定，启停也在自己记录里
         // （`custom_providers::set_models_enabled`）。内核的 `manage_view`
@@ -677,8 +683,40 @@ fun ModelsPage(
         // 不能据此判成「不在清单」（那会让商汤日日新这类预置 API 家的
         // 开关全部置灰，2026-11-02 误伤过一次）。
         val customIds = customProviders.map { it.id.lowercase() }.toSet()
+        // ── 别名 → 上游 id 的反查表（2026-11-03 内核改了清单口径之后必须有）──
+        // 内核现在把**改名的原名从 `/v1/models` 里拿掉**（只广告别名），所以
+        // `/api/session` 给过来的这一行叫 `glm-5.3`，而 manage 里那行永远是
+        // 上游 id `sn-glm-5-3`。不做这一步反解，会话行在 manage 里查不到自己：
+        //   · `inCatalog=false` ⇒ 开关点了只弹「不在目录清单里」；
+        //   · 启停发的是 `glm-5.3`，而内核按 (provider, 上游 id) 存规则 —— 写了
+        //     也回读不到（正是「点了没反应」那一类）。
+        // 反解之后这一行就是**别名行**（`upstreamId` 非空），单家视图据此把
+        // 它让给原名行，全局视图据此把它并进 `glm-5.3` 那张卡。
+        val aliasTargets: Map<String, String> = manageMappings
+            .filter { !it.isDefault && it.enabled }
+            .mapNotNull { mapping ->
+                val owner = mapping.provider?.lowercase() ?: return@mapNotNull null
+                val alias = mapping.alias.trim().lowercase()
+                val target = mapping.target.trim()
+                if (alias.isEmpty() || target.isEmpty() || alias == target.lowercase()) {
+                    return@mapNotNull null
+                }
+                // 别名与这家某个原生 id 逐字相同 ⇒ 它在解析时被原生条目抢走
+                // （`builtin_target` 先按清单 id 匹配），不是改名，不参与反解
+                if ("$owner|$alias" in nativeKeys) return@mapNotNull null
+                "$owner|$alias" to target
+            }
+            .toMap()
         val fromSession = models.map { m ->
-            val mg = byKey["${m.provider.lowercase()}|${bare(m.id).lowercase()}"]
+            val sessionKey = "${m.provider.lowercase()}|${bare(m.id).lowercase()}"
+            val upstream = aliasTargets[sessionKey]
+            // 会话这一格是别名时，规则挂在它指向的上游 id 上
+            val key = if (upstream != null) {
+                "${m.provider.lowercase()}|${upstream.lowercase()}"
+            } else {
+                sessionKey
+            }
+            val mg = byKey[key]
             // ── 启停状态**以管理视图为准**（2026-11-01 修「关不掉」）──────
             // 旧写法 `enabled = true` 是错的：会话清单是**上一次轮询的快照**，
             // 关掉一个模型后它在快照里还在（快照要等下一轮 / `refreshOnce`
@@ -689,7 +727,6 @@ fun ModelsPage(
             // 条目 + 真实 enabled。会话清单只用来补富数据（上下文 / 能力位）。
             // 只有管理视图里确实没有这条（理论上不该发生）才退回 true ——
             // 那时它在会话清单里，说明内核认为它可用。
-            val key = "${m.provider.lowercase()}|${bare(m.id).lowercase()}"
             m.copy(
                 // 临时覆盖 > 管理视图 > 默认开（见 optimistic 的说明）
                 enabled = optimistic[key] ?: mg?.enabled ?: true,
@@ -697,6 +734,8 @@ fun ModelsPage(
                 // 管理视图里没有这一行 **且** 不是自定义家 ⇒ 启停无从写起
                 // （见 inCatalog 的说明；自定义家的判据见上面 customIds）
                 inCatalog = mg != null || m.provider.lowercase() in customIds,
+                // 非空 = 这一格是别名：启停要按它解析出的上游 id 发
+                upstreamId = upstream,
             )
         }
         val present = fromSession
@@ -1354,7 +1393,8 @@ private fun XpCard(
         Spacer(Modifier.height(9.dp))
         Text(
             "清单只决定「客户端看见什么」；两种写法在任何模式下都能调用：" +
-                "裸名由「路由」队列选账号（可跨家转移），provider/id 锁定这一家。",
+                "裸名由「路由」队列选账号（可跨家转移），provider/id 锁定这一家。" +
+                "改了名的模型在这里只列别名，原名不再出现 —— 它仍然可以调用，关掉那条映射就恢复列出原名。",
             style = AgateType.Caption,
             color = C.textDim,
         )
@@ -1944,7 +1984,11 @@ private fun ProviderModelGroup(
                     fontSize = 11.sp,
                     modifier = Modifier.weight(1f),
                 )
-                val visibleIds = models.map { m -> if ('/' in m.id) m.id.substringAfter('/') else m.id }
+                // 批量写的是**上游 id**（内核按 (provider, 上游 id) 存规则）。
+                // 单家视图里的行本来就是原名行，但别名行万一流进来也不能写错名。
+                val visibleIds = models.map { m ->
+                    m.upstreamId ?: if ('/' in m.id) m.id.substringAfter('/') else m.id
+                }
                 SmallPill("全部启用", enabled = !batchBusy) { onToggleAll(visibleIds, true) }
                 SmallPill("全部关闭", enabled = !batchBusy) { onToggleAll(visibleIds, false) }
             }
@@ -1966,8 +2010,16 @@ private fun ProviderModelGroup(
 
             // 整家已勾选时，行内不再给「前缀」开关（每一条本来就带前缀，见 ModelLine 的说明）
             val homePinned = providerId in pins
+            // ── 前缀 pin 用**对外名**，不是上游原名 ───────────────────
+            // 混合模式的 pin 是「把这条以 `provider/名字` 加进客户端清单」，所以
+            // 名字必须是**客户端会看到的那个**。改名之后清单里只有别名，用原名
+            // 写进去的 pin 一个也匹配不上（内核按对外名比），开关看起来像没生效。
+            fun publicName(row: GatewayRepository.ModelRow): String =
+                if ('/' in row.id) row.id.substringAfterLast('/') else row.id
+            fun pinName(row: GatewayRepository.ModelRow): String =
+                row.aliases.firstOrNull() ?: publicName(row)
             onRows.forEach { m ->
-                val bare = if ('/' in m.id) m.id.substringAfterLast('/') else m.id
+                val bare = pinName(m)
                 ModelLine(
                     m = m,
                     toggling = toggling,
@@ -2003,7 +2055,7 @@ private fun ProviderModelGroup(
                 if (showOff) {
                     offRows.forEach { m ->
                         Box(Modifier.fillMaxWidth().height(1.dp).background(C.border.copy(alpha = 0.4f)))
-                        val bare = if ('/' in m.id) m.id.substringAfterLast('/') else m.id
+                        val bare = pinName(m)
                         ModelLine(
                             m = m,
                             toggling = toggling,
@@ -2042,11 +2094,14 @@ private fun ModelLine(
     val C = agateColors()
     val scope = rememberCoroutineScope()
     val bareId = if ('/' in m.id) m.id.substringAfter('/') else m.id
-    val busy = toggling == "${m.provider}|$bareId"
+    // 定位一律用**上游 id**：别名行的 `id` 是对外名，而启停 / 能力位 / 测速
+    // 都挂在上游 id 上（内核按 `(provider, 上游 id)` 存）。
+    val wireId = m.upstreamId ?: bareId
+    val busy = toggling == "${m.provider}|$wireId"
     // 行内测速：结果与「模型测速」页共用一份（见 ModelTestStore 的说明）
     val testResults by ModelTestStore.results.collectAsState()
     val testing by ModelTestStore.running.collectAsState()
-    val testKey = ModelTestStore.key(m.provider, bareId)
+    val testKey = ModelTestStore.key(m.provider, wireId)
     val testBusy = testKey in testing
     val testResult = testResults[testKey]
     Row(
@@ -2060,6 +2115,17 @@ private fun ModelLine(
                 color = if (m.enabled) C.textSub else C.textDim,
                 fontSize = 12.sp,
             )
+            // ── 小字：这一条对外还叫别的名字（2026-11-03）──────────────
+            // 单家视图按用户定的口径显示**原名**，而客户端清单里看到的是别名。
+            // 不给这行小字，用户在「这家的清单」里根本找不到客户端报的那个名字，
+            // 也就无法判断「映射到底有没有生效」。
+            m.aliases.takeIf { it.isNotEmpty() }?.let { aliases ->
+                Text(
+                    "别名 ${aliases.joinToString(" / ")}",
+                    color = C.textDim,
+                    fontSize = 9.sp,
+                )
+            }
             if (testResult != null) {
                 Text(
                     testResult.summary(),
@@ -2097,7 +2163,7 @@ private fun ModelLine(
             modifier = Modifier
                 .padding(end = 6.dp)
                 .background(C.accent.copy(alpha = 0.10f), RoundedCornerShape(7.dp))
-                .clickable { onOpenCaps(bareId) }
+                .clickable { onOpenCaps(wireId) }
                 .padding(horizontal = 7.dp, vertical = 3.dp),
         )
         // 「测速」：单条真实请求（会花额度），所以只在行上给一颗小按钮，
@@ -2111,7 +2177,7 @@ private fun ModelLine(
                 .padding(end = 6.dp)
                 .background(C.accent.copy(alpha = 0.10f), RoundedCornerShape(7.dp))
                 .clickable(enabled = !testBusy) {
-                    scope.launch { ModelTestStore.run(m.provider, bareId) }
+                    scope.launch { ModelTestStore.run(m.provider, wireId) }
                 }
                 .padding(horizontal = 7.dp, vertical = 3.dp),
         )
@@ -2282,7 +2348,11 @@ private fun ModelAggregateCard(
         Spacer(Modifier.height(8.dp))
         ranked.forEachIndexed { i, m ->
             val bareId = if ('/' in m.id) m.id.substringAfter('/') else m.id
-            val busy = toggling == "${m.provider}|$bareId"
+            // 启停 / 能力位 / 测速都按**上游 id** 定位：别名行的 `id` 是对外名，
+            // 而规则与能力位是挂在上游 id 上的（内核按 `(provider, 上游 id)` 存）。
+            // 不换这一下，别名行的忙碌态永远点不亮、能力位会弹到一条不存在的行。
+            val wireId = m.upstreamId ?: bareId
+            val busy = toggling == "${m.provider}|$wireId"
             Row(
                 Modifier.fillMaxWidth().padding(vertical = 2.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -2321,7 +2391,7 @@ private fun ModelAggregateCard(
                     )
                 }
                 // 测速：聚合卡的价值就是「对比各家」，能在这一屏直接测才有意义
-                val testKey = ModelTestStore.key(m.provider, bareId)
+                val testKey = ModelTestStore.key(m.provider, wireId)
                 Text(
                     if (testKey in testing) "…" else "测速",
                     color = if (testKey in testing) C.textDim else C.accent,
@@ -2331,7 +2401,7 @@ private fun ModelAggregateCard(
                         .padding(end = 6.dp)
                         .background(C.accent.copy(alpha = 0.10f), RoundedCornerShape(7.dp))
                         .clickable(enabled = testKey !in testing) {
-                            scope.launch { ModelTestStore.run(m.provider, bareId) }
+                            scope.launch { ModelTestStore.run(m.provider, wireId) }
                         }
                         .padding(horizontal = 7.dp, vertical = 3.dp),
                 )
@@ -2385,7 +2455,7 @@ private fun ModelAggregateCard(
             Text("能力位", color = C.textDim, fontSize = 12.sp, modifier = Modifier.padding(end = 8.dp))
             ranked.forEach { m ->
                 val bare = if ('/' in m.id) m.id.substringAfter('/') else m.id
-                SmallPill(m.providerLabel, true) { onOpenCaps(m.provider, bare) }
+                SmallPill(m.providerLabel, true) { onOpenCaps(m.provider, m.upstreamId ?: bare) }
                 Spacer(Modifier.width(6.dp))
             }
         }

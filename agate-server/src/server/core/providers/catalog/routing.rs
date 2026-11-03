@@ -68,9 +68,72 @@ pub(super) fn builtin_target(
     })
 }
 
+/// 这一家里「已被生效别名取代」的 `(原生 id, 别名)` 对。
+///
+/// ── 为什么「改名」要影响清单，而不只影响解析 ────────────────
+/// 解析侧映射是「追加一个可用名」：原名照旧能调（见 [`builtin_target`] 的第一
+/// 段）。所以在清单里两个都列在技术上不算错 —— 但它**不是用户要的**。用户建
+/// 映射的动机就是「我这边只叫这个名字」：清单里同时出现 `sn-glm-5-3` 与
+/// `glm-5.3`，客户端下拉列表就有两条看起来不同、实则同一个上游模型的条目。
+/// 2026-11-03 用户为此报了第三次：模型列表按别名显示之后，「客户端所见清单」
+/// 里**还是原名** —— 那张卡宣称自己等于 `GET /v1/models`，而它确实等于：
+/// 问题在这一层（清单出口），不在界面。
+///
+/// ── 只影响「列不列」，不影响「能不能调」─────────────────────
+/// 返回的是「该隐去哪条原名」，调用方据此**只从清单里删掉它**。转发侧不受影响：
+/// 老客户端 / 老 Key 白名单里写着的原名照旧打得通。这是刻意的 ——
+/// 已投产的调用方不该因为一次改名而静默失效（`api::pipeline` 那层「列表里没有
+/// 就拒绝」的门禁因此要额外认这些原名，见 `catalog::callable_names`）。
+///
+/// ── 两条判据都不能少 ────────────────────────────────────
+///   1. 有一条 **enabled** 映射，`target` 是这条原生 id 且 `alias != target`；
+///   2. 那条别名在本家**真的解析得回同一个 id**
+///      （`builtin_target` 命中的上游条目正是它）。
+///
+/// 少了第 2 条，别名指向一个已下架 / 已换名的上游 id 时原名也被隐去 —— 这个
+/// 模型会从清单里**彻底消失**，而它其实还能调。少列一个名字只是吵，消失是故障。
+/// 第 2 条还要求「解析回**这同一个** id」而不只是「解析得通」：别名与这家另一个
+/// 原生 id 撞名时（`glm-5.3` 既是别名、又是别条的原生 id），解析会落到那条
+/// 原生条目上 —— 此时隐去原名等于让这个名字无路可走。
+///
+/// 返回成对而不是只给原名集合：调用方还要回答「这条别名替谁顶了名」
+/// （清单条目要带上它，供 Key 白名单那道过滤认老名字）。
+pub(super) fn renamed_away_pairs(
+    rules: &model_rules::ModelRules,
+    kind: ProviderKind,
+    manifest: &[Value],
+) -> Vec<(String, String)> {
+    let provider = kind_id(kind);
+    let mut out: Vec<(String, String)> = Vec::new();
+    for mapping in rules.mappings.iter() {
+        if !mapping.enabled || mapping.alias.eq_ignore_ascii_case(&mapping.target) {
+            continue;
+        }
+        if !mapping.provider.as_deref()
+            .map_or(true, |owner| owner.eq_ignore_ascii_case(provider))
+        {
+            continue;
+        }
+        // 别名本身也是这家的原生 id 时不算「改名」：那只是给一个已存在的名字
+        // 加一条同义映射，隐去原名会把那条原生模型一起删掉
+        if manifest.iter().any(|item| model_id(item).eq_ignore_ascii_case(&mapping.alias)) {
+            continue;
+        }
+        // `target` 必须是这家的原生 id（不是别家的、也不是另一个别名）
+        if !manifest.iter().any(|item| model_id(item).eq_ignore_ascii_case(&mapping.target)) {
+            continue;
+        }
+        let resolves_back = builtin_target(rules, kind, manifest, &mapping.alias)
+            .is_some_and(|wire| wire.model.eq_ignore_ascii_case(&mapping.target));
+        if resolves_back {
+            out.push((mapping.target.clone(), mapping.alias.clone()));
+        }
+    }
+    out
+}
+
 /// 原始能力查询不应用开关，供管理 API 展开旧版全局规则。
-pub fn providers_for_model(model: &str) -> Vec<String> {
-    let model = model.trim();
+pub fn providers_for_model(model: &str) -> Vec<String> {    let model = model.trim();
     if model.is_empty() {
         return Vec::new();
     }
@@ -249,5 +312,36 @@ mod tests {
             builtin_target(&rules, ProviderKind::Raccoon, &manifest, "glm-5.3").is_none(),
             "关闭的映射不该把 glm-5.3 解析成 sn-glm-5-3"
         );
+    }
+
+    /// 生效别名 → 原名进「让位」集合（清单出口据它把原名从 `/v1/models` 拿掉）
+    #[test]
+    fn enabled_alias_marks_the_original_as_renamed_away() {
+        let rules = rules_with(serde_json::json!([
+            { "alias": "glm-5.3", "target": "sn-glm-5-3", "provider": "raccoon", "enabled": true }
+        ]));
+        let manifest = vec![serde_json::json!({ "id": "sn-glm-5-3" })];
+        let pairs = renamed_away_pairs(&rules, ProviderKind::Raccoon, &manifest);
+        assert_eq!(pairs, vec![("sn-glm-5-3".to_string(), "glm-5.3".to_string())]);
+    }
+
+    /// 关掉的映射不让位（「关掉映射才显示原名」）
+    #[test]
+    fn disabled_alias_does_not_rename_away_the_original() {
+        let rules = rules_with(serde_json::json!([
+            { "alias": "glm-5.3", "target": "sn-glm-5-3", "provider": "raccoon", "enabled": false }
+        ]));
+        let manifest = vec![serde_json::json!({ "id": "sn-glm-5-3" })];
+        assert!(renamed_away_pairs(&rules, ProviderKind::Raccoon, &manifest).is_empty());
+    }
+
+    /// 别家的映射不给这一家改名（provider 归属）
+    #[test]
+    fn other_providers_alias_does_not_rename_away_this_manifest() {
+        let rules = rules_with(serde_json::json!([
+            { "alias": "glm-5.3", "target": "sn-glm-5-3", "provider": "workbuddy", "enabled": true }
+        ]));
+        let manifest = vec![serde_json::json!({ "id": "sn-glm-5-3" })];
+        assert!(renamed_away_pairs(&rules, ProviderKind::Raccoon, &manifest).is_empty());
     }
 }

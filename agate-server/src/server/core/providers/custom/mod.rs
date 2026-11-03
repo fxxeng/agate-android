@@ -41,14 +41,44 @@ pub(crate) fn catalog_providers(store: &AccountStore) -> Vec<(String, Vec<Value>
     }).collect()
 }
 
+/// 把自定义家的对外条目并进清单。
+///
+/// ── 白名单按**同义名**判（与内置家同一口径）──────────────────
+/// 自定义家的别名存在**自己的记录**里（`mappings[]`），不在 `modelRules` —— 所以
+/// `catalog::synonymous_names` 看不见它们。清单按别名收敛之后，一把勾了**原名**
+/// 的 Key 会因此看不到这个模型（逐字比对判成「不在白名单」）。这里就地把这家
+/// 自己的「名字 + 它的同义名」展开一次，判据与 `bindings::public_models`
+/// 的收敛口径同源。
 pub fn append_models_response(store: &AccountStore, scope: Option<&KeyScope>, data: &mut Vec<Value>) {
     let mut claimed: std::collections::HashSet<_> = data.iter()
         .map(|item| model_id(item).to_lowercase()).collect();
+    let restricts = scope.is_some_and(KeyScope::restricts_models);
     for (provider, models) in catalog_providers(store) {
         if !key_scope::allows_provider(scope, &provider) { continue; }
+        // 这家的允许集合：勾了哪些名字 + 它们的同义名（只在真的限制了模型时算）
+        let allowed: Option<std::collections::HashSet<String>> = if restricts {
+            let record = crate::server::core::custom_providers::get(&provider);
+            let mut set = std::collections::HashSet::new();
+            for name in scope.map(KeyScope::allowed_model_names).unwrap_or_default() {
+                set.insert(name.clone());
+                for synonym in record.as_ref()
+                    .map(|record| crate::server::core::custom_providers::synonymous_models(record, &name))
+                    .unwrap_or_default()
+                {
+                    set.insert(synonym.to_lowercase());
+                }
+            }
+            Some(set)
+        } else {
+            None
+        };
         for model in models {
             let id = model_id(&model);
-            if key_scope::allows_model(scope, &id) && claimed.insert(id.to_lowercase()) {
+            let permitted = match &allowed {
+                None => true,
+                Some(set) => set.contains(&id.to_lowercase()),
+            };
+            if permitted && claimed.insert(id.to_lowercase()) {
                 data.push(list_item(&model, &provider));
             }
         }

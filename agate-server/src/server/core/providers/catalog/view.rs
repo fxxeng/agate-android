@@ -25,12 +25,32 @@ use super::{active_manifests, aggregate_source, manifest_for, refresh_meta};
 /// 实测：`space-bunny-alpha`（与展示名逐字相同）会中，`mimo-v2.6-flash`
 /// （展示名是 `Mimo V2.6 Flash`，比不中）不会中 —— 同一个开关两种结果。
 /// 模块头那句「所有对外出口使用相同的开启绑定集合」说的就是这里必须过滤。
+///
+/// ── 被别名的原生 id 改名让位（2026-11-03）──────────────────
+/// 建了生效映射 `sn-glm-5-3 → glm-5.3` 之后，这一家在清单里**只报 `glm-5.3`**，
+/// 不再同时报原名。此前两个名字都进候选名，于是客户端下拉列表里出现两条看
+/// 起来不同、实则同一个上游模型的条目 —— 用户建映射的动机恰恰是「我这边只叫
+/// 这个名字」。判据见 [`renamed_away_pairs`]（要求别名在本家**解析得回同一个
+/// 上游 id**，否则宁可不隐藏，避免模型从清单里彻底消失）。
+///
+/// 关掉那条映射 → 原生 id 立刻回到清单里（判据是实时算的，不是一次性迁移）。
 fn advertised_names(
     rules: &model_rules::ModelRules,
     provider: &str,
     manifest: &[Value],
 ) -> Vec<String> {
-    let mut names: Vec<String> = manifest.iter().map(model_id).collect();
+    // 家 id 反查不到（调用方传了脏值）就不做改名判定 —— 宁可按旧行为两个名字
+    // 都报，也不要凭一个猜不出的 kind 去隐藏名字
+    let renamed = match kind_from_id(provider) {
+        Some(kind) => super::routing::renamed_away_pairs(rules, kind, manifest),
+        None => Vec::new(),
+    };
+    let mut names: Vec<String> = manifest.iter()
+        .map(model_id)
+        .filter(|id| {
+            !renamed.iter().any(|(hidden, _)| hidden.eq_ignore_ascii_case(id))
+        })
+        .collect();
     names.extend(rules.mappings.iter()
         .filter(|mapping| mapping.enabled)
         .filter(|mapping| mapping.provider.as_deref().map_or(true, |owner| owner == provider))
@@ -185,9 +205,33 @@ pub fn models_response_with_mode(
         .filter(|(kind, _)| key_scope::allows_provider(scope, kind_id(*kind)))
         .collect();
     let (source, refreshed_at) = aggregate_source(&active);
-    let mut data: Vec<_> = public_builtin_items(&active, mode, pins).into_iter()
+    let items = public_builtin_items(&active, mode, pins);
+    // ── Key 白名单：按**同义名**判（2026-11-03）───────────────
+    // 清单按别名收敛之后，勾了**原名**的那把 Key 会看不到这条模型 —— 逐字比对
+    // 会把 `glm-5.3` 判成「不在白名单」（它勾的是 `sn-glm-5-3`），于是模型从那把
+    // Key 的清单里凭空消失。这里把白名单展开成「名字 + 它的同义名」一次，判据
+    // 与 [`advertised_names`] 的收敛口径同源（见 [`synonymous_names`]）。
+    //
+    // 一次展开成集合而不是逐条展开：`model_rules::current()` 每次都重新解析一遍
+    // 配置，放进逐条循环就是「几十个白名单项 × 几百行清单」次解析。
+    let allowed = scope
+        .filter(|scope| scope.restricts_models())
+        .map(|scope| {
+            let rules = model_rules::current();
+            let mut set: HashSet<String> = HashSet::new();
+            for name in scope.allowed_model_names() {
+                for synonym in synonyms_in(&rules, &name) {
+                    set.insert(synonym.to_lowercase());
+                }
+            }
+            set
+        });
+    let mut data: Vec<_> = items.into_iter()
+        .filter(|(_, item)| match &allowed {
+            None => true,
+            Some(set) => set.contains(&model_id(item).to_lowercase()),
+        })
         .map(|(_, item)| item)
-        .filter(|item| key_scope::allows_model(scope, &model_id(item)))
         .collect();
     let builtin_count = data.len();
     super::super::custom::append_models_response(store, scope, &mut data);
@@ -207,6 +251,77 @@ pub fn has_available_providers(store: &AccountStore) -> bool {
 pub fn advertised_model_ids(store: &AccountStore) -> Vec<String> {
     models_response(store, None).get("data").and_then(Value::as_array)
         .map(|items| items.iter().map(model_id).collect()).unwrap_or_default()
+}
+
+/// 与 `name` **等价**的一组对外名（含自己）。
+///
+/// ── 别名不是「另一个名字」，是同一个模型的两个写法 ────────────
+/// 名单一旦按别名收敛（见 [`advertised_names`]），原名就不再出现在
+/// `/v1/models` 里。而下面两处**仍然按名字**做判定，直接按字面比对就会给出
+/// 两个错误结论：
+///   1. **入口门禁**（`api::pipeline` 的「列表里没有就拒绝」）：一个已经在用
+///      `sn-glm-5-3` 的客户端，在他建了 `glm-5.3` 映射之后忽然 404 —— 而内核
+///      明明还能把它解析成上游 id。改名是**给名字加一个更合口味的写法**，
+///      不该让老写法失效。
+///   2. **Key 的模型白名单**：那把 Key 勾的是 `sn-glm-5-3`，清单现在只广告
+///      `glm-5.3` —— 逐字比对会让这个模型从**那把 Key 的清单里消失**，
+///      看起来像「我勾的模型不见了」。
+/// 两处都要认「同义」：沿 `mappings` 双向展开（`alias → target` 与
+/// `target → alias`），一跳到头（别名之间不允许链式指向，见 `Mapping` 的说明）。
+///
+/// ── 两个存储都要扫 ──────────────────────────────────────
+/// 内置家的映射在 `modelRules.mappings`，自定义家的在**自己那条记录**的
+/// `mappings[]` 里（`custom_providers::synonymous_models`）。只扫前者的话，
+/// 自定义家的改名对白名单/门禁不生效，症状是「内置家改名后能调、自定义家改名后
+/// 404」—— 同一个功能两套行为，最难查。
+pub fn synonymous_names(name: &str) -> Vec<String> {
+    let mut out = synonyms_in(&model_rules::current(), name);
+    for provider in crate::server::core::custom_providers::list() {
+        for synonym in crate::server::core::custom_providers::synonymous_models(&provider, name) {
+            if !out.iter().any(|n| n.eq_ignore_ascii_case(&synonym)) {
+                out.push(synonym);
+            }
+        }
+    }
+    out
+}
+
+/// [`synonymous_names`] 的实质（规则快照由调用方给：清单出口已经读过一遍配置）。
+fn synonyms_in(rules: &model_rules::ModelRules, name: &str) -> Vec<String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Vec::new();
+    }
+    let mut out: Vec<String> = vec![trimmed.to_string()];
+    let push = |candidate: &str, out: &mut Vec<String>| {
+        if !candidate.is_empty() && !out.iter().any(|n| n.eq_ignore_ascii_case(candidate)) {
+            out.push(candidate.to_string());
+        }
+    };
+    for mapping in rules.mappings.iter().filter(|mapping| mapping.enabled) {
+        if mapping.alias.eq_ignore_ascii_case(trimmed) {
+            push(&mapping.target, &mut out);
+        } else if mapping.target.eq_ignore_ascii_case(trimmed) {
+            push(&mapping.alias, &mut out);
+        }
+    }
+    out
+}
+
+/// 入口门禁口径：这个名字**能不能调**（含已改名让位、不再广告的原名）。
+///
+/// 与 [`advertised_manifest_contains`] 的差别有两个方向，都是刻意的：
+///   · **更宽**：认同义名（[`synonymous_names`]）—— 改名之后老写法仍可调用。
+///   · **与清单形态无关**：固定按 `Model` 形态算裸名。`/v1/models` 的三种形态
+///     只是**展示写法**（`provider/` 前缀是给人挑的），不是「这条模型存不存在」
+///     的判据；跟着当前配置走会让「切到按提供商模式 → 所有裸名调用一起 404」。
+pub fn callable_manifest_contains(store: &AccountStore, model: &str) -> bool {
+    let ids: Vec<String> = models_response_with_mode(store, None, ListMode::Model, &[])
+        .get("data").and_then(Value::as_array)
+        .map(|items| items.iter().map(model_id).collect())
+        .unwrap_or_default();
+    synonymous_names(model).iter()
+        .any(|name| ids.iter().any(|id| id.eq_ignore_ascii_case(name)))
 }
 
 pub fn advertised_manifest_contains(store: &AccountStore, model: &str) -> bool {
@@ -547,5 +662,77 @@ mod tests {
         ]));
         let names = advertised_names(&rules, "cline-free", &manifest());
         assert!(!names.iter().any(|name| name == "x-alias"));
+    }
+
+    /// 小浣熊的最小清单：`sn-glm-5-3` 一条
+    fn raccoon_manifest() -> Vec<Value> {
+        vec![json!({ "id": "sn-glm-5-3" })]
+    }
+
+    /// **改名之后，这一家在清单里只报别名**（2026-11-03 用户第三次反馈的口径）。
+    ///
+    /// 建了 `sn-glm-5-3 → glm-5.3` 之后，`GET /v1/models` 里不该再出现原名 ——
+    /// 那是「客户端所见清单」那张卡的唯一数据源，用户看到的是「映射也建了，
+    /// 清单里还是原名」。
+    #[test]
+    fn renamed_original_id_is_not_advertised() {
+        let rules = rules_with(json!([
+            { "alias": "glm-5.3", "target": "sn-glm-5-3", "provider": "raccoon", "enabled": true }
+        ]));
+        let names = advertised_names(&rules, "raccoon", &raccoon_manifest());
+        assert!(names.iter().any(|name| name == "glm-5.3"), "别名必须在: {names:?}");
+        assert!(
+            !names.iter().any(|name| name == "sn-glm-5-3"),
+            "改名的原生 id 不该再广告: {names:?}"
+        );
+    }
+
+    /// 关掉那条映射 → 原名立刻回到清单里（「关掉才显示」）
+    #[test]
+    fn disabling_the_mapping_restores_the_original_id() {
+        let rules = rules_with(json!([
+            { "alias": "glm-5.3", "target": "sn-glm-5-3", "provider": "raccoon", "enabled": false }
+        ]));
+        let names = advertised_names(&rules, "raccoon", &raccoon_manifest());
+        assert!(names.iter().any(|name| name == "sn-glm-5-3"));
+        assert!(!names.iter().any(|name| name == "glm-5.3"));
+    }
+
+    /// 别名指向一个**清单里没有**的 target（悬空映射）→ 不隐藏原名。
+    ///
+    /// 否则这个模型会从清单里彻底消失，而它其实还能调 —— 消失是故障，
+    /// 多列一个名字只是吵。
+    #[test]
+    fn dangling_mapping_does_not_hide_the_original() {
+        let rules = rules_with(json!([
+            { "alias": "gone", "target": "sn-not-there", "provider": "raccoon", "enabled": true }
+        ]));
+        let names = advertised_names(&rules, "raccoon", &raccoon_manifest());
+        assert!(names.iter().any(|name| name == "sn-glm-5-3"));
+    }
+
+    /// 别名与本家**另一个原生 id** 撞名 → 不隐藏（否则那个名字无路可走）
+    #[test]
+    fn alias_colliding_with_another_native_id_does_not_hide_the_original() {
+        let rules = rules_with(json!([
+            { "alias": "glm-5.3", "target": "sn-glm-5-3", "provider": "raccoon", "enabled": true }
+        ]));
+        let manifest = vec![json!({ "id": "sn-glm-5-3" }), json!({ "id": "glm-5.3" })];
+        let names = advertised_names(&rules, "raccoon", &manifest);
+        assert!(names.iter().any(|name| name == "glm-5.3"));
+        assert!(
+            names.iter().any(|name| name == "sn-glm-5-3"),
+            "别名被原生 id 占用时不能隐藏原名: {names:?}"
+        );
+    }
+
+    /// 别家的同名映射不影响这一家的原名广告（映射按 provider 归属）
+    #[test]
+    fn other_providers_rename_does_not_hide_this_providers_original() {
+        let rules = rules_with(json!([
+            { "alias": "glm-5.3", "target": "sn-glm-5-3", "provider": "workbuddy", "enabled": true }
+        ]));
+        let names = advertised_names(&rules, "raccoon", &raccoon_manifest());
+        assert!(names.iter().any(|name| name == "sn-glm-5-3"));
     }
 }

@@ -24,9 +24,9 @@ pub use routing::{
     providers_for_model, split_provider_prefix, wire_target_for_provider, WireTarget,
 };
 pub use view::{
-    advertised_manifest_contains, advertised_model_ids, has_available_providers, manage_view,
-    models_by_provider, models_response, models_response_with_mode, session_models,
-    suggest_advertised,
+    advertised_manifest_contains, advertised_model_ids, callable_manifest_contains,
+    has_available_providers, manage_view, models_by_provider, models_response,
+    models_response_with_mode, session_models, suggest_advertised, synonymous_names,
 };
 pub use view::ListMode;
 

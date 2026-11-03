@@ -114,6 +114,15 @@ impl KeyScope {
         sorted(&self.allowed_providers)
     }
 
+    /// 白名单里的模型名（小写、排序；未限制 = 空表）。
+    ///
+    /// 消费方是清单出口的同义展开（`catalog::models_response_with_mode`）：
+    /// 清单按别名收敛之后，勾了**原名**的 Key 也要能看见那条模型 —— 逐条
+    /// 逐字比对会把它判成「不在白名单」，模型就从那把 Key 的清单里消失。
+    pub fn allowed_model_names(&self) -> Vec<String> {
+        sorted(&self.allowed_models)
+    }
+
     /// 白名单的可读摘要（日志与错误文案用；空 = `不限制`）
     pub fn describe(&self) -> String {
         let providers = if self.restricts_providers() {

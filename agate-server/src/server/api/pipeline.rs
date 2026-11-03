@@ -29,8 +29,8 @@ use crate::server::config;
 use crate::server::core::key_scope::{self, KeyScope};
 use crate::server::core::limiter;
 use crate::server::core::providers::catalog::{
-    advertised_manifest_contains, default_model_catalog, default_model_usable,
-    has_available_providers, model_blocked_everywhere, suggest_advertised,
+    callable_manifest_contains, default_model_catalog, default_model_usable,
+    has_available_providers, model_blocked_everywhere, suggest_advertised, synonymous_names,
 };
 use crate::server::core::upstream::usage::{self, RequestTelemetry, TelemetrySnapshot};
 use crate::server::errors::GatewayError;
@@ -251,7 +251,7 @@ pub fn resolve_model(
         // 比在这里用收窄后的视图报一句笼统的「模型不存在」对用户有用得多
         //（后者会让人去查模型管理页的启停，而真正要改的是 Key 的可用提供商）。
         if has_available_providers(state.store())
-            && !advertised_manifest_contains(state.store(), &requested_model)
+            && !callable_manifest_contains(state.store(), &requested_model)
         {
             let hint = suggest_advertised(state.store(), &requested_model, 5);
             let message = format!(
@@ -277,6 +277,9 @@ pub fn resolve_model(
         // 先加账号。
         if has_available_providers(state.store())
             && !key_scope::allows_model(scope, &requested_model)
+            && !synonymous_names(&requested_model)
+                .iter()
+                .any(|name| key_scope::allows_model(scope, name))
         {
             return Err(GatewayError::with_status(404, format!(
                 "模型 '{requested_model}' 不可用：不在这把网关 Key 的可用模型列表里"
