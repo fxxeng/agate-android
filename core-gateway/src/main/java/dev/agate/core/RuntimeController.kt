@@ -320,6 +320,16 @@ object RuntimeController {
         },
     )
 
+    // Completion callbacks must never occupy the lifecycle worker. Keep one daemon
+    // dispatcher to preserve callback FIFO order without creating a thread per result.
+    private val callbackExecutor = Executors.newSingleThreadExecutor(
+        ThreadFactory { runnable ->
+            Thread(runnable, "AgateNativeCallbacks").apply {
+                isDaemon = true
+            }
+        },
+    )
+
     /** 在专用控制线程上执行一个生命周期变更，并把异常原样交还调用方。 */
     fun <T> runSerialized(operation: () -> T): T {
         if (Thread.currentThread() === worker.get()) return operation()
@@ -345,14 +355,49 @@ object RuntimeController {
         }
     }
 
-    /** 从任意线程按调用顺序入队；完成回调在控制线程执行，调用方自行切回 UI。 */
+    /**
+     * Submit a lifecycle operation in FIFO order. The operation runs on the lifecycle
+     * worker; its completion callback is dispatched to a separate single-thread daemon
+     * executor so slow UI/result handling cannot stall later lifecycle commands.
+     *
+     * The callback is not a UI-thread callback: callers must explicitly dispatch to
+     * Main when needed. Operation failures are delivered as Result.failure; callback
+     * failures are isolated from both executors. If lifecycle enqueue is rejected,
+     * rejection is thrown synchronously to the submitting caller and no callback runs.
+     *
+     * The lifecycle executor is process-lifetime and uses an unbounded FIFO queue.
+     * This API does not provide cancellation or backpressure; do not use it for
+     * high-volume or long-running business work.
+     */
     fun <T> submitSerialized(
         operation: () -> T,
         onComplete: (Result<T>) -> Unit,
+    ) = submitSerializedWith(
+        enqueue = { task -> executor.execute(task) },
+        dispatchCallback = { task -> callbackExecutor.execute(task) },
+        operation = operation,
+        onComplete = onComplete,
+    )
+
+    /**
+     * Test seam for the submission contract. Production supplies the lifecycle and
+     * callback executors; tests can deterministically exercise synchronous rejection.
+     */
+    internal fun <T> submitSerializedWith(
+        enqueue: (Runnable) -> Unit,
+        dispatchCallback: (Runnable) -> Unit,
+        operation: () -> T,
+        onComplete: (Result<T>) -> Unit,
     ) {
-        executor.execute {
-            val result = runCatching(operation)
-            runCatching { onComplete(result) }
-        }
+        enqueue(
+            Runnable {
+                val result = runCatching(operation)
+                dispatchCallback(
+                    Runnable {
+                        runCatching { onComplete(result) }
+                    },
+                )
+            },
+        )
     }
 }

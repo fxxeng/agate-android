@@ -569,3 +569,46 @@ Batch 4B-2B-10 已在当前工作快照中新增 typed `GatewayStatusObservation
 - 本修正只处理 status 读取失败的错误分类，不证明跨 Native lifecycle 操作的读取具备原子快照语义。
 - `readStatus()` 仍是调用线程只读探测，不进入 RuntimeController lifecycle queue；不要将高频轮询改为 `refreshStatus()`。
 - Batch 4B-2B-10 尚未 CI 验证；没有执行本地 Gradle/JUnit/Rust/APK/Instrumentation/真机测试。
+
+
+---
+
+## R28 收官与 Batch 4B-2B-11 源码审计（2026-11-04）
+
+### R28 验证结论
+
+- Batch 4B-2B-10 基线 `1d96372605`，最终 commit `97c44551d3e0a181fbf66ffdad7413a36ac5a571`，Run `41658936617` success。
+- JVM 82/82、Instrumentation 2/2、Rust tests 与 Android build 均通过；源码对账 758 blobs，未声明改动 0。
+- Native status 三态修复正式关闭：合法 `running=false` 是 Available；读取异常是 Unavailable，不得推断 Gateway stopped 或断开 SSE。
+
+### Batch 4B-2B-11：异步提交回调与生命周期队列隔离
+
+**基线：** `97c44551d3`。
+
+**发现：** `RuntimeController.submitSerialized()` 原来把 `operation` 与 `onComplete` 放在同一个 lifecycle executor Runnable 中。回调虽然由 `runCatching` 防止异常逃逸，但若回调阻塞，仍会占用 `AgateNativeLifecycle` 单线程队列，延迟后续生命周期命令。
+
+**改动：**
+- 新增单线程 daemon `AgateNativeCallbacks` executor；`submitSerialized` 的 operation 保持在 `AgateNativeLifecycle`，callback 改由独立 dispatcher 串行执行。
+- callback 不是 Main；UI 调用方必须自行切回 Main。`GatewayControlPage` 当前已用 Handler post Main，无需改调用方。
+- operation 异常仍作为 `Result.failure` 传给 callback；callback 异常隔离，不影响后续 callback/lifecycle operation。
+- 新增 `submitSerializedWith` internal seam 测试 enqueue rejection：入队拒绝同步抛出，operation/callback 均不运行。
+- KDoc 明确无界 FIFO、无取消/backpressure；不允许把长业务工作塞入此 API。
+
+**测试：**
+- 新增 3 个 RuntimeControllerTest：callback 阻塞不阻塞 lifecycle worker；operation failure 交付且 callback failure 隔离；enqueue rejection 同步传播。
+- RuntimeControllerTest 静态 `@Test` 数量从 25 增至 28；JVM 模块总数预计 82→85。实际执行数量以 R29 CI 为准。
+- 本地未执行 Gradle/JUnit/Rust/APK/Instrumentation/真机测试；当前仅静态审查与补丁应用校验，不得标记通过。
+
+**文件范围：** 2 Kotlin + 2 文档，0 新增/删除。未改 GatewayControlPage、Service 命令队列、SSE、STOP guard 原子区间、WakeLock、JNI、Rust、Gradle、CI workflow。
+
+**风险与边界：**
+- callback dispatcher 是进程期 daemon 单线程队列，保持回调顺序，但 callback 自身仍须短小、非阻塞；慢回调会延迟后续 callback，不会阻塞 lifecycle worker。
+- lifecycle executor 当前无界 FIFO、无 shutdown API。拒绝语义是同步抛出边界，不是可依赖的正常流控。
+- 不保证 callback 在 UI/Main 线程；不得删除调用方显式线程切换。
+- 不要把长时间 `apiCall`、`checkinRunAndWait` 或 SSE 业务放入 lifecycle queue。
+
+### 下一步
+
+1. 以 R28 `97c44551d3` 为唯一基线应用 Batch 4B-2B-11 补丁，CI 验证后关闭。
+2. Batch 4B-2B-12 合并完成 RuntimeController、GatewayRepository、Service 生产入口与并发边界总审计，尽量完成 Phase 2 代码收尾。
+3. 真机 START/STOP、Scheduler/Core 恢复、Service destroy/进程回收仍为 Phase 2 必须通过的验收项；CI instrumentation 不替代设备验证。

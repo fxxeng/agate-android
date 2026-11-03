@@ -1800,3 +1800,58 @@ onGatewayRunning(status?.running == true)
 2. R28 CI 验证通过后关闭 Batch 4B-2B-10。
 3. 下一批优先审计 RuntimeController `submitSerialized()` 的回调线程、异常隔离、排队/拒绝语义，并检查 GatewayRepository 生命周期操作与状态探测的并发边界；不要把长时间业务请求放入生命周期队列。
 4. Phase 2 仍未收官：真实设备 START/STOP/Scheduler、Service 销毁/进程回收验证未完成；Phase 3 Doze、WakeLock、Alarm/WorkManager 与 ROM 长稳测试仍需推进。不能以 CI 双绿替代设备验收。
+
+
+## 17. R28 收官与 Batch 4B-2B-11：异步生命周期提交契约（2026-11-04）
+
+### 17.1 R28 / Batch 4B-2B-10 验证收官
+
+- R28 最终 commit：`97c44551d3e0a181fbf66ffdad7413a36ac5a571`；GitHub Actions Run `41658936617` success。
+- Android Build、Rust tests 通过；JVM 单测 82/82；Instrumentation 2/2。
+- 源码对账 758 blobs：753 MATCH / 3 UPD / 2 ADD / 0 DEL；5 个交付文件与 patch/hash 一致，未声明改动为 0。
+- Batch 4B-2B-10 将 Native status 观测区分为 `Available(Status)` 与 `Unavailable`。Native 查询异常不再被解释为 Gateway stopped；Unavailable 保留 last-known 状态与 SSE/started，并记录错误等待下轮探测。R28 正式关闭该批。
+- CI-Fix11 的 PSI settle 900s 在本轮约 495s 才开门的模拟器轨迹中再次证明必要；阈值 `<20`、连续 3 次采样和 fail-closed 语义未放宽。
+- 后续批次唯一基线为 `97c44551d3`。R28 源码归档不含 `.git`，commit 身份以 CI 报告为准。
+
+### 17.2 Batch 4B-2B-11：RuntimeController 异步提交/回调边界
+
+基线：`97c44551d3`。目标是让 `submitSerialized()` 的队列与回调契约明确，并防止结果回调阻塞生命周期控制面。
+
+#### 现状与风险
+
+旧实现把 `operation` 和 `onComplete` 放在同一个 `AgateNativeLifecycle` 单线程任务中。虽然 `onComplete` 异常已被 `runCatching` 隔离，但回调如果执行耗时工作或等待 UI/其他任务，会占住生命周期 worker，使后续 START/STOP/Scheduler 等控制操作排队。当前唯一生产调用方 `GatewayControlPage` 已显式通过 `Handler(Looper.getMainLooper()).post` 切回主线程，但 RuntimeController 公共契约没有强制或隔离这一行为。
+
+#### 本批修改
+
+- 保留 `AgateNativeLifecycle` 单线程 FIFO executor，Native 生命周期 operation 仍只在该 worker 执行。
+- 新增独立单线程 daemon `AgateNativeCallbacks` executor，完成回调从生命周期 worker 解耦；单线程保证回调按提交完成顺序串行执行。
+- `submitSerialized()` 明确：operation 在生命周期 worker；callback 在独立 callback dispatcher；callback **不是 Android Main**，UI 调用方仍必须显式切回 Main。
+- operation 抛出的异常以 `Result.failure` 交给 callback；callback 自身异常被隔离，不终止后续 callback 或生命周期任务。
+- lifecycle executor 入队若被拒绝，`RejectedExecutionException` 同步抛给提交者，operation 和 callback 均不执行。生产 executor 为进程期单例、当前不提供 shutdown，因此拒绝属于边界/故障语义，不是正常背压机制。
+- 明确队列仍是无界 FIFO；本 API 不提供取消或 backpressure，不适用于高频/长耗时业务工作。`apiCall`、`checkinRunAndWait` 等长业务请求继续留在生命周期队列之外。
+- 新增 internal `submitSerializedWith()` 测试缝，以确定性方式覆盖 enqueue rejection，不改变 public API。
+
+#### 测试覆盖
+
+新增 3 项 `RuntimeControllerTest`：
+1. callback 在独立线程执行；人为阻塞 callback 时，后续生命周期任务仍可完成。
+2. operation failure 通过 `Result.failure` 交付；callback 抛异常后，后续 callback 仍能执行。
+3. lifecycle enqueue rejection 同步抛出，且 callback 不执行。
+
+R28 基线 `RuntimeControllerTest` 25 项，本批静态计数预计 28 项；JVM 模块总数预计 85 项。最终数量和通过结果以 R29 CI 报告为准。
+
+#### 变更范围与禁止事项
+
+- 预计 2 个 Kotlin 文件 + 2 份文档：`RuntimeController.kt`、`RuntimeControllerTest.kt`、HANDOFF、Source Audit；0 新增、0 删除。
+- 不修改 `GatewayControlPage` 调用方式（其 callback 已自行切 Main）；不改 Gateway/SSE/Service 命令队列、STOP 原子区间、WakeLock、JNI ABI、Rust、Gradle、CI workflow。
+- 不把 callback dispatcher 当 UI dispatcher；不允许回调执行同步长任务；不将长业务请求迁入 lifecycle executor。
+- 当前仅完成源码审阅、静态检查、补丁和归档校验；未执行 Gradle/Kotlin/JUnit/Rust/APK/Instrumentation/真机测试。Batch 4B-2B-11 等待 R29 CI。
+- 快照不含 `.git`，不是 Git commit。真实验证分支必须以 `97c44551d3` 为 HEAD 应用补丁；只推 `verify/arch-8faa5f5`，不动 `main`、不合并。
+
+### 17.3 后续批次与 Phase 2 收官条件
+
+1. R29 验证 Batch 4B-2B-11；若 CI 失败，先依据 unit-test-reports 定位，不扩大修复范围。
+2. Batch 4B-2B-12 做一次 RuntimeController / GatewayRepository / Service 生命周期总审计：所有生产 `coreInit/start/stop/schedulerSet` 入口、`readStatus/refreshStatus` 语义、SSE started 维护、状态快照消费者、异步提交调用点与线程上下文。
+3. Phase 2 代码收尾后，仍必须完成真实 Android 设备验证：START/STOP 意图竞争、Scheduler 开关与 Core 未就绪恢复、Service destroy、进程回收/重建。CI instrumentation 2/2 不等同这些设备场景通过。
+4. Phase 2 收官后集中推进 Phase 3：FGS、WakeLock、Alarm/WorkManager、Doze、重启/进程死亡恢复及 ROM 长稳。
+5. 不以小批次 CI 绿灯数量代替系统级稳定性验收；不提前开始大规模 Phase 4 Rust 平台解耦。

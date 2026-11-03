@@ -96,6 +96,99 @@ class RuntimeControllerTest {
     }
 
     @Test
+    fun submitSerializedCallbackRunsOffLifecycleWorkerAndCannotBlockIt() {
+        val operationThread = AtomicReference<Thread?>()
+        val callbackThread = AtomicReference<Thread?>()
+        val callbackEntered = CountDownLatch(1)
+        val releaseCallback = CountDownLatch(1)
+        val nextLifecycleCompleted = CountDownLatch(1)
+
+        RuntimeController.submitSerialized(
+            operation = {
+                operationThread.set(Thread.currentThread())
+                "first"
+            },
+            onComplete = {
+                callbackThread.set(Thread.currentThread())
+                callbackEntered.countDown()
+                releaseCallback.await(2, TimeUnit.SECONDS)
+            },
+        )
+
+        assertTrue("completion callback did not start", callbackEntered.await(2, TimeUnit.SECONDS))
+        val nextResult = AtomicReference<String?>()
+        val nextCaller = Thread {
+            nextResult.set(RuntimeController.runSerialized { "second" })
+            nextLifecycleCompleted.countDown()
+        }
+        nextCaller.start()
+
+        val lifecycleContinuedWhileCallbackBlocked =
+            nextLifecycleCompleted.await(2, TimeUnit.SECONDS)
+        releaseCallback.countDown()
+
+        assertTrue(
+            "a blocked completion callback stalled the lifecycle queue",
+            lifecycleContinuedWhileCallbackBlocked,
+        )
+        assertEquals("second", nextResult.get())
+        assertTrue("callback must not execute on lifecycle worker", operationThread.get() !== callbackThread.get())
+    }
+
+    @Test
+    fun submitSerializedDeliversOperationFailureAndIsolatesCallbackFailure() {
+        val firstCallback = CountDownLatch(1)
+        val secondCallback = CountDownLatch(1)
+        val expected = IllegalStateException("async-operation-failed")
+        val receivedFailure = AtomicReference<Throwable?>()
+        val secondResult = AtomicReference<String?>()
+
+        RuntimeController.submitSerialized(
+            operation = { throw expected },
+            onComplete = { result ->
+                receivedFailure.set(result.exceptionOrNull())
+                firstCallback.countDown()
+                throw IllegalStateException("callback-failed")
+            },
+        )
+        assertTrue("failed operation result was not delivered", firstCallback.await(2, TimeUnit.SECONDS))
+        assertSame(expected, receivedFailure.get())
+
+        RuntimeController.submitSerialized(
+            operation = { "queue-still-alive" },
+            onComplete = { result ->
+                secondResult.set(result.getOrNull())
+                secondCallback.countDown()
+            },
+        )
+
+        assertTrue("callback dispatcher did not survive callback failure",
+            secondCallback.await(2, TimeUnit.SECONDS))
+        assertEquals("queue-still-alive", secondResult.get())
+    }
+
+    @Test
+    fun submitSerializedQueueRejectionIsSynchronousAndDoesNotInvokeCallback() {
+        val expected = java.util.concurrent.RejectedExecutionException("queue-closed")
+        val callbackCalled = AtomicReference(false)
+
+        val actual = try {
+            RuntimeController.submitSerializedWith(
+                enqueue = { throw expected },
+                dispatchCallback = { task -> task.run() },
+                operation = { "must-not-run" },
+                onComplete = { callbackCalled.set(true) },
+            )
+            null
+        } catch (failure: Throwable) {
+            failure
+        }
+
+        assertSame(expected, actual)
+        assertFalse(callbackCalled.get())
+    }
+
+    @Test
     fun readOnlyStatusDoesNotWaitForLifecycleQueueOrPublishSnapshot() {
         val blockerEntered = CountDownLatch(1)
         val releaseBlocker = CountDownLatch(1)
