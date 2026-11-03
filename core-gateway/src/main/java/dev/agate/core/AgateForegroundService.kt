@@ -364,12 +364,19 @@ class AgateForegroundService : Service() {
             // 无论签到成功、busy、WakeLock 获取失败还是 Core 初始化失败，都必须收尾。
             // 原先 Core 初始化失败分支直接 return，会跳过这里之后的前台清理，
             // 留下一个没有网关运行、却长期挂着的 START_STICKY 前台服务。
-            val gatewayRunning = try {
+            val gatewayRunning: Boolean? = try {
                 RuntimeController.readStatus().running
-            } catch (_: Throwable) {
-                false
+            } catch (failure: Throwable) {
+                // A failed probe is not proof that Gateway stopped. Keep the FGS as
+                // the Gateway carrier until a later authoritative observation.
+                android.util.Log.w(
+                    "Agate",
+                    "TICK 收尾无法确认 Gateway 状态；保留前台服务等待后续探测",
+                    failure,
+                )
+                null
             }
-            if (!gatewayRunning) stopIfCurrentStart(startId)
+            if (shouldStopServiceAfterTick(gatewayRunning)) stopIfCurrentStart(startId)
         }
     }
 

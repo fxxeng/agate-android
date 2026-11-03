@@ -5,7 +5,7 @@
 
 > 文档用途：供后续开发者接手、评审和持续推进 Android 架构改造。
 
-> **验证分支当前状态（R23 / 2026-11-03）**：`verify/arch-8faa5f5` 当前 HEAD 为 `c8049b4e`（`c31f3a88` 的 STOP 迁移收官 + `c8049b4e` CI-Fix9）。最新一轮待验证源码切片以此为基线；完整状态以本文第 14 节及 Source Audit 第 14 节为准。收到的 R23 源码归档仅对应 `c31f3a88`，不能冒充 `c8049b4e` 完整快照。
+> **验证分支当前状态（R29 / 2026-11-04）**：`verify/arch-8faa5f5` 已验证 HEAD 为 `3ad7aa5f09aa1429ce0d12d16a4c62b7acc380cd`（CI Run `41674284609`）。Batch 4B-2B-11 已关闭；R29 后续总审计与 FGS tick 状态失败语义修复记录见本文第 18 节及 Source Audit 对应追加记录。归档不含 `.git`，commit 身份以 CI 报告为准。
 >
 > 当前工作分支：`architecture/kotlin-rust-core`（仅在本地工作副本建立）  
 > 当前基线：`e5fb279`（从用户提供的源码 ZIP 导入）  
@@ -1855,3 +1855,57 @@ R28 基线 `RuntimeControllerTest` 25 项，本批静态计数预计 28 项；JV
 3. Phase 2 代码收尾后，仍必须完成真实 Android 设备验证：START/STOP 意图竞争、Scheduler 开关与 Core 未就绪恢复、Service destroy、进程回收/重建。CI instrumentation 2/2 不等同这些设备场景通过。
 4. Phase 2 收官后集中推进 Phase 3：FGS、WakeLock、Alarm/WorkManager、Doze、重启/进程死亡恢复及 ROM 长稳。
 5. 不以小批次 CI 绿灯数量代替系统级稳定性验收；不提前开始大规模 Phase 4 Rust 平台解耦。
+
+
+## 18. R29 收官与 Batch 4B-2B-12：RuntimeController / Repository / Service 生命周期总审计（2026-11-04）
+
+### 18.1 R29 验证结论与唯一基线
+
+- Batch 4B-2B-11 基线 `97c44551d3`，交付 commit `3ad7aa5f09aa1429ce0d12d16a4c62b7acc380cd`，GitHub Actions Run `41674284609` success（38m48s）。
+- Rust tests、Android build 成功；JVM 单测 85/85，0 failures/errors/skipped；Instrumentation 2/2。
+- `RuntimeControllerTest` 28 项；新增的 callback 隔离、operation failure、同步 enqueue rejection 三项均通过。
+- R29 最终源码归档 SHA-256：`995d9cbb3397f78f189ce91d26747556bdcaf7f13901ab62d25b86157656419c`。后续唯一基线为 `3ad7aa5f09`，不得再从 `97c44551d3` 应用新补丁。
+- CI 双绿不等于真实设备验收；Phase 2 的 START/STOP、Scheduler/Core 恢复、Service destroy、进程回收仍须真机验证。
+
+### 18.2 Batch 4B-2B-12 总审计结论
+
+**Native 生命周期入口：** 全量检索生产 Kotlin 源码后，`Gateway.coreInit/start/stop/schedulerSet` 的直接调用均只存在于 `RuntimeController.kt`。生产调用方为 `AgateApp`、`AgateForegroundService`、`GatewayControlPage`；均通过具名控制器 API。`NativeRuntimeInstrumentedTest` 中直接调用属于测试夹具，不构成生产旁路。`Gateway.requestCheckinStop()` 与 `Gateway.checkinRunAndWait()` 是长业务任务的取消/等待接口，按既定边界留在生命周期队列之外。
+
+**状态读取与线程：** 生产 `Gateway.status()` 读取均通过 `RuntimeController.readStatus()`；直接调用只存在于 RuntimeController 内部和 Instrumentation 测试。生产调用点均位于后台上下文：Repository `Dispatchers.IO`、Assistant `withContext(IO)`、Settings `withContext(IO)`、GatewayControlPage IO scope、Tile 独立后台线程、FGS command executor。`refreshStatus()` 当前没有生产调用方，保留为显式串行对账能力；不得把 5 秒探活迁移为 `refreshStatus()`。
+
+**RuntimeSnapshot：** 生产代码目前只有 RuntimeController 写入/读取实现，未发现 UI、Repository 或 Service 的生产消费者。它目前是进程内状态归约基础设施，不是已经接入 StateFlow 的 UI 状态源；不要宣称页面已由该快照驱动。`GatewayRepository.gatewayStatus` 则是独立的 Native status StateFlow。
+
+**Service / 控制面：** Service 命令仍由 `AgateServiceCommands` FIFO 队列串行；RuntimeController 使用独立 `AgateNativeLifecycle` 队列。Service 命令线程同步等待 RuntimeController 生命周期操作，但没有发现反向等待 Service 命令队列的生产路径。`runTick()` 的 `checkinRunAndWait()` 留在生命周期队列之外；STOP 的 `requestCheckinStop()` 使用独立 executor，避免长签到阻塞取消信号。`mayStopNow()` 与 `Gateway.stop()` 仍处于同一个 RuntimeController 串行闭包。`onDestroy()` 先排入清理任务再 shutdown executor，shutdown 保留已入队任务执行；拒绝分支只释放本地锁，不在主线程补调 JNI。
+
+**异步提交：** `submitSerialized()` 当前唯一生产调用方是 `GatewayControlPage`；operation 在 lifecycle worker，callback 在 callback dispatcher，调用方显式 Handler 切 Main。callback FIFO 的严格前提是 lifecycle worker 为私有 callback dispatcher 的唯一生产者；已在 RuntimeController KDoc 补明，不应从其它线程直接投递。
+
+### 18.3 本批修复：TICK 收尾不得把 status 异常当作 stopped
+
+审计发现 `AgateForegroundService.runTick()` 的 finally 原先将 `RuntimeController.readStatus()` 异常折叠成 `false`，继而调用 `stopIfCurrentStart(startId)`。如果 Native 状态只是暂时不可读取，而 Gateway 实际仍在运行，这会提前移除承载 Gateway 的 FGS。该语义与 R28/R29 已建立的 `Available` / `Unavailable` 区分不一致。
+
+修复后：
+- 明确读到 `running=false` 才允许 tick 收尾停止 Service；
+- 明确读到 `running=true` 时保留 Service；
+- status 查询异常记录 warning，并按 `null`（Unavailable）处理，保留 FGS，等待后续状态探测/用户操作；
+- 新增纯 Kotlin `shouldStopServiceAfterTick(Boolean?)` 策略函数及单测，覆盖 true / false / null 三种输入。
+
+这是 fail-closed 取舍：状态未知时宁可暂时保留 FGS，也不冒险让仍在运行的 Gateway 失去前台服务承载。代价是 Native 状态持续不可用且 Gateway 实际已停止时，Service 可能暂时残留；应通过日志和后续探测定位，不得把未知伪装成已停止。
+
+### 18.4 Repository SSE 生命周期并发风险（后续批次）
+
+`GatewayRepository.started` 虽为 `@Volatile`，但 `start()/stop()/onGatewayRunning()` 及 `eventSource/retryJob/pollJob` 的复合更新没有统一锁或单线程 actor。生产自动探活运行在 `Dispatchers.IO`，控制页的手动连接/断开入口从 Compose 点击路径调用；两类路径可能并发。另，SSE listener 的 `onFailure/onClosed` 未校验回调对应的 EventSource 是否仍是当前实例，旧连接的迟到回调存在触发多余重连/覆盖新连接状态的可能。
+
+这不构成 Gateway Native 生命周期入口旁路，但属于 Repository 自身 SSE 生命周期一致性风险。避免在本批扩大改动；下一批 Batch 4B-2B-13 应集中实现连接生命周期串行化、旧 EventSource 回调代次/身份校验，并补确定性 JVM 测试。手动「断开事件流」目前只是临时断开：导航宿主每 5 秒探活，若 Gateway 仍运行会再次自动连接；应在 UI 文案/交接中保持这一行为明确。
+
+### 18.5 文件范围与验证状态
+
+- 本批预期 4 个生产/测试 Kotlin 文件 + 2 份文档：新增 `ForegroundServiceTickPolicy.kt` 与对应测试；修改 `AgateForegroundService.kt`、`RuntimeController.kt`、HANDOFF、Source Audit。0 删除。
+- JVM 单测基线 R29 为 85；新增 1 项后预期 86。以 R30 CI XML 为最终依据。
+- 当前已完成源码审计、修改和静态检查；未执行 Gradle/JUnit/Rust/APK/Instrumentation/真机测试。不得将本批标记为 CI 通过。
+
+### 18.6 下一步
+
+1. 以 R29 `3ad7aa5f09` 为唯一基线验证 Batch 4B-2B-12；CI 通过后关闭本批。
+2. Batch 4B-2B-13 处理 GatewayRepository SSE lifecycle 的并发串行化与 stale EventSource 回调保护，补测试；不要与 Native Service 队列/WakeLock 改动混批。
+3. Phase 2 真机硬门槛仍为 START/STOP 意图竞争、Scheduler 开关与 Core 未就绪恢复、Service destroy、进程回收/重建。
+4. Phase 3 再集中做 FGS/WakeLock/Alarm/WorkManager/Doze/ROM 长稳；Phase 4 Rust 平台解耦暂不提前启动。

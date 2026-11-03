@@ -322,6 +322,8 @@ object RuntimeController {
 
     // Completion callbacks must never occupy the lifecycle worker. Keep one daemon
     // dispatcher to preserve callback FIFO order without creating a thread per result.
+    // Production FIFO order relies on the lifecycle worker being the sole producer
+    // that submits callbacks to this private dispatcher; do not dispatch from other threads.
     private val callbackExecutor = Executors.newSingleThreadExecutor(
         ThreadFactory { runnable ->
             Thread(runnable, "AgateNativeCallbacks").apply {

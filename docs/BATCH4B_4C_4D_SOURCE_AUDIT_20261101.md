@@ -612,3 +612,36 @@ Batch 4B-2B-10 已在当前工作快照中新增 typed `GatewayStatusObservation
 1. 以 R28 `97c44551d3` 为唯一基线应用 Batch 4B-2B-11 补丁，CI 验证后关闭。
 2. Batch 4B-2B-12 合并完成 RuntimeController、GatewayRepository、Service 生产入口与并发边界总审计，尽量完成 Phase 2 代码收尾。
 3. 真机 START/STOP、Scheduler/Core 恢复、Service destroy/进程回收仍为 Phase 2 必须通过的验收项；CI instrumentation 不替代设备验证。
+
+
+---
+
+## 2026-11-04 R29 收官与 Batch 4B-2B-12 生命周期总审计
+
+### R29 证据
+
+- Batch 4B-2B-11 最终 commit `3ad7aa5f09aa1429ce0d12d16a4c62b7acc380cd`，Run `41674284609` success。
+- Rust tests / Android build 双绿；JVM 85/85；Instrumentation 2/2。
+- 新基线 `3ad7aa5f09`；源码归档 SHA-256 `995d9cbb3397f78f189ce91d26747556bdcaf7f13901ab62d25b86157656419c`。
+
+### 生产入口与线程审计
+
+- `Gateway.coreInit/start/stop/schedulerSet` 直接生产调用仅位于 `RuntimeController.kt`；生产入口来自 `AgateApp`、FGS、`GatewayControlPage`。Instrumentation 中的直接调用属于测试夹具。
+- 生产 status 读取通过 `RuntimeController.readStatus()`；所有调用点位于 IO、后台线程或 FGS command executor。`refreshStatus()` 无生产调用方，继续保留为显式串行 reconcile，不用于高频轮询。
+- `Gateway.requestCheckinStop()` / `checkinRunAndWait()` 是长业务控制接口，留在生命周期队列之外；STOP 信号有独立 executor。
+- `RuntimeSnapshot` 暂无生产消费者；当前不是 UI StateFlow。`GatewayRepository.gatewayStatus` 是单独的状态流。
+- callback FIFO 顺序依赖 lifecycle worker 是 callback dispatcher 唯一生产者；已补 KDoc 前提。
+
+### 本批发现并修复：FGS tick status failure semantics
+
+原 `runTick()` finally 将 status 查询异常折叠成 `running=false`，可能在 Gateway 仍运行时停止 FGS。修复后以 nullable observation 表示三态：true=保留，false=允许停止，null=查询失败、保留 FGS并记录 warning。新增 `shouldStopServiceAfterTick(Boolean?)` 与 1 项单测覆盖三种状态。此为 fail-closed 选择，未知时可能暂时留下 FGS，但避免 Gateway 失去前台服务承载。
+
+### 后续风险：GatewayRepository SSE lifecycle
+
+`started` 的 volatile 可见性不等于 `start/stop/onGatewayRunning` 与 `eventSource/retryJob/pollJob` 复合更新的原子性。自动探活（IO）与手动控制页入口可能并发；SSE listener 也没有校验迟到回调是否来自当前 EventSource。下一批 4B-2B-13 应集中做连接生命周期串行化和 EventSource identity/generation guard，并补确定性测试。当前手动断开只临时生效，NavHost 仍会每 5 秒按 Gateway 状态自动重连。
+
+### 本批验证边界
+
+- 预期改动：新增 2 Kotlin 文件、修改 2 Kotlin 文件、更新 2 文档；0 删除。
+- R29 JVM 85 项，新增 1 项后预计 86；以 R30 CI XML 为准。
+- 本地仅做静态源码审计/修改/差异检查；没有运行 Gradle、JUnit、Rust、APK、Instrumentation 或真机测试。
