@@ -34,7 +34,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -51,7 +50,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.agate.core.AgateForegroundService
 import dev.agate.core.Gateway
-import dev.agate.core.RuntimeController
 import dev.agate.core.GatewayPrefs
 import dev.agate.android.data.GatewayRepository
 import dev.agate.android.navigation.Routes
@@ -66,9 +64,6 @@ import dev.agate.android.ui.components.BadgeTone
 import dev.agate.android.ui.components.KpiCell
 import dev.agate.android.ui.components.StatCell
 import dev.agate.android.ui.theme.agateColors
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.withContext
 
 /**
  * 首页·控制台（M3-2R，对齐 v44 Tab 1 结构，自上而下）：
@@ -91,18 +86,13 @@ fun ConsolePage(
     val snap by GatewayRepository.snapshot.collectAsState()
     val snapError by GatewayRepository.snapshotError.collectAsState()
 
-    var gw by remember { mutableStateOf<Gateway.Status?>(null) }
+    val gw by GatewayRepository.gatewayStatus.collectAsState()
     // 快照轮询与网关探活**已移到导航宿主**（`AgateNavHost`）：那里是全应用
     // 唯一的启动点。这一段曾在这里，于是没进过控制台就直接打开提供商页时，
     // 快照永远是初始空值 —— 覆盖安装后「账号不见了」的观感就是这么来的。
     // 本页只读快照，不再自己起轮询（两处都起会让 SSE 连两次、`started` 反复置位）。
-    // `gw` 这颗仍保留：本页要显示内核 uptime / 端口 / 调度器开关这些控件级读数。
-    LaunchedEffect(Unit) {
-        while (true) {
-            gw = withContext(Dispatchers.IO) { runCatching { RuntimeController.readStatus() }.getOrNull() }
-            delay(5_000L)
-        }
-    }
+    // 完整 Native status 由导航宿主的单一 5s 探活循环发布到 Repository；
+    // 本页只订阅共享状态，不再额外发起 JNI status 轮询。
     val running = gw?.running == true
     var hcOpen by remember { mutableStateOf(false) }
 

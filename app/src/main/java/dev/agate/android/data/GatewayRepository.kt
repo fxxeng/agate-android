@@ -2,6 +2,7 @@ package dev.agate.android.data
 
 import dev.agate.android.data.dto.AccountDto
 import dev.agate.android.data.dto.AccountDtos
+import dev.agate.core.Gateway
 import dev.agate.core.RuntimeController
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -157,6 +158,10 @@ object GatewayRepository {
     private val _link = MutableStateFlow(LinkState.DISCONNECTED)
     val link: StateFlow<LinkState> = _link
 
+    /** Latest Native lifecycle observation, shared by the navigation shell and pages. */
+    private val _gatewayStatus = MutableStateFlow<Gateway.Status?>(null)
+    val gatewayStatus: StateFlow<Gateway.Status?> = _gatewayStatus
+
     private val _events = MutableStateFlow<List<RecentEvent>>(emptyList())
     val events: StateFlow<List<RecentEvent>> = _events
 
@@ -217,6 +222,7 @@ object GatewayRepository {
     private var snapshotJob: Job? = null
     private val failures = AtomicInteger(0)
     private val refreshing = AtomicBoolean(false)
+    private val syncingGatewayStatus = AtomicBoolean(false)
     private val lastEventRefresh = AtomicLong(0)
     @Volatile private var started = false
 
@@ -297,12 +303,20 @@ object GatewayRepository {
      * 是因为**页面不保证被访问**：用户在提供商页时那条循环根本不存在。
      */
     fun syncGatewayRunning() {
+        // The navigation shell ticks every 5s. Do not allow a slow Native status call
+        // to accumulate overlapping probes or let an older result overwrite a newer one.
+        if (!syncingGatewayStatus.compareAndSet(false, true)) return
         scope.launch {
-            val status = runCatching { RuntimeController.readStatus() }.getOrNull()
-            onGatewayRunning(status?.running == true)
-            // 探活到「在跑」但快照还是空的（比如进程刚拉起来、或上一次全失败
-            // 留下的空值）：立刻补拉一次，用户不必等下一个 5 秒刻度。
-            if (started && _snapshot.value.fetchedAtMs == 0L) refreshOnce()
+            try {
+                val status = runCatching { RuntimeController.readStatus() }.getOrNull()
+                _gatewayStatus.value = status
+                onGatewayRunning(status?.running == true)
+                // 探活到「在跑」但快照还是空的（比如进程刚拉起来、或上一次全失败
+                // 留下的空值）：立刻补拉一次，用户不必等下一个 5 秒刻度。
+                if (started && _snapshot.value.fetchedAtMs == 0L) refreshOnce()
+            } finally {
+                syncingGatewayStatus.set(false)
+            }
         }
     }
 
