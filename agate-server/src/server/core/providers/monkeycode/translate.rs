@@ -321,7 +321,7 @@ pub(super) enum Terminal {
 pub(super) struct Handled {
     /// 要下发给客户端的 SSE 帧
     pub(super) frames: Vec<Bytes>,
-    /// 要回给上游的控制消息（ping / reply-question）
+    /// 要回给上游的控制消息（ping / reply-question / permission-resp）
     pub(super) reply: Option<String>,
     /// 终态（None = 继续）
     pub(super) terminal: Option<Terminal>,
@@ -363,6 +363,10 @@ pub(super) fn handle_message(translator: &mut Translator, raw: &str) -> Handled 
                 ..Handled::default()
             }
         }
+        // 逐工具权限审批：起始的 auto-approve 兜不住「单个工具再问一次」，
+        // 不回 permission-resp 任务就停在工具调用处（官网也一直转圈）。
+        // 见 `handle_permission_request`。
+        "permission-req" => handle_permission_request(parsed.get("data")),
         other => {
             logging::verbose(
                 "[MonkeyCode]",
@@ -531,12 +535,73 @@ fn text_field(value: Option<&Value>) -> String {
 /// 「base64 编码的提问数据」一说（01-task-stream.md），因此解析失败时再试一次
 /// base64 → JSON 解码（两种形态都认，避免任务卡在提问处）。
 /// 解析全失败时返回 None（参考的 catch 分支同样不回）。
+/// 控制消息载荷解码：`data` 可能是 JSON 串 / base64(JSON) / 直接是对象。
+///
+/// 本项目整条 WebSocket 用**裸 JSON**：`Handled.reply` 由 `stream.rs` 的
+/// `Message::text(reply)` 原样发出，下行 `data` 也按 JSON 串解析。上游 3.4.1
+/// 把全链路改成了 base64(JSON)（`wire.rs`），那是一次协议迁移，不能只给
+/// `permission-resp` 用 —— 同一条连接上并存两套编码会让服务端解不出帧。
+/// 所以这里沿用本项目既有约定，并像 `auto_reply_question` 一样兼容三种形态。
+fn decode_payload(data: Option<&Value>) -> Option<Value> {
+    match data {
+        Some(Value::String(raw)) => parse_question(raw),
+        Some(value @ Value::Object(_)) => Some(value.clone()),
+        _ => None,
+    }
+}
+
+/// 逐工具权限审批 → `permission-resp`（自动批准）。
+///
+/// 载荷用 `id` 回执、`approved=true`、`remember=false`、`persist=false`，
+/// 与官方客户端 `approvals.ts::sendAskAnswersVia` 同形。解析不出 id 时
+/// **不回**：批错号没有意义，还可能让上游把另一个待审批项提前放行。
+fn handle_permission_request(data: Option<&Value>) -> Handled {
+    let payload = decode_payload(data);
+    let id = payload
+        .as_ref()
+        .and_then(|value| value.get("id").or_else(|| value.get("request_id")))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if id.is_empty() {
+        logging::verbose("[MonkeyCode]", "permission-req 缺少 id，未自动批准");
+        return Handled::default();
+    }
+    let tool = payload
+        .as_ref()
+        .and_then(|value| value.get("tool"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let title = payload
+        .as_ref()
+        .and_then(|value| value.get("title"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    logging::verbose(
+        "[MonkeyCode]",
+        &format!("自动批准工具调用：tool={tool} title={}", preview(title, 120)),
+    );
+    Handled {
+        reply: Some(
+            json!({
+                "type": "permission-resp",
+                "data": json!({
+                    "id": id,
+                    "approved": true,
+                    "remember": false,
+                    "persist": false,
+                })
+                .to_string(),
+            })
+            .to_string(),
+        ),
+        ..Handled::default()
+    }
+}
+
 fn auto_reply_question(data: Option<&Value>) -> Option<String> {
-    let payload = match data {
-        Some(Value::String(raw)) => parse_question(raw)?,
-        Some(value @ Value::Object(_)) => value.clone(),
-        _ => return None,
-    };
+    let payload = decode_payload(data)?;
     let request_id = payload
         .get("request_id")
         .and_then(Value::as_str)
@@ -635,4 +700,65 @@ fn preview(text: &str, limit: usize) -> String {
     let mut out: String = text.chars().take(limit).collect();
     out.push('…');
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use base64::Engine;
+
+    fn dispatch(data: Value) -> Handled {
+        let raw = json!({ "type": "permission-req", "data": data }).to_string();
+        let mut translator = Translator::new("chatcmpl-test".into(), "m".into(), false);
+        handle_message(&mut translator, &raw)
+    }
+
+    /// 回执必须是本项目既有的裸 JSON 形态，且 data 里带上原 id 与批准标记
+    fn approval_of(handled: &Handled) -> Value {
+        let outer: Value = serde_json::from_str(handled.reply.as_deref().expect("应当有回执"))
+            .expect("外层是 JSON");
+        assert_eq!(outer["type"], "permission-resp");
+        serde_json::from_str(outer["data"].as_str().expect("data 是 JSON 串"))
+            .expect("内层是 JSON")
+    }
+
+    #[test]
+    fn permission_req_replies_with_approval() {
+        let payload = json!({ "id": "p-1", "tool": "bash", "title": "运行命令" }).to_string();
+        let approval = approval_of(&dispatch(Value::String(payload)));
+        assert_eq!(approval["id"], "p-1");
+        assert_eq!(approval["approved"], true);
+        assert_eq!(approval["remember"], false);
+        assert_eq!(approval["persist"], false);
+    }
+
+    /// 载荷是对象或 base64(JSON) 时也要能回 —— 与 auto_reply_question 共用解码器
+    #[test]
+    fn permission_req_accepts_all_three_payload_shapes() {
+        let object = json!({ "id": "p-2", "tool": "read" });
+        assert_eq!(approval_of(&dispatch(object.clone()))["id"], "p-2");
+
+        use base64::engine::general_purpose::STANDARD;
+        let encoded = STANDARD.encode(object.to_string());
+        assert_eq!(approval_of(&dispatch(Value::String(encoded)))["id"], "p-2");
+    }
+
+    /// 缺 id 不回：批错号没有意义，还可能提前放行另一个待审批项
+    #[test]
+    fn permission_req_without_id_is_ignored() {
+        assert!(dispatch(json!({ "tool": "bash" })).reply.is_none());
+        assert!(dispatch(Value::Null).reply.is_none());
+    }
+
+    /// 抽走共用解码器后，原有的 Agent 提问自动回复不能退化
+    #[test]
+    fn reply_question_still_works_after_sharing_the_decoder() {
+        let data = Value::String(json!({ "request_id": "q-1" }).to_string());
+        let reply = auto_reply_question(Some(&data)).expect("应当有 reply-question");
+        let outer: Value = serde_json::from_str(&reply).expect("外层 JSON");
+        assert_eq!(outer["type"], "reply-question");
+        let inner: Value = serde_json::from_str(outer["data"].as_str().expect("data 是 JSON 串"))
+            .expect("内层 JSON");
+        assert_eq!(inner["request_id"], "q-1");
+    }
 }

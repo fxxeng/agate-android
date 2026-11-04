@@ -69,6 +69,8 @@ use super::{kind_id, ProviderKind};
 
 pub mod balance;
 pub mod credentials;
+/// 桌面端身份头（组织身份 / X-Client-* / X-Request-Id），见模块头。
+pub mod headers;
 pub mod jwt;
 pub mod models;
 pub mod onboarding;
@@ -97,7 +99,8 @@ impl ProviderAdapter for RaccoonAdapter {
         models::list()
     }
 
-    /// 构造 `POST {llmBase}/chat/completions`（头集合照抄源实现 `upstreamHeaders`）。
+    /// 构造 `POST {llmBase}/chat/completions`（基础头照抄源实现 `upstreamHeaders`，
+    /// 再经 `headers::append_identity` 补上官方桌面端的身份头）。
     ///
     /// body **原样透传**：源实现除了 `model` 走一次路由解析（未知模型回退默认，
     /// 本期由网关的模型校验/路由承担）之外不改任何字段。
@@ -119,12 +122,16 @@ impl ProviderAdapter for RaccoonAdapter {
                 "小浣熊账号缺少 accessToken，无法转发",
             ));
         }
-        let headers: Vec<(String, String)> = vec![
+        let mut headers: Vec<(String, String)> = vec![
             ("Content-Type".to_string(), "application/json".to_string()),
             // 源实现给的是 `Accept: */*`（LLM 网关两种响应形态都可能回）
             ("Accept".to_string(), "*/*".to_string()),
             ("Authorization".to_string(), format!("Bearer {token}")),
         ];
+        // 官方桌面端身份头是上游的风控基线：缺 X-Client-* / X-Request-Id
+        // 时请求可能被静默降级，日志里只剩「上游没回内容」。三头共用的取值
+        // 在 `balance::desktop_client_headers()`，组织身份从账号记录读。
+        headers::append_identity(&mut headers, account)?;
         Ok(ChatRequestPlan::chat(
             format!("{}/chat/completions", self.llm_base_url()),
             headers,

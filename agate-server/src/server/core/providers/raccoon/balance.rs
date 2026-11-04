@@ -329,12 +329,19 @@ fn to_int(value: Option<&Value>) -> Option<i64> {
 const GRANT_CHECK_LIMIT: usize = 20;
 const GRANT_CHECK_TIMEOUT_MS: u64 = 25_000;
 
-/// 客户端身份头：官方桌面端启动时带的两个头（源实现 grantDesktopLoginPoints）。
-/// 每日签到（setting_info）与新手任务的首次登录奖励（`onboarding.rs`）共用。
+/// 客户端身份头：官方桌面端启动时带的三个头（源实现 grantDesktopLoginPoints）。
+/// 每日签到（setting_info）、新手任务的首次登录奖励（`onboarding.rs`）与
+/// **对话请求**（`headers::append_identity`）共用这一份，别在别处再抄一遍。
+///
+/// 版本对齐上游 3.4.1 的 `v1.1.5`（旧值 `v1.0.0` 会被上游当成过旧客户端）。
+/// 平台值固定 `desktop-windows`：这个头表达的是**被伪装的官方桌面客户端**，
+/// 不是宿主 OS —— 本项目跑在 Android 上，按 `cfg!(target_os)` 反推会得到
+/// `desktop-linux`，反而与要伪装的目标不一致（详见 `headers.rs` 模块头）。
 pub(super) fn desktop_client_headers() -> Vec<(String, String)> {
     vec![
+        ("X-Client-Name".to_string(), "raccoon-work".to_string()),
         ("X-Client-Platform".to_string(), "desktop-windows".to_string()),
-        ("X-Client-Version".to_string(), "v1.0.0".to_string()),
+        ("X-Client-Version".to_string(), "v1.1.5".to_string()),
     ]
 }
 
