@@ -563,6 +563,9 @@ fn short_hash(text: &str) -> String {
 
 /// 重建配置 + 启动（或重启）内核 + 同步节点（详见模块头「启动流程」）。
 pub async fn run_restart(providers: &[ProviderInput]) -> Result<(), String> {
+    if let Some(reason) = crate::server::core::sub_kernel::unsupported_reason() {
+        return Err(reason);
+    }
     if !crate::server::core::sub_kernel::installed() {
         return Err("代理内核未安装（先在「订阅管理」下载内核）".to_string());
     }
@@ -843,6 +846,9 @@ pub async fn stop_kernel() {
 /// 强制刷新一条订阅的内容：控制器 PUT（provider 强制拉取）→ 轮询节点 →
 /// 集合变了才重建配置 + 重启（端口注册表保持稳定）。
 pub async fn run_refresh(sub_id: &str, providers: &[ProviderInput]) -> Result<(), String> {
+    if let Some(reason) = crate::server::core::sub_kernel::unsupported_reason() {
+        return Err(reason);
+    }
     let state = read_state();
     let Some(controller_port) = state.get("controllerPort").and_then(json_u16) else {
         return Err("内核未运行（先启动内核）".to_string());
@@ -1169,6 +1175,9 @@ pub fn test_port() -> Option<u16> {
 /// 节点根本不在订阅缓存里（已被机场移除）时**不等**，当场给出与池解析
 /// （`proxy_pool::resolve_item`）同一口径的话。
 pub async fn select_test_node(provider_id: &str, node: &str) -> Result<u16, String> {
+    if let Some(reason) = crate::server::core::sub_kernel::unsupported_reason() {
+        return Err(reason);
+    }
     if !crate::server::core::sub_kernel::installed() {
         return Err("代理内核未安装（先在「订阅管理」下载内核）".to_string());
     }

@@ -86,12 +86,13 @@ enum DownloadError {
 
 /// 执行下载（worker 调用；已安装时是 no-op ——「重复点下载」不重复拉）。
 pub async fn run_download() -> Result<DownloadOutcome, String> {
+    let Some((asset, sha256)) = crate::server::core::sub_kernel::asset_for_current_platform() else {
+        return Err(crate::server::core::sub_kernel::unsupported_reason()
+            .unwrap_or_else(|| "当前平台暂不支持代理子内核".to_string()));
+    };
     if crate::server::core::sub_kernel::installed() {
         return Ok(DownloadOutcome::Done);
     }
-    let Some((asset, sha256)) = crate::server::core::sub_kernel::asset_for_current_platform() else {
-        return Err("当前平台暂不支持代理内核（官方没有这一平台的预编译产物）".to_string());
-    };
     let dir = kernel_dir();
     std::fs::create_dir_all(&dir).map_err(|error| format!("创建内核目录失败: {error}"))?;
     let archive_path = dir.join(asset);

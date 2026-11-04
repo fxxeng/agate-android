@@ -4,7 +4,7 @@
 > 基线：`verify/arch-8faa5f5`，GitHub 验证 HEAD `53758d9`（R14 / Run `41305086716`）  
 > 本文是源码审计与设计决策记录，不代表本批已经修改 RuntimeController/JNI/Rust 业务代码。源码归档不含 `.git`，因此不能从归档本身验证 Git commit 身份；身份来自用户提供的 R14 CI 报告。
 
-> **当前验证分支状态（R32 / 2026-11-04）**：验证分支 `verify/arch-8faa5f5` 的最新已验证提交为 `91dd6c26e54080e266dafa0e3f3911e9a93c0754`，CI Run `41774982028` success。R32 源码归档不含 `.git`；commit 身份以 CI 报告为准。后续批次必须以 R32 源码树为基线，不得回退到旧归档。
+> **当前验证分支状态（R33 / 2026-11-04）**：验证分支 `verify/arch-8faa5f5` 的最新已验证提交为 `82e27c41e8`，CI Run `41830352114` 双绿。R33 源码归档不含 `.git`；commit 身份以 CI 报告为准。当前 Batch 4D-1A 候选基于 R33，尚未 CI 验证。
 
 ## 1. Batch 4A 关闭记录
 
@@ -816,3 +816,45 @@ R32 `91dd6c26e54080e266dafa0e3f3911e9a93c0754` 仍是唯一已验证基线。当
 ### 真机证据
 
 Phase 2 A–E 改为滚动验收：APP 日常使用中记录设备信息、操作时间线、logcat、必要的 dumpsys 和复现次数。未实测保持 NOT RUN，受限保持 BLOCKED。设备验证不阻塞独立架构批次，但也不能被 CI 结果替代。
+
+
+## R33 收官与 Batch 4D-1 / 4D-2 审计补记（2026-11-04）
+
+### R33 验证结果
+
+- HEAD `82e27c41e8`，GitHub Actions Run `41830352114` 双绿，33.5 min。
+- Rust 747/747；Gradle JVM 99/99；Instrumentation 2/2；JNI export 12/12；APK/ELF 检查通过。
+- Batch 4C-1 Native log callback contract 正式关闭。模拟器实际 JNI 注册/撤销断言通过；真实手机日志回调仍待滚动观察。
+- 源码归档 SHA256 `7b2ee86df483788b07e608edb8529c09f539354f9d14222530695ac8e4c95137`，765 files；无 `.git`。
+
+### Batch 4D-1A：平台能力显式化
+
+本轮实现不是 Android 子内核支持，而是将已有“不存在 Android 官方资产”的隐含行为提升为明确的平台契约。
+
+- 资产解析变成纯函数 `asset_for_platform(os, arch)`，保留 Windows/macOS/Linux x86_64 与 aarch64 的 v1.19.32 文件名和 SHA256 pin。
+- Android 不被映射到 Linux ARM64；`platform_info()` 暴露 `{os, arch, supported, asset, reason}`，`status_json()` 增加 `available` 与 `platform` 字段。
+- `installed()` 仍表示磁盘上有文件；新增 `available()` 表示平台受支持且文件已安装，避免残留文件触发自动启动或 listener reconcile。
+- 下载、重启、刷新、节点测试、自动启动均加入平台能力快速失败/门禁；删除仍允许按物理文件状态清理残留。
+- `accounts.rs` 在 Android 拒绝隐式 `importDesktop:true` 固定路径读取；显式文件导入（`authFileContent` / `authFileB64`）优先级保留，手动粘贴不受影响。
+- 新增 6 项纯函数 Rust tests。R33 的 747 是已验证结果，本批 753 只是预期计数，等待 CI。
+
+### Batch 4D-2：Core Worker 生命周期审计
+
+R33 源码表明任务所有权至少分为 Core process scope、Gateway scope、Request scope、Sidecar scope。当前 `sub_kernel` worker 使用 OnceLock + unbounded mpsc，JoinHandle 丢弃，sender 没有显式关闭；`sub_kernel::shutdown()` 在当前归档中没有生产调用点，且只 kill 当前 child，不停止队列 worker。`GLOBAL_RUNTIME` 为进程级 OnceLock Runtime；scheduled_tasks / usage_query / zcode config_sync 等长期循环没有显式取消句柄。与此同时，Gateway HTTP serve 已使用 oneshot→watch graceful shutdown，AutoCheckin / RunGuard 具备局部句柄管理，callback server 使用 watch 信号。后续应统一 owner/scope 契约，而非统一 abort。
+
+完整方案见 `docs/CORE_WORKER_LIFECYCLE_AUDIT_20261104.md`。本轮不修改 worker 生命周期生产逻辑，避免在没有定义 Core shutdown 与 Gateway stop 区别前引入竞态。下一批先设计最小 `CoreTaskSupervisor` / `TaskScope`，再选一个循环任务做可验证 spike。
+
+### 当前状态
+
+| 项目 | 状态 |
+|---|---|
+| R33 / Batch 4C-1 | 已验证关闭 |
+| Batch 4D-1A 平台能力门禁 | 已实施，待集中 CI |
+| Batch 4D-2 Worker 生命周期审计 | 审计完成，实施未开始 |
+| Batch 4D-3 平台进程 adapter | 等 4D-1/4D-2 决策 |
+| Phase 2 真机验收 | 滚动进行，不阻塞开发 |
+| 当前已验证 HEAD | `82e27c41e8` |
+
+### 下一次集中验证建议
+
+先完成 4D-1A 的 Rust/Android ABI/Gradle/JNI/APK/Instrumentation 集中 CI（预期 Rust tests 753）；在该候选验证期间继续准备 CoreTaskSupervisor 设计，但不把尚未实施的 Worker 生产改动混入本候选。4D-2 的代码 spike 与后续平台 adapter 连续开发后，再合并成下一轮集中验证。

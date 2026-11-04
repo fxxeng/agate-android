@@ -88,6 +88,15 @@ fn sync_kernel_after_change() {
             "[Subscription]",
             "内核已手动关闭 —— 订阅变更已保存，「启动内核」后生效",
         );
+    } else if !sub_kernel::platform_supported() {
+        // 当前平台没有可运行的 sidecar：订阅仍正常保存，不投递必然失败的重启命令。
+        logging::log(
+            "[Subscription]",
+            &format!(
+                "订阅已保存；{}",
+                sub_kernel::unsupported_reason().unwrap_or_default()
+            ),
+        );
     } else {
         sub_kernel::request_restart(enabled);
     }
@@ -205,6 +214,9 @@ async fn save(body: &Bytes) -> Response {
 
 /// POST /api/subscriptions/refresh（强制拉取订阅内容；节点变了自动重启内核）
 fn refresh(body: &Bytes) -> Response {
+    if let Some(reason) = sub_kernel::unsupported_reason() {
+        return management_error(400, &reason);
+    }
     let payload = match parse_body(body) {
         Ok(value) => value,
         Err(_) => return management_error(400, "请求内容不是有效 JSON"),
@@ -339,6 +351,9 @@ fn decode_qr(body: &Bytes) -> Response {
 /// `dir` 空串 = 恢复默认目录；非绝对路径当场 400 —— 宁可在这里说清楚，也不要
 /// 等下载时报一句「创建内核目录失败」。
 async fn kernel_download(body: &Bytes) -> Response {
+    if let Some(reason) = sub_kernel::unsupported_reason() {
+        return management_error(400, &reason);
+    }
     if sub_kernel::installed() {
         return ok_json(sub_kernel::status_json());
     }
@@ -437,6 +452,9 @@ fn downloading() -> bool {
 
 /// POST /api/subscriptions/kernel/restart（手动启动 / 重启；先落日志便于排障）
 fn kernel_restart() -> Response {
+    if let Some(reason) = sub_kernel::unsupported_reason() {
+        return management_error(400, &reason);
+    }
     let enabled = subscriptions::enabled_provider_inputs();
     if enabled.is_empty() {
         return management_error(400, "还没有启用的订阅（先添加一条订阅再启动内核）");

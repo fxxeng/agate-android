@@ -596,6 +596,31 @@ pub async fn add_account(state: &ServerState, body: &Bytes) -> Response {
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty());
+    // Android 不具备桌面客户端固定目录语义。只阻止「自动读取本机桌面登录态」
+    // （importDesktop）；用户显式选择文件后提交的 authFileContent/authFileB64
+    // 仍按各 Provider 已有的文件导入能力处理，不与 desktop import 混为一谈。
+    let file_import_provider = matches!(
+        crate::server::core::providers::kind_from_id(provider),
+        Some(
+            crate::server::core::providers::ProviderKind::Raccoon
+                | crate::server::core::providers::ProviderKind::CatPaw
+                | crate::server::core::providers::ProviderKind::ClineFree
+                | crate::server::core::providers::ProviderKind::ClinePass
+                | crate::server::core::providers::ProviderKind::Kuku
+        )
+    );
+    let explicit_file_import =
+        file_import_provider && (auth_file_content.is_some() || auth_file_b64.is_some());
+    if crate::server::core::platform::should_reject_desktop_import(
+        std::env::consts::OS,
+        import_desktop,
+        explicit_file_import,
+    ) {
+        return management_error(
+            400,
+            "当前平台不支持自动读取桌面客户端登录态；请使用文件导入或手动粘贴凭证",
+        );
+    }
     // ── 自定义提供商（`custom-` 前缀，不在静态注册表里）─────────
     // 它**不进** `ProviderKind` 枚举 —— `kind_from_id` 对它返回 None 是设计
     // 而不是遗漏（见 `providers` 的模块头），所以必须在穷举 match **之前**

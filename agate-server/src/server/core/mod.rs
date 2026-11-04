@@ -93,6 +93,7 @@ pub mod model_meta;
 pub mod model_rules;
 pub mod models;
 pub mod prompt;
+pub mod platform;
 pub mod protocol;
 pub mod providers;
 pub mod proxy_pool;

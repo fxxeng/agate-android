@@ -439,5 +439,5 @@ pub fn enabled_provider_inputs() -> Vec<ProviderInput> {
 
 /// 是否已安装内核且有启用的订阅（bootstrap 自动拉起的判据）
 pub fn should_autostart() -> bool {
-    crate::server::core::sub_kernel::installed() && has_enabled()
+    crate::server::core::sub_kernel::available() && has_enabled()
 }

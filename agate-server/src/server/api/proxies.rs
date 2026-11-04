@@ -428,9 +428,9 @@ fn listener_flow(state: &ServerState, id: &str, change: &proxy_pool::EnabledChan
         return "none";
     }
     if change.enabled {
-        // 内核没装：补建无从谈起（地址列会提示「去订阅管理下载内核」），
+        // 当前平台不可运行内核：补建无从谈起（状态 API 会给出平台能力原因），
         // 这里报 opening 只会让前端白轮询十几秒
-        if !sub_kernel::installed() {
+        if !sub_kernel::available() {
             return "none";
         }
         let pool_ids = state.store().referenced_pool_ids();
@@ -450,8 +450,8 @@ fn listener_flow(state: &ServerState, id: &str, change: &proxy_pool::EnabledChan
     } else {
         // 禁用：对账（回收方向）—— 缺口判据是 reconcile 的 stale 检测
         // （不在 wanted 里却还挂着端口：刚禁用的这条、先前遗留的、
-        // 失去引用的都算），内核没装则无端口可收
-        if !sub_kernel::installed() {
+        // 失去引用的都算），当前平台不可运行内核则无端口可收
+        if !sub_kernel::available() {
             return "none";
         }
         if reconcile_listeners(state) {
@@ -633,6 +633,16 @@ pub fn reconcile_listeners(state: &ServerState) -> bool {
         }
     }
     if missing == 0 && stale == 0 {
+        return false;
+    }
+    if !sub_kernel::platform_supported() {
+        logging::log(
+            "[Proxies]",
+            &format!(
+                "当前平台不支持代理子内核，监听器对账暂缓：{}",
+                sub_kernel::unsupported_reason().unwrap_or_default()
+            ),
+        );
         return false;
     }
     // 手动关闭闩：用户刚点过「关闭内核」，这里不悄悄把它带起来 —— 缺口

@@ -94,12 +94,10 @@ fn account_store() -> Option<&'static AccountStore> {
     STORE.get().and_then(Option::as_ref)
 }
 
-/// 当前平台的发布资产（名字 + sha256 pin）。
-///
-/// 不支持的平台返回 None（界面提示「暂不支持的平台」；内核是 Go 预编译
-/// 二进制，官方 Release 只出这几组）。
-pub fn asset_for_current_platform() -> Option<(&'static str, &'static str)> {
-    match (std::env::consts::OS, std::env::consts::ARCH) {
+/// 按目标平台解析官方发布资产。纯函数便于在宿主机上覆盖 Android /
+/// Windows / macOS / Linux 的能力矩阵；不能把 Linux ARM64 资产推断为 Android 资产。
+pub fn asset_for_platform(os: &str, arch: &str) -> Option<(&'static str, &'static str)> {
+    match (os, arch) {
         ("windows", "x86_64") => Some((
             "mihomo-windows-amd64-v1.19.32.zip",
             "1ac84e795b5b915446e20139677fb6cc013a0778e876e8d4c96f994750b4c4a3",
@@ -126,6 +124,54 @@ pub fn asset_for_current_platform() -> Option<(&'static str, &'static str)> {
         )),
         _ => None,
     }
+}
+
+/// 当前平台是否有项目明确支持的 mihomo 发布资产。
+pub fn platform_supported() -> bool {
+    asset_for_platform(std::env::consts::OS, std::env::consts::ARCH).is_some()
+}
+
+/// 当前平台不支持时给调用方的稳定、可操作错误。
+pub fn platform_unsupported_reason(os: &str, arch: &str) -> Option<String> {
+    if asset_for_platform(os, arch).is_some() {
+        return None;
+    }
+    Some(if os == "android" {
+        format!(
+            "Android 暂不支持代理子内核（{arch}）：当前没有经过验证的 Android ABI 专用 mihomo 资产；Linux ARM64 资产不能视为 Android 可执行文件"
+        )
+    } else {
+        format!("当前平台暂不支持代理子内核（{os}/{arch}）：没有对应的官方预编译资产")
+    })
+}
+
+/// 当前平台不支持时的错误；支持平台返回 None。
+pub fn unsupported_reason() -> Option<String> {
+    platform_unsupported_reason(std::env::consts::OS, std::env::consts::ARCH)
+}
+
+/// 当前平台的能力描述，供状态 API / UI 明确区分「未安装」与「平台不支持」。
+pub fn platform_info() -> Value {
+    let os = std::env::consts::OS;
+    let arch = std::env::consts::ARCH;
+    let asset = asset_for_platform(os, arch);
+    json!({
+        "os": os,
+        "arch": arch,
+        "supported": asset.is_some(),
+        "asset": asset.map(|(name, _)| name),
+        "reason": platform_unsupported_reason(os, arch),
+    })
+}
+
+/// 当前平台的发布资产（名字 + sha256 pin）。
+pub fn asset_for_current_platform() -> Option<(&'static str, &'static str)> {
+    asset_for_platform(std::env::consts::OS, std::env::consts::ARCH)
+}
+
+/// 是否可以在当前平台运行代理子内核（平台支持 + 二进制已安装）。
+pub fn available() -> bool {
+    platform_supported() && installed()
 }
 
 /// 内核二进制的期望文件名（下载后统一改名到它，config / 状态文件引用固定名）
@@ -518,6 +564,8 @@ pub fn status_json() -> Value {
     let running = kernel_running_with(controller_port, snapshot_running);
     json!({
             "installed": installed(),
+            "available": available(),
+            "platform": platform_info(),
             "version": KERNEL_VERSION,
             "asset": asset_for_current_platform().map(|(name, _)| name),
             "running": running,
@@ -668,4 +716,40 @@ pub fn record_download_progress(received: u64, total: u64) {
         snapshot.download.received = received;
         snapshot.download.total = total;
     });
+}
+
+#[cfg(test)]
+mod platform_tests {
+    use super::{asset_for_platform, platform_unsupported_reason};
+
+    #[test]
+    fn official_desktop_assets_are_mapped() {
+        assert!(asset_for_platform("windows", "x86_64").is_some());
+        assert!(asset_for_platform("windows", "aarch64").is_some());
+        assert!(asset_for_platform("macos", "x86_64").is_some());
+        assert!(asset_for_platform("macos", "aarch64").is_some());
+        assert!(asset_for_platform("linux", "x86_64").is_some());
+        assert!(asset_for_platform("linux", "aarch64").is_some());
+    }
+
+    #[test]
+    fn android_arm64_is_not_inferred_from_linux_arm64() {
+        assert!(asset_for_platform("android", "aarch64").is_none());
+        let reason = platform_unsupported_reason("android", "aarch64").unwrap();
+        assert!(reason.contains("Android"));
+        assert!(reason.contains("Linux ARM64"));
+    }
+
+    #[test]
+    fn unsupported_os_and_arch_are_rejected() {
+        assert!(asset_for_platform("freebsd", "x86_64").is_none());
+        assert!(asset_for_platform("linux", "riscv64").is_none());
+        assert!(platform_unsupported_reason("freebsd", "x86_64").is_some());
+    }
+
+    #[test]
+    fn supported_platform_has_no_unsupported_reason() {
+        assert!(platform_unsupported_reason("linux", "aarch64").is_none());
+    }
+
 }

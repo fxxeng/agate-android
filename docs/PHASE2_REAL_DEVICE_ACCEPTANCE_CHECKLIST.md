@@ -173,4 +173,9 @@ adb logcat -d -v threadtime | grep -iE 'Agate|Gateway|RuntimeController|Foregrou
 
 只有 A–D 四类主场景均有真实设备证据，且所有失败/阻塞项均有明确处置，才可讨论 Phase 2 关闭。E 为 SSE 端到端补充验收，建议一并完成。若某项因设备/系统限制无法执行，必须标记 BLOCKED，不得折算为 PASS。
 
-Phase 2 通过后再进入 Phase 3 的 Doze、WakeLock、Alarm/WorkManager、重启/进程死亡恢复及 ROM 长稳验证。Phase 4 Rust 平台解耦继续保持冻结，不因本轮 CI 通过而提前启动。
+Phase 2 设备验收继续按真实使用证据滚动推进；它不阻塞独立的 Phase 4 Rust 平台解耦批次。Phase 3 的 Doze、WakeLock、Alarm/WorkManager、重启/进程死亡恢复及 ROM 长稳仍需按单独清单验收。
+
+
+## 10. R33 补充：Native 日志回调模拟器证据（2026-11-04）
+
+R33 GitHub Actions Run `41830352114` 的 Instrumentation 2/2 通过，其中 `nativeLibraryCoreRouterAndGatewayLifecycleWork` 走真实 JNI listener 注册/撤销路径，并断言注册 `ok`、撤销 `ok && cleared`。这属于 Emulator / Android Runtime 证据，不等同于真实手机长期运行证据。真机日志回调继续在 APP 使用中观察；若出现未投递、重复投递、listener 泄漏或关闭后仍回调，需保留 logcat 与复现时间线。

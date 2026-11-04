@@ -5,12 +5,12 @@
 
 > 文档用途：供后续开发者接手、评审和持续推进 Android 架构改造。
 
-> **验证分支当前状态（R32 / 2026-11-04）**：最近一次已验证 HEAD 为 `91dd6c26e54080e266dafa0e3f3911e9a93c0754`（CI Run `41774982028`，JVM 91/91、Instrumentation 2/2，Rust/Android 构建通过）。Batch 4B-2B-14 已关闭。当前交付候选在 R32 上叠加 Batch 4C-1 Native 日志回调契约改动；该候选尚未取得 R33 CI，不得称为已验证 HEAD。源码归档不含 `.git`，commit 身份以 CI 报告为准。
+> **验证分支当前状态（R33 / 2026-11-04）**：最近一次已验证 HEAD 为 `82e27c41e8`（CI Run `41830352114`，Rust 747/747、JVM 99/99、Instrumentation 2/2、JNI exports 12/12、Android/Rust 构建通过）。Batch 4C-1 已关闭。当前工作候选为 R33 + Batch 4D-1A 平台能力门禁；该候选尚未取得下一轮 CI，不得称为已验证提交。源码归档不含 `.git`，commit 身份以 CI 报告为准。
 >
-> 当前工作分支：`architecture/kotlin-rust-core`（仅在本地工作副本建立）  
-> 当前基线：`e5fb279`（从用户提供的源码 ZIP 导入）  
-> 最近代码改造：`3406bb1`（加固 Android Service 销毁清理与签到通知契约）；此前平台路径修复：`e852b95`；平台依赖审计：`aeca960`；交接文档随当前工作副本持续更新
-> 本文档对应工作目录：仓库根目录
+> 当前验证分支：`verify/arch-8faa5f5`（只允许推送该分支，不修改 `main`、不合并）
+> 当前已验证基线：R33 `82e27c41e8`
+> 当前工作候选：R33 + Batch 4D-1A；预计 Rust tests 753 项，尚待 CI。
+> 真机验收采用 APP 日常使用中的滚动证据，不作为独立架构批次的前置阻塞。
 
 ## 1. 项目目标与边界
 
@@ -2148,3 +2148,88 @@ Phase 2 A–E 场景在 APP 日常使用中逐步覆盖。每次发现问题记�
 | Phase 6 观测与发布门禁 | 部分准备 | 与压力测试/发布阶段合并规划 |
 
 **执行原则总结：** 以后不按文件数或一两处代码改动触发 CI；按架构主题组织开发。一个验证候选可以包含多个已完成子任务，但每个子任务保留独立验收项。缩短的是 CI 往返次数，不是正确性门槛。
+
+
+## 24. R33 收官与 Batch 4D-1 平台能力收敛（2026-11-04）
+
+### 24.1 R33 验证收官
+
+- 验证分支：`verify/arch-8faa5f5`。
+- R33 HEAD：`82e27c41e8`（完整 SHA 以 GitHub commit 为准）；CI Run `41830352114`，Rust 与 Android 双绿，总耗时约 33.5 分钟。
+- Rust tests：747/747；Gradle JVM：99/99；Instrumentation：2/2；JNI exports：12/12；APK 内容与 ELF 检查通过。
+- R33 修复 Native log callback 更新契约：Rust callback mutex poisoned / JavaVM / GlobalRef 更新失败不再谎报成功；Kotlin `LogListenerRegistry` 只有 Native 返回 ok 后才提交当前 listener。JNI export 名称与签名未变。
+- Instrumentation 在 Emulator 的真实 Android Runtime 走通 JNI 注册/撤销并断言 `ok` / `cleared:true`。真实手机上的日志回调链路仍未执行，不能标为真机 PASS。
+- R33 源码归档：`Agate_Verification_Source_8faa5f5_Consolidated_4C1_R33_82e27c41e8.zip`；SHA-256 `7b2ee86df483788b07e608edb8529c09f539354f9d14222530695ac8e4c95137`；报告称 765 个文件，8 个 R33 改动路径与远端 GitHub blob SAME。归档不含 `.git`。
+- Batch 4C-1 正式关闭。新的已验证基线是 R33 `82e27c41e8`，不再沿用 R32 `91dd6c26...` 作为当前基线。
+
+### 24.2 Batch 4D-1A：子内核平台能力显式化（本轮源码候选）
+
+本轮基于 R33 做了小范围、同一主题的能力边界收敛，目标不是宣称 Android 已支持 mihomo，而是让当前不支持的能力明确、可查询、快速失败。
+
+**能力矩阵：**
+
+| 目标平台 | 资产映射 | 当前策略 |
+|---|---|---|
+| Windows x86_64 / aarch64 | 官方 v1.19.32 对应 zip + SHA256 pin | 支持 |
+| macOS x86_64 / aarch64 | 官方 v1.19.32 对应 gz + SHA256 pin | 支持 |
+| Linux x86_64 / aarch64 | 官方 v1.19.32 对应 gz + SHA256 pin | 支持 |
+| Android（当前主要为 arm64-v8a） | 无经过验证的 Android 专用资产 | 明确不支持 |
+| 其它 OS / ABI | 无资产映射 | 明确不支持 |
+
+Linux ARM64 资产不等同于 Android ARM64 可执行文件。Android 需要单独验证 ABI、bionic/系统调用兼容、应用私有目录执行策略、SELinux、进程监督与分发许可；在这些证据齐备前不自动下载、不启动，也不把“文件存在”当作“当前平台可运行”。
+
+**代码改动：**
+- `sub_kernel::asset_for_platform(os, arch)`：将平台资产映射提取为纯函数，可在宿主测试中覆盖多平台矩阵。
+- `platform_supported()` / `unsupported_reason()` / `platform_info()`：提供平台能力与可操作错误；`status_json()` 新增 `available` 与 `platform { os, arch, supported, asset, reason }` 字段。
+- 保留 `installed()` 的原语义：只表示二进制文件在磁盘上存在，便于清理遗留文件；新增 `available()` 表示“当前平台有已声明支持的资产且二进制已安装”。两者不可混用。
+- `run_restart()` / `run_refresh()` / `select_test_node()` 在平台能力检查失败时立即返回明确错误；下载先判断平台资产，再判断文件是否已安装，避免 Android 放入一个同名文件后被误报为下载完成。
+- `kernel_download` / `kernel_restart` API 在排队前快速返回平台不支持；`should_autostart()` 与代理池 listener reconcile 使用 `available()` / 平台门禁，避免 Android 上因残留同名文件而触发自动启动/无效重建；订阅变更仍正常落库，但不再排队必然失败的 sidecar 重启。
+- `kernel_remove` 仍按物理 `installed()` 判断，保留清理遗留文件的能力；停止/删除不因平台不支持而被禁用。
+- Android `importDesktop:true` 的隐式固定路径读取被拒绝；明确选择的 `authFileContent` / `authFileB64` 文件导入仍按 Provider 已实现能力处理，手动粘贴不受影响。显式文件导入优先级保持不变。
+- 新增 6 项 Rust 纯函数测试，覆盖六类桌面资产映射、Android ARM64 不继承 Linux ARM64、未知 OS/ABI、unsupported reason、桌面导入平台门禁和显式文件导入优先级。
+
+**本轮没有做：** 没有改 JNI ABI、Kotlin Service、Gateway 生命周期、mihomo 下载源/版本/hash、桌面进程启动参数、Desktop/headless 启动语义；没有将 Android 标记为支持；没有替换现有 Desktop `tokio::process::Command` / `taskkill` / `kill` 实现。
+
+**验证状态：** 该候选尚未运行 GitHub CI。当前执行环境没有 cargo/rustc/Gradle，6 项新增 Rust 测试尚未实际执行；只完成源码静态检查、调用点审查和归档级对账。预计 Rust tests 目标从 R33 的 747 增至 753，最终以 CI TEST 结果为准。不能将该候选称为 R34 已通过。
+
+### 24.3 Batch 4D-2：Core Worker 生命周期审计（源码审计已完成，实施未开始）
+
+本轮基于 R33 源码对 worker/task 生命周期做了第一轮盘点，完整分类与建议见 `docs/CORE_WORKER_LIFECYCLE_AUDIT_20261104.md`。重要结论：当前 Rust Core 已存在多种不同的任务所有权模型，不能简单把所有任务统一改成 abort 或全部塞进一个 Kotlin 生命周期队列。
+
+**已识别的主要类别：**
+
+| 类别 | 代码位置 | 当前所有权/取消方式 | 风险与处理方向 |
+|---|---|---|---|
+| Core 进程级循环 | `ServerState::bootstrap` 中 `sub_kernel::spawn_worker`、`scheduled_tasks::spawn`、`zcode::config_sync::spawn`、`usage_query::spawn_sweeper` | 多数 `spawn_task` 后丢弃 JoinHandle；部分用 OnceLock 防重复 | 明确 Core shutdown 时的停止/等待策略；Gateway stop 不应停止它们 |
+| 子内核命令 worker | `core/sub_kernel/mod.rs` | OnceLock + unbounded mpsc；worker JoinHandle 丢弃；sender 无显式关闭入口 | 需要有界/背压策略、关闭闩、队列 drain/drop 语义；避免 shutdown 与队列中的 Restart 竞争 |
+| 子内核 sidecar 进程 | `core/sub_kernel/runtime.rs` | static Mutex<Option<Child>>；当前句柄可 `start_kill` + wait；stale PID 通过 secret 验证后调用平台命令 | 将“当前 Child 句柄”和“遗留 PID 清理”区分；宿主进程退出与 sidecar 退出需形成明确契约 |
+| 全局 Tokio fallback | `lib.rs::GLOBAL_RUNTIME` / `spawn_task` | OnceLock 持有 Runtime 到进程退出；返回 JoinHandle，但很多调用点不保存 | 说明运行时由谁创建/拥有；不能在 Gateway stop 时 drop；需要 Core 级显式关闭或明确进程级常驻语义 |
+| 可取消调度任务 | `core/auto_checkin.rs` | 保存 JoinHandle + AtomicBool，stop 时置位并 abort | 有显式停止，但 abort 与合作式退出的完成/等待语义需统一说明 |
+| 任务租约心跳 | `core/task_state.rs::RunGuard` | 保存 JoinHandle，finish/Drop 时 abort | 属请求/任务级资源；不应纳入全局 Core stop 的无差别 abort |
+| Callback HTTP servers | Trae / AutoClaw 等 callback_server | watch channel 发停止信号，任务句柄保存策略不完全一致 | 统一记录 owner、stop signal、join timeout；回调任务有独立生命周期 |
+| Gateway HTTP serve | `server/mod.rs` | oneshot → watch 广播，Axum graceful shutdown | 属 Gateway scope；与 Core 级 worker 分离，保留在途请求收尾 |
+| 请求/登录/Provider 异步任务 | `jni_bridge.rs`、`login.rs`、Provider chat/session 等 | 混用 `spawn_task` 与 `tokio::spawn`，有的返回句柄、有的 detached | 逐类判断是否请求作用域、用户取消作用域或 Core 作用域；不能仅按 spawn API 名称统一迁移 |
+
+**需要优先处理的具体问题：**
+1. `sub_kernel::spawn_worker()` 通过 `OnceLock<UnboundedSender<Command>>` 常驻；`send()` 在 sender 不存在或 send 失败时静默丢弃命令；当前没有明确 worker close / join API。
+2. `sub_kernel::shutdown()` 在本归档源码中只有定义，没有发现生产调用点；它只调用 `runtime::kill_child()`，并不关闭命令接收端、不等待 worker 退出，也不能阻止正在执行/排队的 Restart 后续再次 spawn。
+3. `GLOBAL_RUNTIME` 是进程级 OnceLock Runtime，没有显式 shutdown；这是当前 fallback 的实际所有权，不应被误称为 Gateway 生命周期。
+4. `scheduled_tasks`、`usage_query`、`zcode::config_sync` 等循环任务没有保存 JoinHandle 或取消接收端；目前依赖进程退出终止。Core graceful shutdown 的可控性不足。
+5. `auto_checkin` 与 `RunGuard` 已有句柄管理，callback servers 与 Gateway serve 已有 watch/oneshot 模式；后续应复用经过验证的合作式取消 + 有界等待思路，而不是对所有任务一律 abort。
+6. 当前 `spawn_task` 对当前 Tokio runtime 与全局 fallback runtime 采用不同承载；后台任务归属需要显式记录，否则 shutdown 时难以证明所有任务均已停止。
+
+**下一批实施边界：**
+- 先做 `CoreTaskSupervisor` / `TaskScope` 最小设计，明确 `Core`、`Gateway`、`Request`、`Sidecar` 四种 scope。
+- Core scope 持有任务句柄与取消信号；Gateway scope 只随 Gateway stop；Request scope由请求/登录流程自行结束；Sidecar scope拥有子进程句柄和命令 worker。
+- 先接入一类低耦合、可测试的 Core 循环（优先 `zcode::config_sync` 或 `usage_query`）作为 spike，再扩展；不要第一轮就重写所有 Provider `tokio::spawn`。
+- `Core shutdown` 与 `Gateway stop` 必须是不同操作。Android Kotlin 可发起显式 Core shutdown（若产品生命周期确实需要），但不能把 Activity/Service `onDestroy` 当成进程死亡通知；Android OS 杀进程时不保证回调。
+- 保留 Desktop/headless 的优雅 shutdown；不将 Android Context、Service、Lifecycle 类型传入 Rust。
+- 先定义取消、join timeout、超时后 detach/abort、失败日志与重复 shutdown 的幂等语义，再动生产任务。
+
+### 24.4 当前验证基线与集中验证候选
+
+- 已验证 HEAD：R33 `82e27c41e8`，CI Run `41830352114`。
+- 本轮工作树：R33 + Batch 4D-1A 平台能力门禁与 4D-2 生命周期审计文档；工作树不含 `.git`，不是 Git commit。
+- 预计 Rust tests 753（R33 747 + 本轮 6）；Android Rust ABI build、Gradle JVM、JNI exports、APK/ELF、Instrumentation 均需集中 CI 验证。
+- 当前批次没有增加 Kotlin/JNI ABI，不应仅因 Rust tests 通过就声称 Android 运行时支持 mihomo。
+- 分支继续只允许 `verify/arch-8faa5f5`；不触碰 `main`、不合并。Phase 2 真机验收继续滚动进行，不阻塞本批 CI。
