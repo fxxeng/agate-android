@@ -262,7 +262,7 @@ object GatewayRepository {
     }
 
     private fun stopInternal(onlyIfStarted: Boolean): Boolean {
-        val detached: Triple<EventSource?, Job?, Job?>? = sseLifecycle.withLock {
+        val detached: Triple<EventSource?, Job?, Job?> = sseLifecycle.withLock {
             if (onlyIfStarted && !isStartedLocked()) return@withLock null
             stopLocked()
             val old = Triple(eventSource, retryJob, pollJob)
