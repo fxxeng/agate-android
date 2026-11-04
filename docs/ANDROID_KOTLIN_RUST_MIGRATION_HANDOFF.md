@@ -1864,7 +1864,7 @@ R28 基线 `RuntimeControllerTest` 25 项，本批静态计数预计 28 项；JV
 - Batch 4B-2B-11 基线 `97c44551d3`，交付 commit `3ad7aa5f09aa1429ce0d12d16a4c62b7acc380cd`，GitHub Actions Run `41674284609` success（38m48s）。
 - Rust tests、Android build 成功；JVM 单测 85/85，0 failures/errors/skipped；Instrumentation 2/2。
 - `RuntimeControllerTest` 28 项；新增的 callback 隔离、operation failure、同步 enqueue rejection 三项均通过。
-- R29 最终源码归档 SHA-256：`995d9cbb3397f78f189ce91d26747556bdcaf7f13901ab62d25b86157656419c`。后续唯一基线为 `3ad7aa5f09`，不得再从 `97c44551d3` 应用新补丁。
+- R29 最终源码归档（`.tar.gz`）SHA-256：`995d9cbb3397f78f189ce91d26747556bdcaf7f13901ab62d25b86157656419c`；同轮 `.zip` SHA-256：`13ba866b31ec1d394fcb152b6541ecc39d1290f4479d067aaeb9761e4908e477`。后续唯一基线为 `3ad7aa5f09`，不得再从 `97c44551d3` 应用新补丁。
 - CI 双绿不等于真实设备验收；Phase 2 的 START/STOP、Scheduler/Core 恢复、Service destroy、进程回收仍须真机验证。
 
 ### 18.2 Batch 4B-2B-12 总审计结论
@@ -1899,7 +1899,7 @@ R28 基线 `RuntimeControllerTest` 25 项，本批静态计数预计 28 项；JV
 
 ### 18.5 文件范围与验证状态
 
-- 本批预期 4 个生产/测试 Kotlin 文件 + 2 份文档：新增 `ForegroundServiceTickPolicy.kt` 与对应测试；修改 `AgateForegroundService.kt`、`RuntimeController.kt`、HANDOFF、Source Audit。0 删除。
+- 本批共 4 个 Kotlin 文件 + 2 份文档：生产代码修改 `AgateForegroundService.kt`、`RuntimeController.kt`（后者仅补注释）；新增生产策略 `ForegroundServiceTickPolicy.kt` 和测试 `ForegroundServiceTickPolicyTest.kt`；另更新 HANDOFF、Source Audit。0 删除。
 - JVM 单测基线 R29 为 85；新增 1 项后预期 86。以 R30 CI XML 为最终依据。
 - 当前已完成源码审计、修改和静态检查；未执行 Gradle/JUnit/Rust/APK/Instrumentation/真机测试。不得将本批标记为 CI 通过。
 
@@ -1909,3 +1909,49 @@ R28 基线 `RuntimeControllerTest` 25 项，本批静态计数预计 28 项；JV
 2. Batch 4B-2B-13 处理 GatewayRepository SSE lifecycle 的并发串行化与 stale EventSource 回调保护，补测试；不要与 Native Service 队列/WakeLock 改动混批。
 3. Phase 2 真机硬门槛仍为 START/STOP 意图竞争、Scheduler 开关与 Core 未就绪恢复、Service destroy、进程回收/重建。
 4. Phase 3 再集中做 FGS/WakeLock/Alarm/WorkManager/Doze/ROM 长稳；Phase 4 Rust 平台解耦暂不提前启动。
+
+
+## 19. R30 收官与 Batch 4B-2B-13：GatewayRepository SSE 生命周期串行化（2026-11-04）
+
+### 19.1 R30 / Batch 4B-2B-12 验证收官
+
+- Batch 4B-2B-12 基线 `3ad7aa5f09`，交付 commit `70e34054fa42d4a79cb1f79168fa005f737805aa`，GitHub Actions Run `41738565657` success（32m49s）。
+- Rust tests、Android build 通过；JVM 单测 86/86，0 failures/errors/skipped；Instrumentation 2/2。
+- R30 归档：`.zip` SHA-256 `bcd15a3936ba529b1ae8c2f50834694a96edea53dee8c50a5f5a93417ace28c5`；`.tar.gz` SHA-256 `3f029fc179617df0604e47acfe527b6a4e0772a9b9a79eb20111ed66cd294a5f`。归档不含 `.git`，commit 身份以 CI 报告为准。
+- Patch 交付链验证：基线 zip + patch 应用后与成品 zip 760/760 文件逐字节一致；`git apply --check`、实际应用、`git diff --check` 均通过。
+- Batch 4B-2B-12 正式关闭。新唯一基线为 `70e34054fa`；后续不得再从 `3ad7aa5f09` 应用新批次。
+
+### 19.2 Batch 4B-2B-13：本批目标与实现
+
+本批仅处理 `GatewayRepository` 的 SSE 客户端生命周期，不改 Native Gateway/Service 生命周期队列、WakeLock、JNI ABI、Rust、SSE 服务端协议或 5 秒 Native 探活频率。
+
+- 新增纯 Kotlin `SseLifecycleGuard`，用单一 monitor 串行化 `start/stop/onGatewayRunning`、EventSource 安装/失效、retry/poll generation 及相关 `LinkState` 复合更新。
+- 每次显式 start、stop、新连接建立都会推进 generation。retry/poll Job 必须携带其 generation；旧 Job 在 stop 或新连接后无法重新连接。
+- EventSource listener 的 `onOpen/onEvent/onClosed/onFailure` 均校验 generation 与 EventSource 对象身份；不再接受旧连接迟到的事件/断流回调。
+- 第一个有效断流回调立即使该 EventSource 失效；同一连接随后到达的重复 `onClosed/onFailure` 不会再次累计 failures 或覆盖新状态。
+- 取消 EventSource/Job 在锁外执行，避免 OkHttp cancel 引发回调时形成锁内重入；状态复合更新仍在同一锁内完成。
+- `onGatewayRunning(true)` 只在从 stopped 转为 started 时触发连接；`false` 的状态判断与 stop 在同一临界区完成，避免检查与执行之间被手动 start 插入。
+- 控制页将「断开事件流」明确改为「临时断开事件流」，并注明 Gateway 仍运行时导航壳每 5 秒探活会自动重连。没有新增“永久禁用自动连接”偏好或改变产品语义。
+
+### 19.3 测试覆盖与边界
+
+新增 4 项 `SseLifecycleGuardTest`：
+1. 新连接替换旧连接后，旧 EventSource 回调不再被识别为当前连接。
+2. stop 使 pending retry/poll generation 失效。
+3. 同一连接的重复 failure/closed 回调只能使连接失效一次。
+4. 新的手动 start 使旧 retry token 失效。
+
+测试针对实际接入的 generation/identity guard；EventSource listener 与 Android UI 接线仍需代码审阅及 CI/设备验证，不把纯 guard 测试夸大成完整 OkHttp 并发集成测试。
+
+- R30 JVM 基线 86 项；新增 4 项，预计 90 项。以 R31 CI 的 XML 报告为准。
+- 当前仅完成源码修改、静态审查与补丁/归档校验；未执行 Gradle、Kotlin 编译、JUnit、Rust、APK、Instrumentation 或真机测试。Batch 4B-2B-13 等待 R31 CI。
+- 本批不改 `.github/`、Gradle、Native Service 命令队列、STOP 原子区间、WakeLock、RuntimeController、JNI 或 Rust。
+- 手动临时断开不持久：Gateway 仍运行时，下一轮 5 秒探活会重新连接。若未来要支持用户关闭自动 SSE，应另行设计显式 preference/override 状态，而不是在本批暗改语义。
+
+### 19.4 下一步
+
+1. 以 R30 `70e34054fa` 为唯一基线应用 Batch 4B-2B-13 patch；确认 patch 与完整源码归档逐字节一致后推送 `verify/arch-8faa5f5`。
+2. R31 核对 Rust tests、Android build、JVM 90 项、Instrumentation 2 项；CI XML 是最终测试数量与结果依据。
+3. 若 R31 通过，关闭 Batch 4B-2B-13。之后不要继续无目的增加 internal seam；转入 Phase 2 真机验收收敛。
+4. Phase 2 真机硬门槛仍包括 START/STOP 意图竞争、Scheduler/Core 未就绪恢复、Service destroy、进程回收/重建。CI instrumentation 2/2 不替代这些设备场景。
+5. Phase 2 设备验收通过后再集中推进 Phase 3 FGS/WakeLock/Alarm/WorkManager/Doze/ROM 长稳；不提前启动大规模 Phase 4 Rust 平台解耦。

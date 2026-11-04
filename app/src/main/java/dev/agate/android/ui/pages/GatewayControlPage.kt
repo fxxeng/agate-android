@@ -165,9 +165,14 @@ fun GatewayControlPage(modifier: Modifier = Modifier, onOpenDrawer: () -> Unit =
             GatewayRepository.configure(GatewayPrefs.apiKey(ctx))
             GatewayRepository.start()
         }
-        RowButton("断开事件流") {
+        RowButton("临时断开事件流") {
             GatewayRepository.stop()
         }
+        Text(
+            "仅临时断开：网关仍运行时，导航壳每 5 秒探活会自动重新连接。",
+            style = AgateType.BodyS,
+            color = C.textSub,
+        )
         if (recentEvents.isEmpty()) {
             Text(
                 "尚无事件：连上后首帧 hello；转发完成 / 签到轮次 / 网关启动都会推到这里",

@@ -222,6 +222,7 @@ object GatewayRepository {
             .build()
     }
 
+    private val sseLifecycle = SseLifecycleGuard()
     private var eventSource: EventSource? = null
     private var retryJob: Job? = null
     private var pollJob: Job? = null
@@ -230,7 +231,6 @@ object GatewayRepository {
     private val refreshing = AtomicBoolean(false)
     private val syncingGatewayStatus = AtomicBoolean(false)
     private val lastEventRefresh = AtomicLong(0)
-    @Volatile private var started = false
 
     /** 壳侧凭证：FGS 启动内核前把 GatewayPrefs 的 Key 同步进来。 */
     /**
@@ -244,30 +244,54 @@ object GatewayRepository {
         CoreTransport.configure(apiKey)
     }
 
+    /**
+     * 显式连接：每次调用都建立一个新 generation，旧连接/重试/降级轮询全部失效。
+     * lifecycle guard 将手动入口与 IO 探活入口的复合状态变更串行化。
+     */
     fun start() {
-        started = true
-        failures.set(0)
-        connect()
+        val generation = sseLifecycle.withLock {
+            failures.set(0)
+            startLocked()
+        }
+        connect(generation)
         refreshOnce()
     }
 
     fun stop() {
-        started = false
-        eventSource?.cancel()
-        eventSource = null
-        retryJob?.cancel()
-        retryJob = null
-        pollJob?.cancel()
-        pollJob = null
-        _link.value = LinkState.DISCONNECTED
+        stopInternal(onlyIfStarted = false)
+    }
+
+    private fun stopInternal(onlyIfStarted: Boolean): Boolean {
+        val detached: Triple<EventSource?, Job?, Job?>? = sseLifecycle.withLock {
+            if (onlyIfStarted && !isStartedLocked()) return@withLock null
+            stopLocked()
+            val old = Triple(eventSource, retryJob, pollJob)
+            eventSource = null
+            retryJob = null
+            pollJob = null
+            _link.value = LinkState.DISCONNECTED
+            old
+        } ?: return false
+        detached.first?.cancel()
+        detached.second?.cancel()
+        detached.third?.cancel()
+        return true
     }
 
     /** 内核运行态对齐（控制台页 5s 轮询 JNI status 后回填）：起 SSE / 断 SSE。 */
     fun onGatewayRunning(running: Boolean) {
-        if (running && !started) {
-            start()
-        } else if (!running && started) {
-            stop()
+        if (running) {
+            val generation = sseLifecycle.withLock {
+                if (isStartedLocked()) null else {
+                    failures.set(0)
+                    startLocked()
+                }
+            }
+            if (generation != null) {
+                connect(generation)
+                refreshOnce()
+            }
+        } else if (stopInternal(onlyIfStarted = true)) {
             _snapshotError.value = "网关未运行"
         }
     }
@@ -290,7 +314,7 @@ object GatewayRepository {
             while (isActive) {
                 // 壳层还没探过活时先问一次：`started` 只由探活/网关启停来置位，
                 // 页面自己猜「大概在跑」会让快照对着一个没起来的端口轮询。
-                if (started) refreshOnce()
+                if (sseLifecycle.withLock { isStartedLocked() }) refreshOnce()
                 delay(SNAPSHOT_INTERVAL_MS)
             }
         }
@@ -322,7 +346,9 @@ object GatewayRepository {
                         onGatewayRunning(status.running)
                         // 探活到「在跑」但快照还是空的（比如进程刚拉起来、或上一次全失败
                         // 留下的空值）：立刻补拉一次，用户不必等下一个 5 秒刻度。
-                        if (started && _snapshot.value.fetchedAtMs == 0L) refreshOnce()
+                        if (sseLifecycle.withLock { isStartedLocked() } &&
+                            _snapshot.value.fetchedAtMs == 0L
+                        ) refreshOnce()
                     }
                     is GatewayStatusObservation.Unavailable -> {
                         // status 查询失败不是「网关已停止」：保留 last-known status 和 SSE，
@@ -490,57 +516,85 @@ object GatewayRepository {
         }
     }
 
-    private fun connect() {
-        if (!started) return
-        pollJob?.cancel()
-        pollJob = null
-        _link.value = if (failures.get() == 0) LinkState.CONNECTING else LinkState.RETRYING
-        val builder = Request.Builder().url("http://127.0.0.1:$port/api/events")
-        if (apiKey.isNotBlank()) builder.header("Authorization", "Bearer $apiKey")
-        eventSource?.cancel()
-        eventSource = EventSources.createFactory(sseClient).newEventSource(
-            builder.build(),
-            object : EventSourceListener() {
-                override fun onOpen(eventSource: EventSource, response: Response) {
-                    failures.set(0)
-                    _link.value = LinkState.CONNECTED
-                }
+    /**
+     * 建立 SSE 连接。expectedGeneration 用于阻止已过期的 retry/poll Job 在 stop 或
+     * 新连接建立后重新接管生命周期。所有 EventSource/Job/LinkState 复合更新均在
+     * sseLifecycle 锁内完成；取消动作在锁外执行，避免 OkHttp 回调重入锁。
+     */
+    private fun connect(expectedGeneration: Long) {
+        val detached: Triple<EventSource?, Job?, Job?>? = sseLifecycle.withLock {
+            if (!isGenerationActiveLocked(expectedGeneration)) {
+                null
+            } else {
+                val oldSource = eventSource
+                val oldRetry = retryJob
+                val oldPoll = pollJob
+                eventSource = null
+                retryJob = null
+                pollJob = null
+                val generation = beginConnectionLocked(expectedGeneration)
+                if (generation == null) {
+                    null
+                } else {
+                    _link.value = if (failures.get() == 0) LinkState.CONNECTING else LinkState.RETRYING
+                    val builder = Request.Builder().url("http://127.0.0.1:$port/api/events")
+                    if (apiKey.isNotBlank()) builder.header("Authorization", "Bearer $apiKey")
+                    val source = EventSources.createFactory(sseClient).newEventSource(
+                        builder.build(),
+                        object : EventSourceListener() {
+                            override fun onOpen(eventSource: EventSource, response: Response) {
+                                sseLifecycle.withLock {
+                                    if (!isCurrentLocked(generation, eventSource)) return@withLock
+                                    failures.set(0)
+                                    _link.value = LinkState.CONNECTED
+                                }
+                            }
 
-                override fun onEvent(eventSource: EventSource, id: String?, type: String?, data: String) {
-                    // 业务事件先上总线（页面按需局部刷新），再走下面原有的
-                    // 「进最近事件列表 / 触发快照」逻辑。顺序无关但都在主线程外，
-                    // 所以只 tryEmit（满缓冲就丢，见 _bus 的说明）。
-                    if (type != null) {
-                        when (type) {
-                            "accounts_changed",
-                            "models_changed",
-                            "providers_changed",
-                            "checkin_done",
-                            "request_done",
-                            -> _bus.tryEmit(type)
-                        }
+                            override fun onEvent(eventSource: EventSource, id: String?, type: String?, data: String) {
+                                sseLifecycle.withLock {
+                                    if (!isCurrentLocked(generation, eventSource)) return@withLock
+                                    if (type != null) {
+                                        when (type) {
+                                            "accounts_changed",
+                                            "models_changed",
+                                            "providers_changed",
+                                            "checkin_done",
+                                            "request_done",
+                                            -> _bus.tryEmit(type)
+                                        }
+                                    }
+                                    when (type) {
+                                        "ping" -> return@withLock
+                                        "lagged" -> {
+                                            refreshOnce()
+                                            return@withLock
+                                        }
+                                        "request_done" -> scheduleEventRefresh()
+                                    }
+                                    appendEvent(data)
+                                }
+                            }
+
+                            override fun onClosed(eventSource: EventSource) {
+                                onLinkBroken(eventSource, generation, "closed")
+                            }
+
+                            override fun onFailure(eventSource: EventSource, t: Throwable?, response: Response?) {
+                                onLinkBroken(eventSource, generation, t?.message ?: ("failure " + (response?.code ?: "")))
+                            }
+                        },
+                    )
+                    eventSource = source
+                    check(installConnectionLocked(generation, source)) {
+                        "SSE generation changed while installing EventSource"
                     }
-                    when (type) {
-                        // ping 是心跳；lagged 提示全量刷新（M3-2 控制台接入），不进列表
-                        "ping" -> return
-                        "lagged" -> {
-                            refreshOnce()
-                            return
-                        }
-                        "request_done" -> scheduleEventRefresh()
-                    }
-                    appendEvent(data)
+                    Triple(oldSource, oldRetry, oldPoll)
                 }
-
-                override fun onClosed(eventSource: EventSource) {
-                    onLinkBroken("closed")
-                }
-
-                override fun onFailure(eventSource: EventSource, t: Throwable?, response: Response?) {
-                    onLinkBroken(t?.message ?: ("failure " + (response?.code ?: "")))
-                }
-            },
-        )
+            }
+        }
+        detached?.first?.cancel()
+        detached?.second?.cancel()
+        detached?.third?.cancel()
     }
 
     /** request_done 节流刷新：2s 窗口内的连续收尾合并成一次快照拉取。 */
@@ -552,46 +606,72 @@ object GatewayRepository {
         refreshOnce()
     }
 
-    private fun onLinkBroken(@Suppress("UNUSED_PARAMETER") reason: String) {
-        if (!started) return
-        val n = failures.incrementAndGet()
-        if (n >= MAX_SSE_FAILURES) {
-            degradeToPolling()
-            return
-        }
-        _link.value = LinkState.RETRYING
-        // 指数退避 2s→30s（n 从 1 起：1000<<1=2s）
-        val delayMs = (1000L shl n.coerceAtMost(5)).coerceAtMost(30_000L)
-        retryJob?.cancel()
-        retryJob = scope.launch {
-            delay(delayMs)
-            connect()
-        }
-    }
-
-    /** O9 降级轮询：/health 是 public 免鉴权端点，探测成本最低。 */
-    private fun degradeToPolling() {
-        _link.value = LinkState.POLLING
-        pollJob?.cancel()
-        pollJob = scope.launch {
-            var streak = 0
-            while (isActive) {
-                val alive = try {
-                    pollClient.newCall(
-                        Request.Builder().url("http://127.0.0.1:$port/health").build(),
-                    ).execute().use { it.isSuccessful }
-                } catch (_: Exception) {
-                    false
+    /**
+     * 只接受当前 generation + 当前 EventSource 的断流回调。
+     * 第一个失败回调立即使该连接失效，因此同一连接迟到的 onClosed/onFailure
+     * 不会重复累计 failures，也不会覆盖后续连接状态。
+     */
+    private fun onLinkBroken(source: EventSource, generation: Long, reason: String) {
+        val detached: Triple<EventSource, Job?, Job?>? = sseLifecycle.withLock {
+            val nextGeneration = invalidateConnectionLocked(generation, source)
+            if (nextGeneration == null) {
+                null
+            } else {
+                val n = failures.incrementAndGet()
+                eventSource = null
+                val oldRetry = retryJob
+                retryJob = null
+                val oldPoll = pollJob
+                pollJob = null
+                if (n >= MAX_SSE_FAILURES) {
+                    _link.value = LinkState.POLLING
+                    val poll = scope.launch {
+                        var streak = 0
+                        while (isActive) {
+                            if (!sseLifecycle.withLock { isGenerationActiveLocked(nextGeneration) }) {
+                                return@launch
+                            }
+                            val alive = try {
+                                pollClient.newCall(
+                                    Request.Builder().url("http://127.0.0.1:$port/health").build(),
+                                ).execute().use { it.isSuccessful }
+                            } catch (_: Exception) {
+                                false
+                            }
+                            if (!sseLifecycle.withLock { isGenerationActiveLocked(nextGeneration) }) {
+                                return@launch
+                            }
+                            streak = if (alive) streak + 1 else 0
+                            if (streak >= 3) {
+                                val stillCurrent = sseLifecycle.withLock {
+                                    if (isGenerationActiveLocked(nextGeneration)) {
+                                        failures.set(0)
+                                        true
+                                    } else false
+                                }
+                                if (stillCurrent) connect(nextGeneration)
+                                return@launch
+                            }
+                            delay(5_000L)
+                        }
+                    }
+                    pollJob = poll
+                } else {
+                    _link.value = LinkState.RETRYING
+                    val delayMs = (1000L shl n.coerceAtMost(5)).coerceAtMost(30_000L)
+                    val retry = scope.launch {
+                        delay(delayMs)
+                        connect(nextGeneration)
+                    }
+                    retryJob = retry
                 }
-                streak = if (alive) streak + 1 else 0
-                if (streak >= 3) {
-                    failures.set(0)
-                    connect()
-                    return@launch
-                }
-                delay(5_000L)
+                Log.w(TAG, "SSE connection lost; generation=$generation reason=$reason")
+                Triple(source, oldRetry, oldPoll)
             }
         }
+        detached?.first?.cancel()
+        detached?.second?.cancel()
+        detached?.third?.cancel()
     }
 
     private fun appendEvent(data: String) {

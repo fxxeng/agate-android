@@ -622,7 +622,7 @@ Batch 4B-2B-10 已在当前工作快照中新增 typed `GatewayStatusObservation
 
 - Batch 4B-2B-11 最终 commit `3ad7aa5f09aa1429ce0d12d16a4c62b7acc380cd`，Run `41674284609` success。
 - Rust tests / Android build 双绿；JVM 85/85；Instrumentation 2/2。
-- 新基线 `3ad7aa5f09`；源码归档 SHA-256 `995d9cbb3397f78f189ce91d26747556bdcaf7f13901ab62d25b86157656419c`。
+- 新基线 `3ad7aa5f09`；源码归档（`.tar.gz`）SHA-256 `995d9cbb3397f78f189ce91d26747556bdcaf7f13901ab62d25b86157656419c`，同轮 `.zip` SHA-256 `13ba866b31ec1d394fcb152b6541ecc39d1290f4479d067aaeb9761e4908e477`。
 
 ### 生产入口与线程审计
 
@@ -645,3 +645,41 @@ Batch 4B-2B-10 已在当前工作快照中新增 typed `GatewayStatusObservation
 - 预期改动：新增 2 Kotlin 文件、修改 2 Kotlin 文件、更新 2 文档；0 删除。
 - R29 JVM 85 项，新增 1 项后预计 86；以 R30 CI XML 为准。
 - 本地仅做静态源码审计/修改/差异检查；没有运行 Gradle、JUnit、Rust、APK、Instrumentation 或真机测试。
+
+
+---
+
+## R30 收官与 Batch 4B-2B-13 源码审计（2026-11-04）
+
+### R30 验证结论
+
+- Batch 4B-2B-12 最终 commit `70e34054fa42d4a79cb1f79168fa005f737805aa`，Run `41738565657` success（32m49s）。
+- Rust tests / Android build 双绿；JVM 86/86；Instrumentation 2/2。
+- R30 源码归档 `.zip` SHA-256 `bcd15a3936ba529b1ae8c2f50834694a96edea53dee8c50a5f5a93417ace28c5`；`.tar.gz` SHA-256 `3f029fc179617df0604e47acfe527b6a4e0772a9b9a79eb20111ed66cd294a5f`。
+- 基线 zip + 独立 patch + 成品 zip 三重校验：patch dry-run/应用/diff-check 通过，patched tree 与交付 zip 760/760 文件逐字节一致。Batch 4B-2B-12 正式关闭；新唯一基线 `70e34054fa`。
+- R29 归档 hash 格式歧义已更正：`.tar.gz` 为 `995d9cbb…`，`.zip` 为 `13ba866b…`；Batch 4B-2B-12 文件计数措辞也已明确区分生产策略文件、测试文件与注释文件。
+
+### Batch 4B-2B-13 实施审计
+
+- 新增 `SseLifecycleGuard`，以一个 monitor 管理 started/generation/current EventSource identity；所有状态访问通过 `withLock`，`*Locked` 方法要求调用者持锁。
+- Repository 的 `start/stop/onGatewayRunning`、连接安装、断流失效、retry/poll 代次验证均使用该 guard。stop 与 Native stopped observation 的复合状态变更不再分成“先检查、后 stop”两个竞争窗口。
+- `onOpen/onEvent/onClosed/onFailure` 都验证 generation + 对象身份。第一个有效 failure/closed 回调立即 invalidates 当前连接；重复或旧连接回调不再更新 link/failures。
+- retry/poll coroutine 绑定 generation；停止或新连接后，旧任务即使完成网络等待，也必须再次验证 token 才能继续或重连。
+- EventSource/Job 的 cancel 在锁外执行，避免取消动作导致回调重入时持锁。
+- `GatewayControlPage` 文案改为「临时断开事件流」，明确说明 Gateway 仍运行时 5 秒探活会自动重连；没有偷偷引入永久禁用开关。
+- 新增 4 项纯 JVM guard 测试。它们覆盖 generation/identity 状态机，不等价于 OkHttp EventSource 全链路并发集成测试；listener 接线仍需审阅与 CI/设备验证。
+
+### 本批变更边界与验证状态
+
+- 预计 4 个 Kotlin 文件（修改 `GatewayRepository.kt`、`GatewayControlPage.kt`；新增 `SseLifecycleGuard.kt`、`SseLifecycleGuardTest.kt`）+ 2 份文档；0 删除。
+- R30 JVM 86 项，新增 4 项后预计 90；最终以 R31 `TEST-*.xml` 为准。
+- 未修改 Native Service 命令队列、STOP 原子区间、WakeLock、RuntimeController、JNI、Rust、Gradle 或 `.github/`。
+- 当前只完成源码静态审查、补丁应用/归档对账；未执行 Gradle/Kotlin/JUnit/Rust/APK/Instrumentation/真机测试。Batch 4B-2B-13 等待 R31 CI。
+- 唯一补丁基线为 `70e34054fa`；只推 `verify/arch-8faa5f5`，不动 `main`，不合并。
+
+### 下一步
+
+1. 在真实 `70e34054fa` 仓库应用 patch，核对变更文件 hash，再推送验证分支。
+2. R31 CI 通过后关闭 Batch 4B-2B-13；若失败，优先读 JUnit XML 与 Android build 日志，不扩大到 Service/Rust。
+3. 随后转入 Phase 2 真机验收，不继续堆叠微型 CI 批次：START/STOP 意图竞争、Scheduler/Core 恢复、Service destroy、进程回收/重建。
+4. 设备验收通过后再集中推进 Phase 3；CI 双绿不能代替真机长稳。
