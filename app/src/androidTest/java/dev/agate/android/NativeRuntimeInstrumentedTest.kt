@@ -53,8 +53,10 @@ class NativeRuntimeInstrumentedTest {
         assertFalse("coreInit must not implicitly start Gateway", Gateway.status().running)
 
         // 覆盖 JNI GlobalRef 注册/撤销路径，不依赖异步日志时序。
-        Gateway.setLogListener(Gateway.LogListener { _, _, _ -> })
-        Gateway.setLogListener(null)
+        val registered = Gateway.setLogListener(Gateway.LogListener { _, _, _ -> })
+        assertTrue("Native log callback registration failed: $registered", registered.ok)
+        val cleared = Gateway.setLogListener(null)
+        assertTrue("Native log callback clear failed: $cleared", cleared.ok && cleared.cleared)
 
         // Router::oneshot 直调应在 Gateway 未监听端口时仍可用。
         val direct = JSONObject(Gateway.apiCall("GET", "/health", null, ""))

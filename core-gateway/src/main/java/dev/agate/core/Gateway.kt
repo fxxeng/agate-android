@@ -215,26 +215,25 @@ object Gateway {
     private val logThread = HandlerThread("AgateLog").apply { start() }
     private val logHandler = Handler(logThread.looper)
 
-    @Volatile
-    private var sink: LogSink? = null
+    private val logListenerRegistry = LogListenerRegistry<LogSink>()
 
     /**
      * 注册内核日志监听（转发自 logging::console_line 的全量日志）；
      * 传 null 撤销。回调固定在 AgateLog 后台线程执行，不要在回调里做重活。
      * 约定：网关运行期间不换监听（内核侧只持有单个 GlobalRef）。
+     * 返回 Native 结构化结果；ok=false 时保留上一次成功注册的 Kotlin 强引用，
+     * 调用方应记录 error，而不能把失败当作注册/撤销成功。
      */
     @Synchronized
-    fun setLogListener(listener: LogListener?) {
+    fun setLogListener(listener: LogListener?): LogCallbackUpdateResult {
         ensureLoaded()
-        if (listener == null) {
-            sink = null
-            nativeSetLogCallback(null)
-        } else {
-            val s = LogSink { level, tag, message ->
-                logHandler.post { listener.onLog(level, tag, message) }
+        val candidate = listener?.let { target ->
+            LogSink { level, tag, message ->
+                logHandler.post { target.onLog(level, tag, message) }
             }
-            sink = s // Kotlin 侧也持强引用，防 GC
-            nativeSetLogCallback(s)
+        }
+        return logListenerRegistry.update(candidate) { callback ->
+            parseLogCallbackUpdateResponse(nativeSetLogCallback(callback))
         }
     }
 

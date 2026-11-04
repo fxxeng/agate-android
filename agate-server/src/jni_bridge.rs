@@ -873,21 +873,25 @@ pub extern "system" fn Java_dev_agate_core_Gateway_nativeSetLogCallback<'local>(
     callback: JObject<'local>,
 ) -> jstring {
     let result = if callback.is_null() {
-        if let Ok(mut guard) = LOG_CALLBACK.lock() {
-            *guard = None;
+        match LOG_CALLBACK.lock() {
+            Ok(mut guard) => {
+                *guard = None;
+                json!({"ok": true, "cleared": true})
+            }
+            Err(_) => json!({"ok": false, "error": "log_callback_lock_poisoned"}),
         }
-        json!({"ok": true, "cleared": true})
     } else {
         match env.get_java_vm() {
             Ok(vm) => {
                 let _ = JAVA_VM.set(vm);
                 match env.new_global_ref(callback) {
-                    Ok(global) => {
-                        if let Ok(mut guard) = LOG_CALLBACK.lock() {
+                    Ok(global) => match LOG_CALLBACK.lock() {
+                        Ok(mut guard) => {
                             *guard = Some(global);
+                            json!({"ok": true})
                         }
-                        json!({"ok": true})
-                    }
+                        Err(_) => json!({"ok": false, "error": "log_callback_lock_poisoned"}),
+                    },
                     Err(e) => {
                         let message = e.to_string();
                         clear_pending_exception(&mut env);

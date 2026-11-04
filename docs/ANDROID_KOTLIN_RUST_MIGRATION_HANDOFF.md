@@ -5,7 +5,7 @@
 
 > 文档用途：供后续开发者接手、评审和持续推进 Android 架构改造。
 
-> **验证分支当前状态（R29 / 2026-11-04）**：`verify/arch-8faa5f5` 已验证 HEAD 为 `3ad7aa5f09aa1429ce0d12d16a4c62b7acc380cd`（CI Run `41674284609`）。Batch 4B-2B-11 已关闭；R29 后续总审计与 FGS tick 状态失败语义修复记录见本文第 18 节及 Source Audit 对应追加记录。归档不含 `.git`，commit 身份以 CI 报告为准。
+> **验证分支当前状态（R32 / 2026-11-04）**：最近一次已验证 HEAD 为 `91dd6c26e54080e266dafa0e3f3911e9a93c0754`（CI Run `41774982028`，JVM 91/91、Instrumentation 2/2，Rust/Android 构建通过）。Batch 4B-2B-14 已关闭。当前交付候选在 R32 上叠加 Batch 4C-1 Native 日志回调契约改动；该候选尚未取得 R33 CI，不得称为已验证 HEAD。源码归档不含 `.git`，commit 身份以 CI 报告为准。
 >
 > 当前工作分支：`architecture/kotlin-rust-core`（仅在本地工作副本建立）  
 > 当前基线：`e5fb279`（从用户提供的源码 ZIP 导入）  
@@ -1998,3 +1998,153 @@ CI Instrumentation 2/2 不替代以上真实设备场景。设备验收未完成
 - 本次身份测试补强批次只做纯 Kotlin 测试与注释/交接文档更新，不改 Native Service、RuntimeController、GatewayRepository 生产逻辑、Rust、JNI、Gradle 或 CI。
 - 预计 JVM 91 项；必须由下一轮 CI 的 `TEST-*.xml` 确认。
 - 只允许推送 `verify/arch-8faa5f5`；不得触碰 `main` 或合并。
+
+
+## 21. R32 收官与 Phase 2 真机验收执行（2026-11-04）
+
+### 21.1 Batch 4B-2B-14 正式关闭
+
+- 基线：R31 修复提交 `28c007268d63e209ea0b62c92dea9fcddb1dd608`；分支 `verify/arch-8faa5f5`，不动 `main`、不合并。
+- R32 提交：`91dd6c26e54080e266dafa0e3f3911e9a93c0754`；GitHub Actions Run `41774982028`，success；31 个步骤全部 success，0 skipped / 0 cancelled。
+- Rust Android libraries（arm64-v8a、x86_64）、JNI exports、Gradle tests/APK、APK contents/ELF、Instrumentation 均通过；JVM 91/91（0 failures/errors/skipped），Instrumentation 2/2。
+- `SseLifecycleGuardTest` 为 5 项；新增 `sameGenerationRejectsDifferentEventSourceIdentity` 已在 TEST XML 中确认通过。
+- 推送前纯 Kotlin 实测：真实实现 5/5；将 `currentConnection === connection` 替换为恒真 M1 变异体后 4/5，且只有新增 identity 用例失败。该结果证明新测试专门覆盖同 generation 下的对象身份判断。
+- 本批生产逻辑零改动；改动为 1 个测试、3 处注释与 2 份文档。Batch 4B-2B-14 正式关闭，SSE guard 不再追加 internal seam。
+
+### 21.2 R32 源码交付核验
+
+- 上传归档 `Agate_Verification_Source_8faa5f5_Batch4B2B14_91dd6c26e5.tar.gz`：762 个普通文件、122 个目录，不含 `.git`。
+- R32 CI 报告核对：4 个变更文件与 patch 声明一致；无新增/删除；源码 zip 与 Docs.zip 中对应文档哈希一致。
+- 本轮交接补记同时纠正一处来源轮次：R29 归档 hash 容器格式歧义由 **R30** 反馈提出，不是 R31；更正只修复审计来源标注，不改变历史技术结论。
+- R32 反馈还指出前一轮 SHA256SUMS 清单列了 7 项但实际交付仅 4 项。后续交付必须确保校验清单只列实际随包交付的文件，或确保所有清单项目全部附上；不得留下“缺失还是篡改”无法区分的状态。
+
+### 21.3 Phase 2 执行策略
+
+- 按 R32 结论，停止继续堆叠 1–2 文件的生产逻辑微批次；当前进入真实 Android 设备验收。
+- 新增 `docs/PHASE2_REAL_DEVICE_ACCEPTANCE_CHECKLIST.md`，将 START/STOP 竞争、Scheduler/Core 未就绪恢复、Service destroy/Tick 清理、进程回收/Boot/Alarm、SSE 自动重连整理为可执行步骤、预期行为、日志采集和结果模板。
+- **当前状态：待设备执行。** 本轮没有真实 Android 设备操作记录，不能把任何设备场景标为 PASS，Phase 2 不关闭。
+- 用户下一步需在实际设备上按 checklist 执行并回传原始 logcat、`dumpsys` 快照、设备信息及每个场景的次数/结果。对不可执行项标记 BLOCKED 并说明限制。
+- Phase 2 设备验收通过后，再集中推进 Phase 3 FGS/WakeLock/Alarm/WorkManager/Doze/ROM 长稳；Phase 4 Rust 平台解耦暂不提前启动。
+
+### 21.4 后续基线与安全边界
+
+- R32 唯一验证基线：`91dd6c26e54080e266dafa0e3f3911e9a93c0754`。
+- 该归档不含 `.git`；commit 身份以 CI 报告为依据。后续文档或工具包改动只基于 R32 源码树，不得回退到 R31。
+- 不修改 `main`，不合并；不因 CI 通过而修改 Service 命令队列、STOP guard、WakeLock、JNI 或 Rust 生命周期语义。
+
+
+## 22. R32 后推进策略修订与 Batch 4C-1（2026-11-04，基线 R32）
+
+### 22.1 开发与真机验收并行，不互相阻塞
+
+R32 后曾将 Phase 2 真机验收作为下一阶段主线，并建议暂停代码批次。用户明确反馈更倾向继续批量推进，真机测试可在 APP 正常使用过程中逐步发现问题、收集 Bug。因此将执行策略修订为：
+
+- 继续推进有明确架构收益、边界可控的独立代码批次；不为追求批次数量制造无价值微改。
+- Phase 2 A–E 改为滚动设备验收：日常使用中自然覆盖场景，按发生次数累积证据；发现 Bug 后优先保存原始 logcat、dumpsys、设备信息和操作时间线，再单独定位修复。
+- Phase 2 设备证据不足时继续标记 NOT RUN / BLOCKED，不得虚报 PASS；但 Phase 2 尚未关闭不阻塞 Native Bridge、JNI 契约或独立 Rust 边界批次。
+- CI 通过仅证明 CI 覆盖范围；源码静态审计与真机运行证据分栏记录。
+
+### 22.2 Batch 4C-1：Native 日志回调结果契约（当前批次，待 R33 CI）
+
+**基线：** R32 `91dd6c26e54080e266dafa0e3f3911e9a93c0754`，验证分支 `verify/arch-8faa5f5`。不触碰 `main`，不合并。
+
+**发现：** `Gateway.setLogListener()` 忽略 `nativeSetLogCallback()` 返回的 JSON，并在 Native 操作前改写 Kotlin `sink`。另外 Rust JNI 注册/清除分支在 `LOG_CALLBACK.lock()` poisoned 时跳过更新但仍返回 `{ok:true}`，造成 Native 事实与 Kotlin 结果不一致。
+
+**改动：**
+- 新增 `LogCallbackUpdateResult(ok, cleared, error)` 结构化结果。
+- 新增纯 Kotlin `LogListenerRegistry`，Native 更新成功后才提交当前 Kotlin 强引用；失败/异常保留旧 listener。
+- 新增严格 JSON 响应解析：缺少 `ok` 字段视为协议错误，不当作成功。
+- `Gateway.setLogListener()` 返回 Native 结构化结果；不改变 JNI 方法签名或 JSON ABI。
+- Rust `nativeSetLogCallback()` 对 callback mutex poisoned 返回 `{ok:false,error:"log_callback_lock_poisoned"}`；不再静默返回成功。
+- Instrumentation 对真实 JNI listener 注册和清除结果增加断言；新增 8 项 JVM 测试覆盖 JSON 解析及 listener 状态提交/失败保持。
+
+**预期验证：** R32 JVM 91 + 8 = 99；Instrumentation 仍 2 项，其中 Native JNI 测试新增断言。Rust host 单测不编译 Android `jni_bridge.rs`，必须检查 Android ABI Rust library build 与 JNI exports。当前仅完成源码修改和静态审阅，所有构建/测试仍待 R33 CI。
+
+**范围边界：** 3 个修改文件（`Gateway.kt`、`NativeRuntimeInstrumentedTest.kt`、`jni_bridge.rs`），2 个新增文件（`LogListenerRegistry.kt`、`LogListenerRegistryTest.kt`），2 份主交接/审计文档与 Phase 2 checklist 更新。未改 JNI ABI、12 个导出名称/签名、回调线程、GlobalRef 正常生命周期模型、Service/RuntimeController/WakeLock 或 Rust 业务逻辑。
+
+**下一步：** 本地纯 Kotlin 最小验证与静态 diff 检查后，推送验证分支取得 R33 CI。通过后关闭 Batch 4C-1，再按风险优先级推进剩余 JNI 入口契约测试；Phase 2 设备观察并行持续，不作为该批次的前置门槛。
+
+### 22.3 当前阶段状态（不虚增完成度）
+
+| 事项 | 当前状态 | 证据/下一步 |
+|---|---|---|
+| Phase 2 设备验收 | 滚动进行，尚未关闭 | A–E 仍需真实设备记录；APP 使用中逐步积累 |
+| Batch 4B-2B-14 / SSE Guard | 已关闭 | R32 JVM 91/91、Instrumentation 2/2、M1 mutation 4/5 |
+| Batch 4C-1 Native log callback | 实施完成，待 R33 CI | 预期 JVM 99/99；Android ABI build + JNI exports + Instrumentation |
+| Phase 4 Rust 平台解耦 | 暂不大规模启动 | 先完成 Native Bridge 契约切片；不因本批局部 JNI 修复宣称平台解耦完成 |
+| Phase 5 UniFFI 评估 | 未开始 | 等 JNI 契约与真实维护成本证据更充分后再做小型 spike/ADR |
+
+
+### 22.4 R32 归档文件数复核说明
+
+R32 CI 反馈报告记载归档为 762 个普通文件；对本轮实际收到的 R32 `.tar.gz` 直接执行 tar inventory 并在干净目录解包后，统计到 763 个普通文件、122 个目录。两者存在 1 个文件的计数口径/结果差异，但归档 SHA-256 与报告给出的 R32 交付物一致，且本批 patch 在该归档上可干净应用。为避免沿用不一致数字，本批交付树以实际解包计数为准：新增 2 个文件后为 765 个普通文件、122 个目录、无 `.git`。该差异不涉及源码内容变更；后续以清单和逐文件 hash 对账，不再仅依赖文件总数。
+
+
+## 23. 集中开发与集中验证策略修订（2026-11-04）
+
+### 23.1 为什么调整
+
+前几轮采用“一个小改动 → 一次 GitHub push → 一轮完整 CI”的节奏，CI 中 Android build / emulator settle 本身耗时较长，导致验证往返占用过多时间。用户明确要求按主题批量推进，并将真机测试融入 APP 日常使用，不再等待完整真机验收才继续开发。
+
+从本节起，执行方式改为：**主题级连续开发、验证边界分层、多个相互独立且已完成的改动集中触发 CI、一次性处理同轮反馈**。减少重复 CI，不减少必要测试。
+
+### 23.2 批次合并规则
+
+1. 同一主题内的关联改动尽量一次完成。例如 Native callback 的 Kotlin 状态提交、JNI 返回语义、测试和文档属于一个完整契约，不拆成多轮。
+2. 跨主题改动可放入同一次 CI，但必须保留独立测试与报告边界；某主题失败时能单独定位，不用一个总绿灯掩盖局部缺口。
+3. 不把尚未完成设计/审计的高风险 Rust 平台重构硬塞进当前 JNI 批次。先完成源码审计和边界设计，再将可独立验证的实现切片组合成一个有意义的集中验证候选。
+4. 每次集中验证前先做源码级审查、静态检查、可运行的局部测试、patch 应用检查和文件清单/hash 对账。CI 负责补足 Android/Rust toolchain、ABI、APK、Instrumentation 等环境验证。
+5. CI 红灯优先按同轮日志和测试 XML 聚类修复；除非修复引入新风险，不为每个单点修复额外制造一轮独立 CI。
+6. 不为“批量”而扩大无关改动面；改动之间必须有清晰主题关系或共同验证收益。
+
+### 23.3 当前候选源码与验证状态
+
+- 验证分支：`verify/arch-8faa5f5`；唯一已验证基线仍为 R32 `91dd6c26e54080e266dafa0e3f3911e9a93c0754`。
+- 当前交付候选：R32 + Batch 4C-1 Native log callback contract。它是待推送/待 R33 验证的源码快照，不是新 Git commit，也不是 CI 已通过版本。
+- Batch 4C-1 涉及 8 个路径（6 修改、2 新增）：3 个生产代码文件、2 个测试文件、3 份文档；JNI 方法签名与 12 个导出名称不变。详细契约和预期检查见第 22 节及 `README_Agate_Batch4C1` 交付说明。
+- R32 的 91/91 与 2/2 是已验证事实；Batch 4C-1 预期 JVM 99 项仅是目标，必须由 R33 `TEST-*.xml` 和 instrumentation 报告确认。当前未声称 R33 已运行。
+
+### 23.4 主线优先级修正：回到 Rust Core 平台解耦
+
+Batch 4C-1 是 Native Bridge 契约收敛，不应被误当成整个项目的主线。R32 之前的计划曾将 Phase 2 真机验收设为 Phase 4 的前置条件；现根据用户推进偏好修正：设备验收持续滚动进行，但不阻塞独立的 Rust Core 平台解耦工作。
+
+后续工作按以下主题组织：
+
+**工作包 1：Batch 4C-1 收尾。** 对当前候选完成一次集中 R33 验证，确认 Android Rust ABI build（arm64-v8a / x86_64）、JNI exports、Gradle/JVM 测试数、APK/ELF、Instrumentation。若失败，按同一轮反馈集中修复。通过后关闭 4C-1。
+
+**工作包 2：Batch 4D-1 `sub_kernel` 平台能力审计。** 基于当前源码逐项查清外部子进程启动、二进制分发/ABI、可执行权限、文件路径、进程终止、超时、输出管道、Android SELinux/存储限制及 Desktop 行为。产出“支持 / 需抽象 / 明确不支持”矩阵和最小接口设计；本轮先不直接重写进程管理。
+
+**工作包 3：Batch 4D-2 Core Worker 生命周期。** 单独盘点 Rust Core 后台 worker/task 的创建、运行、取消、超时、join、shutdown、重启和进程退出语义。区分业务任务与平台宿主任务，明确 Android 由 Kotlin 控制的边界、Desktop/headless 的宿主实现及取消传播。不得将长业务请求塞入 RuntimeController 生命周期队列。
+
+**工作包 4：Batch 4D-3 平台适配实现。** 依据 4D-1/4D-2 审计结果，先落地最小可验证的 Rust 平台能力接口与 Android/Desktop adapter；保留现有桌面启动/config/env 语义。将相关实现、测试和文档连续完成后，再集中触发一轮 Android + Rust + desktop/headless 验证。
+
+**工作包 5：Batch 4E 双实例互斥。** 单独审计进程级/数据目录级资源所有权和多实例行为，避免与 4D 的平台能力抽象混为一谈；完成后按其风险面集中验证。
+
+**工作包 6：Phase 5/6。** 在 JNI 契约和平台边界稳定后再做 JNI vs UniFFI spike/ADR；随后补充观测、压力测试、泄漏/崩溃恢复和发布门禁。不得为了技术新颖性提前迁移全部 JNI。
+
+### 23.5 CI 集中触发策略
+
+- 当前 4C-1 候选应先作为一轮验证提交；4D-1 审计可并行开展，但在没有完成边界设计前不把未成形的 4D 代码混入 R33。
+- 4D-2 / 4D-3 相关改动允许连续多个本地子任务共同形成一个验证候选，再统一触发 GitHub CI；测试仍按模块和平台分别报告。
+- 若 4C-1 的 R33 尚未触发，不得把该候选的预期测试数写成实际结果；如果用户已经在远端推送，应先用 CI 报告和精确源码归档确认 HEAD，禁止在未知 HEAD 上继续叠 patch。
+- 只允许更新 `verify/arch-8faa5f5`，不触碰 `main`、不合并。源码 ZIP/TAR 不含 `.git`，必须通过 CI 报告确认 commit 身份。
+
+### 23.6 真机验收采用滚动证据
+
+Phase 2 A–E 场景在 APP 日常使用中逐步覆盖。每次发现问题记录设备型号/Android 版本、电池优化状态、时间线、原始 logcat、必要的 `dumpsys` 和复现次数。没有观察到的场景保持 `NOT RUN`，受设备/系统限制的场景标记 `BLOCKED`；只有真实设备证据才能标记设备 PASS。真机验收持续推进，但不阻塞 4C/4D 的独立开发与 CI。
+
+### 23.7 当前状态表
+
+| 工作项 | 状态 | 下一步 |
+|---|---|---|
+| R32 / Batch 4B-2B-14 | 已验证关闭 | 作为当前唯一 CI 基线 |
+| Batch 4C-1 | 源码候选已准备，R33 未验证 | 集中执行 R33；CI 通过后关闭 |
+| Batch 4D-1 `sub_kernel` | 待进行源码审计 | 形成平台能力矩阵与接口决策 |
+| Batch 4D-2 Core Worker | 待审计/设计 | 形成生命周期与取消/shutdown 边界 |
+| Batch 4D-3 平台适配 | 未开始 | 依赖 4D-1/4D-2 结论 |
+| Batch 4E 双实例互斥 | 待排期 | 独立审计与实现 |
+| Phase 2 真机验收 | 滚动进行，尚未关闭 | APP 使用中持续积累证据 |
+| Phase 5 JNI vs UniFFI | 未开始 | JNI 稳定后做 spike/ADR |
+| Phase 6 观测与发布门禁 | 部分准备 | 与压力测试/发布阶段合并规划 |
+
+**执行原则总结：** 以后不按文件数或一两处代码改动触发 CI；按架构主题组织开发。一个验证候选可以包含多个已完成子任务，但每个子任务保留独立验收项。缩短的是 CI 往返次数，不是正确性门槛。
