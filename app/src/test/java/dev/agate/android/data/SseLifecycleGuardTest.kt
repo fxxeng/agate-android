@@ -83,4 +83,25 @@ class SseLifecycleGuardTest {
             assertTrue(isStartedLocked())
         }
     }
+
+    @Test
+    fun sameGenerationRejectsDifferentEventSourceIdentity() {
+        val guard = SseLifecycleGuard()
+        val currentSource = Any()
+        val differentSource = Any()
+        val generation = guard.withLock {
+            val started = startLocked()
+            beginConnectionLocked(started)!!
+        }
+
+        guard.withLock {
+            assertTrue(installConnectionLocked(generation, currentSource))
+            assertTrue(isCurrentLocked(generation, currentSource))
+
+            // Keep the generation identical: only object identity can reject this callback.
+            assertFalse(isCurrentLocked(generation, differentSource))
+            assertNull(invalidateConnectionLocked(generation, differentSource))
+            assertTrue(isCurrentLocked(generation, currentSource))
+        }
+    }
 }

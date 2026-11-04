@@ -1955,3 +1955,46 @@ R28 基线 `RuntimeControllerTest` 25 项，本批静态计数预计 28 项；JV
 3. 若 R31 通过，关闭 Batch 4B-2B-13。之后不要继续无目的增加 internal seam；转入 Phase 2 真机验收收敛。
 4. Phase 2 真机硬门槛仍包括 START/STOP 意图竞争、Scheduler/Core 未就绪恢复、Service destroy、进程回收/重建。CI instrumentation 2/2 不替代这些设备场景。
 5. Phase 2 设备验收通过后再集中推进 Phase 3 FGS/WakeLock/Alarm/WorkManager/Doze/ROM 长稳；不提前启动大规模 Phase 4 Rust 平台解耦。
+
+
+## 20. R31 收官与 Phase 2 真机验收准备（2026-11-04）
+
+### 20.1 Batch 4B-2B-13 验证收官
+
+- 基线 `70e34054fa`；首次提交 `49072638ff` 因 `GatewayRepository.stopInternal()` 的 nullable `Triple` 显式类型标注导致 Kotlin 编译失败。
+- 修复提交 `28c007268d63e209ea0b62c92dea9fcddb1dd608` 仅将已由 Elvis return 保证非空的 `detached` 类型从 `Triple<...>?` 改为 `Triple<...>`；1 file、1 insertion/1 deletion，零逻辑变化。
+- 修复后 GitHub Actions Run `41765943802` success；Rust tests、Android build、JNI exports、APK contents/ELF、JVM 90/90、Instrumentation 2/2 全部通过。
+- R31 最终源码归档 `.tar.gz` SHA-256：`b6cc6bfa5fe2fd48feeab8ac63449cae6f90e69cbe48d1f39987ed902ac3a074`；762 个普通文件、122 个目录，不含 `.git`。commit 身份以 CI 报告为准。
+- Batch 4B-2B-13 正式关闭。SSE lifecycle generation/identity 保护、retry/poll 失效和 cancel 锁外执行已通过 CI；不再重写状态机。
+
+### 20.2 R31 测试有效性复核与最小补强
+
+R31 变异测试发现：删除 `currentConnection === connection` 后，原有 4 项测试仍全部通过。原测试只在 generation 已变化时验证旧连接，因此没有独立证明同一 generation 下的对象身份检查。
+
+本批后续补强只增加一个纯 JVM 测试 `sameGenerationRejectsDifferentEventSourceIdentity`：
+- 安装 currentSource 后，用相同 generation、不同对象调用 `isCurrentLocked()`，必须返回 false。
+- 对不同对象调用 `invalidateConnectionLocked()` 必须返回 null。
+- 验证原 currentSource 仍然是当前连接。
+- 该用例应在移除 `currentConnection === connection` 的 M1 变异体下失败。
+- JVM 预期从 R31 的 90 项增至 91 项。该用例是测试护栏补齐，不改变生产状态机。
+
+同时修正 `GatewayRepository.kt` 三处注释：使用「SSE 的 started 状态」而非暗示已删除的独立 `started` 字段。
+
+### 20.3 验收策略调整：停止微型生产改动，转向设备验收
+
+R31 报告建议停止继续堆叠小型 CI 批次。除上述单项身份测试与注释修正外，不再扩大生产代码范围。下一阶段以 Phase 2 真机验收为主：
+
+1. START/STOP 意图竞争：连续快速 start/stop、stop 后立即 start、Service destroy 与新 START 交错；确认最终意图获胜且 Gateway 不被旧 STOP 误停。
+2. Scheduler/Core 未就绪恢复：Core 初始化失败/尚未就绪时切换 Scheduler，Core 恢复后状态能按持久化设置对齐。
+3. Service destroy：正常停止、系统回收、异常退出分别检查 WakeLock、pending tick、Gateway 和 Service 状态。
+4. 进程回收/重建：后台杀进程、重新启动应用、BOOT_COMPLETED/Alarm 触发路径，确认无重复 Service、无幽灵任务。
+5. 每个场景记录设备型号/Android 版本/电池优化状态、操作时间线、通知栏状态、logcat（Agate/AndroidRuntime）、Gateway health/status、结果与复现次数。
+
+CI Instrumentation 2/2 不替代以上真实设备场景。设备验收未完成前，Phase 2 不得标记为完全关闭。
+
+### 20.4 当前验证边界与后续基线
+
+- R31 修复后的源码基线：`28c007268d63e209ea0b62c92dea9fcddb1dd608`。
+- 本次身份测试补强批次只做纯 Kotlin 测试与注释/交接文档更新，不改 Native Service、RuntimeController、GatewayRepository 生产逻辑、Rust、JNI、Gradle 或 CI。
+- 预计 JVM 91 项；必须由下一轮 CI 的 `TEST-*.xml` 确认。
+- 只允许推送 `verify/arch-8faa5f5`；不得触碰 `main` 或合并。

@@ -683,3 +683,35 @@ Batch 4B-2B-10 已在当前工作快照中新增 typed `GatewayStatusObservation
 2. R31 CI 通过后关闭 Batch 4B-2B-13；若失败，优先读 JUnit XML 与 Android build 日志，不扩大到 Service/Rust。
 3. 随后转入 Phase 2 真机验收，不继续堆叠微型 CI 批次：START/STOP 意图竞争、Scheduler/Core 恢复、Service destroy、进程回收/重建。
 4. 设备验收通过后再集中推进 Phase 3；CI 双绿不能代替真机长稳。
+
+
+## R31 收官与 Phase 2 真机验收准备（2026-11-04）
+
+### Batch 4B-2B-13 最终验证
+
+- 基线 `70e34054fa`；首次提交 `49072638ff` 编译失败，原因是 `stopInternal()` 中 `detached` 被显式声明为 nullable Triple，但 Elvis `?: return false` 已排除外层 null。
+- 修复 commit `28c007268d63e209ea0b62c92dea9fcddb1dd608` 只移除该 Triple 类型上的 `?`，不改变三个成员各自 nullable 的语义；1 行修改。
+- CI Run `41765943802` success：Rust / Android build / JNI / APK / Instrumentation 均通过；JVM 90/90，Instrumentation 2/2。
+- R31 `.tar.gz` SHA-256 `b6cc6bfa5fe2fd48feeab8ac63449cae6f90e69cbe48d1f39987ed902ac3a074`；762 regular files + 122 directories；归档不含 `.git`。
+- Batch 4B-2B-13 关闭。不能把首次失败提交 `49072638ff` 当作后续基线。
+
+### 测试缺口与补强
+
+R31 mutation M1 删除 `currentConnection === connection` 后原 4 项测试仍通过，说明 identity 分支未被单独隔离。新增 `sameGenerationRejectsDifferentEventSourceIdentity`：
+- 相同 generation、不同 EventSource 对象必须被 `isCurrentLocked()` 拒绝；
+- 对该对象的 invalidate 必须返回 null；
+- 当前真实连接身份必须保持不变。
+此测试应能杀死 M1 变异体；JVM 总数预期 91。该改动只增强测试，不调整生产状态机。
+
+### 注释清理
+
+`GatewayRepository.kt` 三处注释统一改为「SSE 的 started 状态」，避免读者误以为 Repository 仍有独立 `started` 字段。R31 反馈中指出的 R29 归档 hash 格式歧义已在前一轮文档中按 `.zip` / `.tar.gz` 分别标明；本轮保持该修正。
+
+### Phase 2 真机验收（当前主线）
+
+不再安排额外生产逻辑微批次。下一步应执行并归档真实 Android 设备验收：
+1. START/STOP 意图竞争及 STOP→START 交错；
+2. Scheduler 与 Core 未就绪/恢复；
+3. Service destroy 与 WakeLock/pending tick 清理；
+4. 进程被系统回收后的重建与 Boot/Alarm 恢复。
+每项记录设备/系统版本、操作时间线、logcat、Gateway 状态和重复次数。CI instrumentation 2/2 不能代替设备验收，Phase 2 在设备验收通过前保持未关闭。

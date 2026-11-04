@@ -305,14 +305,14 @@ object GatewayRepository {
      * 一片空**，而同一时刻签到中心（走自己的 `/api/checkin-center`）明明有账号。
      *
      * 现在由 `AgateNavHost` 在导航宿主这一层启动一次，全应用共用（见那里的
-     * `DisposableEffect`）；`started` 由 [syncGatewayRunning] 探活维护，
+     * `DisposableEffect`）；SSE 的 started 状态由 [syncGatewayRunning] 探活维护，
      * 不再依赖某个页面先被访问过。
      */
     fun startPolling() {
         if (snapshotJob?.isActive == true) return
         snapshotJob = scope.launch {
             while (isActive) {
-                // 壳层还没探过活时先问一次：`started` 只由探活/网关启停来置位，
+                // 壳层还没探过活时先问一次：SSE 的 started 状态只由探活/网关启停来置位，
                 // 页面自己猜「大概在跑」会让快照对着一个没起来的端口轮询。
                 if (sseLifecycle.withLock { isStartedLocked() }) refreshOnce()
                 delay(SNAPSHOT_INTERVAL_MS)
@@ -326,7 +326,7 @@ object GatewayRepository {
     }
 
     /**
-     * 探活并同步 `started`：网关在跑就起 SSE + 拉快照，停了就置错误。
+     * 探活并同步 SSE 的 started 状态：网关在跑就起 SSE + 拉快照，停了就置错误。
      *
      * 幂等、可频繁调用 —— 壳层每几秒调一次即可。原本这段逻辑写在控制台页的
      * `LaunchedEffect` 里（`RuntimeController.readStatus()` + [onGatewayRunning]），搬到这里
