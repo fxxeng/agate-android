@@ -150,10 +150,12 @@ pub async fn create_custom_provider(State(state): State<ServerState>, body: Byte
 
 /// 更新提供商（字段缺省不动；校验在 core 层，改 protocol / baseUrl 同样新规）。
 ///
-/// 响应只带更新后的提供商本身，不带账号 —— 改提供商不影响任何账号记录
-/// （账号的 `baseUrl` 是覆盖项，缺省时**转发阶段**才回落到提供商的值，
-/// 不需要在保存时同步）。
-pub async fn update_custom_provider(State(_state): State<ServerState>, body: Bytes) -> Response {
+/// 响应只带更新后的提供商本身，不带账号。**唯一例外是改 `baseUrl`**：账号记录
+/// 里的 `baseUrl` 是覆盖项、转发时优先于提供商，早先建家时抄进账号的旧地址会
+/// 让「改了地址却不生效」。所以地址真变了要顺带把那些「等于旧值」的覆盖项
+/// 清掉，让账号回到「跟随提供商」（见
+/// `account_store::custom_accounts::clear_custom_base_url_overrides`）。
+pub async fn update_custom_provider(State(state): State<ServerState>, body: Bytes) -> Response {
     let object = match body_object(&body) {
         Ok(object) => object,
         Err(response) => return response,
@@ -182,6 +184,42 @@ pub async fn update_custom_provider(State(_state): State<ServerState>, body: Byt
         .get("name")
         .and_then(Value::as_str)
         .unwrap_or(&id);
+    // 地址改了 → 清掉账号里那份「旧地址」的覆盖项。清理失败**不回滚**提供商
+    // （地址本身已经存好了），只记一条日志：残留的旧覆盖项仍可从账号设置里
+    // 「改回跟随提供商」手动清，而回滚会让用户完全不知道保存到底成没成。
+    let before_base = before
+        .as_ref()
+        .and_then(|item| item.get("baseUrl"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim_end_matches('/')
+        .to_string();
+    let after_base = updated
+        .get("baseUrl")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim_end_matches('/')
+        .to_string();
+    if !before_base.is_empty() && before_base != after_base {
+        match state
+            .store()
+            .clear_custom_base_url_overrides(&id, &before_base)
+        {
+            Ok(names) if !names.is_empty() => logging::log(
+                "[CustomProvider]",
+                &format!(
+                    "🔗 已把 {} 个账号的旧地址覆盖项改回「跟随提供商」: {}",
+                    names.len(),
+                    names.join("、")
+                ),
+            ),
+            Ok(_) => {}
+            Err(error) => logging::log(
+                "[CustomProvider]",
+                &format!("⚠️  清理旧地址覆盖项失败（不影响本次保存）: {error}"),
+            ),
+        }
+    }
     logging::log(
         "[CustomProvider]",
         &format!("✏️  自定义提供商「{label}」已更新（{changes}）"),

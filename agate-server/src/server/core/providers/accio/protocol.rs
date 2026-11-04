@@ -443,22 +443,28 @@ pub fn build_upstream_body(
     }
 }
 
-/// `generateContent` 的 URL：`{llmBase}/generateContent?sg_k=<md5(requestId)>`。
-///
-/// `sg_k` 是桌面端拼的一个防重放标记（`md5(requestId)`，不是签名）——
-/// 上游要它，我们就照算。
-pub fn generate_content_url(llm_base: &str, request_id: &str) -> String {
-    // 项目已在用 `md-5`（import 名 `md5`，见 autoclaw::refresh），
-    // 这里直接用同一个 crate，不另引第二个 md5 实现
+/// 稳定摘要（十六进制 md5）。项目里已在用 `md-5`（`autoclaw::refresh`），
+/// 这里收成**唯一一处**实现：既给 `sg_k`，也给凭证的设备指纹派生用 ——
+/// 两处各写一遍 hex 循环迟早会漂移。它只把身份变成固定形状的标识，
+/// 不参与鉴权。
+pub fn md5_hex(text: &str) -> String {
     use md5::{Digest as _, Md5};
     let mut hasher = Md5::new();
-    hasher.update(request_id.as_bytes());
+    hasher.update(text.as_bytes());
     let digest = hasher.finalize();
     let mut hex = String::with_capacity(32);
     for byte in digest {
         hex.push_str(&format!("{byte:02x}"));
     }
-    format!("{llm_base}/generateContent?sg_k={hex}")
+    hex
+}
+
+/// `generateContent` 的 URL：`{llmBase}/generateContent?sg_k=<md5(requestId)>`。
+///
+/// `sg_k` 是桌面端拼的一个防重放标记（`md5(requestId)`，不是签名）——
+/// 上游要它，我们就照算。
+pub fn generate_content_url(llm_base: &str, request_id: &str) -> String {
+    format!("{llm_base}/generateContent?sg_k={}", md5_hex(request_id))
 }
 
 /// 从请求体里读客户端显式指定的思考档位（绑定让位判据用）。

@@ -19,7 +19,12 @@
 //! 推理请求要带 `utdid`（设备指纹）。桌面端每台机器一个（装机时生成、落盘）。
 //! 本网关按**账号**生成并落进记录：多账号池化时每个账号带自己的指纹，
 //! 与「一个账号一台设备」的真实形态一致（同一指纹挂十个账号才是可疑形态）。
-//! 它不影响鉴权，缺省也能跑（推理头里 utdid 是可选的），但带上更接近真实客户端。
+//!
+//! ⚠️ **必带，不是可选**（对齐上游 3.4.1）：上游把 utdid 当风控基线，缺了会
+//! 回 **HTTP 200 + HTML 拦截页**（bixi-intl 的 punish 脚本），症状是「空响应 /
+//! 模型不回复」—— 不报错、不换号，最难查。所以请求头一律走 [`Credentials::utdid`]：
+//! 记录里没有 `deviceId`（手改的、旧版本迁来的）也要按账号身份派生一个稳定值。
+//! 旧注释里「缺省也能跑」是错的，已废弃。
 
 use serde_json::{json, Value};
 
@@ -90,6 +95,28 @@ impl Credentials {
         }
     }
 
+    /// 推理请求必带的设备指纹。
+    ///
+    /// 正常路径上 `ensure_identity`（添加账号 / 登录 / 续期）已经补过值，这里
+    /// 兜的是「记录是手改的 / 从旧版本迁过来的」那一档：**缺字段也不能让头消失**。
+    /// 另外还要挡脏值 —— reqwest 遇到非法头值会让**整条请求**失败（不是这一个
+    /// 头失效），手改记录与上游回填的 deviceId 都可能出现非 ASCII。
+    ///
+    /// 兜底值按账号身份派生，**绝不共用**：`user_id` 优先（它最稳）；拿不到身份
+    /// 时退回 `access_token` 的摘要 —— 至少「一个账号一个指纹」，代价是 token
+    /// 轮换后这个值会变（那种账号本来就没有稳定的身份字段）。
+    pub fn utdid(&self) -> String {
+        if header_safe(&self.device_id) {
+            return self.device_id.clone();
+        }
+        let seed = if !self.user_id.is_empty() {
+            self.user_id.as_str()
+        } else {
+            self.access_token.as_str()
+        };
+        format!("desktop-{}", super::protocol::md5_hex(seed))
+    }
+
     /// 有刷新凭证 + 有到期时间，且快到点了
     pub fn expiring(&self) -> bool {
         self.can_refresh()
@@ -119,6 +146,11 @@ impl Credentials {
             "deviceId": text_or_null(&self.device_id),
         })
     }
+}
+
+/// 能不能安全放进 HTTP 头：只接受**可见 ASCII**（含空格），空串按不安全处理。
+fn header_safe(value: &str) -> bool {
+    !value.is_empty() && value.bytes().all(|byte| (0x20..=0x7e).contains(&byte))
 }
 
 /// 取一个文本字段（空串按缺失处理）
@@ -171,4 +203,70 @@ pub fn timestamp(value: Option<&Value>) -> Option<i64> {
     chrono::DateTime::parse_from_rfc3339(value.as_str()?)
         .ok()
         .map(|time| time.timestamp_millis())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn creds(user_id: &str, access_token: &str, device_id: &str) -> Credentials {
+        Credentials {
+            region: Region::Global,
+            access_token: access_token.to_string(),
+            refresh_token: "refresh".to_string(),
+            expires_at: None,
+            user_id: user_id.to_string(),
+            email: String::new(),
+            name: String::new(),
+            device_id: device_id.to_string(),
+        }
+    }
+
+    /// 记录里有的指纹照用
+    #[test]
+    fn utdid_uses_the_saved_device_id_when_usable() {
+        assert_eq!(creds("u1", "tok", "desktop-abc").utdid(), "desktop-abc");
+    }
+
+    /// 缺字段**不能让头消失**：这是「HTTP 200 + 空响应」那类静默失败的防线
+    #[test]
+    fn utdid_is_never_empty_when_the_record_lacks_device_id() {
+        let value = creds("u1", "tok", "").utdid();
+        assert!(header_safe(&value), "兜底值必须能安全进 HTTP 头: {value:?}");
+        assert!(value.starts_with("desktop-"));
+    }
+
+    /// 脏值（非 ASCII / 控制字符）也不能原样进头 —— reqwest 会让整条请求失败
+    #[test]
+    fn utdid_replaces_unsafe_values() {
+        assert!(header_safe(&creds("u1", "tok", "设备\n指纹").utdid()));
+        assert!(header_safe(&creds("", "tok", "bad\u{7f}value").utdid()));
+    }
+
+    /// 派生值稳定且按账号分开：同一账号每次一样，不同账号绝不共用一个指纹
+    #[test]
+    fn derived_utdid_is_stable_and_per_account() {
+        let a = creds("u1", "tok-a", "");
+        let b = creds("u2", "tok-a", "");
+        assert_eq!(a.utdid(), a.utdid());
+        assert_ne!(a.utdid(), b.utdid());
+        // 没有 userId 时退回 token 摘要
+        let c = creds("", "tok-a", "");
+        let d = creds("", "tok-b", "");
+        assert_ne!(c.utdid(), d.utdid());
+    }
+
+    /// md5_hex 是唯一一份摘要实现：sg_k 与设备指纹共用
+    #[test]
+    fn md5_hex_is_stable() {
+        assert_eq!(super::super::protocol::md5_hex("abc").len(), 32);
+        assert_eq!(
+            super::super::protocol::md5_hex("abc"),
+            super::super::protocol::md5_hex("abc")
+        );
+        assert_ne!(
+            super::super::protocol::md5_hex("abc"),
+            super::super::protocol::md5_hex("abd")
+        );
+    }
 }

@@ -374,9 +374,9 @@ pub async fn add_mapping(State(state): State<ServerState>, body: Bytes) -> Respo
     let alias = text_field(&object, "alias");
     let target = text_field(&object, "target");
     let provider = text_field(&object, "provider");
-    if !model_rules::alias_valid(&alias) {
-        return errors::management_error(400, "映射名只能包含字母、数字与 - _ . / :，且不超过 128 个字符");
-    }
+    // 名字字符集由 `model_rules::add_mapping` 在「确认是新建」之后判：
+    // 这里无条件判会误伤「给中文上游 id 的自映射切开关」，而上游 id 本来
+    // 就允许非 ASCII。它还会把 400 与 500 分开（见 `MappingError`）。
     if target.is_empty() {
         return errors::management_error(400, "缺少目标上游模型");
     }
@@ -418,7 +418,14 @@ pub async fn add_mapping(State(state): State<ServerState>, body: Bytes) -> Respo
         .filter(|id| Some(id.as_str()) != provider_opt)
         .collect::<Vec<_>>();
     if let Err(error) = model_rules::add_mapping(&alias, &target, provider_opt, reasoning, enabled, &others) {
-        return errors::management_error(500, error);
+        return match error {
+            model_rules::MappingError::InvalidName(message) => {
+                errors::management_error(400, message)
+            }
+            model_rules::MappingError::SaveFailed(message) => {
+                errors::management_error(500, message)
+            }
+        };
     }
     let subject = match provider_opt {
         Some(name) => format!("{alias} → {target}（{name}）"),

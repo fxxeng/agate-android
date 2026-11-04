@@ -105,7 +105,7 @@
 
 use serde_json::{json, Map, Value};
 
-use crate::server::config;
+use crate::server::config;
 use crate::server::events;
 
 pub const KEY_MODEL_RULES: &str = "modelRules";
@@ -812,13 +812,38 @@ fn set_membership(list: &mut Vec<RuleEntry>, provider: Option<&str>, id: &str, p
     }
 }
 
-/// alias 允许的字符：字母 / 数字 / `- _ . / :`
+/// **上游模型 id / 自生成别名**的字符集口径：字母 / 数字 / `- _ . / :`。
+///
+/// 只用在两处 —— 手动登记的上游模型 id（`api::model_manage` 的 `/api/models/custom`）
+/// 与 Cline / 小浣熊的默认映射种子（种子名由模型 id 拼出来）。
+/// **对外映射名不走它**：那是用户给下游点名用的名字，上游不校验，见
+/// [`alias_name_valid`]。别把这两个口径合并 —— 放开它会让上游 id 混进
+/// 「看上去一模一样、请求却对不上」的字符，收紧它会让中文模型名建不了别名。
 pub fn alias_valid(alias: &str) -> bool {
     !alias.is_empty()
         && alias.len() <= 128
         && alias
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/' | ':'))
+}
+
+/// **新建对外映射名**能不能落盘（对齐上游 3.4.1）。
+///
+/// ── 为什么不再限制字符集 ──────────────────────────────────────
+/// 对外名是给下游点名用的名字，上游根本不看它；而各家官方的模型名并不保证是
+/// ASCII —— 千问办公的 `高级` / `标准` 就是中文，且那正是它的**上游模型 id**。
+/// 既然这种名字本来就会作为自映射绑定躺在配置里，新建别名时再按「只准字母数字」
+/// 拦一道，就成了同一份数据两套标准：中文名能用、却不许你再起一个中文名。
+///
+/// 保留的是**「没法当模型名用」**那一档：空、超长、带空白或控制字符。空值会让
+/// 下游点名点不到；空白 / 控制字符会做出「看上去一模一样、请求却对不上」的名字。
+/// 长度按**字符**数计（128 个中文与 128 个字母一视同仁），不是字节数。
+///
+/// 调用方负责先 `trim`（API 层的 `text_field` 已经做过）。
+pub fn alias_name_valid(alias: &str) -> bool {
+    !alias.is_empty()
+        && alias.chars().count() <= 128
+        && !alias.chars().any(|c| c.is_whitespace() || c.is_control())
 }
 
 /// 新增映射（照抄 OmniProxy：追加式，同名 alias 允许多条 —— 不同提供商各建
@@ -846,6 +871,34 @@ pub fn alias_valid(alias: &str) -> bool {
 /// 就是这条接口：只传 (alias, target, provider, enabled) 四项 —— 不带
 /// `reasoning` 不动等级、带 `enabled` 改开关，两个三态参数各管各的字段，
 /// 两条路径互补而不干扰。
+/// 新增映射的错误分类。API 层据此决定 400（用户输入不合法）还是 500（落盘失败）
+/// —— 以前统一返回 `String` 再一律当 500，校验挪进本模块后就没法区分了。
+#[derive(Debug)]
+pub enum MappingError {
+    InvalidName(String),
+    SaveFailed(String),
+}
+
+/// 三元组（alias + target + provider）在 `mappings` 里的下标。
+///
+/// 收成一处是因为「这条是不是已存在」要被两个地方问：`add_mapping` 用它决定
+/// 改哪一行，新建校验用它决定要不要校名字 —— 各写一遍匹配条件迟早会漂移，
+/// 而漂移的表现是「明明是编辑，却被当成新建拦下」。
+fn mapping_index(
+    rules: &ModelRules,
+    alias: &str,
+    target: &str,
+    provider: Option<&str>,
+) -> Option<usize> {
+    rules.mappings.iter().position(|m| {
+        m.alias.eq_ignore_ascii_case(alias)
+            && m.target.eq_ignore_ascii_case(target)
+            && m.provider.as_deref().map_or(provider.is_none(), |p| {
+                provider.map_or(false, |given| p.eq_ignore_ascii_case(given))
+            })
+    })
+}
+
 pub fn add_mapping(
     alias: &str,
     target: &str,
@@ -853,9 +906,24 @@ pub fn add_mapping(
     reasoning: Option<Option<&str>>,
     enabled: Option<bool>,
     other_providers: &[String],
-) -> Result<ModelRules, String> {
+) -> Result<ModelRules, MappingError> {
     let mut rules = current();
     let inherited = provider.and_then(|owner| rules.binding(owner, alias, target).cloned());
+    let existing_index = mapping_index(&rules, alias, target, provider);
+    // 对外别名的名字只在**这一条别名是新建的**时候检查。
+    //
+    // 两个要点，缺一个都会踩坑：
+    //   · **不在编辑时检查**：自映射绑定（alias == target）的「别名」就是上游
+    //     模型 id，而上游 id 不保证是 ASCII（千问办公的 `高级` / `标准`）。
+    //     那些行切开关 / 改思考等级走的也是这条接口，此时别名只是定位键，
+    //     再拦就成了「模型页的开关点不动」。
+    //   · **新建也不再限字符集**：判据见 [`alias_name_valid`]。
+    let creating = !alias.eq_ignore_ascii_case(target) && existing_index.is_none();
+    if creating && !alias_name_valid(alias) {
+        return Err(MappingError::InvalidName(
+            "映射名不能为空、不能含空格或换行，且不超过 128 个字符".to_string(),
+        ));
+    }
     let mut touched = false;
     if alias.eq_ignore_ascii_case(target) {
         if let Some(enabled) = enabled {
@@ -870,13 +938,8 @@ pub fn add_mapping(
             touched = true;
         }
     }
-    if let Some(existing) = rules.mappings.iter_mut().find(|m| {
-        m.alias.eq_ignore_ascii_case(alias)
-            && m.target.eq_ignore_ascii_case(target)
-            && m.provider.as_deref().map_or(provider.is_none(), |p| {
-                provider.map_or(false, |given| p.eq_ignore_ascii_case(given))
-            })
-    }) {
+    if let Some(index) = existing_index {
+        let existing = &mut rules.mappings[index];
         if let Some(next) = reasoning {
             // `Some(None)` = 显式清空；`Some(Some(x))` = 设成 x
             let next = next.and_then(normalize_reasoning);
@@ -905,7 +968,7 @@ pub fn add_mapping(
         touched = true;
     }
     if touched && !save(&rules) {
-        return Err("模型绑定保存失败".to_string());
+        return Err(MappingError::SaveFailed("模型绑定保存失败".to_string()));
     }
     Ok(rules)
 }
@@ -1700,5 +1763,53 @@ mod tests {
                 "小浣熊的 {target} 缺额外别名 {alias} —— 用户会被迫手建成连字符，                 与别家点号名撞不上，主备队列合不起来"
             );
         }
+    }
+
+    /// 一份只含 mappings 的规则（不碰全局 config）
+    fn rules_with(mappings: Value) -> ModelRules {
+        let raw = json!({ "modelRules": { "mappings": mappings } });
+        ModelRules::from_raw(raw.as_object().expect("对象字面量"))
+    }
+
+    /// 对外别名允许中文等非 ASCII（千问办公的「高级 / 标准」就是这种名字）
+    #[test]
+    fn alias_name_accepts_non_ascii_names() {
+        assert!(alias_name_valid("高级"));
+        assert!(alias_name_valid("标准·旗舰"));
+        assert!(alias_name_valid("glm-5.3"));
+        assert!(alias_name_valid("模型/档位:甲"));
+    }
+
+    /// 保留「没法当模型名用」那一档：空、空白/控制字符、超长
+    #[test]
+    fn alias_name_rejects_unusable_names() {
+        assert!(!alias_name_valid(""));
+        assert!(!alias_name_valid("高级 标准"));
+        assert!(!alias_name_valid("高级\n标准"));
+        assert!(!alias_name_valid("glm\u{7f}"));
+        // 长度按字符数，不是字节数：128 个中文与 128 个字母一视同仁
+        assert!(alias_name_valid(&"高".repeat(128)));
+        assert!(!alias_name_valid(&"高".repeat(129)));
+    }
+
+    /// 上游 id 的 ASCII 口径**没有**被放开 —— 两个函数各管一件事，
+    /// 别在合并字符集时把登记模型 id 也一起放开了
+    #[test]
+    fn alias_valid_still_restricts_upstream_ids() {
+        assert!(!alias_valid("高级"));
+        assert!(alias_valid("glm-5.3"));
+        assert!(!alias_valid("glm 5.3"));
+    }
+
+    /// 三元组匹配是「新建 vs 编辑」判据的唯一实现：大小写不敏感、provider 归属要对
+    #[test]
+    fn mapping_index_matches_the_same_triple() {
+        let rules = rules_with(json!([
+            { "alias": "glm-5.3", "target": "sn-glm-5-3", "provider": "raccoon", "enabled": true }
+        ]));
+        assert_eq!(mapping_index(&rules, "GLM-5.3", "SN-GLM-5-3", Some("raccoon")), Some(0));
+        assert_eq!(mapping_index(&rules, "glm-5.3", "sn-glm-5-3", Some("workbuddy")), None);
+        assert_eq!(mapping_index(&rules, "glm-5.3", "sn-glm-5-3", None), None);
+        assert_eq!(mapping_index(&rules, "other", "sn-glm-5-3", Some("raccoon")), None);
     }
 }

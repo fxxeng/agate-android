@@ -768,6 +768,11 @@ pub fn panel_router(state: ServerState) -> Router {
         // 方法不匹配的兜底：Node 版没有 405 概念，一律落到 404 分支，
         // 所以这里把 405 也转成同样的 Not found 文案，保持行为一致
         .method_not_allowed_fallback(method_not_allowed)
+        // 大块文本响应 gzip：局域网 / headless 形态下远程打开面板时，
+        // `/api/session` 与模型清单都是上百 KB 的 JSON（见 compression 模块头）。
+        // 只挂管理面 —— 网关面的 `/v1/*` 是 SSE 流，不能压；App 的 JNI 进程内
+        // 直调不带 Accept-Encoding，走的是「只补 Vary、不压」那条分支。
+        .layer(middleware::from_fn(super::compression::gzip))
         // CORS 与 body 限制必须在最外层：404 与错误响应也要带 CORS 头
         .layer(middleware::from_fn(cors))
         .layer(axum::extract::DefaultBodyLimit::max(MAX_BODY_SIZE))

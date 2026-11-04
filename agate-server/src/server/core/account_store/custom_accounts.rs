@@ -360,6 +360,49 @@ impl AccountStore {
         Ok(removed)
     }
 
+    /// 清掉这一家账号里「**等于旧地址**」的 `baseUrl` 覆盖项（对齐上游 3.4.1）。
+    ///
+    /// ── 为什么需要 ────────────────────────────────────────────
+    /// `baseUrl` 在账号记录里是**覆盖项**，转发时优先于提供商的地址
+    /// （`custom_providers::resolve_base_url`）。早先版本新建提供商时会把当时的
+    /// 地址抄进首个账号，于是「改了提供商地址、请求仍打旧地址」，而界面只显示
+    /// 提供商那一层，账号里的旧值既看不见也改不掉。清理是「回到跟随提供商」，
+    /// 不是删除用户配置 —— 地址仍由提供商记录提供。
+    ///
+    /// 值**逐字相等**（去首尾空白、去末尾斜杠后）才清：导入来的账号可能刻意
+    /// 指到另一个地址，那是有意的覆盖项，不能一并抹掉。
+    /// 返回被清掉的账号名（供日志说明改了哪些条）。
+    pub fn clear_custom_base_url_overrides(
+        &self,
+        provider_id: &str,
+        matched: &str,
+    ) -> Result<Vec<String>, AccountStoreError> {
+        let provider_id = provider_id.trim();
+        let target = matched.trim().trim_end_matches('/');
+        if provider_id.is_empty() || target.is_empty() {
+            return Ok(Vec::new());
+        }
+        let _guard = self.guard();
+        let records = self.records_for_provider(&_guard, provider_id);
+        let mut cleared: Vec<String> = Vec::new();
+        for mut record in records {
+            let current = record
+                .fields()
+                .get("baseUrl")
+                .and_then(Value::as_str)
+                .map(|text| text.trim().trim_end_matches('/').to_string());
+            if current.as_deref() != Some(target) {
+                continue;
+            }
+            let name = record.name();
+            record.remove("baseUrl");
+            record.set_updated_at(logging::now_ms());
+            self.with_conn(&_guard, |conn| sql::update_in_place(conn, &record))?;
+            cleared.push(name);
+        }
+        Ok(cleared)
+    }
+
     /// 按账号 id 取它的 provider —— **仅当它属于自定义提供商时**返回 Some。
     ///
     /// 消费方是 `api::accounts::refresh_account` 的分支：自定义账号没有可刷新
@@ -893,4 +936,98 @@ fn account_id_for(api_key: &str) -> Result<String, String> {
 fn short_hash(seed: &str) -> String {
     let digest = Sha256::digest(seed.as_bytes());
     format!("{digest:x}").chars().take(12).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn temp_store(
+        label: &str,
+    ) -> (AccountStore, crate::server::db::test_temp::TempDb) {
+        let (db, guard) = crate::server::db::test_temp::TempDb::open(&format!(
+            "custom-accounts-clear-base-{label}"
+        ));
+        (AccountStore::with_db(Some(db)), guard)
+    }
+
+    /// 直接落一条自定义账号记录（绕开 upsert 的表单校验，只测清理本身）
+    fn insert(store: &AccountStore, id: &str, provider: &str, base_url: Option<&str>) {
+        let mut fields = json!({
+            "id": id, "provider": provider, "name": id,
+            "apiKey": format!("key-{id}"), "enabled": true, "priority": 10,
+        })
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+        if let Some(url) = base_url {
+            fields.insert("baseUrl".to_string(), Value::String(url.to_string()));
+        }
+        let record = StoredAccount::from_map(fields);
+        let guard = store.guard();
+        store
+            .with_conn(&guard, |conn| sql::put(conn, &record))
+            .expect("测试库应当能写入");
+    }
+
+    fn base_url_of(store: &AccountStore, id: &str) -> Option<String> {
+        let guard = store.guard();
+        store
+            .record_by_id(&guard, id)?
+            .fields()
+            .get("baseUrl")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    }
+
+    /// 只清「逐字等于旧地址」的覆盖项：尾斜杠归一后算相等；指到别处的
+    /// 有意覆盖、本来就没有覆盖项的账号、以及别家的账号都不能动。
+    #[test]
+    fn clears_only_the_overrides_pointing_at_the_old_address() {
+        let (store, _db) = temp_store("matching");
+        insert(&store, "same", "custom-test", Some("https://old.example.com/v1"));
+        insert(&store, "slash", "custom-test", Some("https://old.example.com/v1/"));
+        insert(&store, "other", "custom-test", Some("https://mirror.example.com/v1"));
+        insert(&store, "none", "custom-test", None);
+        insert(&store, "foreign", "custom-other", Some("https://old.example.com/v1"));
+
+        let cleared = store
+            .clear_custom_base_url_overrides("custom-test", "https://old.example.com/v1")
+            .expect("清理应当成功");
+        assert_eq!(cleared.len(), 2, "只该清掉 same / slash: {cleared:?}");
+        assert!(cleared.iter().any(|name| name == "same"));
+        assert!(cleared.iter().any(|name| name == "slash"));
+
+        assert_eq!(base_url_of(&store, "same"), None);
+        assert_eq!(base_url_of(&store, "slash"), None);
+        assert_eq!(
+            base_url_of(&store, "other").as_deref(),
+            Some("https://mirror.example.com/v1")
+        );
+        assert_eq!(base_url_of(&store, "none"), None);
+        assert_eq!(
+            base_url_of(&store, "foreign").as_deref(),
+            Some("https://old.example.com/v1")
+        );
+    }
+
+    /// 空参数是无操作，不是「把全家的覆盖项都清掉」
+    #[test]
+    fn empty_inputs_are_a_no_op() {
+        let (store, _db) = temp_store("empty");
+        insert(&store, "a", "custom-test", Some("https://old.example.com/v1"));
+        assert!(store
+            .clear_custom_base_url_overrides("custom-test", "")
+            .expect("空地址")
+            .is_empty());
+        assert!(store
+            .clear_custom_base_url_overrides("", "https://old.example.com/v1")
+            .expect("空 provider")
+            .is_empty());
+        assert_eq!(
+            base_url_of(&store, "a").as_deref(),
+            Some("https://old.example.com/v1")
+        );
+    }
 }

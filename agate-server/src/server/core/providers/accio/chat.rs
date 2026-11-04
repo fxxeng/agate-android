@@ -217,10 +217,10 @@ pub fn build_plan(
         // 见 `endpoints::DEFAULT_APP_KEY`。
         ("appKey".to_string(), endpoints::app_key()),
     ];
-    // 设备指纹（每条账号自带一个；缺省也能发，但带上更接近真实客户端）
-    if !credentials.device_id.is_empty() {
-        headers.push(("utdid".to_string(), credentials.device_id.clone()));
-    }
+    // 设备指纹（utdid）：**必带**。上游把它当风控基线，缺了会回 HTTP 200 +
+    // HTML 拦截页，症状是「空响应 / 模型不回复」，而且不报错也不换号。
+    // 一律走 `utdid()` —— 记录缺 deviceId 时给一个按账号派生的稳定值。
+    headers.push(("utdid".to_string(), credentials.utdid()));
     headers.push(("version".to_string(), endpoints::DEFAULT_APP_VERSION.to_string()));
 
     let body_bytes = serde_json::to_vec(&built.body)

@@ -140,6 +140,8 @@ pub mod access;
 pub mod altcha;
 pub mod config;
 pub mod config_migration;
+/// 管理面响应 gzip 压缩（只挂 `panel_router`，网关面 SSE 不压）。
+mod compression;
 pub mod core;
 pub mod db;
 pub mod errors;

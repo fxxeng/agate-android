@@ -193,13 +193,31 @@ pub fn select_tools(all: &[Value], choice: &ToolChoice) -> Result<Vec<Value>, Ca
     }
 }
 
-/// JSON 值合法性校验（原实现 `validateJsonValue`）：嵌套深度 ≤12、
+/// JSON Schema 允许的最深嵌套。原实现（照抄上游客户端）是 12，实测会把
+/// zod 系 MCP server 整类挡在门外（上游 issue #416），提到 32 覆盖实测最深的 31 层。
+const MAX_SCHEMA_DEPTH: usize = 32;
+
+/// 只表达「或 / 且 / 非」的 schema 组合键。它们不是数据层级，遍历时不计深度。
+const SCHEMA_COMBINATORS: &[&str] = &["anyOf", "oneOf", "allOf", "not"];
+
+/// JSON 值合法性校验（原实现 `validateJsonValue`）：嵌套深度 ≤32、
 /// 对象内不允许 `__proto__` / `constructor` / `prototype` 三个键。
 ///
-/// 为什么网关也要挡这三个键：它们会一路进上游 JSON（上游是 JS 生态，
+/// ── 深度口径为什么改了（对齐上游 3.4.1，issue #416）────────────
+/// 原实现的 12 是照抄上游客户端的校验，但 zod 系 MCP server 在把 zod schema
+/// 转成 JSON Schema 时会自动套 `anyOf` / `oneOf` / `allOf` 包装层：语义上很浅的
+/// schema 实测能到 16~31 层，结果「挂载大型 MCP server」的客户端一发就 400，
+/// 且换号也不会顺延 —— 问题出在本机校验，重试没有意义。
+/// 现在的口径：
+///   - 上限提到 [`MAX_SCHEMA_DEPTH`]（32），覆盖实测最深的 31 层；
+///   - [`SCHEMA_COMBINATORS`] 及其分支数组**不计层** —— 它们只是 schema 的组合语法，
+///     不是数据层级，这样将来更深的 zod 样板也不会再误伤；
+///   - 真实的 object / array 嵌套仍按 32 层封顶，原型污染防护不变。
+///
+/// 为什么网关也要挡那三个键：它们会一路进上游 JSON（上游是 JS 生态，
 /// 原型污染是真实攻击面），且这类输入没有任何正常用途。
 fn validate_json_value(value: &Value, path: &str, depth: usize) -> Result<(), CatPawError> {
-    if depth > 12 {
+    if depth > MAX_SCHEMA_DEPTH {
         return Err(CatPawError::bad_request(format!("{path} 嵌套过深")));
     }
     match value {
@@ -217,9 +235,71 @@ fn validate_json_value(value: &Value, path: &str, depth: usize) -> Result<(), Ca
                         "{path} 包含不允许的字段 {key}"
                     )));
                 }
+                if SCHEMA_COMBINATORS.contains(&key.as_str()) {
+                    // 组合键的值是「分支数组」；数组容器本身也不构成数据层级，
+                    // 所以直接按原深度校验每个分支，而不是先 +1 再进数组。
+                    if let Value::Array(branches) = item {
+                        for (index, branch) in branches.iter().enumerate() {
+                            validate_json_value(branch, &format!("{path}.{key}[{index}]"), depth)?;
+                        }
+                        continue;
+                    }
+                    validate_json_value(item, &format!("{path}.{key}"), depth)?;
+                    continue;
+                }
                 validate_json_value(item, &format!("{path}.{key}"), depth + 1)?;
             }
             Ok(())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 造 `depth` 层真实 object 嵌套（最里面是标量）
+    fn nested(depth: usize) -> Value {
+        let mut value = Value::String("leaf".to_string());
+        for _ in 0..depth {
+            let mut object = Map::new();
+            object.insert("a".to_string(), value);
+            value = Value::Object(object);
+        }
+        value
+    }
+
+    /// zod 系 MCP server 的 schema 实测到 31 层；旧实现的 12 会把整类工具挡下
+    #[test]
+    fn schema_at_31_levels_is_accepted() {
+        assert!(validate_json_value(&nested(31), "schema", 0).is_ok());
+        assert!(validate_json_value(&nested(32), "schema", 0).is_ok());
+    }
+
+    /// 真实数据嵌套仍按 32 层封顶，不是彻底不设防
+    #[test]
+    fn schema_above_32_levels_is_rejected() {
+        assert!(validate_json_value(&nested(33), "schema", 0).is_err());
+    }
+
+    /// 组合键（anyOf/oneOf…）是 schema 语法而不是数据层级，
+    /// 40 层包装也不该把一条浅 schema 判成「嵌套过深」
+    #[test]
+    fn schema_combinators_do_not_count_as_depth() {
+        let mut value = nested(2);
+        for _ in 0..40 {
+            let mut object = Map::new();
+            object.insert("anyOf".to_string(), Value::Array(vec![value]));
+            value = Value::Object(object);
+        }
+        assert!(validate_json_value(&value, "schema", 0).is_ok());
+    }
+
+    /// 放宽深度不等于放宽原型污染防护
+    #[test]
+    fn prototype_pollution_keys_are_still_rejected() {
+        let mut object = Map::new();
+        object.insert("__proto__".to_string(), Value::String("x".to_string()));
+        assert!(validate_json_value(&Value::Object(object), "schema", 0).is_err());
     }
 }
