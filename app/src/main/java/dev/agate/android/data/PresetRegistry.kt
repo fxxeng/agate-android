@@ -394,6 +394,92 @@ object PresetRegistry {
             pasteMultiline = true,
             supportsCheckin = true,
         ),
+
+        // ══ 第 4 批新增的四家 ══════════════════════════════════════
+        // 内核侧已全部接完（见 docs/上游3.4.1-同步与移植分析.md），这里是客户端
+        // 那一半。**顺序与内核 `PROVIDERS` 尾部逐条对齐**：本仓按接入批次排在末尾，
+        // 不按上游 order（与 qwenwork / tabbit 同一处置）。
+        //
+        // ── 四家都只有「粘贴」一条通道，理由各不相同但结论相同 ──────
+        // 内核 `supports_web_login()` 对这四家**如实为 false**（登录链/登录页属
+        // UI 类，单独立项）。给一条点了必然 400 的通道比少给一条更糟 ——
+        // 与豆包工作「网页登录通道还没在壳侧实现，就先不提供」同一处置。
+
+        // Tabbit 两个站点：上游在 **web 插件包**里（`provider_category: "web"`），
+        // 两个站账号不通用、签名 key 不同，所以是两个 id、各填各的 Cookie
+        // （拿国内站的 Cookie 打国际站只会 401）。
+        //
+        // 内核侧的事实（改这条注释前先核对 `tabbit/adapter.rs`）：
+        // 有真实的每日签到活动（`daily_sign_in`，奖励是额度重置券），
+        // 但**没有续期接口**（JWT 7 天有效，失效只能重粘）。
+        ProviderPreset(
+            "tabbit", "Tabbit 国内版", "web.tabbit.com · 粘贴 Cookie / 登录 JWT",
+            LoginKind.PASTE,
+            listOf(AuthChannel.PASTE),
+            category = ProviderCategory.WEB,
+            // 一段文本收三种粘法（内核 `credentials::normalize_payload` 按**内容**
+            // 判，不认字段名）：Cookie 头单行 / DevTools 的 Copy as cURL 整段 / 裸 JWT。
+            // 客户端**不做**半套解析 —— 两处各拆一次必然分叉，症状是「同一个串
+            // 粘贴能加、转发却报缺令牌」。
+            pasteHint = "粘贴网页 Cookie 整串（token=…; user_id=…），或 DevTools 的 Copy as cURL 整段，或裸 JWT",
+            pasteMultiline = true,
+            supportsCheckin = true,
+        ),
+        ProviderPreset(
+            "tabbit-intl", "Tabbit 国际版", "web.tabbit.ai · 粘贴 Cookie / 登录 JWT",
+            LoginKind.PASTE,
+            listOf(AuthChannel.PASTE),
+            category = ProviderCategory.WEB,
+            // 国际站**只能导入 Cookie**（上游没有手机号登录），提示里点明这一点：
+            // 用户拿着国内站的 Cookie 来填是常见错误，坐实「不通用」比让他自己试出来好。
+            pasteHint = "粘贴国际站的网页 Cookie（与国内站不通用），或裸 JWT",
+            pasteMultiline = true,
+            supportsCheckin = true,
+        ),
+
+        // Kiro（AWS 的 AI IDE 订阅，`kiro.dev`）：粘贴官方 API key（`ksk_…`）
+        // 或整段 `kiro-auth-token.json`。
+        //
+        // ── 为什么没有「浏览器登录」通道 ──────────────────────────
+        // 内核的 OAuth 链（AWS Builder ID 设备码 + SSO OIDC）还没接，属 UI 类；
+        // 本次也不提供「导入桌面端登录态」—— 那份登录态是 kiro-cli 的 SQLite
+        // 与 Kiro IDE 的文件，Android 上两者都不存在（内核 `api::accounts` 对该家
+        // 的 importDesktop 直接回 400 并说明原因）。
+        // `IMPORT_FILE` 给的是**文本 JSON**（`kiro-auth-token.json`）这一条，
+        // 与内核「不吃二进制凭证文件」一致。
+        //
+        // 不标签到：内核 `CHECKIN_PROVIDERS` 里没有它（上游没有可自动领的奖励）——
+        // 勾上一个永远「不支持」的家比不勾更糟。
+        ProviderPreset(
+            "kiro", "Kiro", "kiro.dev · 粘贴 API key / kiro-auth-token.json",
+            LoginKind.PASTE,
+            listOf(AuthChannel.PASTE, AuthChannel.IMPORT_FILE),
+            pasteHint = "粘贴 ksk_ 开头的 API key，或整段 kiro-auth-token.json（含 accessToken / refreshToken）",
+            pasteMultiline = true,
+        ),
+
+        // AStudio（科大讯飞「星火 Astron Studio」桌面端）：粘贴 `modelBearerToken`
+        // 或整段 `astron-session.json`。
+        //
+        // ── 两套凭据，粘哪一套都能加 ────────────────────────────
+        //   只 `modelBearerToken`      → 能对话；没有余额行、不参与签到
+        //   + `token` / `accountId`    → 余额 / 会员 / 签到全通
+        // 只粘网页会话是错的（内核会回「没有模型凭据」），所以**一个输入框**就够了
+        // —— 整段文件、裸令牌、带 `Bearer ` 外壳的整行都由内核
+        // `credentials::normalize_paste` 按内容判。不做「两栏分别填」：那要把两段
+        // 拼成内核认的 JSON，等于在客户端再写一遍归一逻辑（与上面同一条纪律）。
+        //
+        // 签到能标上：内核 `CHECKIN_PROVIDERS` 里有它。但只有模型凭据的账号
+        // 由实现直接回 `ineligible`，不会空打 —— 界面上「无网页会话」是如实陈述，
+        // 不是「账号异常」（账号列表里读 `noSession` 那个标记）。
+        ProviderPreset(
+            "astudio", "AStudio", "讯飞星辰 · 粘贴 modelBearerToken / astron-session.json",
+            LoginKind.PASTE,
+            listOf(AuthChannel.PASTE, AuthChannel.IMPORT_FILE),
+            pasteHint = "粘贴 modelBearerToken，或整段 astron-session.json（带上 token / accountId 时余额与签到才可用）",
+            pasteMultiline = true,
+            supportsCheckin = true,
+        ),
     )
 
     fun byId(id: String): ProviderPreset? = ALL.firstOrNull { it.id == id }

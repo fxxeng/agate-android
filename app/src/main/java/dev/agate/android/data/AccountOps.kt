@@ -149,6 +149,26 @@ object AccountOps {
                 body.put("accessToken", primary.trim())
                 if (!secondary.isNullOrBlank()) body.put("refreshToken", secondary.trim())
             }
+            // ── 第 4 批四家 ────────────────────────────────────────────
+            //
+            // Tabbit 两家：**故意塞 `accessToken` 而不是 `cookie`**。
+            // 内核 `tabbit::credentials::normalize_payload` 只在「这段文本看着像
+            // Cookie 串」时（`looks_like_cookie_paste`：含 `token=` / `cookie:` /
+            // ` -b `）才拆包回填；塞进 `cookie` 字段的**裸 JWT** 两条规则都不命中，
+            // 最后 `from_fields` 读到的是一个没有 `token=` 的串 → 400「缺少登录令牌」。
+            // 塞进 `accessToken` 则三种粘法都成立：
+            //   Cookie 串 / cURL 整段 → 按内容拆出 token + cookie（覆盖原文）
+            //   裸 JWT                → 原样留着，由 `from_fields` 合成 Cookie
+            // 客户端因此**不需要**自己判断用户粘的是哪种 —— 判据只在内核一份。
+            "tabbit", "tabbit-intl" -> body.put("accessToken", primary.trim())
+            // Kiro：一段 textarea 收「裸 API key（ksk_…）」与「整段
+            // kiro-auth-token.json」两种，`kiro::credentials::normalize_paste`
+            // 先搬令牌、再解字符串里的 JSON，两种都认。
+            "kiro" -> body.put("text", primary.trim())
+            // AStudio：同上。`astudio::credentials::normalize_paste` 认裸
+            // `modelBearerToken`、带 `Bearer ` 外壳的整行、整段 `astron-session.json`、
+            // 以及动态登录的 `{inputs:{…}}` 包装 —— 按内容判，所以这里只递原文。
+            "astudio" -> body.put("text", primary.trim())
             else -> return OpResult(false, null, "该提供商不支持粘贴凭证添加")
         }
         return post("/api/accounts", body)

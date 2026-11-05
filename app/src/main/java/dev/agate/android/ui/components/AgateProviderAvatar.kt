@@ -75,6 +75,22 @@ object ProviderIcons {
         // UI 资源目录里 —— 有据可依才补上，不是"随便找一张图顶上"
         // （一张不对的图标比没有图标更误导：用户会以为自己加错了家）。
         "doubaowork" to R.drawable.provider_doubaowork,
+        // ── 第 4 批四家 ────────────────────────────────────────────
+        // 三张图分成两种来源，都不是"随便找一张顶上"：
+        //
+        // Tabbit 两家：上游 web 插件包 `assets/tabbit.png`（同一张也在
+        // `desktop-tauri/ui/assets/providers/tabbit.png`，160×160）。两个站点共用一个
+        // 产品记号，靠 `normalize()` 把 `tabbit-intl` 折成 `tabbit` —— 所以只登记一条。
+        "tabbit" to R.drawable.provider_tabbit,
+        // Kiro：上游只发 SVG（`Agent2Providers-v3.4.1/assets/kiro.svg`），本机没有
+        // SVG 光栅化工具。这张只由三条 path 组成、viewBox 24 单元，于是**转成
+        // VectorDrawable**（`res/drawable/provider_kiro.xml`，路径与调色板逐字保留，
+        // 出处注释也在那个文件里）。字段名与别家 PNG 一样，调用方不需要区分。
+        "kiro" to R.drawable.provider_kiro,
+        // AStudio（科大讯飞星火 Astron Studio）：上游桌面 UI 资源
+        // `desktop-tauri/ui/assets/providers/astudio.png`（256×256）。实测透明
+        // 占比 0.010（满底色块），所以在两种模式下都够清楚，**不进**底座表。
+        "astudio" to R.drawable.provider_astudio,
     )
 
     /**
@@ -167,6 +183,11 @@ object ProviderIcons {
         "monkeycode" to 0.510f,
         "workbuddy" to 0.380f,
         "catpaw" to 0.366f,
+        // Tabbit：0.347（上游 `assets/tabbit.png` 实测：160×160、8 位索引色 +
+        // `tRNS` 透明表，按调色板 alpha 逐像素统计，不是估的）。透明底 + 单色
+        // 字形，浅色模式下会糊成一片，必须衬底座。只登记一条 —— `tabbit-intl`
+        // 会被 `normalize()` 折成 `tabbit`。
+        "tabbit" to 0.347f,
         "autoclaw" to 0.291f,
         "trae" to 0.229f,
         "loomy" to 0.209f,
