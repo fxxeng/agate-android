@@ -49,6 +49,12 @@ pub mod aggregate;
 pub mod cancellation;
 pub mod connections;
 pub mod continuation;
+/// 会话图片压缩（转发前把内联 base64 大图压小）。
+///
+/// 公开而非 `mod`：`payload::send_body` 是唯一调用方，但用例要直接驱动
+/// 「给定请求体 → 改写成什么样」，藏在私有模块里就没法从外部钉住那些
+/// 「坏图必须原样放行」的判据。
+pub mod image_compress;
 pub mod refusal;
 pub mod request;
 mod payload;
@@ -389,6 +395,7 @@ impl UpstreamService {
         let sanitize_fingerprints = config.sanitize_fingerprints();
         let sanitize_zwsp_words = config.sanitize_zwsp_words();
         let developer_role_compat = config.developer_role_compat();
+        let image_compress = config.image_compress_settings();
         let prompt = config.prompt_plan();
         // Key 的提供商白名单随请求带进转发上下文：它要活过整条转发链
         //（含流式 —— 但流本身不需要它，只在选路与重试时读）。
@@ -409,6 +416,7 @@ impl UpstreamService {
             sanitize_fingerprints,
             sanitize_zwsp_words,
             developer_role_compat,
+            image_compress,
             prompt,
             key_scope: key_scope.as_ref(),
             pinned_account: pinned_account.as_deref(),

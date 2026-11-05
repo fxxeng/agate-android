@@ -306,7 +306,7 @@ impl AccountStore {
         }
         // ③ 持锁落盘：只按计划删键，不再做任何解析
         let _guard = self.guard();
-        let mut state = self.load(&_guard);
+        let mut state = (*self.load(&_guard)).clone();
         let mut cleaned: Vec<String> = Vec::new();
         for record in state.accounts.iter_mut() {
             let Some((_, who, stale)) = plan.iter().find(|(id, _, _)| id == record.id()) else {
@@ -444,7 +444,7 @@ impl AccountStore {
     /// && !scope_migrated && cline_renamed == 0` 的早退分支连事务都不开）。
     pub fn migrate_startup(&self) -> Value {
         let _guard = self.guard();
-        let mut state = self.load(&_guard);
+        let mut state = (*self.load(&_guard)).clone();
 
         // ① provider 惰性补齐（架构文档 §3.2）：缺失/空值一律补 workbuddy
         let mut provider_added = 0usize;

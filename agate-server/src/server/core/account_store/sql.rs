@@ -80,6 +80,39 @@ use crate::server::core::account_store::priority::{grouped_queue_order, QueueEnt
 use crate::server::core::account_store::state::{AccountState, StoredAccount};
 use crate::server::core::crypto::{self, SecretScope};
 
+/// `kv` 里「账号写事件版本号」的键名。
+///
+/// 写入方是 `server/db/schema.rs` 的 [`V16_SCHEMA`](../../../db/schema.rs) 那三个
+/// 触发器（`accounts_revision_insert/update/delete`）—— **本文件只读不写**，
+/// 所以这里没有对应的写入函数，也不该有：版本号一旦能被业务代码改，它就不再是
+/// 「库里发生过什么」的如实记录，而变成一个又要靠纪律维护的约定。
+/// 改键名必须同时改 DDL 里的字面量（两处对不上时的表现是缓存永不失效）。
+pub(crate) const ACCOUNTS_REVISION_KEY: &str = "accountsRevision";
+
+/// 账号表当前的写事件版本号（没有该键 = 0 = 从未写过，或库是 v16 之前的旧库）。
+///
+/// 读它只为回答一个问题：**「我缓存的那份账号列表还算不算数」**（消费方见
+/// `account_store::snapshot`）。因此它不需要精确、只需要单调 —— 触发器按事件
+/// 递增，任何写入都会让它变化，这就够了。
+///
+/// 库是 v16 之前创建的、且此后还没有过任何账号写入时，这个键不存在、返回 0；
+/// 只要写一次就会出现并开始递增。两条分支对缓存都是安全的（0 也是一个稳定的
+/// 版本号，配上「缓存若为空则必建」的判据即可）。
+pub(crate) fn accounts_revision(conn: &Connection) -> rusqlite::Result<u64> {
+    let value: Option<String> = conn
+        .query_row(
+            "SELECT value FROM kv WHERE key = ?1",
+            params![ACCOUNTS_REVISION_KEY],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(value
+        .as_deref()
+        .map(str::trim)
+        .and_then(|text| text.parse::<u64>().ok())
+        .unwrap_or(0))
+}
+
 /// 一行 `data` 列 → 记录字段的 JSON `Value`（**密文与历史明文都能读**）。
 ///
 /// 这是「`data` 列 ↔ 内存明形态」这条边界的读侧内核，[`decode_data`] 与
@@ -676,4 +709,85 @@ pub(crate) fn encrypt_legacy_rows(conn: &mut Connection) -> rusqlite::Result<usi
     }
     tx.commit()?;
     Ok(updates.len())
+}
+
+#[cfg(test)]
+mod tests {
+    //! 触发器的判据：**任何**一条 `accounts` 写入都必须让版本号变。
+    //!
+    //! 这三条触发器是账号快照缓存的唯一失效依据（理由见 `db::schema` 的
+    //! `SCHEMA_VERSION` v16 段）。它们失效的表现极其隐蔽：缓存不再更新，
+    //! 界面改了备注名、转发却仍按旧记录选路，而且**不会报任何错**。所以这里
+    //! 用真 SQLite + 真 schema（`schema::migrate`，跑到 v16）逐条钉住
+    //! INSERT / UPDATE / DELETE 三种写事件。
+    //!
+    //! 不测「版本号精确等于几」：它的语义只要求**单调变化**（见 V16_SCHEMA 的
+    //! 注记），钉死具体数值等于把「触发器内部先播种再自增」这个实现细节写进
+    //! 测试里，改实现就误报。
+
+    use super::*;
+    use crate::server::db::schema;
+
+    fn memory_db() -> Connection {
+        let conn = Connection::open_in_memory().expect("内存库");
+        schema::migrate(&conn).expect("建表（含 v16 触发器）");
+        conn
+    }
+
+    fn insert_row(conn: &Connection, id: &str) {
+        conn.execute(
+            "INSERT INTO accounts (id, provider, priority, enabled, added_at, data) \
+             VALUES (?1, 'workbuddy', 1, 1, 0, '{}')",
+            params![id],
+        )
+        .expect("插入账号行");
+    }
+
+    #[test]
+    fn an_untouched_table_has_no_revision_yet() {
+        let conn = memory_db();
+        assert_eq!(accounts_revision(&conn).expect("读版本号"), 0);
+    }
+
+    #[test]
+    fn insert_update_and_delete_all_bump_the_revision() {
+        let conn = memory_db();
+        insert_row(&conn, "a");
+        let after_insert = accounts_revision(&conn).expect("读版本号");
+        assert!(after_insert > 0, "插入必须让版本号变化");
+
+        // 改一行（等价于 `sql::update_in_place` / `apply_priorities` 的 UPDATE）
+        conn.execute("UPDATE accounts SET priority = 2 WHERE id = 'a'", [])
+            .expect("改行");
+        let after_update = accounts_revision(&conn).expect("读版本号");
+        assert!(after_update > after_insert, "改行必须让版本号继续变");
+
+        // 删一行（等价于 `sql::delete`）
+        conn.execute("DELETE FROM accounts WHERE id = 'a'", [])
+            .expect("删行");
+        let after_delete = accounts_revision(&conn).expect("读版本号");
+        assert!(after_delete > after_update, "删行必须让版本号继续变");
+    }
+
+    /// `sql::put` 走的是 `DELETE` + `INSERT`（见 `V1_SCHEMA` 关于 rowid 与顺序的
+    /// 说明），两条语句都要触发 —— 这条用例覆盖「真实写路径的语句形状」，
+    /// 而不是上面那种单条 SQL。
+    #[test]
+    fn the_real_put_path_bumps_the_revision() {
+        let conn = memory_db();
+        let record = StoredAccount::from_value(serde_json::json!({
+            "id": "acc-1",
+            "provider": "workbuddy",
+            "priority": 1,
+            "enabled": true,
+        }))
+        .expect("记录");
+        put(&conn, &record).expect("写入");
+        let first = accounts_revision(&conn).expect("读版本号");
+        assert!(first > 0);
+
+        // 同一个 id 再写一次（先删后插）：版本号必须继续前进
+        put(&conn, &record).expect("覆盖写入");
+        assert!(accounts_revision(&conn).expect("读版本号") > first);
+    }
 }

@@ -122,6 +122,7 @@ pub mod priority;
 pub mod qoder_accounts;
 pub mod raccoon_accounts;
 pub mod raccoon_import;
+pub mod snapshot;
 pub mod sql;
 pub mod state;
 pub mod store;

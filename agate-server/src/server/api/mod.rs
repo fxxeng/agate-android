@@ -82,6 +82,11 @@ pub mod endpoints;
 /// SSE 事件流（M3 事件总线，见 `server::events` 模块头）
 pub mod events_api;
 pub mod health;
+/// 会话图片压缩的开关与三项参数（`/api/image-compress`）。
+///
+/// 与 `/api/keepalive-strip` 同形（GET 读 / PUT 写、默认关），差别是「一个开关
+/// + 三个有界整数」而不是单开关 —— 所以独立成文件，不塞进 config_api。
+pub mod image_compress;
 // 「从其他工具导入」的扫描接口（当前来源：cc-switch；存储读取见
 // `core::import_ccswitch`）
 pub mod import_sources;

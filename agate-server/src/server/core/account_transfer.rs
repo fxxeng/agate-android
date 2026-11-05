@@ -170,7 +170,7 @@ pub fn import_accounts(store: &AccountStore, payload: &Value) -> Result<Value, A
     };
 
     let (result, catpaw_invalidations) = store.with_lock(|guard| {
-        let mut state = store.load_locked(guard);
+        let mut state = (*store.load_locked(guard)).clone();
         let mut stats = ImportStats::default();
         let mut taken_ids: Vec<String> = state
             .accounts

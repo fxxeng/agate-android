@@ -693,9 +693,9 @@ impl RequestStats {
         let loaded = {
             let guard = self.guard();
             self.with_conn(&guard, |conn| {
-                let total = sql::count_all(conn)?;
-                let matched = sql::count_matching(conn, &plan)?;
-                let running = sql::count_running(conn, &plan)?;
+                // 三个计数合成一条语句（`sql::counts`）：请求日志页每秒轮询一次，
+                // 三遍全表扫描只为回答「这几个数各是多少」不值得（理由见该函数）
+                let (total, matched, running) = sql::counts(conn, &plan)?;
                 let entries = sql::select_page_desc(conn, &plan, filter.offset, limit)?;
                 Ok((total, matched, running, entries))
             })

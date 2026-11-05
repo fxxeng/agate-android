@@ -74,8 +74,9 @@ impl AccountStore {
         })?;
 
         // 回包用**重排之后**的列表：只把内存态里的号码改一遍（与库里的值同源），
-        // 不必再读一次库
-        let mut state = state;
+        // 不必再读一次库。`state` 是缓存给的共享快照（`Arc`），要改就得先拿一份
+        // 自己的副本 —— 直接改会把别人的只读快照改掉。
+        let mut state = (*state).clone();
         for record in state.accounts.iter_mut() {
             if let Some(index) = ids.iter().position(|id| id == record.id()) {
                 record.set_priority(index as i64);

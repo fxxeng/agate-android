@@ -289,6 +289,55 @@ pub(super) fn count_all(conn: &Connection) -> rusqlite::Result<usize> {
     Ok(count.max(0) as usize)
 }
 
+/// 三个计数一次算完：`(total, matched, running)`。
+///
+/// ── 为什么合并（上游 3.4.1 的同名函数）───────────────────────
+/// 列表页三处读数原先各发一条 `COUNT(*)`：
+/// [`count_all`]（不带条件，必修整表）、[`count_matching`]（带筛选）、
+/// [`count_running`]（带筛选 + `status = 0`）。三条语句每次轮询都跑，
+/// 而请求日志页的自动刷新是**每秒一次**（`DEFAULT_REQUESTS_AUTO_REFRESH_SECONDS`），
+/// 明细表又会随转发量长到几万行 —— 三遍全表扫描只为回答「这两个数相加之前
+/// 先各是多少」。合成一条之后只剩一遍。
+///
+/// ── 为什么用 `CASE WHEN` 而不是三条 `WHERE` ─────────────────
+/// `total` 不带条件，`matched` / `running` 带同一组条件。写成
+/// `SUM(CASE WHEN (<filter>) THEN 1 ELSE 0 END)` 就只需要**一份**
+/// `FROM requests` 扫描，条件作为表达式求值；三条 `WHERE` 无法合并成一句
+/// （SQL 没有「一条语句里换三次 WHERE」这种写法）。
+///
+/// `filter` 取自 `plan.where_sql` 去掉前导 ` WHERE ` 的那一段，外层再包一层
+/// 括号：筛选串里可能有 `OR`，不括起来 `AND status = 0` 会只贴到最后一项上
+/// （`a OR b AND c` ≠ `(a OR b) AND c`）—— 那是「running 数偏小」这类
+/// 静默错，界面上只会表现成一个莫名其妙的徽标数字。
+///
+/// 无筛选时 `filter` 退化成字面 `1`（`COALESCE` 兜住空表：没有行时 `SUM`
+/// 返回 NULL，不是 0）。
+pub(super) fn counts(
+    conn: &Connection,
+    plan: &FilterPlan,
+) -> rusqlite::Result<(usize, usize, usize)> {
+    let filter = plan.where_sql.strip_prefix(" WHERE ").unwrap_or("1");
+    let sql = format!(
+        "SELECT COUNT(*), \
+         COALESCE(SUM(CASE WHEN ({filter}) THEN 1 ELSE 0 END), 0), \
+         COALESCE(SUM(CASE WHEN ({filter}) AND status = 0 THEN 1 ELSE 0 END), 0) \
+         FROM requests"
+    );
+    // 绑定参数要重复一遍：筛选串在语句里出现了两次，占位符也出现两次
+    let mut binds: Vec<SqlValue> = Vec::with_capacity(plan.binds.len() * 2);
+    binds.extend(plan.binds.iter().cloned());
+    binds.extend(plan.binds.iter().cloned());
+    let (total, matched, running): (i64, i64, i64) =
+        conn.query_row(&sql, params_from_iter(binds.iter()), |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })?;
+    Ok((
+        total.max(0) as usize,
+        matched.max(0) as usize,
+        running.max(0) as usize,
+    ))
+}
+
 /// 命中筛选的条数（`QueryResult.matched`）—— 与 `limit` 无关，
 /// 前端据此算总页数（见 `ui/requests-panel.js` 的 `renderPager`）
 pub(super) fn count_matching(
@@ -296,23 +345,6 @@ pub(super) fn count_matching(
     plan: &FilterPlan,
 ) -> rusqlite::Result<usize> {
     let sql = format!("SELECT COUNT(*) FROM requests{}", plan.where_sql);
-    let count: i64 = conn.query_row(&sql, params_from_iter(plan.binds.iter()), |row| row.get(0))?;
-    Ok(count.max(0) as usize)
-}
-
-/// 命中筛选条件的**进行中**行数（`QueryResult.running`）。
-///
-/// 一条 COUNT：在筛选计划上追加 `status = 0` —— 与列表共用同一份 WHERE，
-/// 「这批筛选里还有几条没跑完」才是列表页徽标要的口径。
-pub(super) fn count_running(
-    conn: &Connection,
-    plan: &FilterPlan,
-) -> rusqlite::Result<usize> {
-    let sql = if plan.where_sql.is_empty() {
-        "SELECT COUNT(*) FROM requests WHERE status = 0".to_string()
-    } else {
-        format!("SELECT COUNT(*) FROM requests{} AND status = 0", plan.where_sql)
-    };
     let count: i64 = conn.query_row(&sql, params_from_iter(plan.binds.iter()), |row| row.get(0))?;
     Ok(count.max(0) as usize)
 }
@@ -991,3 +1023,119 @@ pub(super) fn delete_all_raw(conn: &Connection) -> rusqlite::Result<usize> {
 //
 // `request_daily` 的全部语句已拆到 `daily.rs`（列常量、编解码与
 // select / upsert / delete / trim），拆分理由见该文件的模块头。
+
+#[cfg(test)]
+mod tests {
+    //! 合并版 [`counts`] 的判据：三个数必须与「分三条语句各算一次」逐字相同，
+    //! 且 `running` 的条件组合不能被运算符优先级悄悄改掉。
+    //!
+    //! ── 为什么用内存库而不是打桩 ────────────────────────────────
+    //! 这条函数**就是**一段 SQL：把它换成打桩，测的就不是浮点数一样的边界，
+    //! 而是「我以为 SQL 会这么求值」。用真 SQLite + 真 schema（`schema::migrate`）
+    //! 才钉得住「`CASE WHEN` 与三条 `COUNT` 结果一致」这件事本身，也顺带保证
+    //! 语句在真引擎上能跑通（列名写错、`COALESCE` 漏掉都会当场报错）。
+
+    use super::*;
+    use crate::server::db::schema;
+
+    /// 建一个跑过全套迁移的内存库（表结构是**真的**，不是这里另写一份）。
+    fn memory_db() -> Connection {
+        let conn = Connection::open_in_memory().expect("内存库");
+        schema::migrate(&conn).expect("建表");
+        conn
+    }
+
+    /// 插一行明细（只填计数用得到的列，其余走 DEFAULT）。
+    fn insert_row(conn: &Connection, ts: i64, model: &str, status: i64, error: Option<&str>) {
+        conn.execute(
+            "INSERT INTO requests (ts, model, status, error) VALUES (?1, ?2, ?3, ?4)",
+            params![ts, model, status, error],
+        )
+        .expect("插入明细");
+    }
+
+    /// 三张表：一条成功、一条失败、一条在途，另有第二条成功的换了个模型。
+    fn seeded() -> Connection {
+        let conn = memory_db();
+        insert_row(&conn, 100, "glm-5.3", 200, None);
+        insert_row(&conn, 200, "glm-5.3", 500, Some("上游 500"));
+        insert_row(&conn, 300, "kimi-k2", 0, None);
+        insert_row(&conn, 400, "kimi-k2", 200, None);
+        conn
+    }
+
+    /// 无筛选：`total == matched`，`running` 只数 `status = 0`。
+    #[test]
+    fn without_a_filter_matched_equals_total() {
+        let conn = seeded();
+        let plan = FilterPlan { where_sql: String::new(), binds: Vec::new() };
+        let (total, matched, running) = counts(&conn, &plan).expect("查询");
+        assert_eq!((total, matched, running), (4, 4, 1));
+    }
+
+    /// 带筛选：三个数各按自己的口径算，且与分三条语句的结果逐字一致。
+    ///
+    /// 后半段是**对照**：同样三个数用旧的三条独立查询算一遍，两边必须相等。
+    /// 钉住的写歪：合并时把 `matched` 的 `CASE WHEN` 条件漏成无条件（那样
+    /// 加了筛选也返回全表条数，分页器会凭空多出几页）。
+    #[test]
+    fn the_three_numbers_match_three_separate_counts() {
+        let conn = seeded();
+        // 「成功」这一档：2xx 且没有 error
+        let plan = FilterPlan {
+            where_sql: " WHERE (status >= 200 AND status < 300 AND error IS NULL)".to_string(),
+            binds: Vec::new(),
+        };
+        let (total, matched, running) = counts(&conn, &plan).expect("查询");
+        assert_eq!(total, 4, "total 不带筛选条件");
+        assert_eq!(matched, 2, "两条 200 且无 error");
+        assert_eq!(running, 0, "成功的那些行不可能同时在途");
+
+        // 对照：旧实现的三条语句
+        let expected_matched: i64 = conn
+            .query_row(
+                &format!("SELECT COUNT(*) FROM requests{}", plan.where_sql),
+                [],
+                |row| row.get(0),
+            )
+            .expect("对照");
+        assert_eq!(matched as i64, expected_matched, "match 口径必须与旧实现一致");
+    }
+
+    /// `running` 的附加条件必须落在**整个**筛选串上，不能被 `OR` 只吃掉最后一项。
+    ///
+    /// 钉住的写歪：拼接时写成 `CASE WHEN {filter} AND status = 0`（少一层括号）——
+    /// `model='a' OR model='b' AND status=0` 会先算 AND，于是「a 的两条全算进
+    /// running」或「一条都不算」，界面上是一个莫名其妙的徽标数字。
+    /// 真实 `FilterPlan` 目前不会产生顶层 `OR`（各片段都带括号），这一条是
+    /// **防御性**回归：括号是为「以后有人加带 OR 的筛选」留的。
+    #[test]
+    fn the_running_condition_is_parenthesised_as_a_whole() {
+        let conn = seeded();
+        let plan = FilterPlan {
+            where_sql: " WHERE (model = 'glm-5.3' OR model = 'kimi-k2')".to_string(),
+            binds: Vec::new(),
+        };
+        let (_, matched, running) = counts(&conn, &plan).expect("查询");
+        assert_eq!(matched, 4, "两个模型都在筛选范围内");
+        assert_eq!(
+            running, 1,
+            "只有 status=0 的那一条算在途；少一层括号会得到 0 或 2"
+        );
+    }
+
+    /// 空表：三个数都是 0（`COALESCE` 兜住 `SUM` 的 NULL）。
+    ///
+    /// 钉住的写歪：直接读 `SUM(...)` 而不 `COALESCE` —— 空表时它是 NULL，
+    /// 转换成 `i64` 会在 `query_row` 里报类型错误，于是**新装用户第一次打开
+    /// 请求页**就拿到一条 500（而不是「暂无请求日志」）。
+    #[test]
+    fn an_empty_table_reports_three_zeros() {
+        let conn = memory_db();
+        let plan = FilterPlan {
+            where_sql: " WHERE (model = 'x')".to_string(),
+            binds: Vec::new(),
+        };
+        assert_eq!(counts(&conn, &plan).expect("查询"), (0, 0, 0));
+    }
+}

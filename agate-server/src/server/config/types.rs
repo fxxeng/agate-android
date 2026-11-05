@@ -974,6 +974,110 @@ pub struct QueuePatch {
     pub wait_seconds: Option<i64>,
 }
 
+// ─── 会话图片压缩（转发前把对话里的内联 base64 大图压小）─────────────
+//
+// 实现与取舍在 `core::upstream::image_compress`，这里只定义「哪几个数可调」。
+
+/// 总开关（`imageCompressEnabled`）。
+///
+/// ── 默认值与上游**不同**，这是有意的 ────────────────────────
+/// 上游（agent2api 3.4.1）这一项默认**开**，因为它是给自己的桌面客户端用的
+/// 个人中转：默认压小等于默认省流量，代价由同一个人的带宽承受。
+/// 本项目是**网关**：说不清后面接的是谁、发的图要拿去做什么。默认改写用户要发
+/// 出去的图片内容，属于「静默改变了客户端可观测的行为」，而且对「截图里读小字」
+/// 这类用法是净损失。所以这里默认**关**，开了才压 —— 方向与 `debug_mode`、
+/// `KEY_STRIP_NEWLINE_KEEPALIVE` 一致（改可观测行为的开关默认关），
+/// 与 `sanitize_fingerprints`（默认关会让新用户一上来撞 400）相反。
+///
+/// 想让它默认生效的地方（比如自用的安卓端）改这一个字面值即可，别在别处兜底。
+pub const KEY_IMAGE_COMPRESS_ENABLED: &str = "imageCompressEnabled";
+/// 长边像素上限（`imageCompressMaxEdge`）：超过等比缩小，**不放大**
+pub const KEY_IMAGE_COMPRESS_MAX_EDGE: &str = "imageCompressMaxEdge";
+/// JPEG 重编码质量（`imageCompressQuality`）
+pub const KEY_IMAGE_COMPRESS_QUALITY: &str = "imageCompressQuality";
+/// 触发阈值（KB，`imageCompressThresholdKb`）：解码后小于它保持原样
+pub const KEY_IMAGE_COMPRESS_THRESHOLD_KB: &str = "imageCompressThresholdKb";
+
+/// 长边上限默认值 2048：多数视觉模型内部就缩到这个量级附近，再大只是白占带宽。
+/// 与上游取同一个数（它照抄 OmniProxy），调小也不会「看起来更差」太快 ——
+/// 参考 CatPaw 上游硬限制用的 1568。
+pub const DEFAULT_IMAGE_COMPRESS_MAX_EDGE: i64 = 2048;
+/// 重编码质量默认值 80：翻拍照片在 80 上看不出差别，体积约为 95 的三分之一。
+pub const DEFAULT_IMAGE_COMPRESS_QUALITY: i64 = 80;
+/// 触发阈值默认值 512 KB：再小的图压下去省不了多少，解码开销倒是实付的。
+pub const DEFAULT_IMAGE_COMPRESS_THRESHOLD_KB: i64 = 512;
+
+/// 长边上限的合法范围 256~8192：下限以下缩得连图看不清，上限以上等于不缩。
+pub const IMAGE_COMPRESS_MIN_MAX_EDGE: i64 = 256;
+pub const IMAGE_COMPRESS_MAX_MAX_EDGE: i64 = 8192;
+/// 质量范围 40~95：低于 40 画面明显劣化（文字边缘先糊），高于 95 体积收益趋零。
+pub const IMAGE_COMPRESS_MIN_QUALITY: i64 = 40;
+pub const IMAGE_COMPRESS_MAX_QUALITY: i64 = 95;
+/// 触发阈值范围 0~10240 KB：0 = 不设阈值、所有候选图都过一遍。
+pub const IMAGE_COMPRESS_MIN_THRESHOLD_KB: i64 = 0;
+pub const IMAGE_COMPRESS_MAX_THRESHOLD_KB: i64 = 10240;
+
+/// 会话图片压缩设置（设置页「网关 → 图片压缩」区域）。
+///
+/// 与 `QueueSettings` 同一取舍：四个值总是一起用（每次发送前取一份快照），
+/// 打包成一个 `Copy` 值让调用方一次拿到 —— 转发链把这份快照随请求借下去，
+/// 不必在热路径上反复读配置锁。
+///
+/// ── 它作用在哪 ──────────────────────────────────────────────
+/// 只在**对话链路**：三个下游协议入口（chat / responses / anthropic）在
+/// `api::protocol` 里都已先归一成 Chat Completions 形态，图片块因此永远是
+/// `{"type":"image_url", ...}` 或 `input_image`。`http(s)` 引用、gif / svg
+/// 一律不碰（见 `image_compress` 模块头的白名单）。
+///
+/// ── 它不改什么 ──────────────────────────────────────────────
+/// 不碰 `model` / `messages` 结构 / 工具声明 / 任何非图片字段；压不小就原样保留；
+/// 处理失败也原样保留。**它不是** CatPaw 家自用的那份 60KB 硬限制压缩
+/// （`providers::catpaw::image_compress`），两者互不影响、可同时生效。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ImageCompressSettings {
+    /// 总开关（关 = 出站请求体一个字节都不动）
+    pub enabled: bool,
+    /// 长边像素上限（超过等比缩小，不放大）
+    pub max_edge: i64,
+    /// JPEG 重编码质量
+    pub quality: i64,
+    /// 触发阈值（KB，解码后小于它保持原样）
+    pub threshold_kb: i64,
+}
+
+impl Default for ImageCompressSettings {
+    fn default() -> Self {
+        Self {
+            // 默认关，理由见 KEY_IMAGE_COMPRESS_ENABLED 的说明（与上游相反，
+            // 因为「网关」和「个人中转」对「默认改写用户内容」的代价归属不同）
+            enabled: false,
+            max_edge: DEFAULT_IMAGE_COMPRESS_MAX_EDGE,
+            quality: DEFAULT_IMAGE_COMPRESS_QUALITY,
+            threshold_kb: DEFAULT_IMAGE_COMPRESS_THRESHOLD_KB,
+        }
+    }
+}
+
+/// 会话图片压缩的**部分**更新入参（`None` = 该项不动）。
+///
+/// 形状与 `AutoContinuePatch` 相同（开关 + 若干有界整数一起写），理由也一样：
+/// **一次 PUT 只落一次盘**，避免出现「开关开了、参数还是旧的」半套状态。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ImageCompressPatch {
+    /// 开关（`None` = 该项不动）
+    pub enabled: Option<bool>,
+    /// 长边上限（`None` = 该项不动）。调用方须先按
+    /// `IMAGE_COMPRESS_MIN_MAX_EDGE..=IMAGE_COMPRESS_MAX_MAX_EDGE` 校验过。
+    pub max_edge: Option<i64>,
+    /// 质量（`None` = 该项不动）。调用方须先按
+    /// `IMAGE_COMPRESS_MIN_QUALITY..=IMAGE_COMPRESS_MAX_QUALITY` 校验过。
+    pub quality: Option<i64>,
+    /// 触发阈值 KB（`None` = 该项不动）。调用方须先按
+    /// `IMAGE_COMPRESS_MIN_THRESHOLD_KB..=IMAGE_COMPRESS_MAX_THRESHOLD_KB` 校验过。
+    pub threshold_kb: Option<i64>,
+}
+
+
 // ─── ZCode 验证码令牌池（活动套餐通道的补货节奏，见 api/zcode_captcha）──
 
 /// 令牌池的库存目标（`zcodeCaptchaPoolTarget`）：库存低于它前端铸造器才补铸。

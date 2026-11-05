@@ -315,7 +315,34 @@ pub fn is_reserved(key: &str) -> bool {
 /// 在百毫秒量级，不会让启动明显变慢。**不要把这两条往 [`V1_SCHEMA`] 里补**：
 /// 新库按 1→15 依次跑，v15 那一步同样会建出来，而 v1 里多写一份等于同一条索引
 /// 有了两处定义 —— 将来改一处忘一处，正是 `V4_SCHEMA` 那类错位的来源。
-pub const SCHEMA_VERSION: i64 = 15;
+///
+/// ── 版本 16：accounts 的三个写事件触发器（账号快照缓存的失效判据）──
+/// 见 [`V16_SCHEMA`]。这一版加的是 `AFTER INSERT / UPDATE / DELETE ON accounts`
+/// 三个触发器，作用只有一个：把 `kv['accountsRevision']` 递增，于是「账号数据
+/// 有没有变过」有了一个**本进程之外也成立**的事实来源。
+///
+/// **为什么必须落在库里、而不是一个进程内的计数器**：`AccountStore` 的读路径
+/// （`list_accounts` 及其派生的选路快照）在**每个上游请求**上都会跑一遍，每次
+/// 都是「读出全部账号行 → 逐行解密 → 逐行拼公开形态」。这是转发链路上最贵的
+/// 一件纯重复劳动，要缓存就必须答得准「什么时候该失效」。进程内计数器要求
+/// **每一处写路径都记得加一** —— 本项目有 30 多个 `*_accounts.rs`，各自调
+/// `sql::put` / `sql::update_in_place` / `sql::delete`，还有三份旧数据导入与批量
+/// 删改；「以后新增的写路径要记得 inflate 一下」正是那种一定会漏的约定（漏了
+/// 的表现还特别难查：界面改了名、转发却还按旧记录选路）。触发器没有这个问题：
+/// 它挂在表上，任何写入（含用户用 `sqlite3` 手工改库）都绕不过去。
+///
+/// **代价**：每次账号写入多两条语句（一条 `INSERT OR IGNORE` 播种、一条
+/// `UPDATE` 自增），都在调用方已有的事务里，且 `kv` 是单行主键查找 —— 与
+/// 「写一条账号记录」本身的成本相比可忽略。**读**的代价是缓存校验时的一条
+/// 主键查找（`SELECT value FROM kv WHERE key = ?`）。
+///
+/// 触发器体里的写法是「先 `INSERT OR IGNORE` 播种、再 `UPDATE` 自增」而不是
+/// 单条 UPSERT：`kv` 里这个键首次出现时没有行可 `UPDATE`，而有行时 `INSERT`
+/// 必然冲突 —— 两条语句各管一种情况，不依赖 SQLite 的 UPSERT 语法版本
+/// （UPSERT 在触发器体内的可用性随版本而变，这条约束不值得赌）。
+/// 首次写入让它从 1 变成 2（播种 1、再自增）不影响语义：这个数是**版本号**，
+/// 唯一要求是单调变化，不是精确的写入次数。
+pub const SCHEMA_VERSION: i64 = 16;
 
 /// 版本 1 的全部表与索引：改造前所有 JSON / JSONL 文件的对应形态。
 ///
@@ -819,6 +846,37 @@ CREATE INDEX IF NOT EXISTS idx_requests_summary ON requests(
 );
 ";
 
+/// v16：`accounts` 的三个写事件触发器 + 它们维护的 `kv['accountsRevision']`。
+///
+/// 语义与代价见 [`SCHEMA_VERSION`] 的 v16 段。这里只补三条实现注记：
+///
+///   1. **键名常量在两处出现**：这里是 DDL 里的字面量，读侧是
+///      `account_store::sql::ACCOUNTS_REVISION_KEY`。改一处必须改另一处 ——
+///      对不上时的表现是「缓存永不失效」（读到 0、永远是同一个版本号），
+///      比读错值更难查，所以读侧那个常量上写了反向指回这里的注释。
+///   2. **三个触发器都要**：只挂 INSERT/UPDATE 会漏掉「删掉一个账号后列表还在
+///      显示它」；只挂 UPDATE 会漏掉导入（全是 INSERT）与清空。
+///   3. `value` 是 TEXT 列，自增要显式 `CAST(... AS INTEGER)` 再 `CAST(... AS
+///      TEXT)` 写回。SQLite 的类型亲和性对 `'12' + 1` 会算成 13，但 `kv.value`
+///      上若存过非数字串（本键不会，但表是共用的），显式 CAST 让失败方式变成
+///      「得到 1」而不是「得到 0.0 或空串」—— 版本号只要变化即可，这里不追求
+///      精确计数（见 SCHEMA_VERSION 的 v16 段末句）。
+const V16_SCHEMA: &str = "
+-- ── accounts 写事件计数器（schema v16）：账号快照缓存的失效判据 ──
+CREATE TRIGGER IF NOT EXISTS accounts_revision_insert AFTER INSERT ON accounts BEGIN
+  INSERT OR IGNORE INTO kv(key, value) VALUES ('accountsRevision', '1');
+  UPDATE kv SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT) WHERE key = 'accountsRevision';
+END;
+CREATE TRIGGER IF NOT EXISTS accounts_revision_update AFTER UPDATE ON accounts BEGIN
+  INSERT OR IGNORE INTO kv(key, value) VALUES ('accountsRevision', '1');
+  UPDATE kv SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT) WHERE key = 'accountsRevision';
+END;
+CREATE TRIGGER IF NOT EXISTS accounts_revision_delete AFTER DELETE ON accounts BEGIN
+  INSERT OR IGNORE INTO kv(key, value) VALUES ('accountsRevision', '1');
+  UPDATE kv SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT) WHERE key = 'accountsRevision';
+END;
+";
+
 /// 把库升到 [`SCHEMA_VERSION`]（幂等：已是最新版时什么都不做）。
 ///
 /// **库版本高于本程序时返回 `Err` 拒绝打开**（v14 起有意反转的一条既有决定，
@@ -976,6 +1034,9 @@ fn apply_version(
         // v15：requests 补两条索引（status 的定位 + 报表窄列的覆盖，见
         // V15_SCHEMA 与 SCHEMA_VERSION 的 v15 段）。
         15 => conn.execute_batch(V15_SCHEMA),
+        // v16：accounts 的三个写事件触发器（账号快照缓存的失效判据，见
+        // V16_SCHEMA 与 SCHEMA_VERSION 的 v16 段）。
+        16 => conn.execute_batch(V16_SCHEMA),
         _ => Ok(()),
     }
 }

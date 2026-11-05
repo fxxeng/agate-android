@@ -165,7 +165,7 @@ enum TaskResult {
 fn summarize(results: &[TaskResult]) -> Value {
     let mut newly: Vec<String> = Vec::new();
     let mut total = 0i64;
-    let mut already_claimed = false;
+    let mut already_labels: Vec<String> = Vec::new();
     let mut failures: Vec<String> = Vec::new();
     let mut unresolved: Vec<String> = Vec::new();
     for result in results {
@@ -174,7 +174,10 @@ fn summarize(results: &[TaskResult]) -> Value {
                 newly.push(format!("{label}+{reward}"));
                 total = total.saturating_add(*reward);
             }
-            TaskResult::Already { .. } => already_claimed = true,
+            // 标签要留着：结论里写「已领过」而说不出**哪几个**，用户看到
+            // 一个灰掉的按钮却没有任何依据（与 `Unresolved` / `Failure` 同口径：
+            // 只报结论、不报依据的消息在本项目里一律算没说清）
+            TaskResult::Already { label } => already_labels.push(label.clone()),
             TaskResult::Unresolved { label, status } => {
                 unresolved.push(format!("{label}：上游未确认完成（{status}）"));
             }
@@ -184,12 +187,16 @@ fn summarize(results: &[TaskResult]) -> Value {
         }
     }
 
+    let already_claimed = !already_labels.is_empty();
     let success = !newly.is_empty();
     let done = !success && already_claimed;
     let mut msg = if success {
         format!("签到完成：{}（共 +{total}）", newly.join("、"))
     } else if done {
-        "今日积分已领过（任务接口幂等，无新增）".to_string()
+        format!(
+            "今日已领过：{}（任务接口幂等，无新增）",
+            already_labels.join("、")
+        )
     } else if !failures.is_empty() {
         format!("每日任务领取失败：{}", failures.join("；"))
     } else {
@@ -240,6 +247,13 @@ mod tests {
         assert_eq!(result["success"], false);
         assert_eq!(result["alreadyCompleted"], true);
         assert_eq!(result["outcome"], "done");
+        // 结论要说出**哪几个**任务已领过：只说「已领过」而不给依据，用户看到
+        // 灰掉的按钮没法核实（`alreadyCompleted` 会让定时链整天不再重试）
+        assert!(
+            result["msg"].as_str().unwrap_or("").contains("每日登录"),
+            "已领过的消息必须点名具体任务，拿到的是: {}",
+            result["msg"]
+        );
     }
 
     /// 核心缺陷回归：失败不再虚报成功，也不会被当成已领过

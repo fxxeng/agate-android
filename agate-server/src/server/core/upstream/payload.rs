@@ -104,6 +104,16 @@ pub(super) struct ProviderContext<'a> {
     /// 原样透传的，不归一就会把 developer 原样发出去）。默认开，见
     /// `config::KEY_DEVELOPER_ROLE_COMPAT`。
     pub developer_role_compat: bool,
+    /// 本次请求的**会话图片压缩**设置快照（请求开始时取一次）。
+    ///
+    /// 与 `sanitize_fingerprints` 同一取舍：同一次请求内四参数必须一致，否则
+    /// 会出现「前一家按 2048 压过、换家后又按 1024 再压一遍」这类语义漂移；
+    /// 快照也让日志与判定用同一份值。默认关（见
+    /// `config::KEY_IMAGE_COMPRESS_ENABLED` 的取舍说明）。
+    ///
+    /// 为什么是 `Copy` 值而不是引用：设置只有四个整数/布尔，取值本身就是
+    /// 一次读锁 + 拷贝，比多一层生命周期简单得多。
+    pub image_compress: crate::server::config::ImageCompressSettings,
     /// 本次请求的**系统提示词决定**（模式 + 文本，请求开始时从配置快照取一次）。
     ///
     /// 与 `sanitize_fingerprints` 同一取舍：模式与文本在同一次请求内必须一致，
@@ -259,7 +269,42 @@ pub(super) fn send_body<'a>(
         },
         false => after_prompt,
     };
-    // ── ③ 原生（服务端执行）工具声明闸门 ──────────────────────────────
+    // ── ③ 会话图片压缩层（仅对话链路）─────────────────────────────────
+    // 把内嵌 base64 大图缩到长边上限并重编码（参数与开关见
+    // `config::ImageCompressSettings`），顺带以内容哈希缓存压缩结果 ——
+    // 多轮对话里客户端每轮重发同一张原图时直接命中，不再重复解码编码。
+    //
+    // 位置在脱敏**之后**：脱敏是「把不该出去的文字去掉」，压缩是「把图缩小」，
+    // 两者作用的对象不重叠；放在脱敏之后是为了让 `has_compressible` 扫的是
+    // 已经定稿的那份体（脱敏命中时会换成副本，早于它扫等于扫了一份要被丢弃的）。
+    //
+    // 纯 CPU 活（一张几 MB 的图可能几百毫秒），经 `blocking::in_place` 让出
+    // 当前 tokio worker；current-thread 运行时（测试用例）下自动退化成就地跑。
+    // 只在真有候选图时才克隆请求体（`has_compressible` 早退，多数请求继续零拷贝）。
+    let body = if ctx.image_compress.enabled
+        && super::image_compress::has_compressible(body.as_ref())
+    {
+        let settings = ctx.image_compress;
+        let mut owned = body.into_owned();
+        let stats = crate::server::core::blocking::in_place(|| {
+            super::image_compress::compress_images_in_place(&mut owned, &settings)
+        });
+        if stats.changed() {
+            logging::verbose(
+                "[Upstream]",
+                &format!(
+                    "会话图片压缩：{} 张 provider={provider_id} {}KB -> {}KB",
+                    stats.compressed,
+                    stats.bytes_before / 1024,
+                    stats.bytes_after / 1024,
+                ),
+            );
+        }
+        Cow::Owned(owned)
+    } else {
+        body
+    };
+    // ── ④ 原生（服务端执行）工具声明闸门 ──────────────────────────────
     // 内置家是各家官方客户端的后端：官方客户端只声明 `type:"function"` 的函数
     // 工具（联网搜索走客户端自己的链路），上游对原生工具类型的处理从「整轮 400」
     // （CatPaw）到「静默剔除」（Qoder / Trae）都有 —— 所以统一在这里降级：

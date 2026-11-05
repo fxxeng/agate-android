@@ -499,7 +499,7 @@ impl AccountStore {
     /// 2→0/0→1/1→2 三行都变，而 [0,5,9] 置顶末位时只有一行变）。
     pub fn promote_to_front(&self, id: &str) -> Result<Value, AccountStoreError> {
         let _guard = self.guard();
-        let mut state = self.load(&_guard);
+        let mut state = (*self.load(&_guard)).clone();
         if !state.accounts.iter().any(|item| item.id() == id) {
             return Err(AccountStoreError::not_found("账号不存在"));
         }
@@ -1037,7 +1037,7 @@ impl AccountStore {
         // 相邻位要靠**全局优先级序**找出来：交换对象可能是另一家账号
         // （全局一条队列），所以这里必须把全部账号读出来排一次 —— 语义要求，
         // 与 `promote_to_front` 同理。但**写**只碰交换的那两行。
-        let mut state = self.load(&_guard);
+        let mut state = (*self.load(&_guard)).clone();
         if !state.accounts.iter().any(|item| item.id() == id) {
             return Err(AccountStoreError::not_found("账号不存在"));
         }

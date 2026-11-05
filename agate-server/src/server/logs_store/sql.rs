@@ -86,38 +86,55 @@ pub(super) fn count_all(conn: &Connection) -> rusqlite::Result<usize> {
     Ok(count.max(0) as usize)
 }
 
-/// 当前最大 id（空表为 0）—— `Stats.lastId`（已读水位）的数据源。
+/// 当前最大 id（空表为 0）—— `allocate_next_id` 的自愈基准。
 ///
 /// 与旧实现 `guard.entries.last().map(|item| item.id)` 等价：`id` 单调递增，
-/// 所以数组最后一条就是 id 最大的那条。
+/// 所以数组最后一条就是 id 最大的那条。日志页的 `Stats.lastId` 不走这条
+/// （那边并进 [`stats_snapshot`] 与 `COUNT(*)` 同一次扫描了）。
 pub(super) fn max_id(conn: &Connection) -> rusqlite::Result<u64> {
     let value: Option<i64> = conn.query_row("SELECT MAX(id) FROM logs", [], |row| row.get(0))?;
     Ok(value.unwrap_or(0).max(0) as u64)
 }
 
-/// 每级别计数（`(level, count)`；空表返回空表）。
+/// 日志页统计的**一次**取数：`(总数, 最大 id, (level, category, count) 桶)`。
+///
+/// ── 为什么合并 ────────────────────────────────────────────
+/// 旧实现为渲染一次日志页连发四条全表扫描：`COUNT(*)`、`MAX(id)`、
+/// `GROUP BY level`、`GROUP BY category`。日志页会按 `lastId` 轮询，
+/// 每轮四条扫描在低端机上直接体现为掉帧。这里压到两条：
+///
+/// - 总数与水位合成一条（同一张表、同一次扫描，`MAX(id)` 顺带就能拿到）；
+/// - 两个分组维度合成一条 `GROUP BY level, category`，上层把二维桶按维度
+///   相加得到两个边际和 —— 数学上与原两条 `GROUP BY` 逐字等价，因为
+///   「按 level 分组计数」正是「按 (level, category) 分组后对 category 求和」。
+///
+/// 桶的条数是 `级别数 × 分类数`（当前 4 × 6 = 24 行封顶），比两条各自
+/// 几行的结果多一些，但换来一次扫描，仍然划算。
 ///
 /// 不在这里补齐「计数为 0 的已知级别」—— 那是 `Stats` 的形状问题（要保证
 /// 四个级别键恒定存在），由上层拼装；本层只如实回报库里有什么。
-pub(super) fn level_counts(conn: &Connection) -> rusqlite::Result<Vec<(String, i64)>> {
-    group_counts(conn, "SELECT level, COUNT(*) FROM logs GROUP BY level")
-}
+pub(super) fn stats_snapshot(
+    conn: &Connection,
+) -> rusqlite::Result<(usize, u64, Vec<(String, String, i64)>)> {
+    // 一条语句拿两个标量：两者都是全表聚合，拆成两条就要扫两遍
+    let (total, last_id): (i64, Option<i64>) = conn.query_row(
+        "SELECT COUNT(*), MAX(id) FROM logs",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
 
-/// 每分类计数（同上）
-pub(super) fn category_counts(conn: &Connection) -> rusqlite::Result<Vec<(String, i64)>> {
-    group_counts(conn, "SELECT category, COUNT(*) FROM logs GROUP BY category")
-}
-
-/// 分组计数的公共执行体。SQL 是**两条写死的语句**（不给列名做字符串插值）：
-/// 本层不接受任何来自调用方的 SQL 片段。
-fn group_counts(conn: &Connection, sql: &str) -> rusqlite::Result<Vec<(String, i64)>> {
-    let mut stmt = conn.prepare(sql)?;
+    let mut stmt = conn.prepare("SELECT level, category, COUNT(*) FROM logs GROUP BY level, category")?;
     let mut rows = stmt.query([])?;
-    let mut out = Vec::new();
+    let mut buckets = Vec::new();
     while let Some(row) = rows.next()? {
-        out.push((row.get(0)?, row.get(1)?));
+        buckets.push((row.get(0)?, row.get(1)?, row.get(2)?));
     }
-    Ok(out)
+
+    Ok((
+        total.max(0) as usize,
+        last_id.unwrap_or(0).max(0) as u64,
+        buckets,
+    ))
 }
 
 /// 全部日志，按 id 升序 —— `to_jsonl` 的导出顺序（旧的「文件顺序」）。
@@ -352,21 +369,38 @@ pub(super) fn raise_next_id(conn: &Connection, value: u64) -> rusqlite::Result<(
     Ok(())
 }
 
+/// 单条 `DELETE ... IN (…)` 的 id 上限。
+///
+/// 不是随便定的：SQLite 的绑定变量数有硬上限（3.32 起默认 32766，更早是
+/// 999），而 `delete_by_ids` 的入参长度由「命中筛选的行数」决定、不由本层
+/// 控制。当前日志容量是 500，恰好躲在 999 下面 —— 也就是说**本机永远测不出**
+/// 这个隐患；哪天容量一调大（或换个更老的 SQLite 构建），清空日志就会抛
+/// `too many SQL variables`。400 是给自己留的余量（其它绑定参数还能插进来）。
+const DELETE_BATCH: usize = 400;
+
 /// 按 id 删除一批行，返回实际删掉的条数。
 ///
 /// 占位符按 id 个数生成（不是把 id 拼进 SQL）—— 列表长度由命中行数决定，
-/// 值本身永远走绑定参数。
+/// 值本身永远走绑定参数。超过 [`DELETE_BATCH`] 就分多条语句，每条各自
+/// 计数后相加；空输入直接返回 0（不能发一条 `IN ()`，那是语法错）。
+///
+/// 不包事务：调用方（`LogStore::prune` 一类）已经在自己的锁里，且这里删的
+/// 是**同一批确定要删的 id**，中途失败留下的是「少删了几条」而不是数据错乱。
 pub(super) fn delete_by_ids(conn: &Connection, ids: &[u64]) -> rusqlite::Result<usize> {
     if ids.is_empty() {
         return Ok(0);
     }
-    let placeholders = vec!["?"; ids.len()].join(", ");
-    let sql = format!("DELETE FROM logs WHERE id IN ({placeholders})");
-    let binds: Vec<SqlValue> = ids
-        .iter()
-        .map(|id| SqlValue::Integer(*id as i64))
-        .collect();
-    conn.execute(&sql, params_from_iter(binds.iter()))
+    let mut removed = 0usize;
+    for chunk in ids.chunks(DELETE_BATCH) {
+        let placeholders = vec!["?"; chunk.len()].join(", ");
+        let sql = format!("DELETE FROM logs WHERE id IN ({placeholders})");
+        let binds: Vec<SqlValue> = chunk
+            .iter()
+            .map(|id| SqlValue::Integer(*id as i64))
+            .collect();
+        removed += conn.execute(&sql, params_from_iter(binds.iter()))?;
+    }
+    Ok(removed)
 }
 
 /// 删掉 `ts < cutoff` 的行，返回删除条数。
@@ -403,4 +437,139 @@ pub(super) fn trim_to_capacity(conn: &Connection, max: usize) -> rusqlite::Resul
 /// 清空全部日志（**不动**高水位；`clear()` 另调 `reset_next_id`）
 pub(super) fn delete_all(conn: &Connection) -> rusqlite::Result<usize> {
     conn.execute("DELETE FROM logs", [])
+}
+
+#[cfg(test)]
+mod tests {
+    //! 合并版 [`stats_snapshot`] 与分批 [`delete_by_ids`] 的判据。
+    //!
+    //! ── 为什么用内存库而不是打桩 ────────────────────────────────
+    //! 这两条函数**就是** SQL：换成打桩，测的就不是结果，而是「我以为 SQL 会
+    //! 这么求值」。真 SQLite + 真 schema（`schema::migrate`）才钉得住
+    //! 「`GROUP BY level, category` 的边际和 == 原两条 `GROUP BY` 的结果」，
+    //! 也顺带保证语句在真引擎上跑得通（列名写错、`COALESCE` 漏掉当场报错）。
+
+    use super::*;
+    use crate::server::db::schema;
+
+    /// 跑过全套迁移的内存库（表结构是**真的**，不是这里另写一份）。
+    fn memory_db() -> Connection {
+        let conn = Connection::open_in_memory().expect("内存库");
+        schema::migrate(&conn).expect("建表");
+        conn
+    }
+
+    fn insert_log(conn: &Connection, id: u64, level: &str, category: &str) {
+        insert(
+            conn,
+            &LogEntry {
+                id,
+                ts: id as i64,
+                level: level.to_string(),
+                category: category.to_string(),
+                message: format!("第 {id} 条"),
+                data: None,
+            },
+        )
+        .expect("插入日志");
+    }
+
+    /// 把二维桶按一个维度相加（= 原来的单条 `GROUP BY`），结果按 key 排序。
+    ///
+    /// 特意写成显式累加而不是 `.filter().map().sum()`：闭包参数会被 match
+    /// ergonomics 变成 `&&String`，与 `&str` 字面量比较不成立，那种写法编译
+    /// 不过 —— 这里用两个 `&String` 比较，语义也正好就是「同一个键」。
+    fn marginal(buckets: &[(String, String, i64)], by_level: bool) -> Vec<(String, i64)> {
+        let mut acc: Vec<(String, i64)> = Vec::new();
+        for (level, category, count) in buckets {
+            let key = if by_level { level } else { category };
+            match acc.iter_mut().find(|(known, _)| known == key) {
+                Some((_, slot)) => *slot += *count,
+                None => acc.push((key.clone(), *count)),
+            }
+        }
+        acc.sort();
+        acc
+    }
+
+    /// 两个维度的边际和分别等于「按级别」「按分类」两遍独立扫描的结果。
+    ///
+    /// 钉住的写歪：合并时把 `GROUP BY level, category` 误写成
+    /// `GROUP BY level` + 只读前两列 —— 那样分类计数会张冠李戴（每行都是
+    /// 该级别的总数），界面上是「按分类」那张图凭空放大。
+    #[test]
+    fn the_marginal_sums_match_two_separate_group_bys() {
+        let conn = memory_db();
+        insert_log(&conn, 1, "info", "request");
+        insert_log(&conn, 2, "info", "checkin");
+        insert_log(&conn, 3, "info", "request");
+        insert_log(&conn, 4, "error", "request");
+
+        let (total, last_id, buckets) = stats_snapshot(&conn).expect("快照");
+        assert_eq!(total, 4);
+        assert_eq!(last_id, 4, "lastId 是已读水位，必须是最大 id");
+
+        assert_eq!(
+            marginal(&buckets, true),
+            vec![("error".to_string(), 1), ("info".to_string(), 3)],
+            "按级别的合计"
+        );
+        assert_eq!(
+            marginal(&buckets, false),
+            vec![("checkin".to_string(), 1), ("request".to_string(), 3)],
+            "按分类的合计"
+        );
+
+        // 桶的总和必须等于行数：漏掉一桶就是少统计（二维分组不能丢行）
+        let sum: i64 = buckets.iter().map(|(_, _, count)| *count).sum();
+        assert_eq!(sum, total as i64);
+
+        // 对照：真发一条按分类的 `GROUP BY`，与边际和逐字相同
+        let mut stmt = conn
+            .prepare("SELECT category, COUNT(*) FROM logs GROUP BY category ORDER BY category")
+            .expect("准备对照语句");
+        let expected: Vec<(String, i64)> = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .expect("对照查询")
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .expect("对照结果");
+        assert_eq!(marginal(&buckets, false), expected);
+    }
+
+    /// 空表：总数与水位都是 0，桶为空（上层据此把字典里的每个键补 0）。
+    ///
+    /// 钉住的写歪：`MAX(id)` 在空表返回 NULL，直接 `row.get::<i64>` 会在
+    /// `query_row` 里报类型错 —— **新装用户第一次打开日志页**就是 500。
+    #[test]
+    fn an_empty_table_is_all_zero() {
+        let conn = memory_db();
+        let (total, last_id, buckets) = stats_snapshot(&conn).expect("快照");
+        assert_eq!((total, last_id), (0, 0));
+        assert!(buckets.is_empty());
+    }
+
+    /// 分批删除：一次传入远超单批上限（400）的 id 也能全删、回报准确条数。
+    ///
+    /// 钉住的写歪：把全部 id 拼进一条 `IN (…)` —— 超过 SQLite 的绑定变量
+    /// 上限就抛 `too many SQL variables`，而那是**只在数据量大时才出现**的
+    /// 错误（容量现在 500，恰好躲在 999 的旧上限下面，所以本机永远测不出来）。
+    #[test]
+    fn delete_by_ids_batches_beyond_one_statement() {
+        let conn = memory_db();
+        let ids: Vec<u64> = (1..=901).collect();
+        for id in &ids {
+            insert_log(&conn, *id, "info", "request");
+        }
+        assert_eq!(count_all(&conn).expect("计数"), 901);
+
+        // 901 个 id = 3 批（400 + 400 + 101），返回值是各批之和
+        assert_eq!(delete_by_ids(&conn, &ids).expect("删除"), 901);
+        assert_eq!(count_all(&conn).expect("计数"), 0);
+
+        // 空输入是合法调用（筛选后一条都没命中的那一路）：不许发 `IN ()`
+        assert_eq!(delete_by_ids(&conn, &[]).expect("空输入"), 0);
+
+        // 重复删除同一批 id：删不到行就回报 0（不能报「删了 N 条」骗上层）
+        assert_eq!(delete_by_ids(&conn, &ids).expect("重复删除"), 0);
+    }
 }

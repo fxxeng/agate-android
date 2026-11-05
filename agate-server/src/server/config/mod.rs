@@ -115,6 +115,13 @@ pub struct RuntimeConfig {
     /// 与 timeouts 同一理由：走排队制的适配器**每次遇到排队**都要取它
     /// （改完设置下一个请求就用新值，不重启进程），解析一次存下来最省事。
     queue: QueueSettings,
+    /// 会话图片压缩的总开关与三项参数（设置页「网关 → 图片压缩」区域）。
+    ///
+    /// 与 routing 同一理由：转发层**每次发送前**都要取它（改完设置下一个请求
+    /// 就生效，不重启进程），而这一段在热路径上 —— 取一个 `Copy` 快照即可，
+    /// 不必去 `raw` 里翻四次 `Value`。默认关，取舍见
+    /// [`types::KEY_IMAGE_COMPRESS_ENABLED`]（与上游相反，因为本项目是网关）。
+    image_compress: ImageCompressSettings,
     /// ZCode 验证码令牌池的补货节奏（设置页「网关 → 验证码令牌池」区域）。
     ///
     /// 与 queue 同一理由：stats 端点**每次被铸造器轮询**都要取它（改完设置
@@ -362,6 +369,11 @@ impl RuntimeConfig {
         &self.models_list_pins
     }
 
+    /// 会话图片压缩的四项（转发层随请求取一次快照，见字段说明）
+    pub fn image_compress_settings(&self) -> ImageCompressSettings {
+        self.image_compress
+    }
+
     /// 系统提示词设置（界面 / 日志用；转发层要的是下面的借用视图）
     pub fn prompt_settings(&self) -> &PromptSettings {
         &self.prompt
@@ -553,6 +565,7 @@ fn build(raw: Map<String, Value>) -> RuntimeConfig {
     let retry = retry_from(&raw);
     let timeouts = timeouts_from(&raw);
     let queue = queue_from(&raw);
+    let image_compress = image_compress_from(&raw);
     let captcha_pool = captcha_pool_from(&raw);
     let routing = routing_from(&raw);
     RuntimeConfig {
@@ -571,6 +584,7 @@ fn build(raw: Map<String, Value>) -> RuntimeConfig {
         retry,
         timeouts,
         queue,
+        image_compress,
         captcha_pool,
         routing,
         log_dir: string_field(&raw, KEY_LOG_DIR),
@@ -1669,6 +1683,60 @@ pub fn set_queue(patch: QueuePatch) -> bool {
             next.wait_seconds = seconds;
         }
         config.queue = next;
+    })
+}
+
+// ─── 会话图片压缩（imageCompressEnabled / MaxEdge / Quality / ThresholdKb）──
+
+/// 只取会话图片压缩的四项（**不克隆整份 raw**）。
+///
+/// 与 `queue_settings()` 同一取舍：转发层**每一家即将发送时**都要取一次
+/// （`payload::send_body`），而 `current()` 会克隆整个 `raw` Map —— 热路径上
+/// 没必要。读锁取一份 `Copy` 快照即可。未初始化时给默认值（默认关）。
+pub fn image_compress_settings() -> ImageCompressSettings {
+    if let Ok(guard) = CONFIG.read() {
+        if let Some(config) = guard.as_ref() {
+            return config.image_compress;
+        }
+    }
+    ImageCompressSettings::default()
+}
+
+/// 更新会话图片压缩（`None` = 该项不动），返回是否写盘成功。
+///
+/// 调用方（`api::image_compress::put_image_compress`）**必须先校验范围**：本函数
+/// 按「已合法」处理，越界值不会在这里被拦（读侧 `bounded_int_field` 会在下次
+/// 重建快照时丢弃它，于是「刚设的值悄悄变回默认」）。与 `set_queue` 同一模式：
+/// 内存快照与 raw 底稿一起改，改完下一个请求立即生效。
+pub fn set_image_compress(patch: ImageCompressPatch) -> bool {
+    update(|config| {
+        let mut next = config.image_compress;
+        if let Some(enabled) = patch.enabled {
+            config
+                .raw
+                .insert(KEY_IMAGE_COMPRESS_ENABLED.to_string(), Value::Bool(enabled));
+            next.enabled = enabled;
+        }
+        if let Some(max_edge) = patch.max_edge {
+            config
+                .raw
+                .insert(KEY_IMAGE_COMPRESS_MAX_EDGE.to_string(), Value::from(max_edge));
+            next.max_edge = max_edge;
+        }
+        if let Some(quality) = patch.quality {
+            config
+                .raw
+                .insert(KEY_IMAGE_COMPRESS_QUALITY.to_string(), Value::from(quality));
+            next.quality = quality;
+        }
+        if let Some(threshold_kb) = patch.threshold_kb {
+            config.raw.insert(
+                KEY_IMAGE_COMPRESS_THRESHOLD_KB.to_string(),
+                Value::from(threshold_kb),
+            );
+            next.threshold_kb = threshold_kb;
+        }
+        config.image_compress = next;
     })
 }
 

@@ -67,6 +67,7 @@ pub mod auth_http;
 pub mod auto_checkin;
 pub mod beijing;
 pub mod billing;
+pub mod blocking;
 pub mod capability;
 pub mod checkin_history;
 pub mod checkin_records;

@@ -596,15 +596,11 @@ impl LogStore {
 
         let loaded = {
             let guard = self.guard();
-            self.with_conn(&guard, |conn| {
-                let total = sql::count_all(conn)?;
-                let last_id = sql::max_id(conn)?;
-                let levels = sql::level_counts(conn)?;
-                let categories = sql::category_counts(conn)?;
-                Ok((total, last_id, levels, categories))
-            })
+            // 一遍 `GROUP BY level, category` 同时算出总数与两个维度的分布
+            // （原先四条语句、三条全表扫描；本方法被日志页每秒轮询一次）
+            self.with_conn(&guard, |conn| sql::stats_snapshot(conn))
         };
-        let Some((total, last_id, levels, categories)) = loaded else {
+        let Some((total, last_id, buckets)) = loaded else {
             return Stats {
                 total: 0,
                 max: MAX_ENTRIES,
@@ -618,13 +614,17 @@ impl LogStore {
         // 库里的 level/category 恒为字典内的值（写入侧归一过），所以这里是
         // 「把已有键的值填进去」；万一有越界的值（有人用 sqlite3 手工改库），
         // `entry()` 会如实补进去计数 —— 不隐藏它的存在，让日志页显示得出来。
-        for (level, count) in levels {
-            let slot = by_level.entry(level).or_insert_with(|| Value::from(0));
-            *slot = Value::from(count.max(0) as u64);
-        }
-        for (category, count) in categories {
-            let slot = by_category.entry(category).or_insert_with(|| Value::from(0));
-            *slot = Value::from(count.max(0) as u64);
+        //
+        // 二维桶相加而不是分两遍扫描：忽略 category 求和就是「按级别」，
+        // 忽略 level 求和就是「按分类」（理由见 `sql::stats_snapshot`）
+        for (level, category, count) in buckets {
+            let count = count.max(0) as u64;
+            let level_slot = by_level.entry(level).or_insert_with(|| Value::from(0));
+            *level_slot = Value::from(level_slot.as_u64().unwrap_or(0).saturating_add(count));
+            let category_slot = by_category
+                .entry(category)
+                .or_insert_with(|| Value::from(0));
+            *category_slot = Value::from(category_slot.as_u64().unwrap_or(0).saturating_add(count));
         }
         Stats { total, max: MAX_ENTRIES, by_level, by_category, last_id, file }
     }

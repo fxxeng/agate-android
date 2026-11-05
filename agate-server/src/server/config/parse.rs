@@ -612,6 +612,50 @@ pub(super) fn resolve_rounds(from_file: Option<i64>, from_env: Option<i64>) -> i
     from_file.or(from_env).unwrap_or(DEFAULT_AUTO_CONTINUE_MAX_ROUNDS)
 }
 
+// ─── 会话图片压缩（imageCompress*）────────────────────────────────
+
+/// 由原始 JSON 解析「会话图片压缩」的四项设置。
+///
+/// 开关：**只有字面 `true` 才算开**，键缺失 / 写成别的值（`"on"` / `1`）都按关
+/// —— 与 `debug_mode` 同向、与上游相反。这里跟上游不一致是有意的：上游默认开
+/// （它服务自己的桌面客户端，省的是同一个人的流量），本项目是网关，默认改写
+/// 用户要发出去的图片属于静默改变可观测行为，所以默认关（取舍写在
+/// [`KEY_IMAGE_COMPRESS_ENABLED`]）。
+///
+/// 三项参数：范围校验在写侧（`api::image_compress`）是 400 报错，在这里是回落默认
+/// —— 手改库写进一个越界值时，宁可回到 2048 / 80 / 512，也不要让压缩层拿到一个
+/// 必然坏事的值（质量为 0 会把整张图压成一片糊，长边 0 会让编码器踩到边界假设）。
+pub(super) fn image_compress_from(map: &Map<String, Value>) -> ImageCompressSettings {
+    let defaults = ImageCompressSettings::default();
+    ImageCompressSettings {
+        enabled: map
+            .get(KEY_IMAGE_COMPRESS_ENABLED)
+            .and_then(Value::as_bool)
+            .unwrap_or(defaults.enabled),
+        max_edge: bounded_int_field(
+            map,
+            KEY_IMAGE_COMPRESS_MAX_EDGE,
+            defaults.max_edge,
+            IMAGE_COMPRESS_MIN_MAX_EDGE,
+            IMAGE_COMPRESS_MAX_MAX_EDGE,
+        ),
+        quality: bounded_int_field(
+            map,
+            KEY_IMAGE_COMPRESS_QUALITY,
+            defaults.quality,
+            IMAGE_COMPRESS_MIN_QUALITY,
+            IMAGE_COMPRESS_MAX_QUALITY,
+        ),
+        threshold_kb: bounded_int_field(
+            map,
+            KEY_IMAGE_COMPRESS_THRESHOLD_KB,
+            defaults.threshold_kb,
+            IMAGE_COMPRESS_MIN_THRESHOLD_KB,
+            IMAGE_COMPRESS_MAX_THRESHOLD_KB,
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     //! 三条取值口径：环境变量的「只认 1 / true / on」、越界的「回落默认而非夹紧」、

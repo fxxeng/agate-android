@@ -636,6 +636,18 @@ pub fn panel_router(state: ServerState) -> Router {
             "/api/auto-continue",
             get(api::auto_continue::get_auto_continue).put(api::auto_continue::put_auto_continue),
         )
+        // ── 会话图片压缩 ──
+        // 与 /api/auto-continue 同一族（GET 读 / PUT 写、默认关、改的是发往上游的
+        // 字节），比它多两项参数：一个开关 + 三个有界整数（长边 / 质量 / 阈值）。
+        // 挂 protected 的理由与那几条相同：开着它会改写用户要发出去的图片内容
+        // （模型看到的是压缩后的像素），是「改客户端可观测行为」里较重的一类。
+        // 代价与判据见 core::upstream::image_compress、默认值的取舍见
+        // config::KEY_IMAGE_COMPRESS_ENABLED。
+        .route(
+            "/api/image-compress",
+            get(api::image_compress::get_image_compress)
+                .put(api::image_compress::put_image_compress),
+        )
         // ── 机器人校验开关 ──
         // 与 /api/sanitize 同形的单开关端点（GET 读 / PUT 写），挂 protected：
         // 它决定登录 / 注册是否要求 ALTCHA proof-of-work，敏感度同级。

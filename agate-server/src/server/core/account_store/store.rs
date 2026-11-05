@@ -126,6 +126,9 @@ struct Inner {
     file_path: PathBuf,
     /// 串行化「读-改-写」整个周期；只保护账号域的数据库访问，不保护网络请求
     lock: Mutex<()>,
+    /// 账号列表快照缓存（见 `snapshot` 模块头：为什么缓存、为什么用库里的
+    /// 版本号做判据）。读路径经 [`AccountStore::load`] 走它。
+    snapshot: super::snapshot::SnapshotCache,
 }
 
 impl AccountStore {
@@ -143,7 +146,12 @@ impl AccountStore {
             None => crate::server::config::config_dir().join(crate::server::db::FILE_NAME),
         };
         Self {
-            inner: Arc::new(Inner { db, file_path, lock: Mutex::new(()) }),
+            inner: Arc::new(Inner {
+                db,
+                file_path,
+                lock: Mutex::new(()),
+                snapshot: super::snapshot::SnapshotCache::default(),
+            }),
         }
     }
 
@@ -243,12 +251,54 @@ impl AccountStore {
 
     /// 读全部账号（**语义要求整份数据**的路径用它，见 `sql::load_all`）。
     ///
-    /// 库不可用时返回**空列表**而不是报错：这个函数的签名（`pub`，且被
-    /// `load_locked` 直接透出）没有表达失败的位置，而它的消费方多是「读快照
-    /// 做展示/派生」—— 拿不到账号就是「没有可用账号」，各调用方本来就要处理
-    /// 这个分支（未登录、无可用账号）。反过来，**写入**路径一律返回
+    /// ── 返回 `Arc` 而不是 `AccountState`（以及为什么现在有缓存）────────
+    /// 本函数是账号读路径的**唯一入口**，而它的调用方几乎全在热路径上（转发选路
+    /// 每次尝试一次、账号页与 `/api/session` 各一次）。原先每次调用都是「读全表 →
+    /// 逐行 AES 解密 → 逐行 JSON 解析」，而账号没被改过时这批字节**一个都不会变**。
+    /// 现在的结果由 [`super::snapshot`] 缓存，判据是库里的写事件版本号（触发器维护，
+    /// 见 `db::schema::SCHEMA_VERSION` 的 v16 段）。
+    ///
+    /// 返回 `Arc` 是这条改造的**形状要求**，不是顺手：命中缓存时直接把同一份数据
+    /// 交给调用方（零复制），若这里返回 owned 值就只能深拷贝整批记录（等于把省下的
+    /// 解析换成了克隆，白忙一场）。需要**可改副本**的写路径显式 `(*state).clone()`
+    /// ——那几处（`store_crud` / `store_admin` / `store_batch` / `account_transfer`）
+    /// 本来就只在用户操作时跑，多一次克隆无所谓，而 `(*arc).clone()` 这个写法让
+    /// 「这里要改数据」在代码里一眼可见。
+    ///
+    /// 库不可用时返回**空列表**而不是报错：这个函数的签名没有表达失败的位置，而它的
+    /// 消费方多是「读快照做展示/派生」—— 拿不到账号就是「没有可用账号」，各调用方
+    /// 本来就要处理这个分支（未登录、无可用账号）。反过来，**写入**路径一律返回
     /// `Result`，数据库不可用时明确报 500，绝不让写操作静默成功。
-    pub(crate) fn load(&self, _guard: &MutexGuard<'_, ()>) -> AccountState {
+    pub(crate) fn load(&self, guard: &MutexGuard<'_, ()>) -> std::sync::Arc<AccountState> {
+        // 版本号读不出来（库不可用 / 连接中毒）时**不缓存**：此时缓存也无从判断
+        // 新鲜度，直接给一份新读的空状态，别把一次失败留在缓存里。
+        let Ok(revision) = self.with_conn(guard, sql::accounts_revision) else {
+            return std::sync::Arc::new(self.load_uncached(guard));
+        };
+        if let Some(hit) = self.inner.snapshot.get(revision) {
+            return hit;
+        }
+        // 重建：整段都在调用方持有的那把账号锁里（本函数的签名要求它），所以
+        // 「读版本号 → 发现失效 → 重建 → 存回」之间不会有第二个写者插进来。
+        //
+        // 经 `blocking::in_place` 跑：重建 = 全部账号行逐条 AES 解密 + JSON 解析，
+        // 几十条就是毫秒级，而调用点大多在 async handler 里（账号页、选路）。
+        // 就地跑会摁住一个 tokio worker，让同 worker 上排队的其它请求（含别的会话
+        // 的 SSE 分片）一起等。current-thread 运行时（测试）与启动期没有运行时，
+        // 它会自动退化成就地执行 —— 慢一点，但不会 panic（见那个模块的模块头）。
+        let state = crate::server::core::blocking::in_place(|| {
+            std::sync::Arc::new(self.load_uncached(guard))
+        });
+        self.inner.snapshot.put(revision, state.clone());
+        state
+    }
+
+    /// 真去库里读的那一半（**不碰缓存**）：只在缓存未命中时由 [`Self::load`] 调用。
+    ///
+    /// 单独拆出来是为了让「缓存在哪一行起作用」一眼可见 —— 缓存判断与真正的
+    /// 读库逻辑混在一个函数里时，后来者很容易在中间插一句「顺便读一下别的表」，
+    /// 于是那句话变成只在未命中时执行（一个只在冷启动才跑的 bug）。
+    fn load_uncached(&self, _guard: &MutexGuard<'_, ()>) -> AccountState {
         let Some(db) = self.inner.db.as_ref() else {
             return AccountState::default();
         };
@@ -292,7 +342,10 @@ impl AccountStore {
     }
 
     /// 供导入导出子模块复用：在已持锁的前提下读全部账号
-    pub fn load_locked(&self, guard: &MutexGuard<'_, ()>) -> AccountState {
+    pub fn load_locked(
+        &self,
+        guard: &MutexGuard<'_, ()>,
+    ) -> std::sync::Arc<AccountState> {
         self.load(guard)
     }
 
