@@ -103,6 +103,11 @@ pub mod accio;
 /// 构造 v1internal 信封，响应走 `UpstreamResponse::AntigravityGemini` 那条
 /// Gemini SSE 翻译层）全部已接通；`is_stateful` 恒 false，见 `antigravity/mod.rs`）。
 pub mod antigravity;
+/// AStudio（科大讯飞「星火 Astron Studio」桌面端）：**Responses 协议** + 粘贴凭据。
+///
+/// 两套凭据各管一段（`modelBearerToken` 调模型；`token` + `accountId` 管余额 / 签到），
+/// 没有续期接口。详见 `astudio/mod.rs` 模块头。
+pub mod astudio;
 /// AtomCode（AtomGit）：账号管理（**轮询式网页登录** + 粘贴 accessToken /
 /// refreshToken）+ 无状态 OpenAI 兼容转发 + 模型目录 / 每窗口调用次数额度 /
 /// 免费 CodingPlan 领取（挂在签到链上）。
