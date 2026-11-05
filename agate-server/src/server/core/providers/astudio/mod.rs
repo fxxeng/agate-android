@@ -43,6 +43,7 @@
 //! ```text
 //!   endpoints    地址与客户端身份常量（纯）
 //!   credentials  凭据读/写/公开形态/身份（纯，无网络）
+//!   responses    Chat → Responses 请求体 + 流事件解读（纯，可离线测）
 //! ```
 //!
 //! ── 硬约束 ──────────────────────────────────────────────────
@@ -50,6 +51,7 @@
 
 pub mod credentials;
 pub mod endpoints;
+pub mod responses;
 
 /// provider id（与内核 `PROVIDERS` 注册表、客户端 `PresetRegistry` 同一字面量）
 pub const ID: &str = "astudio";
