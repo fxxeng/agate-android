@@ -461,6 +461,17 @@ pub fn panel_router(state: ServerState) -> Router {
             "/api/session/login/loomy/sms/verify",
             post(api::session::login_loomy_sms_verify),
         )
+        // Tabbit 的手机号验证码登录（国内站；国际站上游被灰度 403，核心层会拒）。
+        // 与上面两对分开挂的判据相同：站点 / 头 / 中间态都不同，合成一个端点
+        // 就得在 handler 里按 provider 分叉 —— issue #93 正是那么来的。
+        .route(
+            "/api/session/login/tabbit/sms/send",
+            post(api::session::login_tabbit_sms_send),
+        )
+        .route(
+            "/api/session/login/tabbit/sms/verify",
+            post(api::session::login_tabbit_sms_verify),
+        )
         // AutoClaw OAuth 网页登录（**国际版**的官方主方式）。三段里只有前两段
         // 在这里：第三段（loopback 回调）在 public 组（调用方是用户的浏览器，
         // 见那边的注释）。这两段都挂 protected —— 它们要带验证码参数去打上游、

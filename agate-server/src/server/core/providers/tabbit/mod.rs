@@ -62,6 +62,7 @@ pub mod checkin;
 pub mod credentials;
 pub mod endpoints;
 pub mod http;
+pub mod login;
 pub mod models;
 pub mod prompt;
 pub mod sign;

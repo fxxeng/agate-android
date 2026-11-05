@@ -523,7 +523,8 @@ private fun SmsLoginForm(preset: ProviderPreset, onDone: (Boolean, String) -> Un
     var phone by remember { mutableStateOf("") }
     var code by remember { mutableStateOf("") }
     var name by remember { mutableStateOf("") }
-    var msgid by remember { mutableStateOf<String?>(null) }
+    // 本次发码的中间态（内核统一的 `ticket`：三家的原名是 deviceId / msgid / uuid）
+    var ticket by remember { mutableStateOf<String?>(null) }
     var sent by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
     var countdown by remember { mutableStateOf(0) }
@@ -565,7 +566,9 @@ private fun SmsLoginForm(preset: ProviderPreset, onDone: (Boolean, String) -> Un
                         busy = false
                         if (r.ok) {
                             sent = true
-                            msgid = r.data?.optString("msgid")?.ifBlank { null }
+                            // 内核在发码响应里统一补出 `ticket`（原名 deviceId /
+                            // msgid / uuid 各自保留，但客户端只认这一个名字）
+                            ticket = r.data?.optString("ticket")?.ifBlank { null }
                             hint = "验证码已发送，请查收短信"
                         } else hint = r.error ?: "发送失败"
                     }
@@ -584,7 +587,7 @@ private fun SmsLoginForm(preset: ProviderPreset, onDone: (Boolean, String) -> Un
         onClick = {
             busy = true; hint = null
             scope.launch {
-                val r = AccountOps.smsVerify(preset.id, phone, code, msgid, name.ifBlank { null })
+                val r = AccountOps.smsVerify(preset.id, phone, code, ticket, name.ifBlank { null })
                 busy = false
                 if (r.ok) onDone(true, "已添加 ${preset.label} 账号")
                 else hint = r.error ?: "登录失败"

@@ -721,6 +721,24 @@ pub fn shim_js() -> &'static str {
     },
   };
 
+  // ── 短信登录：provider → 端点前缀（**唯一一份**）──────────────
+  // `sendSmsCode` 与 `verifySmsLogin` 共用这张表，不在两个方法里各写一套 if：
+  // 两边各写一套时漏改一处就会出现「发码打到 A 家、登录打到 B 家」这种最难
+  // 排查的错（issue #93 的形态：验证码由 AutoClaw 发出、账号也存成 AutoClaw，
+  // 界面却因为文案取自卡片 label 而显示「Loomy 账号已添加」，全程零报错）。
+  // 表里没有的家落 AutoClaw 那一对端点 —— 这是历史口径（老面板不带 provider）。
+  var SMS_ENDPOINTS = {
+    loomy: '/api/session/login/loomy/sms',
+    // 国际站与国内站共用一对端点：拒绝的判定在核心层（上游对国际站灰度 403），
+    // 这里不做第二份判断，否则两处的口径迟早分叉。
+    tabbit: '/api/session/login/tabbit/sms',
+    'tabbit-intl': '/api/session/login/tabbit/sms',
+  };
+  function smsEndpoint(provider, action) {
+    var prefix = SMS_ENDPOINTS[String(provider || '')] || '/api/session/login/sms';
+    return prefix + '/' + action;
+  }
+
   window.workbuddyDesktop = {
     // 平台标识：界面据此裁剪本机功能（导入桌面端登录态等在 web 下隐藏）
     platform: 'web',
@@ -1028,10 +1046,7 @@ pub fn shim_js() -> &'static str {
       var isObject = input && typeof input === 'object';
       var phone = String((isObject ? input.phone : input) || '');
       var provider = isObject && input.provider ? String(input.provider) : '';
-      var path = provider === 'loomy'
-        ? '/api/session/login/loomy/sms/send'
-        : '/api/session/login/sms/send';
-      return call('POST', path, {
+      return call('POST', smsEndpoint(provider, 'send'), {
         phone: phone,
         provider: provider || undefined,
       });
@@ -1039,9 +1054,7 @@ pub fn shim_js() -> &'static str {
     verifySmsLogin: function (payload) {
       payload = payload || {};
       var provider = payload.provider ? String(payload.provider) : '';
-      var path = provider === 'loomy'
-        ? '/api/session/login/loomy/sms/verify'
-        : '/api/session/login/sms/verify';
+      var path = smsEndpoint(provider, 'verify');
       var body = {
         phone: String(payload.phone || ''),
         code: String(payload.code || ''),

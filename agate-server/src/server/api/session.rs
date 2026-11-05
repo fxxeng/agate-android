@@ -899,6 +899,38 @@ fn catpaw_callback_page(status: u16, message: &str) -> Response {
 
 // ─── POST /api/session/login/sms/send 与 /verify ────────────
 
+/// 给「发码」响应补上统一的中间态字段 `ticket`。
+///
+/// ── 为什么需要这个字段 ──────────────────────────────────────
+/// 三条短信登录链的中间态本质是同一件事（「这次发的码归哪一次会话」），上游
+/// 却各叫一个名字：AutoClaw 是 `deviceId`、Loomy 是 `msgid`、Tabbit 是 `uuid`。
+/// 前端只该认**一个**名字 —— 各认各的就必须在表单里按 provider 分叉，而分叉
+/// 漏一处正是 issue #93 的形态（发码打到 A 家、登录打到 B 家，界面还显示成功）。
+///
+/// 原名**一并保留**：web 面板的 JS（`web_shim.rs`）与老客户端仍按各自字段读，
+/// 这里只加不减。`key` 就是那家的原名，值从响应里现取（不另算一次，
+/// 否则中间态会出现两个不同的值）。
+fn with_ticket(mut value: Value, key: &str) -> Value {
+    let ticket = value.get(key).cloned().unwrap_or(Value::Null);
+    if let Some(object) = value.as_object_mut() {
+        object.insert("ticket".to_string(), ticket);
+    }
+    value
+}
+
+/// 从 verify 请求里取中间态：`ticket` 优先，回落到该家的历史字段名。
+///
+/// 回落是给老客户端与 web 面板留的；新客户端只用 `ticket`。
+/// `legacy` 允许给多个候选（Tabbit 的发码响应同时带 `uuid` 与 `deviceId`，
+/// 用户可能按任一个回传）。
+fn ticket_of<'a>(payload: &'a Value, legacy: &[&str]) -> Option<&'a str> {
+    std::iter::once("ticket")
+        .chain(legacy.iter().copied())
+        .filter_map(|key| payload.get(key).and_then(Value::as_str))
+        .map(str::trim)
+        .find(|value| !value.is_empty())
+}
+
 /// 从请求体里读 AutoClaw 地区（`provider` 字段，与 `POST /api/accounts` 同名）。
 ///
 /// 缺省（字段没带 / 空串）落**国内版**：与 provider id 的历史口径一致 ——
@@ -981,7 +1013,8 @@ pub async fn login_sms_send(body: Bytes) -> Response {
         Err(response) => return response,
     };
     match crate::server::core::providers::autoclaw::login::send_code(region, phone).await {
-        Ok(result) => ok_json(result),
+        // `ticket` 是跨三家的统一中间态名（见 [`with_ticket`]），`deviceId` 保留
+        Ok(result) => ok_json(with_ticket(result, "deviceId")),
         Err(error) => management_error(error.status_code, error.message),
     }
 }
@@ -997,7 +1030,7 @@ pub async fn login_sms_verify(State(state): State<ServerState>, body: Bytes) -> 
     let payload = parse_body(&body).unwrap_or(Value::Null);
     let phone = payload.get("phone").and_then(Value::as_str).unwrap_or("");
     let code = payload.get("code").and_then(Value::as_str).unwrap_or("");
-    let device_id = payload.get("deviceId").and_then(Value::as_str);
+    let device_id = ticket_of(&payload, &["deviceId"]);
     let region = match autoclaw_region_of(&payload) {
         Ok(region) => region,
         Err(response) => return response,
@@ -1061,7 +1094,8 @@ pub async fn login_loomy_sms_send(body: Bytes) -> Response {
     let payload = parse_body(&body).unwrap_or(Value::Null);
     let phone = payload.get("phone").and_then(Value::as_str).unwrap_or("");
     match crate::server::core::providers::loomy::login::send_code(phone).await {
-        Ok(result) => ok_json(result),
+        // `ticket` 是跨三家的统一中间态名（见 [`with_ticket`]），`msgid` 保留
+        Ok(result) => ok_json(with_ticket(result, "msgid")),
         Err(error) => management_error(error.status_code, error.message),
     }
 }/// 用手机号 + 验证码登录并**直接落成账号**（**Loomy 专用**）。
@@ -1074,7 +1108,7 @@ pub async fn login_loomy_sms_verify(State(state): State<ServerState>, body: Byte
     let payload = parse_body(&body).unwrap_or(Value::Null);
     let phone = payload.get("phone").and_then(Value::as_str).unwrap_or("");
     let code = payload.get("code").and_then(Value::as_str).unwrap_or("");
-    let msgid = payload.get("msgid").and_then(Value::as_str);
+    let msgid = ticket_of(&payload, &["msgid"]);
     let credentials =
         match crate::server::core::providers::loomy::login::login_with_code(phone, code, msgid).await
         {
@@ -1106,6 +1140,127 @@ pub async fn login_loomy_sms_verify(State(state): State<ServerState>, body: Byte
             ok_json(json!({ "account": account, "list": store.list_accounts() }))
         }
         Err(error) => super::accounts::store_error(error),
+    }
+}
+
+// ─── Tabbit 手机号验证码登录（两段，国内站专用）─────────────
+
+/// 发送短信验证码（**Tabbit 国内站专用**，手机号验证码登录的第一步）。
+///
+/// ── 为什么单开一对端点，而不是塞进上面那对 ──────────────────
+/// `login_sms_send` / `login_sms_verify` 是 **AutoClaw 专用**：它们的 `provider`
+/// 字段用来分「国内版 / 国际版」两个站点，同一个路径打两个域名。Tabbit 的
+/// 站点、头、错误码、中间态（uuid 而不是 deviceId）全都不同，混进同一个
+/// handler 只能靠 if 分叉 —— 那正是 issue #93 的成因（另一个家的 id 发过来时
+/// 号码被发去错的站点、账号也存成错的 provider，调用方却拿到成功响应）。
+///
+/// body `{phone, provider?}` → `{uuid, deviceId}`。
+///
+/// `provider` 只用来认国际站：`tabbit-intl` 会被明确拒绝并给出替代（粘贴
+/// Cookie）。判据在核心层（`tabbit::login::send_code`），这里只做透传 ——
+/// 与 AutoClaw 那条「拒绝的判定在核心层」同一取舍。
+pub async fn login_tabbit_sms_send(body: Bytes) -> Response {
+    let payload = parse_body(&body).unwrap_or(Value::Null);
+    let phone = payload.get("phone").and_then(Value::as_str).unwrap_or("");
+    let realm = match tabbit_realm_of(&payload) {
+        Ok(realm) => realm,
+        Err(response) => return response,
+    };
+    match crate::server::core::providers::tabbit::login::send_code(realm, phone).await {
+        // `ticket` 是跨三家的统一中间态名（见 [`with_ticket`]），`uuid` 保留
+        Ok(result) => ok_json(with_ticket(result, "uuid")),
+        Err(error) => management_error(error.status_code, error.message),
+    }
+}
+
+/// 用手机号 + 验证码登录并**直接落成账号**（**Tabbit 国内站专用**）。
+///
+/// body `{phone, code, uuid?|deviceId?, name?, provider?}` → `{account, list}`
+/// —— 响应形状与 `POST /api/accounts` **逐字一致**：登录只是另一种拿到凭证的
+/// 方式，落盘、命名、去重、优先级分配全部复用既有的添加路径
+/// （`add_tabbit_account`），前端因此可以直接把结果交给同一个收尾逻辑。
+///
+/// `uuid` / `deviceId` 都认：前者是发码响应里的原名字段，后者是客户端
+/// `SmsLoginForm` 已有的通用中间态参数名（Loomy 用它传 msgid）。
+pub async fn login_tabbit_sms_verify(State(state): State<ServerState>, body: Bytes) -> Response {
+    let payload = parse_body(&body).unwrap_or(Value::Null);
+    let phone = payload.get("phone").and_then(Value::as_str).unwrap_or("");
+    let code = payload.get("code").and_then(Value::as_str).unwrap_or("");
+    let realm = match tabbit_realm_of(&payload) {
+        Ok(realm) => realm,
+        Err(response) => return response,
+    };
+    // 中间态：`ticket`（统一名）优先，回落 `uuid` / `deviceId`（各自的原名）
+    let ticket = ticket_of(&payload, &["uuid", "deviceId"]);
+    let name = payload
+        .get("name")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let credentials =
+        match crate::server::core::providers::tabbit::login::login_with_code(
+            realm, phone, code, ticket, name,
+        )
+        .await
+        {
+            Ok(credentials) => credentials,
+            Err(error) => return management_error(error.status_code, error.message),
+        };
+    // 备注名：用户显式填的优先；没填则用手机号尾号 —— 比默认的「Tabbit 账号」
+    // 更像用户自己认得出来的标识
+    let name = name.map(str::to_string).or_else(|| {
+        credentials
+            .get("phoneTail")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    });
+    let store = state.store();
+    match store.add_tabbit_account(realm, &credentials, name.as_deref(), "sms") {
+        Ok(account) => {
+            let label = account
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("Tabbit 账号");
+            logging::log(
+                "[Login]",
+                &format!("✅ Tabbit {}登录成功: {label}", realm.label()),
+            );
+            ok_json(json!({ "account": account, "list": store.list_accounts() }))
+        }
+        Err(error) => super::accounts::store_error(error),
+    }
+}
+
+/// 从请求体里读 Tabbit 站点（`provider` 字段，与 `POST /api/accounts` 同名）。
+///
+/// 缺省落**国内站**：老客户端不带这个字段，而那时只有国内站有短信登录。
+/// 带值却不认识就明确拒绝 —— 与 `autoclaw_region_of` 同一判据：**不静默回落**，
+/// 否则一个别家的 id 发过来会把号码发去错的站点、账号也存成错的 provider。
+///
+/// 用 `Realm::from_provider_id` 而不是自己 match 字符串：id ↔ 站点的映射
+/// 只在 `tabbit::Realm` 有一份。
+fn tabbit_realm_of(
+    payload: &Value,
+) -> Result<crate::server::core::providers::tabbit::Realm, Response> {
+    use crate::server::core::providers::tabbit::Realm;
+    let raw = payload
+        .get("provider")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or("");
+    if raw.is_empty() {
+        return Ok(Realm::Cn);
+    }
+    match Realm::from_provider_id(raw) {
+        Some(realm) => Ok(realm),
+        None => Err(management_error(
+            400,
+            format!(
+                "未知的登录站点「{raw}」（只支持 {} / {}）",
+                Realm::Cn.id(),
+                Realm::Intl.id()
+            ),
+        )),
     }
 }
 

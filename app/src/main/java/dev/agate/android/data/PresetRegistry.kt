@@ -413,9 +413,11 @@ object PresetRegistry {
         // 有真实的每日签到活动（`daily_sign_in`，奖励是额度重置券），
         // 但**没有续期接口**（JWT 7 天有效，失效只能重粘）。
         ProviderPreset(
-            "tabbit", "Tabbit 国内版", "web.tabbit.com · 粘贴 Cookie / 登录 JWT",
-            LoginKind.PASTE,
-            listOf(AuthChannel.PASTE),
+            "tabbit", "Tabbit 国内版", "web.tabbit.com · 手机验证码 / 粘贴 Cookie",
+            LoginKind.SMS,
+            // 国内站有手机号+验证码这条链（内核 `tabbit::login`，两段同步请求，
+            // 不发窗口、不起任务）：`SmsLoginForm` 直接能用，无需新增表单。
+            listOf(AuthChannel.SMS, AuthChannel.PASTE),
             category = ProviderCategory.WEB,
             // 一段文本收三种粘法（内核 `credentials::normalize_payload` 按**内容**
             // 判，不认字段名）：Cookie 头单行 / DevTools 的 Copy as cURL 整段 / 裸 JWT。

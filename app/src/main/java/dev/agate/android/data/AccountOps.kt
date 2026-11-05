@@ -37,33 +37,54 @@ object AccountOps {
     class OpResult(val ok: Boolean, val data: JSONObject?, val error: String?)
 
     /** 发送验证码。loomy 返回的 msgid 由调用方保存、verify 时回传。 */
+    /**
+     * provider → 短信端点前缀（**唯一一份**：smsSend / smsVerify 共用）。
+     *
+     * ── 为什么必须是表 ──────────────────────────────────────────
+     * 原来这两个方法各写一套 `if (providerId == "loomy")`，加第三家时只要漏改
+     * 一处，就会出现「发码打到 A 家、登录打到 B 家」这种最难排查的错 ——
+     * 而界面因为文案取自卡片 label，还会显示「已添加」。
+     *
+     * 表里没有的家落 AutoClaw 那一对端点：这是历史口径（老客户端不带
+     * `provider`，而那些用户本来就在用 AutoClaw 国内版）。
+     *
+     * Tabbit 的国际站与国内站共用一对端点：拒绝的判定在内核
+     * （上游对国际站灰度 403），客户端不做第二份判断。
+     */
+    private fun smsEndpoint(providerId: String): String = when (providerId) {
+        "loomy" -> "/api/session/login/loomy/sms"
+        "tabbit", "tabbit-intl" -> "/api/session/login/tabbit/sms"
+        else -> "/api/session/login/sms"
+    }
+
     suspend fun smsSend(providerId: String, phone: String): OpResult {
-        val (path, body) = if (providerId == "loomy") {
-            "/api/session/login/loomy/sms/send" to JSONObject().put("phone", phone)
-        } else {
-            "/api/session/login/sms/send" to
-                JSONObject().put("phone", phone).put("provider", providerId)
-        }
-        return post(path, body)
+        val body = JSONObject().put("phone", phone).put("provider", providerId)
+        return post(smsEndpoint(providerId) + "/send", body)
     }
 
     /** 用手机号 + 验证码登录并直接落成账号 → {account, list}。 */
+    /**
+     * 用手机号 + 验证码登录并直接落成账号 → {account, list}。
+     *
+     * [ticket] 是**发码响应里的统一中间态字段**（内核三家的原名分别是
+     * `deviceId` / `msgid` / `uuid`，API 层统一补出一个 `ticket`，
+     * 见内核 `api::session::with_ticket`）。客户端只认这一个名字 ——
+     * 各认各的就得在这里再分一次叉。
+     */
     suspend fun smsVerify(
         providerId: String,
         phone: String,
         code: String,
-        msgid: String?,
+        ticket: String?,
         name: String?,
     ): OpResult {
-        val body = JSONObject().put("phone", phone).put("code", code)
+        val body = JSONObject()
+            .put("phone", phone)
+            .put("code", code)
+            .put("provider", providerId)
         if (!name.isNullOrBlank()) body.put("name", name)
-        return if (providerId == "loomy") {
-            if (!msgid.isNullOrBlank()) body.put("msgid", msgid)
-            post("/api/session/login/loomy/sms/verify", body)
-        } else {
-            body.put("provider", providerId)
-            post("/api/session/login/sms/verify", body)
-        }
+        if (!ticket.isNullOrBlank()) body.put("ticket", ticket)
+        return post(smsEndpoint(providerId) + "/verify", body)
     }
 
     /**
