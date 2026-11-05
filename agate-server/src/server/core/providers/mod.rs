@@ -177,6 +177,7 @@ pub mod readiness;
 pub mod qoder;
 pub mod raccoon;
 pub mod refresh_flight;
+pub mod tabbit;
 pub mod router;
 /// Trae（字节 AI IDE）。适配实现在 `trae/`：登录 / 凭据 / 目录 / 会话式转发
 /// 已接通（只支持国内 SOLO 通道；国际版是另一套协议，将来另立 kind），见
@@ -578,6 +579,29 @@ pub enum ProviderKind {
     ///
     /// 归 **Agent 分段**：本家在上游 agent 包里（该包不声明 provider_category）。
     Doubaowork,
+    /// Tabbit **国内版**（`web.tabbit.com`）。
+    ///
+    /// ── 为什么两个站点是两家 provider ─────────────────────────
+    /// 两站**账号体系不通用、签名 key 不同、目录与额度各按站点计**，登录方式
+    /// 也不同（国内站有手机号验证码，国际站只能导入已有 Cookie）。按仓库既有的
+    /// 「两套账号就拆家」规则：`tabbit` / `tabbit-intl`（与 WorkBuddy / AutoClaw /
+    /// Qoder / MonkeyCode 同款判据）。
+    ///
+    /// ── 实现是**一套** ─────────────────────────────────────────
+    /// `tabbit::adapter::TabbitAdapter` 持有一个 `tabbit::Realm`，两个静态实例
+    /// （`TABBIT_ADAPTER` / `TABBIT_INTL_ADAPTER`）由 `adapter_for` 按 kind 给出；
+    /// 站点 ↔ provider id 的互查在 `Realm`（`kind` / `id` / `from_provider_id`），
+    /// 别处不要再写 `"tabbit-intl"` 这类字面量。
+    ///
+    /// ── 形态 ───────────────────────────────────────────────────
+    /// 登录态是网页 Cookie 里的 JWT；一次对话是「建房间 → 订阅事件流 → 投递 →
+    /// 读流」四步，因此 `is_stateful() == true`（见 `tabbit` 的模块头）。
+    /// **没有续期接口**（JWT 7 天，过期重贴 Cookie），归 **Web 分段**（上游
+    /// web 插件包的成员）。
+    Tabbit,
+    /// Tabbit **国际版**（`web.tabbit.ai`）；实现与国内版同一套，见
+    /// [`ProviderKind::Tabbit`] 的文档。
+    TabbitIntl,
 }
 
 /// 一个提供商的静态元数据。
@@ -759,6 +783,15 @@ pub const PROVIDERS: &[ProviderMeta] = &[
     // 归 **Agent 分段**：本家在上游的 `agent2api-providers` 包里
     // （该包不声明 `provider_category`，默认 agent）。
     ProviderMeta::agent("doubaowork", "豆包工作"),
+    // Tabbit 两个站点**相邻**排列（与 WorkBuddy / AutoClaw / Qoder / MonkeyCode
+    // 同一理由：同一条产品线的两个版本，中间隔着别家会让「找国际版」变成一次
+    // 扫描）。标签逐字取上游 `Agent2WebProviders` 的 `pack.json`。
+    //
+    // 归 **Web 分段**：上游 `agent2api-web-providers` 包声明
+    // `"provider_category": "web"`，成员就这四家（chatglm / deepseek-web /
+    // tabbit / tabbit-intl）。
+    ProviderMeta::web("tabbit", "Tabbit 国内版"),
+    ProviderMeta::web("tabbit-intl", "Tabbit 国际版"),
 ];
 
 /// provider id 在注册表里的下标（未知 id → None）。
@@ -851,6 +884,8 @@ pub fn kind_from_id(id: &str) -> Option<ProviderKind> {
         "orcaterm" => Some(ProviderKind::OrcaTerm),
         "deepseek-web" => Some(ProviderKind::DeepSeekWeb),
         "doubaowork" => Some(ProviderKind::Doubaowork),
+        "tabbit" => Some(ProviderKind::Tabbit),
+        "tabbit-intl" => Some(ProviderKind::TabbitIntl),
         // 走到这里 = 上面的注册表判定已放行、这个 match 却没有对应分支：
         // 只可能是有人给 `PROVIDERS` 加了条目忘了加这里。开发期喊出来；
         // release 返回 None（见上：宁可为「未知」，不可误认成别家）。
@@ -901,6 +936,8 @@ pub const fn kind_id(kind: ProviderKind) -> &'static str {
         ProviderKind::Atomcode => "atomcode",
         ProviderKind::DeepSeekWeb => "deepseek-web",
         ProviderKind::Doubaowork => "doubaowork",
+        ProviderKind::Tabbit => "tabbit",
+        ProviderKind::TabbitIntl => "tabbit-intl",
     }
 }
 

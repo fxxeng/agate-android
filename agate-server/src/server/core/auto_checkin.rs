@@ -125,7 +125,7 @@ pub fn default_time() -> String {
 /// 这是「有签到或每日活跃任务」的清单，不是「有积分概念」的清单：CatPaw 有积分
 /// 查询但没有签到，因此不在此列 —— 它的账号在批量签到里被算作 `skipped`。
 /// 加一家之前先确认它的签到链路真的存在（一个点了必然报错的复选框比没有更糟）。
-pub const CHECKIN_PROVIDERS: [&str; 17] = [
+pub const CHECKIN_PROVIDERS: [&str; 19] = [
     "workbuddy",
     "workbuddy-intl",
     "raccoon",
@@ -160,6 +160,12 @@ pub const CHECKIN_PROVIDERS: [&str; 17] = [
     // `undeclared`，本家没有可自动领的奖励 —— 不登记才是诚实的（登记会让
     // 签到中心多出一行永远「不支持」的账号）。
     "doubaowork",
+    // Tabbit 两个站点：上游有真实的每日签到运营活动（`daily_sign_in`，
+    // 奖励是**额度重置券**而不是积分，见 `providers::tabbit::checkin`）。
+    // 两个站点各是一家 provider（账号不通用、签名 key 不同），所以两条都登记。
+    // 追加在末尾（与上面同一理由）。
+    "tabbit",
+    "tabbit-intl",
 ];
 
 /// 缺省的签到提供商集合（全选）
@@ -177,12 +183,12 @@ pub fn default_providers() -> Vec<String> {
 /// 会让这一家的勾选框再也取消不掉（读完就补回来，界面上表现为「取消勾选没反应」）。
 /// 所以补齐只做一次，靠配置里的版本号记账；版本一旦写上去，用户之后再取消勾选
 /// 就真的生效了。执行点见 `checkin_schedules::extend_providers_once`。
-pub const PROVIDERS_VERSION: i64 = 6;
+pub const PROVIDERS_VERSION: i64 = 7;
 
 /// 「哪一版加入的家」——条目清单的版本低于它 = 这家还没被提供过 ⇒ 补进去。
 /// 版本 1 = 多条目改造上线时的形态（9 家；`qoder-intl` 由 `normalize_providers`
 /// 的存量兼容规则跟着 `qoder` 带上，不在这里重复登记）。
-const PROVIDERS_ADDED_IN: [(&str, i64); 7] = [
+const PROVIDERS_ADDED_IN: [(&str, i64); 9] = [
     ("officeace", 2),
     ("codearts", 2),
     // 版本 3（2026-10-31）：ModelScope 两家一次性纳入。它们**默认在范围内**
@@ -195,6 +201,11 @@ const PROVIDERS_ADDED_IN: [(&str, i64); 7] = [
     ("atomcode", 5),
     // 版本 6：豆包工作 —— 签到 = 读签到态 + 领取活动奖励。
     ("doubaowork", 6),
+    // 版本 7：Tabbit 两个站点 —— 每日 `daily_sign_in`（奖励是额度重置券）。
+    // 两条都要登记：两个站点各是一家 provider，只登记国内版会让国际版账号
+    // 在存量条目里静默漏签（与 `qoder` / `qoder-intl` 同一处境）。
+    ("tabbit", 7),
+    ("tabbit-intl", 7),
 ];
 
 /// 版本 `version` 之后才加入清单的家（按注册顺序）。空数组 = 这一版没有新家，

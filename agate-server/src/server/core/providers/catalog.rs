@@ -110,6 +110,16 @@ pub(crate) fn refresh_meta(kind: ProviderKind) -> (bool, i64) {
                 super::qoder::models::last_refreshed_at(site),
             )
         }
+        // Tabbit 两个站点各一格缓存（模型池与权益档都不同，见
+        // `catalog_cache::SCOPE_TABBIT` / `SCOPE_TABBIT_INTL`）。
+        ProviderKind::Tabbit => (
+            super::tabbit::models::remote_refreshed(super::tabbit::Realm::Cn),
+            super::tabbit::models::last_refreshed_at(super::tabbit::Realm::Cn),
+        ),
+        ProviderKind::TabbitIntl => (
+            super::tabbit::models::remote_refreshed(super::tabbit::Realm::Intl),
+            super::tabbit::models::last_refreshed_at(super::tabbit::Realm::Intl),
+        ),
         ProviderKind::CodeArts => (
             super::codearts::models::remote_refreshed(),
             super::codearts::models::last_refreshed_at(),

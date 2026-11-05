@@ -1484,6 +1484,110 @@ pub async fn add_account(state: &ServerState, body: &Bytes) -> Response {
                 "manual",
             )
         }
+        // Tabbit 系（国内版 / 国际版）：**粘贴网页 Cookie / Copy as cURL 整段 /
+        // 裸 JWT** → 归一化 → 打一次 `GET /api/v1/user/info` 探活（顺带拿 uid 与
+        // 昵称）→ 落账号。
+        //
+        // ── 探活为什么是硬前置（与 ModelScope 同一处境、同一处置）──────
+        // 凭证里没有可离线判定的身份：JWT 的 `exp` 只能判过期，uid 藏在 Cookie
+        // 或声明里；而 uid 决定账号 id、额度接口必填。不出网就只能拿令牌尾号
+        // 当身份 —— 同一个人换一次 Cookie 就多出一条记录（用户看到「我只有一个
+        // 账号，怎么越加越多」）。探活失败即 400、不落空记录：要的是「现在真能用」。
+        //
+        // ── 两站互不相通 ─────────────────────────────────────────
+        // 账号不通用、签名 key 不同：拿 A 站的 Cookie 加 B 站必然 401。站点由
+        // provider id 决定（`Realm::from_kind`），**不从 payload 反推** —— 拆家后
+        // 「落哪一家」是身份问题，不是账号属性（同 AutoClaw / ZCode 的口径）。
+        //
+        // ── 为什么不给文件导入 / importDesktop ────────────────────
+        // 本家的登录态就是**浏览器 Cookie**（一段短文本），粘贴即可；桌面端没有
+        // 可读的 auth.json 那种形态（与 Loomy / MonkeyCode / DeepSeek 网页版
+        // 同一口径）。给入口只会稳定失败，不如在文案里说清「粘什么」。
+        Some(
+            kind @ (crate::server::core::providers::ProviderKind::Tabbit
+            | crate::server::core::providers::ProviderKind::TabbitIntl),
+        ) => {
+            use crate::server::core::providers::tabbit::{credentials as tb, http as tb_http};
+            let realm = crate::server::core::providers::tabbit::Realm::from_kind(kind)
+                .unwrap_or(crate::server::core::providers::tabbit::Realm::Cn);
+            if import_desktop {
+                return management_error(
+                    400,
+                    format!(
+                        "{}不支持导入桌面端登录态，请粘贴网页 Cookie（token=…; user_id=…）\
+                         或开发者工具里 Copy as cURL 整段",
+                        realm.label()
+                    ),
+                );
+            }
+            // ── ① 归一化：把「随手复制的一段东西」变成可用凭证 ──────────
+            // 用户会粘三种东西（`credentials` 模块头）：Cookie 头单行 / cURL 整段 /
+            // 裸 JWT。前两种的令牌藏在 cookie 串里，裸 JWT 则要合成 Cookie ——
+            // 都在 `normalize_input_text` + `Credentials::from_fields` 两处收敛，
+            // 不在这里另写一套切分规则（两处口径分叉会出现「同一个串，粘贴能加、
+            // 转发却报缺令牌」这种最难排查的形态）。
+            let mut fields = payload.clone();
+            let raw_paste = fields
+                .get("cookie")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .unwrap_or("")
+                .to_string();
+            let pasted_token = fields
+                .get("accessToken")
+                .and_then(Value::as_str)
+                .is_some_and(|text| !text.trim().is_empty());
+            if !raw_paste.is_empty() && !pasted_token {
+                let (token, cookie) = tb::normalize_input_text(&raw_paste);
+                if let Some(object) = fields.as_object_mut() {
+                    if !token.is_empty() {
+                        object.insert("accessToken".to_string(), Value::String(token));
+                    }
+                    // 只回填「看起来像 Cookie 串」的那份；裸 JWT 交给
+                    // `Credentials::from_fields` 合成（`synthetic_cookie`）
+                    object.insert(
+                        "cookie".to_string(),
+                        Value::String(if cookie.contains('=') {
+                            cookie
+                        } else {
+                            String::new()
+                        }),
+                    );
+                }
+            }
+            let parsed = match tb::Credentials::from_fields(&fields) {
+                Ok(parsed) => parsed,
+                Err(error) => return management_error(error.status_code, error.message),
+            };
+            // ── ② 探活：一次调用拿「Cookie 是否可用」+ uid + 昵称 ──────
+            let client = tb_http::client(None);
+            let (uid, nickname) = match tb_http::user_info(&parsed, realm, client.as_ref()).await {
+                Ok(identity) => identity,
+                Err(error) => return management_error(error.status_code, error.message),
+            };
+            // ── ③ 补全再落库 ────────────────────────────────────────
+            // uid：额度接口必填，且是账号 id 的去重依据（见 `tabbit_accounts`）；
+            // Cookie：用户只粘了裸 JWT 时它是合成的，此刻才知道 uid —— 补上
+            // `user_id` / `SAPISID`，否则额度链路会带着不完整的登录态飞出去。
+            if let Some(object) = fields.as_object_mut() {
+                if !uid.trim().is_empty() {
+                    object.insert("uid".to_string(), Value::String(uid.trim().to_string()));
+                    if !parsed.cookie.contains("user_id=") {
+                        object.insert(
+                            "cookie".to_string(),
+                            Value::String(tb::synthetic_cookie(&parsed.token, uid.trim())),
+                        );
+                    }
+                }
+            }
+            // 备注名：用户自己打的优先；没打就用上游昵称（比「Tabbit 国内版 abc123」
+            // 更好认 —— 本家昵称是必有的展示名）。
+            let display = import_name.map(str::to_string).or_else(|| {
+                let trimmed = nickname.trim();
+                (!trimmed.is_empty()).then(|| trimmed.to_string())
+            });
+            store.add_tabbit_account(realm, &fields, display.as_deref(), "manual")
+        }
         // WorkBuddy 系的两家（国内版 / 国际版）：同一套凭证形态与落账号路径，
         // 差别只有归属 —— provider id 自己就是归属（拆家后不再从 payload 里的
         // `edition` 反推：那是账号的属性，而落哪一家是身份问题）。

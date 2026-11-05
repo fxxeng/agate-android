@@ -385,6 +385,13 @@ impl AccountStore {
             // 下发等于把「这个账号能被别人续期」的条件送出去（见
             // `lobsterai_accounts.rs` 的模块头）。
             self.to_lobsterai_public_account(record)
+        } else if super::is_tabbit_family(&record.provider()) {
+            // Tabbit 的两个站点（`tabbit` / `tabbit-intl`）共用这一份公开形态：
+            // 字段两地完全一致，差别只在站点域名与签名 key（那是转发与凭证层的
+            // 事，公开形态不体现）。这一支**必须有** —— 记录里的 `cookie` 与
+            // `accessToken` 是货真价实的登录态，掉进下面的 workbuddy 兜底形状
+            // 会随列表响应整串下发（同 doubaowork 那一支的理由）。
+            self.to_tabbit_public_account(record)
         } else if record.provider() == super::atomcode_accounts::ATOMCODE_PROVIDER_ID {
             // AtomCode（AtomGit）：摘掉 `accessToken` 与 `refreshToken`，留
             // `tokenTail` / `canRefresh` / `hasToken`。refresh token 是长期有效的

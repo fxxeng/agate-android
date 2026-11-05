@@ -1278,6 +1278,8 @@ pub fn adapter_for(kind: ProviderKind) -> &'static dyn ProviderAdapter {
         // 豆包工作：无状态 + 自有 SSE 事件流；Cookie 凭据 + 桌面端伪装头；
         // 有额度查询 / 签到 / 附件上传，**没有续期**（见 `doubaowork/mod.rs`）。
         ProviderKind::Doubaowork => &super::doubaowork::DOUBAOWORK_ADAPTER,
+        ProviderKind::Tabbit => &super::tabbit::TABBIT_ADAPTER,
+        ProviderKind::TabbitIntl => &super::tabbit::TABBIT_INTL_ADAPTER,
     }
 }
 
@@ -1417,6 +1419,12 @@ pub fn implemented_kinds() -> Vec<ProviderKind> {
         // 豆包工作：适配器已接真身，且有远程目录（`/alice/slot/action_bar_v3/`
         // `brief_list`）—— 必须在列表里，否则目录刷新循环不会问它。
         ProviderKind::Doubaowork,
+        // Tabbit 两个站点：适配器已接真身（凭证 / 会话式转发 / 目录 / 额度 /
+        // 签到），且有远程目录（`/proxy/v1/model_config/models`）—— 必须在
+        // 列表里，否则目录刷新循环不会问它（症状是「账号加了、模型列表一直是
+        // 那条 synthetic 兜底」）。两家各自一格缓存，所以两条都要列。
+        ProviderKind::Tabbit,
+        ProviderKind::TabbitIntl,
     ]
 }
 

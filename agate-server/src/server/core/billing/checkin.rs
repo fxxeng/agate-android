@@ -455,6 +455,22 @@ pub async fn checkin_for(
             .map_err(|error| error.message);
             claim_result(id, name, &display, true, claim)
         }
+        "tabbit" | "tabbit-intl" => {
+            // Tabbit 的每日签到（上游叫 `daily_sign_in`，见 `providers::tabbit::checkin`）。
+            // 两个站点各是一家 provider（账号不通用、签名 key 不同），站点由
+            // provider id 反查 —— 拿国内站的 Cookie 去打国际站的签到接口只会 401。
+            //
+            // 两个「不空打」的判断在实现里：活动未开启 / 今日已签都只回读状态、
+            // 不真发签到请求（一个必然失败的按钮比没有更糟）。「今日已签」给
+            // `alreadyCompleted:true` + 中性文案「今日已签到」。
+            let realm = crate::server::core::providers::tabbit::Realm::from_provider_id(provider_id)
+                .unwrap_or(crate::server::core::providers::tabbit::Realm::Cn);
+            let claim =
+                crate::server::core::providers::tabbit::checkin::claim_daily_checkin(store, realm, &id)
+                    .await
+                    .map_err(|error| error.message);
+            claim_result(id, name, &display, true, claim)
+        }
         // 兜底只服务默认那家（WorkBuddy 国内版）——**不是**「剩下所有家」。
         // 这里曾经是无所不包的 `_`：一个 provider 只要没在上面列出，就会拿自己的
         // 令牌去打腾讯的签到接口，稳定报错且看不出原因（Qoder 接入前正是这个处境）。

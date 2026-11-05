@@ -128,6 +128,13 @@ pub const SCOPE_KUKU: &str = "kuku";
 /// 因此不接目录缓存（给静态清单写缓存只会写出一条假的「刚刷新过」时间戳）。
 /// 同款先例是 `zcode`。详见 `providers::deepseek::models` 的模块头。
 pub const SCOPE_DOUBAOWORK: &str = "doubaowork";
+/// Tabbit **国内版**（`web.tabbit.com`；`GET /proxy/v1/model_config/models`）
+pub const SCOPE_TABBIT: &str = "tabbit";
+/// Tabbit **国际版**（`web.tabbit.ai`）。
+///
+/// 两站的模型池与权益档不同，**目录也各按站点计** —— 共用一格缓存会让一张
+/// 卡片显示另一张的模型（与 Qoder / 千问办公分槽同一理由）。
+pub const SCOPE_TABBIT_INTL: &str = "tabbitIntl";
 
 /// 全部 scope（事实来源：`cached_scopes` 按它遍历；新增一家时加在这里）。
 pub const ALL_SCOPES: &[&str] = &[
@@ -157,6 +164,8 @@ pub const ALL_SCOPES: &[&str] = &[
     SCOPE_ATOMCODE,
     SCOPE_KUKU,
     SCOPE_DOUBAOWORK,
+    SCOPE_TABBIT,
+    SCOPE_TABBIT_INTL,
 ];
 
 /// 一份清单缓存
@@ -316,7 +325,7 @@ mod tests {
     /// 只是没人报告）。改这个数字时要同时想一遍「新加的那家在数组里吗」。
     #[test]
     fn all_scopes_size_matches_declared_scopes() {
-        assert_eq!(ALL_SCOPES.len(), 26, "新增 scope 后请同步本数字与 ALL_SCOPES");
+        assert_eq!(ALL_SCOPES.len(), 28, "新增 scope 后请同步本数字与 ALL_SCOPES");
         for scope in ALL_SCOPES {
             assert!(!scope.trim().is_empty(), "scope 名不能为空");
         }

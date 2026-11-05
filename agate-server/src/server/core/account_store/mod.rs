@@ -132,6 +132,7 @@ pub mod store_crud;
 pub mod store_order;
 pub mod store_util;
 pub mod store_view;
+pub mod tabbit_accounts;
 pub mod trae_accounts;
 pub mod workbuddy_import;
 pub mod zcode_accounts;
@@ -242,6 +243,17 @@ pub(crate) const DEEPSEEK_WEB_PROVIDER_ID: &str = crate::server::core::providers
 pub(crate) const DOUBAOWORK_PROVIDER_ID: &str = crate::server::core::providers::kind_id(
     crate::server::core::providers::ProviderKind::Doubaowork,
 );
+
+/// 这个 provider 是不是 **Tabbit 系**（两个站点之一）。
+///
+/// 与 [`is_cline_family`] / [`is_autoclaw_family`] 同一形态、同一理由：
+/// 账号层有几处判断只关心「是不是 Tabbit」（签到范围、公开形态、绑定关系），
+/// 不关心哪个站点 —— 那些分支走本函数，于是加站点或改名时只改这里一处，
+/// 而不是散在各文件里的 `id == "tabbit"`（那种写法对国际版恒为假，
+/// 是个不会报错的静默失配）。
+pub(crate) fn is_tabbit_family(provider_id: &str) -> bool {
+    crate::server::core::providers::tabbit::Realm::from_provider_id(provider_id).is_some()
+}
 
 /// OfficeAce（华为云果办 / OfficeClaw）provider id（**从注册表推导**，同
 /// [`LOOMY_PROVIDER_ID`] 的口径）。账号形态见 `officeace_accounts.rs`。
