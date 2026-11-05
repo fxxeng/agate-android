@@ -1,9 +1,9 @@
 # Core Worker 生命周期审计与实施方案
 
 - 日期：2026-11-04
-- 源码基线：R34 `ba8a546d1dc9752309c00a8c947dc192619988da`
+- 当前已验证基线：R35 `9be13754c7797b90f5ac49024195b3451a116022`（CI Run `42010197461`）
 - 分支：`verify/arch-8faa5f5`
-- 状态：R34 源码审计已完成；4D-2A/4D-2B 首轮实现候选已落入交付源码，待 CI
+- 状态：4D-2A/4D-2B 已由 R35 验证通过；4D-2C / headless 4D-2D 为当前源码候选，待 CI
 - 关联：`ANDROID_KOTLIN_RUST_MIGRATION_HANDOFF.md` 第 24.3 节
 
 ## 1. 结论
@@ -161,3 +161,48 @@ CoreTaskSupervisor
 
 ### 验证限制
 当前执行环境未安装 Cargo/Rustfmt；本轮没有执行 Rust 编译、Rust 单测或格式化。所有新增测试均为待 CI 验证，不得标记 PASS。Android、模拟器和真机均未在本轮执行。
+
+
+## 8. R35 验证收官与 4D-2C / headless 4D-2D 当前实施候选（2026-11-05）
+
+### 8.1 R35 已验证事实
+
+- HEAD `9be13754c7797b90f5ac49024195b3451a116022`，基线 R34 `ba8a546d1d`。
+- CI Run `42010197461`：rust-tests 与 android-build 双 Job success，无 rerun。
+- Rust 746 passed / 0 failed / 11 ignored；新增 Supervisor 4 项逐名通过。
+- 源码归档 768 blobs，与远端 tree 768/768 匹配。
+- 4D-2A/4D-2B 正式关闭；后续代码以 R35 为唯一基线。
+
+### 8.2 4D-2C 实施：Sidecar worker 资源所有权
+
+当前候选在 `sub_kernel` 中把命令 worker 注册到 `TaskScope::Sidecar`，并把唯一 sender 从 OnceLock 改为可取出的 Mutex Option。关闭流程顺序固定为：
+
+1. 取得 sender 锁后设置永久 `SHUTTING_DOWN` 闩并 take sender；与 `send()` / `spawn_worker()` 使用同一把锁，关闭前已进入临界区的投递先完成，之后的调用只能观察到 stopped。
+2. 调用现有下载 cancel 标志，允许下载任务在分片边界合作式退出。
+3. supervisor 发取消信号；worker 取消分支优先于命令消费，丢弃尚未开始的命令；`execute()` 入口再次检查关闭闩，防止关闭窗口内已出队的命令继续执行。
+4. 在 scope 总超时内 join worker；超时则 abort，并等待最多 1 秒确认 Future Drop。
+5. worker 退出/abort join grace 后调用 `runtime::stop_kernel().await`，停止并 wait 当前 Child；再调用 `cleanup_stale_kernel().await`，通过控制器 secret 校验后清理崩溃遗留进程。`run_restart` 与 `restart_with_config` 多点检查永久关闭闩，防止 worker 延迟恢复后重新 spawn。
+6. 写回 Sidecar stopped 状态并记录 joined/aborted/timeout/failed 汇总。
+
+`runtime::restart_with_config()` 也改为 `stop_kernel().await`，避免重启流程只发 kill 信号后不等待旧 Child。
+
+注意：运行时队列仍保留 unbounded mpsc；本轮只明确关闭时丢弃 pending commands，不改变 API 的队列满错误契约。容量上限和调用方 busy 反馈应在单独设计后落地。
+
+### 8.3 4D-2D 宿主接线范围
+
+- 新增 `agate_server::shutdown_core(timeout)` 统一入口：停止 AutoCheckin → Sidecar shutdown → Core scope shutdown。
+- headless 二进制发送 HTTP graceful shutdown 信号并等待既有 300ms grace interval 后调用该入口并记录报告。`server::start()` 当前没有返回 serve JoinHandle，因此该间隔不是在途请求已全部 join 的证明。
+- 当前源码仓库没有 Desktop Tauri backend exit hook 实现；只提供统一 Rust API，需在实际含 Tauri backend 的宿主仓库接入。当前不可标记 Desktop host PASS。
+- Android 不将 Activity/FGS/Gateway stop 映射为 Core shutdown；OS kill 不保证回调。未新增 JNI export，未来如需显式 Core release，先定义 RuntimeController / Native release 契约。
+- AutoCheckin scheduler loop 由 `stop_global()` abort，但当前运行中的签到轮次不在 Supervisor join 清单内；这符合“真实进程退出”用途，不代表支持进程内可重启式 Core release。
+
+### 8.4 当前候选需要 CI 验证的重点
+
+- Sidecar cancellation 优先级与队列丢弃测试。
+- Supervisor spawn/shutdown 并发竞争、timeout abort join grace 与 Future Drop 测试。
+- Download / Restart / Refresh 执行中 shutdown，特别是 Child 已存入静态槽与仍在局部变量两种时序。
+- `stop_kernel().await` 重启行为与原有端口释放/控制器启动路径回归。
+- headless bootstrap fallback Runtime 与 host runtime await 跨 runtime JoinHandle。
+- Gateway stop 不调用 Core shutdown；Android JNI ABI 仍保持 12 exports。
+
+本执行环境未提供 Cargo/Rustfmt/Gradle，本候选未执行编译、单测、格式化、Android build、模拟器或真机测试。以上均为待 CI 项，不得提前标记 PASS。

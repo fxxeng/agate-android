@@ -106,8 +106,8 @@
 //!   - 系统提示词：同样无句柄，转发层逐请求取一次 `config::current().prompt_plan()`
 //!     交给 `core::prompt` 落到出站副本上；撞内容拦截时由转发层触发
 //!     `core::degrade`（进程级原子状态，无句柄）并就地换中性提示词重试一次。
-//!   - 定时签到：`ServerState::auto_checkin()`；停机清理走
-//!     `core::auto_checkin::stop_global()`（backend::shutdown 里调用）。
+//!   - 定时签到：`ServerState::auto_checkin()`；真实宿主进程退出时由
+//!     `agate_server::shutdown_core()` 调用 `core::auto_checkin::stop_global()`。
 //!   - 间隔型定时任务：`core::scheduled_tasks`（注册表 + 调度循环，循环在
 //!     `bootstrap` 末尾起一次）；开关与间隔来自 `config::scheduled_settings()`
 //!     （内存快照，循环每轮现读 —— 所以改完设置下一轮生效，不重启进程）。

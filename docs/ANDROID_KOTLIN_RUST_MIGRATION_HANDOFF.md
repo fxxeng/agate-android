@@ -5,11 +5,11 @@
 
 > 文档用途：供后续开发者接手、评审和持续推进 Android 架构改造。
 
-> **验证分支当前状态（R34 / 2026-11-05）**：最近一次已验证 HEAD 为 `ba8a546d1dc9752309c00a8c947dc192619988da`（CI Run `41863623004` attempt 2；Rust 742 passed + 11 ignored，JVM 99/99，JNI exports 12/12，Instrumentation 2/2，R34 归档 767/767 blobs 与远端 tree 对账一致）。Batch 4D-1A 已关闭。
+> **验证分支当前状态（R35 / 2026-11-05）**：最近一次已验证 HEAD 为 `9be13754c7797b90f5ac49024195b3451a116022`（CI Run `42010197461`，rust-tests 与 android-build 双 Job 一次成功、无 rerun；Rust 746 passed / 0 failed / 11 ignored；新增 4 项 Supervisor 测试逐名通过；源码归档 768/768 blobs 与远端 tree 对账一致）。Batch 4D-2A/4D-2B 已通过 CI。
 >
 > 当前验证分支：`verify/arch-8faa5f5`（只允许推送该分支，不修改 `main`、不合并）
-> 当前已验证基线：R34 `ba8a546d1dc9752309c00a8c947dc192619988da`
-> 当前工作候选：R34 + Batch 4D-2A/4D-2B（CoreTaskSupervisor 与三个低耦合 Core 循环接入）；尚未运行 CI，不得称为已验证提交。
+> 当前已验证基线：R35 `9be13754c7797b90f5ac49024195b3451a116022`
+> 当前工作候选：R35 + Batch 4D-2C Sidecar worker shutdown protocol + headless host shutdown 接线；Desktop Tauri 宿主代码不在当前源码仓库快照中，Android 不把 Activity/FGS 销毁当作 Core 退出事件。该候选尚未运行 CI。
 > 真机验收采用 APP 日常使用中的滚动证据，不作为独立架构批次的前置阻塞。
 
 ## 1. 项目目标与边界
@@ -2244,11 +2244,11 @@ Linux ARM64 资产不等同于 Android ARM64 可执行文件。Android 需要单
 - 暂停把 CI Harness 改造作为独立主线批次；R35 CI Harness 仅为未验证候选，不作为本轮源码基线，也不要求先推送/验证 R35。
 - CI 保持现有足以验证主线的门禁；只在出现会实质影响结果可信度的问题时修复，不做流程专项扩张。
 - 真机验收持续滚动记录，不阻塞 Rust Core 生命周期与平台抽象的独立开发。CI、模拟器、真机证据必须分开标注。
-- 本轮唯一代码基线是 R34 归档及其 CI 报告，不混入 R35 CI-only patch。
+- 4D-2A/4D-2B 已由 R35 正式验证；当前后续开发唯一代码基线为 R35 `9be13754c7`。不混入 R35 CI-only patch，也不因外部报告改变主线顺序。
 
 ### 26.2 当前批次：4D-2A + 4D-2B（首轮实现候选）
 
-以 R34 为基线新增 `agate-server/src/task_supervisor.rs`：
+以 R34 为基线新增 `agate-server/src/task_supervisor.rs`，并由 R35（`9be13754c7`）CI 验证通过：
 
 - 定义 `TaskScope::{Core, Gateway, Request, Sidecar}`，为后续各生命周期域预留统一分类；当前只接入 Core scope。
 - supervisor 记录稳定任务名、scope、取消 oneshot 和 JoinHandle；相同 scope/name 的活跃任务拒绝重复注册，已结束任务允许后续重新注册。
@@ -2260,17 +2260,83 @@ Linux ARM64 资产不等同于 Android ARM64 可执行文件。Android 需要单
 
 ### 26.3 验收状态与限制
 
-- 已执行源码级修改与静态差异检查准备；当前容器没有 Cargo/Rustfmt，Rust 编译、单测、格式化均未执行，不能标记通过。
-- 新增 supervisor 单测覆盖：活跃任务重复注册、scope 隔离、取消并 join、重复 shutdown、panic 任务报告。实际测试结果待 GitHub CI。
-- 未改 JNI ABI、Kotlin RuntimeController、FGS、Gateway HTTP graceful shutdown、Desktop/headless 启动入口、Sidecar child 管理。
-- 本轮交付包是 R34 + 4D-2A/2B 候选源码快照，不是 Git commit；推送后以 CI 返回的 HEAD 确认提交身份。
+- R35 CI Run `42010197461` 双 Job 一次全绿；Rust 746 passed / 0 failed / 11 ignored；新增 4 项 supervisor 测试逐名通过。
+- R35 归档 768 blobs 与远端 tree 768/768 匹配；R35 已成为当前已验证基线。
+- 未改 JNI ABI、Kotlin RuntimeController、FGS、Gateway HTTP graceful shutdown、Desktop/headless 宿主入口和 Sidecar child 管理（这些属于后续批次）。
 
 ### 26.4 后续主线批次
 
-1. **4D-2C + 4D-2D**：统一 Sidecar command intake / queue / child process stop / worker join 契约，并完成 Desktop、headless、Android 正确宿主接线；与 4D-3 共用平台进程能力边界，避免两套 process manager。
+1. **4D-2C + 4D-2D**：统一 Sidecar command intake / queue / child process stop / worker join 契约；headless 宿主接线纳入本批，Desktop Tauri host 需在包含该宿主的仓库接入统一 `agate_server::shutdown_core()`，Android 维持 Core 进程级所有权、不绑定 Activity/FGS 销毁。与 4D-3 共用平台进程能力边界，避免两套 process manager。
 2. **4D-3**：Rust platform capability traits 与 Android/Desktop adapters，明确路径、进程、权限、网络与平台差异。
 3. **4E**：双实例互斥与资源所有权，避免两个 Core 实例竞争端口、数据库、Sidecar 和后台循环。
 4. **Phase 5**：在 JNI/平台边界稳定后评估 JNI 与 UniFFI，不预设全面迁移。
 5. **Phase 6**：可观测性、压力/泄漏/崩溃恢复与发布门禁。
 
 以上顺序是主线计划，不因外部报告的评分、建议或测试数量而改变；只有源码依赖或真实验证失败才允许调整。
+
+
+## 27. R35 收官与 Batch 4D-2C / 4D-2D（headless slice）实施候选（2026-11-05）
+
+### 27.1 R35 正式验证收官
+
+- 分支：`verify/arch-8faa5f5`。
+- HEAD：`9be13754c7797b90f5ac49024195b3451a116022`，基线 R34 `ba8a546d1d`。
+- CI Run：`42010197461`，`rust-tests` 与 `android-build` 双 Job success，一次成功，无 rerun。
+- Rust：746 passed / 0 failed / 11 ignored；新增 `task_supervisor::tests::*` 4 项逐名通过。
+- R35 变更范围 8 文件（1 新增 + 7 修改）；归档 768 blobs / 121 trees，与远端 tree 768/768 MATCH。
+- R35 当前正式关闭 4D-2A/4D-2B。R35 源码归档 SHA-256：`a55f0a384e6add5bd2bb4917bc3d60acf34f789213056cf34406bcbd88f9999b`。
+- `cargo fmt --check` 在全仓存量格式差异下仍 exit 1，workflow 为 continue-on-error；这不是本轮生产逻辑失败，也不在当前主线扩展成独立格式化专项。新批次仍按实际 CI 结果记录格式状态。
+
+### 27.2 本批主线目标
+
+直接延续 4D-2C / 4D-2D，不插入 CI Harness 专项。目标是让 Sidecar worker 真正拥有可关闭、可等待的生命周期，并为真正退出的宿主提供统一 Core shutdown 入口。
+
+### 27.3 本轮源码候选改动
+
+1. `server/core/sub_kernel/mod.rs`
+   - 将 worker 从 detached `spawn_task` 改为注册到 `CoreTaskSupervisor` 的 `TaskScope::Sidecar`，稳定任务名 `sub_kernel_worker`。
+   - 将 `SENDER: OnceLock<Sender>` 改为 `Mutex<Option<Sender>>`，使 shutdown 能原子关闭命令 intake；`send()` 对 worker 未启动/正在关闭/投递失败显式记录错误，不再静默忽略。
+   - worker 使用优先级取消分支；shutdown 时优先退出并丢弃尚未开始的排队命令，`execute()` 也会在命令入口检查关闭闩，避免队列中 Remove/Restart 等命令在退出阶段继续执行。正在执行的命令先完成或在 supervisor 超时后 abort；永久 `SHUTTING_DOWN` 闩会在启动入口、实际 spawn 前、Child 启动等待期间及 Child 入全局槽后重复检查，防止超时路径下 worker 延迟恢复后复活 sidecar。
+   - 新增异步 `sub_kernel::shutdown(timeout)`：在 sender 锁内设置永久关闭闩并取走唯一 sender → 请求下载取消 → 通过 Sidecar scope 取消并限时 join worker → `runtime::stop_kernel().await` 等待当前 Child 退出 → `cleanup_stale_kernel().await` 按控制器 secret 校验清理崩溃遗留进程 → 更新状态并记录 ShutdownReport。下载请求在关闭后不会再 reset 取消标志。
+   - 取消下载沿用现有 `download::request_cancel()` 合作式路径；未改变用户手动 Stop/Remove/Restart 的队列业务语义。
+   - 新增队列关闭时丢弃未执行命令的纯单测。
+2. `server/core/sub_kernel/runtime.rs`
+   - 移除原来只发 `start_kill` 并 detached wait 的 `kill_child()`；重启路径改为复用 `stop_kernel().await`，确保旧 Child 完成 wait 后再启动新 Child。
+3. `task_supervisor.rs`
+   - 将 `shutdown_scope()` 的 stop gate 与任务 drain 放在同一个 `tasks -> stopped_scopes` 锁序区间，与 `spawn()` 使用相同顺序；这样并发注册只能完整发生在关闭前并被 drain，或发生在关闭后并被 `ScopeStopped` 拒绝。新增 spawn/shutdown 并发竞争测试。原实现的 stopped 锁在取 tasks 锁前已释放，因此不把它误记为已证实的死锁。
+   - 超时后仍先 abort 剩余任务，但新增最多 1 秒的 abort join grace，确认 Future 已 Drop 后再返回；这对 Sidecar worker 这种资源 owner 尤其重要，避免调用方先回收 Child、worker 随后又继续启动进程。
+   - 修正一个调度依赖的测试断言：由单次 `yield_now()` 改为 1 秒内每 5ms 轮询任务退出。
+   - 新增 timeout-abort 后 Future Drop 已完成的测试。
+4. `lib.rs`
+   - 新增平台无关 `agate_server::shutdown_core(timeout)` 和 `CoreShutdownReport`：停止 AutoCheckin 调度、关闭 Sidecar、最后关闭 Core scope。该入口只用于真实宿主进程退出，不用于 Gateway stop。
+5. `bin/agate-server.rs`
+   - headless 在 HTTP graceful shutdown 后调用统一 `shutdown_core(8s)`，记录 Sidecar/Core joined、aborted、timeout 汇总。
+6. `server/mod.rs`
+   - 更新 AutoCheckin shutdown 入口注释，指向统一 Core shutdown API。
+
+### 27.4 宿主边界与未完成项
+
+- **headless：** 本批新增真实退出路径接线。先发送 HTTP shutdown 信号并等待现有 300ms grace interval，再执行 Sidecar 与 Core shutdown。当前 `server::start()` 只返回 shutdown sender、不返回 serve JoinHandle，因此这 300ms 不是“所有在途 HTTP 请求已 join”的证明；后续若需要严格保证，应单独演进 Gateway server handle。
+- **Desktop/Tauri：** 当前提交的源码快照只有 `agate-server` Rust crate，没有 Tauri `backend::shutdown` 宿主实现文件；本轮提供 `agate_server::shutdown_core()` 作为统一入口，必须由包含 Tauri backend 的实际宿主仓库在真实 App exit hook 调用。不能声称 Desktop hook 已接线。
+- **Android：** 不把 Activity `onDestroy`、FGS stop 或 Gateway stop 作为 Core shutdown。Android Core 当前按进程生命周期常驻；Android OS 直接杀进程时不保证回调。若未来产品需要显式释放 Core，必须先定义 Native Core release 契约和 RuntimeController 状态机，再新增 JNI API，不在本轮擅自扩展 JNI ABI。
+- **Gateway stop：** 不调用 `shutdown_core()`；仅关闭 HTTP listener，Core loops 与 Sidecar 仍可被 Android JNI 管理面使用。
+- **Request scope / callback servers / GLOBAL_RUNTIME：** 本轮不做全仓任务迁移，不将请求任务统一纳入 Core shutdown。GLOBAL_RUNTIME 仍由进程持有至退出；后续单独审计其宿主 Runtime owner 与跨 runtime 任务清理边界。AutoCheckin 的 scheduler loop 由 `stop_global()` 发出 abort，但当前运行中的签到轮次不在 Supervisor join 清单内；进程退出会回收它，若未来要求进程内可重启式 Core release，需再补这类 in-flight operation 的 owner/join 契约。
+- **队列容量：** 保留现有 unbounded mpsc，避免本批无 API 反馈契约下引入队列满时的业务拒绝行为。关闭时队列可丢弃；运行时背压/容量上限需要结合调用 API 的忙碌反馈契约作为后续独立子项，不伪称已解决。
+- **shutdown 防复活：** Sidecar 设置进程级永久关闭闩；`send()` / `spawn_worker()` 拒绝新入口，`run_restart()` 与 `restart_with_config()` 在进程启动前、启动等待中、Child 存入全局槽后再次检查。即使 worker 因超时进入 abort 路径，也不会在 shutdown 已经取走旧 Child 后再启动新 Child。
+
+### 27.5 验证状态
+
+- 当前源码候选基于 R35 `9be13754c7`，不是 Git commit。
+- 当前执行容器没有 Cargo、rustc、rustfmt 或 Gradle；本轮未执行 Rust 编译、单测、格式化、Android build、模拟器或真机测试。
+- 新增/变更测试至少包括：Sidecar pending command discard；Supervisor spawn/shutdown 并发竞争；Supervisor timeout abort 后 Future Drop；既有 4D-2A/2B Supervisor tests。均待下一轮 GitHub CI 实际执行。
+- 必须重点验证：`UnboundedReceiver` cancellation branch；worker 正在 Download/Restart/Refresh 时 shutdown 的取消/超时行为；abort join grace；headless `bootstrap` 使用 fallback runtime、shutdown 由 headless runtime await 的跨 runtime JoinHandle 行为；headless 退出时 Child 确实退出。
+- 未改 JNI export、Kotlin、FGS、Gateway stop 语义、mihomo 资产矩阵或 Android 平台支持声明。
+
+### 27.6 后续主线顺序
+
+1. 本批 4D-2C / headless 4D-2D 候选集中 CI 验证；不增加 CI Harness 专项。
+2. 结合验证结果继续补齐宿主退出边界：若 Desktop Tauri host 源码仍在独立仓库，需将 `shutdown_core()` 接入其真实 exit hook；Android 只在有明确 Core release 产品语义时做 JNI 扩展。
+3. 继续 4D-3 平台能力抽象与 Android/Desktop adapters，Sidecar process ownership 接口复用本批，不另建第二套 manager。
+4. 再进入 4E 双实例互斥；之后 Phase 5 JNI/UniFFI ADR、Phase 6 观测/压力/恢复。
+
+外部 AI 报告不决定上述顺序；只有本仓库源码依赖、架构边界或实际 CI/运行证据才调整主线。

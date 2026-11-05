@@ -128,20 +128,23 @@ impl CoreTaskSupervisor {
     }
 
     /// Cancel and join every task in a scope. The timeout is a total scope budget,
-    /// not a per-task budget. Timed-out tasks are aborted before returning.
+    /// not a per-task budget. Timed-out tasks are aborted, then given up to one
+    /// additional second for their futures to drop before returning.
     pub async fn shutdown_scope(
         &self,
         scope: TaskScope,
         timeout: Duration,
     ) -> ShutdownReport {
-        self.stopped_scopes
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(scope);
-
         let mut selected = Vec::new();
         {
+            // Match spawn() lock order: tasks -> stopped_scopes. Holding tasks while
+            // marking the scope stopped makes the stop gate and task drain one
+            // serialized operation relative to concurrent registration.
             let mut tasks = self.tasks.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            self.stopped_scopes
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .insert(scope);
             let mut retained = Vec::with_capacity(tasks.len());
             for entry in tasks.drain(..) {
                 if entry.scope == scope {
@@ -175,6 +178,13 @@ impl CoreTaskSupervisor {
                     for entry in selected.iter().skip(index) {
                         entry.handle.abort();
                     }
+                    // abort() 只提交取消请求，不代表 Future 已经 Drop。等待一个
+                    // 短的清理宽限，确保资源 owner（尤其 Sidecar worker）退出后，
+                    // 调用方再执行 Child/文件等外部资源的最终回收。
+                    let abort_join_deadline = Instant::now() + Duration::from_secs(1);
+                    for entry in selected.iter_mut().skip(index) {
+                        let _ = timeout_at(abort_join_deadline, &mut entry.handle).await;
+                    }
                     return ShutdownReport {
                         tasks_joined: index,
                         tasks_aborted: remaining,
@@ -202,6 +212,7 @@ impl CoreTaskSupervisor {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ShutdownReport {
     pub tasks_joined: usize,
+    /// Number of tasks for which abort was requested after the scope deadline.
     pub tasks_aborted: usize,
     pub timed_out: bool,
     /// Names of tasks that terminated with a panic before/during shutdown in
@@ -223,7 +234,7 @@ pub async fn shutdown_core_tasks(timeout: Duration) -> ShutdownReport {
 
 #[cfg(test)]
 mod tests {
-    use super::{CoreTaskSupervisor, TaskScope};
+    use super::{CoreTaskSupervisor, TaskScope, TaskSpawnError};
     use std::time::Duration;
     use tokio::sync::oneshot;
 
@@ -240,7 +251,13 @@ mod tests {
         assert!(!supervisor.spawn(TaskScope::Core, "loop", |_| async {}).unwrap());
         assert_eq!(supervisor.active_count(TaskScope::Core), 1);
         let _ = release_tx.send(());
-        tokio::task::yield_now().await;
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while supervisor.active_count(TaskScope::Core) != 0 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("released task should leave the active set");
         assert_eq!(supervisor.active_count(TaskScope::Core), 0);
     }
 
@@ -293,5 +310,78 @@ mod tests {
         assert_eq!(report.tasks_joined, 1);
         assert_eq!(report.failed_tasks, vec!["panicking"]);
         assert!(!report.timed_out);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn spawn_racing_shutdown_has_consistent_lock_order() {
+        use std::sync::{Arc, Barrier};
+
+        let supervisor = Arc::new(CoreTaskSupervisor::new());
+        let barrier = Arc::new(Barrier::new(2));
+        let spawn_supervisor = Arc::clone(&supervisor);
+        let spawn_barrier = Arc::clone(&barrier);
+        let registration = tokio::task::spawn_blocking(move || {
+            spawn_barrier.wait();
+            spawn_supervisor.spawn(
+                TaskScope::Core,
+                "racing-task",
+                |mut cancellation| async move {
+                    cancellation.cancelled().await;
+                },
+            )
+        });
+
+        barrier.wait();
+        let report = tokio::time::timeout(
+            Duration::from_secs(2),
+            supervisor.shutdown_scope(TaskScope::Core, Duration::from_secs(1)),
+        )
+        .await
+        .expect("shutdown must not deadlock with concurrent spawn");
+        let registration = tokio::time::timeout(Duration::from_secs(2), registration)
+            .await
+            .expect("registration thread must finish")
+            .expect("registration task must join");
+
+        assert_eq!(supervisor.active_count(TaskScope::Core), 0);
+        match registration {
+            Ok(true) => assert_eq!(report.tasks_joined, 1),
+            Err(TaskSpawnError::ScopeStopped) => assert_eq!(report.tasks_joined, 0),
+            Ok(false) => panic!("unexpected duplicate registration"),
+        }
+    }
+
+    #[tokio::test]
+    async fn timeout_abort_waits_for_task_future_drop() {
+        struct DropNotice(Option<oneshot::Sender<()>>);
+        impl Drop for DropNotice {
+            fn drop(&mut self) {
+                if let Some(sender) = self.0.take() {
+                    let _ = sender.send(());
+                }
+            }
+        }
+
+        let supervisor = CoreTaskSupervisor::new();
+        let (started_tx, started_rx) = oneshot::channel();
+        let (dropped_tx, dropped_rx) = oneshot::channel();
+        supervisor
+            .spawn(TaskScope::Sidecar, "stuck-worker", move |_| async move {
+                let _notice = DropNotice(Some(dropped_tx));
+                let _ = started_tx.send(());
+                std::future::pending::<()>().await;
+            })
+            .unwrap();
+        started_rx.await.expect("worker should start before timeout");
+
+        let report = supervisor
+            .shutdown_scope(TaskScope::Sidecar, Duration::from_millis(10))
+            .await;
+        assert!(report.timed_out);
+        assert_eq!(report.tasks_aborted, 1);
+        tokio::time::timeout(Duration::from_secs(1), dropped_rx)
+            .await
+            .expect("aborted task should be dropped before shutdown returns")
+            .expect("drop notification should be delivered");
     }
 }

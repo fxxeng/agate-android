@@ -30,6 +30,24 @@ pub mod server;
 pub mod web_shim;
 pub mod task_supervisor;
 
+/// Result of a host-requested graceful Core shutdown.
+#[derive(Clone, Debug)]
+pub struct CoreShutdownReport {
+    pub sidecar: task_supervisor::ShutdownReport,
+    pub core: task_supervisor::ShutdownReport,
+}
+
+/// Stop process-owned Core work for a host that is actually exiting.
+///
+/// This must not be called for Gateway stop, Android Activity destruction, or
+/// Android FGS stop: those events do not mean the Rust Core process is exiting.
+pub async fn shutdown_core(timeout: std::time::Duration) -> CoreShutdownReport {
+    server::core::auto_checkin::stop_global();
+    let sidecar = server::core::sub_kernel::shutdown(timeout).await;
+    let core = task_supervisor::shutdown_core_tasks(timeout).await;
+    CoreShutdownReport { sidecar, core }
+}
+
 /// Agate Android：JNI 控制面（src/jni_bridge.rs，仅 Android 目标编译）。
 #[cfg(target_os = "android")]
 pub mod jni_bridge;

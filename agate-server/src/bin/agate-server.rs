@@ -204,8 +204,26 @@ fn main() -> ExitCode {
     };
     runtime.block_on(wait_for_shutdown_signal(restart_rx));
     let _ = shutdown_tx.send(());
-    // 给在途请求留出跑完的时间（start 内部会等 graceful shutdown 收尾）
+    // 给在途请求留出跑完的时间（start 内部会等 graceful shutdown 收尾）。
     std::thread::sleep(std::time::Duration::from_millis(300));
+
+    // 这是 headless 宿主的真实进程退出路径：先停止 Sidecar intake/worker/Child，
+    // 再停止 Core 周期任务。Gateway stop 本身不调用 Core shutdown。
+    let shutdown = runtime.block_on(agate_server::shutdown_core(
+        std::time::Duration::from_secs(8),
+    ));
+    logging::log(
+        "[Server]",
+        &format!(
+            "Core shutdown 完成：Sidecar joined={} aborted={} timeout={}；Core joined={} aborted={} timeout={}",
+            shutdown.sidecar.tasks_joined,
+            shutdown.sidecar.tasks_aborted,
+            shutdown.sidecar.timed_out,
+            shutdown.core.tasks_joined,
+            shutdown.core.tasks_aborted,
+            shutdown.core.timed_out,
+        ),
+    );
     ExitCode::SUCCESS
 }
 

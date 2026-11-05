@@ -81,20 +81,6 @@ fn lock_child() -> std::sync::MutexGuard<'static, Option<tokio::process::Child>>
     }
 }
 
-/// 杀掉内核子进程（停机钩子与重启共用；没有子进程时是 no-op）。
-///
-/// 可能从**同步上下文**调（backend::shutdown 不在 async 里）：
-/// `start_kill()` 是同步的（只发信号），僵尸收尾交给运行时 wait。
-pub fn kill_child() {
-    let Some(mut child) = lock_child().take() else {
-        return;
-    };
-    let _ = child.start_kill();
-    crate::spawn_task(async move {
-        let _ = child.wait().await;
-    });
-}
-
 // ─── 状态文件（端口注册表 + secret + pid）──────────────────
 
 fn state_file_path() -> std::path::PathBuf {
@@ -563,6 +549,9 @@ fn short_hash(text: &str) -> String {
 
 /// 重建配置 + 启动（或重启）内核 + 同步节点（详见模块头「启动流程」）。
 pub async fn run_restart(providers: &[ProviderInput]) -> Result<(), String> {
+    if crate::server::core::sub_kernel::is_shutting_down() {
+        return Err("Sidecar 正在关闭，拒绝启动代理内核".to_string());
+    }
     if let Some(reason) = crate::server::core::sub_kernel::unsupported_reason() {
         return Err(reason);
     }
@@ -749,14 +738,18 @@ async fn restart_with_config(
     targets: &[NodeTarget],
     defs: &HashMap<String, Value>,
 ) -> Result<(), String> {
+    if crate::server::core::sub_kernel::is_shutting_down() {
+        return Err("Sidecar 正在关闭，拒绝启动代理内核".to_string());
+    }
     let dir = crate::server::core::sub_kernel::kernel_dir();
     let config =
         build_config(providers, controller_port, secret, test_port, targets, defs)?;
     std::fs::write(dir.join("config.yaml"), &config)
         .map_err(|error| format!("写入内核配置失败: {error}"))?;
 
-    // 杀旧进程（重启语义；首次启动时是 no-op）
-    kill_child();
+    // 杀旧进程并等待退出（重启语义；首次启动时是 no-op）。
+    // 与 Core shutdown 共用同一套 Child 所有权与 wait 语义。
+    stop_kernel().await;
 
     let binary = dir.join(crate::server::core::sub_kernel::kernel_binary_name());
     if !binary.exists() {
@@ -789,6 +782,10 @@ async fn restart_with_config(
     {
         command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     }
+    // 最后一道启动闸：shutdown 可能发生在配置生成/写入期间。
+    if crate::server::core::sub_kernel::is_shutting_down() {
+        return Err("Sidecar 正在关闭，取消代理内核启动".to_string());
+    }
     let mut child = command
         .spawn()
         .map_err(|error| format!("启动内核进程失败: {error}"))?;
@@ -797,6 +794,11 @@ async fn restart_with_config(
     // 状态带出来
     let deadline = tokio::time::Instant::now() + Duration::from_millis(CONTROLLER_WAIT_MS);
     loop {
+        if crate::server::core::sub_kernel::is_shutting_down() {
+            let _ = child.start_kill();
+            let _ = child.wait().await;
+            return Err("Sidecar 正在关闭，已取消代理内核启动".to_string());
+        }
         if controller_get(controller_port, secret, "/version").await.is_some() {
             break;
         }
@@ -815,6 +817,10 @@ async fn restart_with_config(
     // 持久 pid（下一次启动识别遗留进程用）+ 记录句柄（kill_on_drop 杀它）
     let pid = child.id();
     *lock_child() = Some(child);
+    if crate::server::core::sub_kernel::is_shutting_down() {
+        stop_kernel().await;
+        return Err("Sidecar 正在关闭，已停止刚启动的代理内核".to_string());
+    }
     let mut state = read_state();
     if let Some(pid) = pid {
         state_insert(&mut state, "pid", json!(pid));
@@ -846,6 +852,9 @@ pub async fn stop_kernel() {
 /// 强制刷新一条订阅的内容：控制器 PUT（provider 强制拉取）→ 轮询节点 →
 /// 集合变了才重建配置 + 重启（端口注册表保持稳定）。
 pub async fn run_refresh(sub_id: &str, providers: &[ProviderInput]) -> Result<(), String> {
+    if crate::server::core::sub_kernel::is_shutting_down() {
+        return Err("Sidecar 正在关闭，拒绝刷新订阅".to_string());
+    }
     if let Some(reason) = crate::server::core::sub_kernel::unsupported_reason() {
         return Err(reason);
     }

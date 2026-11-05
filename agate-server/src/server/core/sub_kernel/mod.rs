@@ -38,11 +38,14 @@
 
 use std::net::TcpStream;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use serde_json::{json, Map, Value};
 use tokio::sync::mpsc;
+
+use crate::task_supervisor::{core_task_supervisor, ShutdownReport, TaskScope};
 
 use crate::server::core::account_store::AccountStore;
 use crate::server::core::proxy_pool;
@@ -298,31 +301,149 @@ enum Command {
     Stop { clear_pool: bool },
 }
 
-static SENDER: OnceLock<mpsc::UnboundedSender<Command>> = OnceLock::new();
+static SENDER: Mutex<Option<mpsc::UnboundedSender<Command>>> = Mutex::new(None);
+static SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
 
-/// 投递命令；worker 未启动时静默丢弃（bootstrap 顺序保证先 spawn，
-/// 这里只防极端时序 —— 丢了命令的代价是「这次操作没生效」，不是崩）。
-fn send(command: Command) {
-    if let Some(sender) = SENDER.get() {
-        let _ = sender.send(command);
+/// True after the host has begun process-level Sidecar shutdown. This is permanent
+/// for the current Core process; Core bootstrap is not restartable in-place.
+pub(crate) fn is_shutting_down() -> bool {
+    SHUTTING_DOWN.load(Ordering::Acquire)
+}
+
+fn lock_sender() -> std::sync::MutexGuard<'static, Option<mpsc::UnboundedSender<Command>>> {
+    match SENDER.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
     }
 }
 
-/// 起 worker（bootstrap 调用一次；重复调用无副作用 —— sender 只 set 一次）。
+fn discard_pending_commands(receiver: &mut mpsc::UnboundedReceiver<Command>) -> usize {
+    let mut discarded = 0;
+    while receiver.try_recv().is_ok() {
+        discarded += 1;
+    }
+    discarded
+}
+
+/// 投递命令；worker 未启动或已经关闭时显式记录失败，不静默吞掉。
+fn send(command: Command) -> bool {
+    let guard = lock_sender();
+    if is_shutting_down() {
+        logging::log("[Subscription]", "❌ 代理内核命令未接收：Sidecar 正在关闭");
+        return false;
+    }
+    let Some(sender) = guard.as_ref() else {
+        logging::log("[Subscription]", "❌ 代理内核命令未接收：Sidecar worker 尚未启动或正在关闭");
+        return false;
+    };
+    if let Err(error) = sender.send(command) {
+        logging::log("[Subscription]", &format!("❌ 代理内核命令投递失败：{error}"));
+        return false;
+    }
+    true
+}
+
+/// 起 worker（bootstrap 调用一次；重复调用无副作用）。
+/// worker 的 JoinHandle 由 TaskSupervisor 的 Sidecar scope 持有，避免 detached。
 pub fn spawn_worker() {
-    let (tx, mut rx) = mpsc::unbounded_channel::<Command>();
-    if SENDER.set(tx).is_err() {
+    let mut sender_guard = lock_sender();
+    if is_shutting_down() {
+        logging::log("[Subscription]", "⚠️ Sidecar 已进入关闭状态，拒绝重新启动 worker");
         return;
     }
-    crate::spawn_task(async move {
-        while let Some(command) = rx.recv().await {
-            // 单 worker 串行：每条命令跑完（含内核重启与节点同步）才收下一条
-            execute(command).await;
-        }
+    if sender_guard.is_some() {
+        return;
+    }
+    let (tx, mut rx) = mpsc::unbounded_channel::<Command>();
+    let registration = core_task_supervisor().spawn(
+        TaskScope::Sidecar,
+        "sub_kernel_worker",
+        move |mut cancellation| async move {
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = cancellation.cancelled() => {
+                        // shutdown 优先于队列消费：未开始的命令全部丢弃，
+                        // 避免关停时排队的 Restart/Download 又拉起子进程。
+                        let discarded = discard_pending_commands(&mut rx);
+                        if discarded > 0 {
+                            logging::log(
+                                "[Subscription]",
+                                &format!("🛑 Sidecar 关闭时丢弃 {discarded} 条待处理命令"),
+                            );
+                        }
+                        break;
+                    }
+                    command = rx.recv() => {
+                        let Some(command) = command else { break };
+                        // 当前命令完成后再响应取消；runtime::stop_kernel 在 shutdown
+                        // join/abort 后执行，兜底回收命令期间可能启动的 Child。
+                        execute(command).await;
+                    }
+                }
+            }
+        },
+    );
+    match registration {
+        Ok(true) => *sender_guard = Some(tx),
+        Ok(false) => logging::log(
+            "[Subscription]",
+            "⚠️ Sidecar worker 已由 TaskSupervisor 注册，但发送端尚未建立",
+        ),
+        Err(error) => logging::log(
+            "[Subscription]",
+            &format!("❌ Sidecar worker 注册失败: {error}"),
+        ),
+    }
+}
+
+/// 关闭 Sidecar：先关闭命令入口并请求下载取消，再限时停止 worker，最后
+/// 停止并等待 mihomo Child。Gateway stop 不得调用此函数。
+pub async fn shutdown(timeout: Duration) -> ShutdownReport {
+    // 与 send()/spawn_worker() 使用同一把锁：此前已进入临界区的投递先完成，
+    // 随后设置永久关闭闩并取走唯一发送端；之后的调用只能观察到 stopped。
+    let sender = {
+        let mut guard = lock_sender();
+        SHUTTING_DOWN.store(true, Ordering::Release);
+        guard.take()
+    };
+    drop(sender);
+    download::request_cancel();
+
+    let report = core_task_supervisor()
+        .shutdown_scope(TaskScope::Sidecar, timeout)
+        .await;
+
+    // worker 可能在超时后被 abort；无论如何都要回收全局 Child，覆盖
+    // Restart 已把 Child 放入静态槽、但后续 provider 同步尚未结束的路径。
+    runtime::stop_kernel().await;
+    // 兜底清理上次崩溃遗留的子进程；cleanup_stale_kernel 只有在控制器 secret
+    // 验证成功时才按 PID 终止，避免误杀 PID 复用后的无关进程。
+    runtime::cleanup_stale_kernel().await;
+    patch_status(|snapshot| {
+        snapshot.running = false;
+        snapshot.download.state = "canceled";
+        snapshot.download.received = 0;
+        snapshot.download.total = 0;
     });
+    logging::log(
+        "[Subscription]",
+        &format!(
+            "🛑 Sidecar worker 已关闭（joined={}, aborted={}, timed_out={}, failed={}）",
+            report.tasks_joined,
+            report.tasks_aborted,
+            report.timed_out,
+            report.failed_tasks.len()
+        ),
+    );
+    report
 }
 
 async fn execute(command: Command) {
+    if is_shutting_down() {
+        logging::log("[Subscription]", "🛑 Sidecar 已关闭，跳过尚未开始的命令");
+        return;
+    }
     match command {
         Command::Restart(providers) => {
             // 启动 / 重启 = 用户明确要内核起来，手动关闭闩在此清零
@@ -466,17 +587,33 @@ async fn execute(command: Command) {
 /// 一份就等于同一件事有两个真相，而 worker 执行时刻读配置拿到的必然是最新的
 /// 那个（包括「投命令之后又改了一次设置」的极端时序）。
 pub fn request_download(providers: Vec<ProviderInput>) {
+    if is_shutting_down() {
+        logging::log("[Subscription]", "❌ 拒绝下载请求：Sidecar 正在关闭");
+        return;
+    }
     // 新一轮下载：上一轮可能残留的「停止」请求作废。要在这里清而不是在
     // download::run_download 里清 —— 「点下载」与「worker 真正开跑」之间隔着
     // 队列（前面可能排着一次内核重启），这期间用户点停止必须算数。
     download::reset_cancel();
+    // 关闭可能恰好发生在上面的初始检查之后；再次检查并恢复取消标志，
+    // 防止一个迟到的下载请求清掉 shutdown 已设置的 cancel。
+    if is_shutting_down() {
+        download::request_cancel();
+        logging::log("[Subscription]", "❌ 拒绝下载请求：Sidecar 正在关闭");
+        return;
+    }
     patch_status(|snapshot| {
         snapshot.download.state = "downloading";
         snapshot.download.received = 0;
         snapshot.download.total = 0;
         snapshot.download.error = None;
     });
-    send(Command::Download(providers));
+    if !send(Command::Download(providers)) {
+        patch_status(|snapshot| {
+            snapshot.download.state = "error";
+            snapshot.download.error = Some("Sidecar worker unavailable".to_string());
+        });
+    }
 }
 
 /// 请求停止正在进行的下载（界面上的「停止下载」）。
@@ -652,15 +789,6 @@ fn controller_alive(port: u16) -> bool {
         .unwrap_or(false)
 }
 
-/// 停机钩子（backend::shutdown 调）：best-effort 杀掉内核子进程。
-///
-/// worker 可能正阻塞在下一条命令上（收不到 Stop 也要杀），所以这里直接
-/// 碰 runtime 里的子进程句柄，不走命令队列。
-pub fn shutdown() {
-    runtime::kill_child();
-    logging::log("[Subscription]", "🛑 已停止代理内核");
-}
-
 // ─── 给 runtime / download 的共享小件 ───────────────────────
 
 /// 把节点集合镜像进代理池（runtime 在内核同步完成后调用）。
@@ -752,4 +880,22 @@ mod platform_tests {
         assert!(platform_unsupported_reason("linux", "aarch64").is_none());
     }
 
+}
+
+
+#[cfg(test)]
+mod worker_shutdown_tests {
+    use super::{discard_pending_commands, Command};
+    use tokio::sync::mpsc;
+
+    #[test]
+    fn shutdown_discards_commands_not_yet_started() {
+        let (sender, mut receiver) = mpsc::unbounded_channel();
+        assert!(sender.send(Command::Stop { clear_pool: false }).is_ok());
+        assert!(sender.send(Command::Remove).is_ok());
+        assert!(sender.send(Command::Stop { clear_pool: true }).is_ok());
+
+        assert_eq!(discard_pending_commands(&mut receiver), 3);
+        assert!(receiver.try_recv().is_err());
+    }
 }
