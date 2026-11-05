@@ -50,6 +50,8 @@
 //! ── 硬约束 ──────────────────────────────────────────────────
 //! release 是 `panic=abort`：本目录零 unwrap/expect/panic。
 
+pub mod adapter;
+pub mod chat;
 pub mod credentials;
 pub mod endpoints;
 pub mod errors;
@@ -58,8 +60,15 @@ pub mod eventstream;
 pub mod http;
 pub mod image;
 pub mod models;
+pub mod refresh;
 pub mod request;
 pub mod usage;
+
+/// 适配器的唯一实例（`adapter_for(ProviderKind::Kiro)` 取它）。
+///
+/// 与 Tabbit 的两个实例不同：Kiro 不拆家，地区是**账号上的字段**而不是
+/// provider 身份（见本模块头），所以只有一个实例。
+pub use adapter::{KiroAdapter, KIRO_ADAPTER};
 
 /// provider id（与内核 `PROVIDERS` 注册表、客户端 `PresetRegistry` 同一字面量）
 pub const ID: &str = "kiro";

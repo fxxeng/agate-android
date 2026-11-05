@@ -1280,6 +1280,11 @@ pub fn adapter_for(kind: ProviderKind) -> &'static dyn ProviderAdapter {
         ProviderKind::Doubaowork => &super::doubaowork::DOUBAOWORK_ADAPTER,
         ProviderKind::Tabbit => &super::tabbit::TABBIT_ADAPTER,
         ProviderKind::TabbitIntl => &super::tabbit::TABBIT_INTL_ADAPTER,
+        // Kiro 只有一个适配器实例：两个订阅地区（`us-east-1` / `eu-central-1`）
+        // 是**同一套账号体系、同一套令牌**，只是端点主机不同，地区从 profile ARN
+        // 第 4 段读（见 `kiro/mod.rs` 模块头）—— 与 WorkBuddy / Qoder / Tabbit
+        // 「两套账号就拆家」的判据不同，这里不拆。
+        ProviderKind::Kiro => &super::kiro::KIRO_ADAPTER,
     }
 }
 
@@ -1425,6 +1430,11 @@ pub fn implemented_kinds() -> Vec<ProviderKind> {
         // 那条 synthetic 兜底」）。两家各自一格缓存，所以两条都要列。
         ProviderKind::Tabbit,
         ProviderKind::TabbitIntl,
+        // Kiro：适配器已接真身（粘贴账号 / 续期 / 会话式转发 / 目录 / 额度），
+        // 且有远程目录（`List-Available-Models`）—— 必须在列表里，否则目录刷新
+        // 循环不会问它。症状比别家更隐蔽一点：`kiro::models` 的兜底只有 `auto`
+        // 一条，所以"漏登记"看起来不像是故障，像是「这家本来就只有 auto」。
+        ProviderKind::Kiro,
     ]
 }
 

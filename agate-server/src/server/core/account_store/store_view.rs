@@ -392,6 +392,13 @@ impl AccountStore {
             // `accessToken` 是货真价实的登录态，掉进下面的 workbuddy 兜底形状
             // 会随列表响应整串下发（同 doubaowork 那一支的理由）。
             self.to_tabbit_public_account(record)
+        } else if record.provider() == super::kiro_accounts::KIRO_PROVIDER_ID {
+            // Kiro：`accessToken` / `refreshToken` / `clientSecret` 一律不下发，
+            // 只留 `hasToken` / `canRefresh` / `available`（见
+            // `kiro_accounts::to_kiro_public_account`）。这一支**必须有** ——
+            // 记录里的 access/refresh 是货真价实的登录态，掉进下面的 workbuddy
+            // 兜底形状会随列表响应整串下发（同 doubaowork / tabbit 那一支）。
+            self.to_kiro_public_account(record)
         } else if record.provider() == super::atomcode_accounts::ATOMCODE_PROVIDER_ID {
             // AtomCode（AtomGit）：摘掉 `accessToken` 与 `refreshToken`，留
             // `tokenTail` / `canRefresh` / `hasToken`。refresh token 是长期有效的

@@ -16,9 +16,12 @@
 //! ```
 //!
 //! ── 为什么 `method` 要有兜底推断 ────────────────────────────
-//! 用户可能只粘一枚 `ksk_…`（官方 API key）或只粘 refresh token，`method`
-//! 一片空白。此时按内容判：`ksk_` 前缀 → `apikey`，否则 → `social`。判错的
-//! 代价很具体：`apikey` 会被当成可续期账号，每 2 分钟白刷一次续期接口。
+//! 用户可能只粘一枚 `ksk_…`（官方 API key）或整段 `kiro-auth-token.json`，
+//! `method` 一片空白。此时按**手上有的字段**推断（`method_of`）：`ksk_` 前缀 →
+//! `apikey`；有 `tokenURL` → `external-idp`；有 `clientId` + `clientSecret` →
+//! `idc`；其余 → `social`。判错的代价很具体：`apikey` 被当成可续期账号时每
+//! 2 分钟白刷一次续期接口；OAuth 被当成 API key 时 `can_refresh()` 直接 false、
+//! 临期就报「请重新登录」—— 两种都是查库看不出原因的那种。
 //!
 //! ── 为什么「不知道过期时间」算可用 ──────────────────────────
 //! `expires == 0` 表示上游没告诉我们（API key 永远如此，部分 social 记录也
@@ -72,6 +75,20 @@ fn text(fields: &Value, keys: &[&str]) -> String {
     String::new()
 }
 
+/// 从**已建好的字段表**里取第一个非空文本（`text` 的 Map 版本：粘贴归一
+/// 手里是 `Map` 而不是 `Value`，两处判据必须是同一套键顺序）
+fn first_text(fields: &Map<String, Value>, keys: &[&str]) -> Option<String> {
+    for key in keys {
+        if let Some(value) = fields.get(*key).and_then(Value::as_str) {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    None
+}
+
 fn number(fields: &Value, keys: &[&str]) -> i64 {
     for key in keys {
         if let Some(value) = fields.get(*key).and_then(Value::as_i64) {
@@ -90,6 +107,133 @@ fn number(fields: &Value, keys: &[&str]) -> i64 {
     0
 }
 
+/// 去掉粘贴时常带的外壳（`Bearer ` / 整行 `Authorization: Bearer …`）。
+///
+/// 用户从开发者工具复制的多半是整行请求头而不是裸令牌。在**唯一入口**剥一层，
+/// 后面的签名、续期、请求头就都不必各自防一遍（各自防必然漏一处，漏的那处
+/// 表现为「账号能加、一发请求就 401」）。
+fn bare_token(value: &str) -> String {
+    let mut current = value.trim();
+    if let Some(rest) = current.strip_prefix("Authorization:") {
+        current = rest.trim();
+    }
+    for prefix in ["Bearer ", "bearer ", "BEARER "] {
+        if let Some(rest) = current.strip_prefix(prefix) {
+            return rest.trim().to_string();
+        }
+    }
+    current.to_string()
+}
+
+/// 判定凭证形态：`apikey` / `social` / `idc` / `external-idp`。
+///
+/// 显式写了 `method`（含上游旧名 `authMethod`）就按它；否则按「证据强弱」推
+/// （见模块头）：`ksk_` 前缀 → 有 `tokenURL` → 有 `clientId` + `clientSecret`
+/// → 兜底 `social`。
+fn method_of(fields: &Value, access: &str) -> String {
+    let explicit = text(fields, &["method", "authMethod"]);
+    if !explicit.is_empty() {
+        return explicit;
+    }
+    if access.starts_with("ksk_") {
+        return "apikey".to_string();
+    }
+    if !text(fields, &["tokenURL", "tokenUrl", "token_url"]).is_empty() {
+        return "external-idp".to_string();
+    }
+    if !text(fields, &["clientId"]).is_empty() && !text(fields, &["clientSecret"]).is_empty() {
+        return "idc".to_string();
+    }
+    "social".to_string()
+}
+
+/// 令牌类字段的别名表（`from_fields` 与 `normalize_paste` 共用一份）
+const ACCESS_KEYS: [&str; 6] = [
+    "accessToken",
+    "access_token",
+    "access",
+    "apiKey",
+    "api_key",
+    "key",
+];
+
+/// 把「用户随手粘的一大段」归一成可落库的字段对象（纯函数，无网络）。
+///
+/// ── 认三种粘法（按**内容**判，不按字段名）────────────────────
+///   1. 整段 `kiro-auth-token.json`（IDE 的 token 文件：accessToken /
+///      refreshToken / expiresAt / region / profileArn）；
+///   2. 一枚裸 `ksk_…` API key（官方「API key」页面复制的那枚）；
+///   3. 只有 access + refresh 的两行 JSON。
+/// 三者都可能落在任意一个字符串字段里（客户端把输入框内容原样放进 payload），
+/// 所以这里扫所有字符串字段看有没有一段 JSON，解出来补进字段表 —— 与 Tabbit
+/// 那条「按内容归一、不认字段名」同一纪律：粘贴场景里字段名是最不可靠的东西。
+///
+/// 返回的是一份**新对象**：上传请求专用的键（`provider` / `name` /
+/// `importDesktop` / `authFile*`）全部剥掉 —— `add_kiro_account` 会保留未知
+/// 字段，留着它们只会让账号库里多一批与凭证无关的东西。
+pub fn normalize_paste(payload: &Value) -> Result<Value, GatewayError> {
+    let Some(object) = payload.as_object() else {
+        return Err(GatewayError::with_status(400, "上传内容不是 JSON 对象"));
+    };
+    let mut fields = Map::new();
+    for (key, value) in object {
+        let transport = matches!(key.as_str(), "provider" | "name" | "importDesktop")
+            || key.starts_with("authFile");
+        if !transport {
+            fields.insert(key.clone(), value.clone());
+        }
+    }
+    // ① 先把「用户显式给的那枚令牌」搬到落盘名 `accessToken`。
+    //    这一步必须在解 JSON 之前：后面解析出来的那段用 `or_insert` 补字段，
+    //    字段已存在就不会被覆盖 —— 「用户亲手填的」自动赢过「粘进来的那份」，
+    //    不需要额外的优先级字段。
+    if let Some(value) = first_text(&fields, &ACCESS_KEYS) {
+        fields.insert("accessToken".to_string(), Value::String(value));
+    }
+    // ② 整段 JSON 粘在某个字符串字段里 → 解出来补进去
+    let mut consumed: Vec<String> = Vec::new();
+    for (key, value) in fields.clone() {
+        let Some(raw) = value.as_str() else { continue };
+        let trimmed = raw.trim();
+        if !trimmed.starts_with('{') {
+            continue;
+        }
+        // 解不出来就原样留着：它可能就是一段普通文本，缺凭据时那条 400
+        // 会如实说「没认出凭证」，比在这里猜它是什么更好。
+        if let Ok(Value::Object(inner)) = serde_json::from_str::<Value>(trimmed) {
+            for (inner_key, inner_value) in inner {
+                fields.entry(inner_key).or_insert(inner_value);
+            }
+            consumed.push(key);
+        }
+    }
+    for key in consumed {
+        fields.remove(&key);
+    }
+    // ③ 还是没令牌 → 只剩「一枚裸令牌粘在通用字段里」这一种可能
+    //    （输入框只有一个 textarea，客户端把它塞进 `text` / `value` / `content`）
+    if !fields
+        .get("accessToken")
+        .and_then(Value::as_str)
+        .is_some_and(|value| !value.trim().is_empty())
+    {
+        for key in ["text", "value", "content", "paste", "token", "secret"] {
+            let candidate = fields
+                .get(key)
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string);
+            if let Some(candidate) = candidate {
+                fields.insert("accessToken".to_string(), Value::String(candidate));
+                fields.remove(key);
+                break;
+            }
+        }
+    }
+    Ok(Value::Object(fields))
+}
+
 impl KiroCredentials {
     /// 从账号记录（或任意字段对象）读凭证。
     ///
@@ -97,20 +241,13 @@ impl KiroCredentials {
     /// （`access` / `refresh` / `expires` / `profile`）—— 从旧备份导入的
     /// 账号不该因为键名不同而变成「缺凭证」。
     pub fn from_fields(fields: &Value) -> Result<Self, GatewayError> {
-        let mut method = text(fields, &["method", "authMethod"]);
-        let access = text(fields, &["accessToken", "access_token", "access", "apiKey", "key"]);
-        if method.is_empty() {
-            method = if access.starts_with("ksk_") {
-                "apikey".to_string()
-            } else {
-                "social".to_string()
-            };
-        }
-        let refresh = text(fields, &["refreshToken", "refresh_token", "refresh"]);
+        // 先读齐再判形态：`method_of` 需要看到 `clientId` / `tokenURL` 才能
+        // 区分 idc / external-idp / social（见模块头）。
+        let access = bare_token(&text(fields, &ACCESS_KEYS));
         let credentials = Self {
-            method,
+            method: method_of(fields, &access),
             access,
-            refresh,
+            refresh: text(fields, &["refreshToken", "refresh_token", "refresh"]),
             expires: number(fields, &["expiresAt", "expires"]),
             region: {
                 let region = text(fields, &["region"]);
@@ -410,5 +547,126 @@ mod tests {
         // 短令牌不 panic（多字节也安全；不足 4 位就整串露出来，反正是很短的东西）
         assert_eq!(masked("ab"), "…ab");
         assert_eq!(masked("令牌串"), "…令牌串");
+    }
+
+    /// 形态推断按「手上有的字段」，四档各走对一条
+    #[test]
+    fn the_credential_style_is_inferred_from_the_fields_that_are_there() {
+        // ① 显式写了就按它（哪怕前缀像是别的一类）
+        let explicit = KiroCredentials::from_fields(&json!({
+            "method": "idc",
+            "accessToken": "ksk_looks_like_a_key",
+            "refreshToken": "r1",
+            "clientId": "c1",
+            "clientSecret": "s1",
+        }))
+        .expect("应能读出来");
+        assert_eq!(explicit.method, "idc");
+        // ② 外部 IdP 的判据是 token 端点（只有这一档需要）
+        let external = KiroCredentials::from_fields(&json!({
+            "accessToken": "jwt",
+            "refreshToken": "r1",
+            "tokenURL": "https://idp.example.com/token",
+        }))
+        .expect("应能读出来");
+        assert_eq!(external.method, "external-idp");
+        assert_eq!(external.token_type(), Some("EXTERNAL_IDP"));
+        // ③ AWS SSO OIDC：clientId + clientSecret 两者都要
+        let idc = KiroCredentials::from_fields(&json!({
+            "accessToken": "jwt",
+            "refreshToken": "r1",
+            "clientId": "c1",
+            "clientSecret": "s1",
+        }))
+        .expect("应能读出来");
+        assert_eq!(idc.method, "idc");
+        // 只给 clientId（缺 secret）不足以判 idc —— 退回社交登录
+        let half = KiroCredentials::from_fields(&json!({
+            "accessToken": "jwt",
+            "refreshToken": "r1",
+            "clientId": "c1",
+        }))
+        .expect("应能读出来");
+        assert_eq!(half.method, "social");
+    }
+
+    /// 粘贴带进来的 `Bearer ` 外壳要剥掉（开发者工具复制的是整行请求头）
+    #[test]
+    fn the_authorization_shell_is_stripped_from_a_pasted_token() {
+        let key = KiroCredentials::from_fields(&json!({
+            "accessToken": "Authorization: Bearer ksk_abcdefgh1234",
+        }))
+        .expect("应能读出来");
+        assert_eq!(key.access, "ksk_abcdefgh1234");
+        assert_eq!(key.method, "apikey");
+    }
+
+    /// 整段 `kiro-auth-token.json` 粘进任意字段都能认出来
+    #[test]
+    fn a_pasted_token_file_becomes_credential_fields() {
+        let file = json!({
+            "accessToken": "jwt-1",
+            "refreshToken": "refresh-1",
+            "expiresAt": 1_700_000_000_000i64,
+            "region": "eu-central-1",
+            "profileArn": "arn:aws:codewhisperer:eu-central-1:1:profile/A",
+        })
+        .to_string();
+        let normalized = normalize_paste(&json!({
+            "provider": "kiro",
+            "name": "我的 Kiro",
+            // 客户端把输入框内容原样放进来：字段名是谁都无所谓
+            "credentials": file,
+        }))
+        .expect("应能归一");
+        assert_eq!(
+            normalized.get("accessToken").and_then(Value::as_str),
+            Some("jwt-1")
+        );
+        assert_eq!(
+            normalized.get("region").and_then(Value::as_str),
+            Some("eu-central-1")
+        );
+        // 上传专用的键不该跟着落库，解析用的那段原文也该被吃掉
+        assert!(normalized.get("provider").is_none());
+        assert!(normalized.get("name").is_none());
+        assert!(normalized.get("credentials").is_none());
+        // 归一后的字段能直接过 `from_fields`
+        let parsed = KiroCredentials::from_fields(&normalized).expect("应能读出来");
+        assert_eq!(parsed.method, "social");
+        assert!(parsed.can_refresh());
+        assert_eq!(parsed.region(), "eu-central-1");
+    }
+
+    /// 一枚裸 key 粘在通用字段里也算数（输入框只有一个 textarea）
+    #[test]
+    fn a_bare_key_in_a_generic_field_is_accepted() {
+        let normalized = normalize_paste(&json!({
+            "provider": "kiro",
+            "text": "  ksk_abcdefgh1234  ",
+        }))
+        .expect("应能归一");
+        assert_eq!(
+            normalized.get("accessToken").and_then(Value::as_str),
+            Some("ksk_abcdefgh1234")
+        );
+        // 被消费掉的通用键不留在记录里
+        assert!(normalized.get("text").is_none());
+    }
+
+    /// 显式填的字段比粘进来的那段 JSON 可信：不被覆盖
+    #[test]
+    fn explicit_fields_win_over_a_pasted_blob() {
+        let normalized = normalize_paste(&json!({
+            "provider": "kiro",
+            "apiKey": "ksk_explicit",
+            "text": json!({ "accessToken": "from-file" }).to_string(),
+        }))
+        .expect("应能归一");
+        assert_eq!(
+            normalized.get("accessToken").and_then(Value::as_str),
+            Some("ksk_explicit"),
+            "外层显式给的 apiKey 不该被粘进来的那段覆盖"
+        );
     }
 }

@@ -606,6 +606,27 @@ pub enum ProviderKind {
     /// Tabbit **国际版**（`web.tabbit.ai`）；实现与国内版同一套，见
     /// [`ProviderKind::Tabbit`] 的文档。
     TabbitIntl,
+    /// Kiro（`kiro.dev`）—— AWS 的 AI IDE 订阅。
+    ///
+    /// ── **不拆家**（与 WorkBuddy / Qoder / Tabbit 的判据不同）─────
+    /// 它只有两个**订阅地区**（`us-east-1` / `eu-central-1`），两地共用同一套
+    /// 账号体系与同一份令牌，只是端点主机不同 —— 地区从 profile ARN 里读，
+    /// 读不到才按登录地区兜底。所以它是**一家**，不是两家。
+    ///
+    /// ── 形态 ───────────────────────────────────────────────────
+    /// 模型语义是 Anthropic Messages，传输却是自家
+    /// `generateAssistantResponse` 的会话 JSON + **AWS event stream**（二进制
+    /// 帧）—— 封闭的 `UpstreamKind` 里没有这个变体，所以
+    /// `is_stateful() == true`，由适配器自己读帧、翻成标准 chat SSE。
+    ///
+    /// ── 三种凭证来源 ────────────────────────────────────────────
+    /// `apikey`（`ksk_…`，不续期）/ `oauth`（social / idc / external-idp，
+    /// 可续期）。本机登录态（kiro-cli / Kiro IDE）**不接**：Android 上没有
+    /// 那两个客户端，给了入口只会稳定报「本机没有登录态」。
+    ///
+    /// 归 **Agent 分段**：本家在上游 `agent2api-providers` 包里（该包不声明
+    /// `provider_category`，默认 agent），`order` 是 31。
+    Kiro,
 }
 
 /// 一个提供商的静态元数据。
@@ -796,6 +817,11 @@ pub const PROVIDERS: &[ProviderMeta] = &[
     // tabbit / tabbit-intl）。
     ProviderMeta::web("tabbit", "Tabbit 国内版"),
     ProviderMeta::web("tabbit-intl", "Tabbit 国际版"),
+    // Kiro（`kiro.dev`）：单一 provider，两个订阅地区共用（见
+    // `ProviderKind::Kiro` 的文档）。标签逐字取上游 `pack.json`。
+    // 归 **Agent 分段**（`agent2api-providers` 包，order 31）。
+    // 排在末尾：本仓按接入批次排（与 doubaowork 同一处置），不按上游 order。
+    ProviderMeta::agent("kiro", "Kiro"),
 ];
 
 /// provider id 在注册表里的下标（未知 id → None）。
@@ -890,6 +916,7 @@ pub fn kind_from_id(id: &str) -> Option<ProviderKind> {
         "doubaowork" => Some(ProviderKind::Doubaowork),
         "tabbit" => Some(ProviderKind::Tabbit),
         "tabbit-intl" => Some(ProviderKind::TabbitIntl),
+        "kiro" => Some(ProviderKind::Kiro),
         // 走到这里 = 上面的注册表判定已放行、这个 match 却没有对应分支：
         // 只可能是有人给 `PROVIDERS` 加了条目忘了加这里。开发期喊出来；
         // release 返回 None（见上：宁可为「未知」，不可误认成别家）。
@@ -942,6 +969,7 @@ pub const fn kind_id(kind: ProviderKind) -> &'static str {
         ProviderKind::Doubaowork => "doubaowork",
         ProviderKind::Tabbit => "tabbit",
         ProviderKind::TabbitIntl => "tabbit-intl",
+        ProviderKind::Kiro => "kiro",
     }
 }
 

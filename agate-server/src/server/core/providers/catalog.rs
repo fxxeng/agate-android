@@ -251,6 +251,14 @@ pub(crate) fn refresh_meta(kind: ProviderKind) -> (bool, i64) {
             super::doubaowork::models::remote_refreshed(),
             super::doubaowork::models::last_refreshed_at(),
         ),
+        // Kiro 只有一个目录缓存（两个订阅地区共用同一份账号体系，
+        // 见 `kiro::mod` 模块头）。这家**不落盘**：清单随订阅等级变，
+        // 落一份低等级账号会看到它无权使用的模型。
+        // `remote_refreshed()` 因此只看«本进程内跑到过远程目录»。
+        ProviderKind::Kiro => (
+            super::kiro::models::remote_refreshed(),
+            super::kiro::models::last_refreshed_at(),
+        ),
     }
 }
 

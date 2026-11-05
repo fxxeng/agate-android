@@ -125,6 +125,42 @@ pub fn list(account: &str) -> Vec<Value> {
     }
 }
 
+/// 本进程见过的所有账号清单的**并集**（去重按 `id`，保持首次出现的顺序）。
+///
+/// 为什么需要它：`ProviderAdapter::list_models()` 没有账号参数，而本家的清单
+/// **按订阅等级不同**。三个可选口径里：
+/// ```text
+///   只给兜底 auto        管理页永远只看到一个模型（Free 与 Pro 都一样）
+///   取某一个账号的清单    可能少显示另一个账号能用的模型，而且是"随机"少的
+///   并集（本实现）        多显示某个账号用不了的模型 —— 选了会被上游拒
+/// ```
+/// 选并集：**「多了」的代价是一条明确的 400，「少了」的代价是用户以为不能用**。
+/// 前者能自查，后者查不出来。（注意这与「不落盘」不矛盾：不落盘防的是把一份
+/// 清单持久化成"全局事实"，而这里是本次会话内的实时聚合。）
+pub fn list_any() -> Vec<Value> {
+    with_cache(|table| {
+        let mut seen: Vec<String> = Vec::new();
+        let mut models: Vec<Value> = Vec::new();
+        for catalog in table.values() {
+            for model in &catalog.models {
+                let Some(id) = model.get("id").and_then(Value::as_str) else {
+                    continue;
+                };
+                if seen.iter().any(|item| item == id) {
+                    continue;
+                }
+                seen.push(id.to_string());
+                models.push(model.clone());
+            }
+        }
+        if models.is_empty() {
+            fallback()
+        } else {
+            models
+        }
+    })
+}
+
 /// 上下文窗口（估算用量要用；0 = 不知道）
 pub fn window_of(account: &str, model: &str) -> i64 {
     with_cache(|table| {

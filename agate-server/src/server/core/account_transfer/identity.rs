@@ -275,6 +275,20 @@ pub(super) fn identity_of_item(provider: &str, item: &Map<String, Value>) -> Res
         }
         return Err("缺少 accessToken 与 id（无法标识 Command Code 账号）".to_string());
     }
+    // Kiro：`profileArn` → 账号 → refresh 指纹 → access 指纹（三级）。本家
+    // **没有** uid / userId 键，不接这一支会落进兜底按 `userId` 取 → 报
+    // 「缺少 userId」整条失败（等于 Kiro 账号导不进来）。身份判定直接调
+    // `kiro_accounts::identity_of` 这**同一个函数**：导入判重与落库判重必须是
+    // 一个口径，两处各写一份必然分叉，症状是「同一个账号导两次多出一条」。
+    if provider == kind_id(ProviderKind::Kiro) {
+        let identity = crate::server::core::account_store::kiro_accounts::identity_of(
+            &Value::Object(item.clone()),
+        );
+        if identity.is_empty() {
+            return Err("缺少 profileArn / 账号 / 令牌（无法标识 Kiro 账号）".to_string());
+        }
+        return Ok(identity);
+    }
     if user_id.is_empty() {
         return Err(format!("缺少 userId（无法标识 {provider} 账号）"));
     }
@@ -372,6 +386,13 @@ pub(super) fn identity_of_record(provider: &str, record: &StoredAccount) -> Opti
         }
         let id = record.id().trim().to_string();
         return (!id.is_empty()).then_some(id);
+    }
+    // Kiro：与 `identity_of_item` 调同一个函数（同一口径的唯一保证）
+    if provider == kind_id(ProviderKind::Kiro) {
+        let identity = crate::server::core::account_store::kiro_accounts::identity_of(
+            &record.to_value(),
+        );
+        return (!identity.is_empty()).then_some(identity);
     }
     let user_id = record.user_id().trim().to_string();
     (!user_id.is_empty()).then_some(user_id)

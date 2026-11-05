@@ -1561,6 +1561,49 @@ pub async fn add_account(state: &ServerState, body: &Bytes) -> Response {
             });
             store.add_tabbit_account(realm, &fields, display.as_deref(), "manual")
         }
+        // Kiro（AWS 的 AI IDE 订阅，`kiro.dev`）：**粘贴**官方 API key
+        // （`ksk_…`）或整段 `kiro-auth-token.json`，也可以选一个 .json 凭证文件。
+        //
+        // ── 为什么这里**不探活**（与 Tabbit / ModelScope 相反）─────────
+        // 那两家的身份只能出网拿（uid 藏在 Cookie 里 / 令牌不透明），不出网就
+        // 只能拿令牌尾号当 id，于是同一个账号换一次令牌就多一条记录。Kiro 的
+        // 身份**离线可定**（`profileArn` → `account:` → refresh 指纹，见
+        // `account_store::kiro_accounts::identity_of`），所以鉴权交给第一次转发：
+        // 真失效时 `errors::classify` 判成 Auth（罚号 + 换号）。硬前置反而会
+        // 误杀 —— OAuth 的 access 过期是**常态**，而它本来能续期。
+        //
+        // ── 不提供 importDesktop ────────────────────────────────
+        // 本机登录态是 kiro-cli 的 SQLite / Kiro IDE 的 `kiro-auth-token.json`，
+        // Android 上两者都不存在（见 `kiro/mod.rs` 模块头）。给入口只会稳定报
+        // 「本机没有登录态」，不如在文案里说清「粘什么」。
+        Some(crate::server::core::providers::ProviderKind::Kiro) => {
+            if import_desktop {
+                return management_error(
+                    400,
+                    "Kiro 不支持导入桌面端登录态（本机没有 kiro-cli / Kiro IDE），\
+                     请粘贴 ksk_ 开头的 API key，或粘贴 / 选择登录凭证 JSON",
+                );
+            }
+            // 凭证是**文本 JSON**（IDE 的 kiro-auth-token.json）。base64 只可能
+            // 是二进制文件，明确 400 而不是解出一堆乱码去当令牌。
+            if auth_file_b64.is_some() && auth_file_content.is_none() {
+                return management_error(
+                    400,
+                    "Kiro 的凭证是文本 JSON（kiro-auth-token.json），\
+                     不支持二进制凭证文件；请选择 .json 文件或改用「填写凭证」",
+                );
+            }
+            // 文件内容当作「粘进输入框的那一段」交给同一个归一函数 ——
+            // 两条入口一条解析链，免得出现「粘贴能加、选文件报缺令牌」。
+            let pasted = match auth_file_content {
+                Some(content) => json!({ "text": content }),
+                None => payload,
+            };
+            match crate::server::core::providers::kiro::credentials::normalize_paste(&pasted) {
+                Ok(fields) => store.add_kiro_account(&fields, import_name, "manual"),
+                Err(error) => Err(AccountStoreError::new(error.message, error.status_code)),
+            }
+        }
         // WorkBuddy 系的两家（国内版 / 国际版）：同一套凭证形态与落账号路径，
         // 差别只有归属 —— provider id 自己就是归属（拆家后不再从 payload 里的
         // `edition` 反推：那是账号的属性，而落哪一家是身份问题）。
