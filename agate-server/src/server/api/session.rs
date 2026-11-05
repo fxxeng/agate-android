@@ -197,8 +197,10 @@ fn proxies_summary() -> Value {
 ///   - 注册表里没有的 id → 400「未知的提供商」（不静默回落 workbuddy：
 ///     那会把一次小浣熊登录发起成 workbuddy 登录）。
 ///
-/// ── 三条不走上面的分派，各自有专用分支（顺序即下面的判断顺序）──────
+/// ── 以下几家不走上面的分派，各自有专用分支（顺序即下面的判断顺序）──────
 ///   - `raccoon`（`mode:"browser"`）/ `catpaw`：要给回调基址
+///   - `trae`：授权地址要问一次上游，端口由本进程现绑
+///   - `kiro`：授权地址本地现造，端口必须从官方 IDE 那组白名单里抢
 ///   - `astudio`：本机登录页，结果走进程内 channel（**没有回调、没有 code**）
 ///   - `autoclaw` 国际版：授权地址要先过一次风控验证码，走
 ///     `/api/session/login/oauth/start`
@@ -374,6 +376,31 @@ pub async fn login_start(State(state): State<ServerState>, body: Bytes) -> Respo
         };
         return ok_json(json!({ "state": task_state, "authUrl": auth_url,
             "edition": task_edition, "provider": "trae" }));
+    }
+    // Kiro：**浏览器登录 + 本机回调**，而且必须走系统浏览器 —— Google 与
+    // GitHub 在 WebView 内完成 OAuth 会回 `disallowed_useragent`。
+    // 与 Trae 的两处差别都在「地址与端口的来历」：
+    //   · Trae 的地址要问一次上游（guidance），端口让系统随便给；
+    //   · Kiro 的地址全由本进程算出来（端口 + state + PKCE），而端口**必须**
+    //     从官方 IDE 注册过的那组白名单里抢 —— 白名单外的端口门户不会报错，
+    //     它是根本不跳回来（症状是"点了登录什么都没发生"）。
+    // 因为地址是本地算的，这里**不用** `wait_for_auth_url`：`begin()` 返回时
+    // `authUrl` 就已经就绪，少一次等待与一处超时口径。
+    if kind == crate::server::core::providers::ProviderKind::Kiro {
+        let handle = match state.login().start_kiro_login().await {
+            Ok(handle) => handle,
+            Err(error) => return management_error(400, error),
+        };
+        let task = handle.snapshot();
+        let (Some(task_state), Some(auth_url)) = (task.state, task.auth_url) else {
+            return management_error(500, "Kiro 登录地址未能生成，请重试");
+        };
+        return ok_json(json!({
+            "state": task_state,
+            "authUrl": auth_url,
+            "edition": task.edition,
+            "provider": "kiro",
+        }));
     }
     // OfficeAce（华为云果办 / OfficeClaw）：**服务端中介的轮询登录**（与 ZCode
     // 同一形态，见 `core::login::officeace` 的模块头）—— 授权地址由本进程现造

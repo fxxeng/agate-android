@@ -79,7 +79,7 @@ fn digest(seed: &[u8]) -> String {
 /// **同一个口径**，两处各写一份必然分叉（症状是「同一个账号导两次多出一条」）。
 pub(crate) fn identity_of(fields: &Value) -> String {
     let profile = pick(fields, &["profileArn", "profile"]);
-    if !profile.is_empty() {
+    if !profile.is_empty() && !is_shared_profile(&profile) {
         return format!("profile:{profile}");
     }
     let account = pick(fields, &["accountId", "email"]);
@@ -95,6 +95,20 @@ pub(crate) fn identity_of(fields: &Value) -> String {
         return format!("access:{}", digest(access.as_bytes()));
     }
     String::new()
+}
+
+/// 这个 profile ARN 是不是**所有 Builder ID 账号共用的那一个**。
+///
+/// Builder ID 没有自己的 profile —— 官方 IDE 与 kiro-cli 都用同一个固定 ARN
+/// （`crate::server::core::providers::kiro::BUILDER_ID_PROFILE`）。它**不能**
+/// 当身份用：两个不同的 Builder ID 账号会落到同一个 id 上，第二个登录会把
+/// 第一个的 token 覆盖掉，用户看到的是「加了一个号，另一个号却掉线了」。
+/// 这类账号的身份要退到邮箱（`account:` 那一条）。
+///
+/// 只看这一个固定值，不是"凡是 profile 都可疑"：Google / GitHub / IAM
+/// Identity Center 的 profile 各自唯一，那是可靠的身份。
+fn is_shared_profile(profile: &str) -> bool {
+    profile == crate::server::core::providers::kiro::BUILDER_ID_PROFILE
 }
 
 /// 身份串 → 稳定的账号 id
@@ -351,6 +365,30 @@ mod tests {
         let refresh_only = json!({ "refreshToken": "r1", "accessToken": "t1" });
         assert!(identity_of(&refresh_only).starts_with("refresh:"));
         assert_eq!(identity_of(&json!({ "name": "x" })), "");
+    }
+
+    /// Builder ID 那个固定 profile ARN **不能**当身份。
+    ///
+    /// Builder ID 没有自己的 profile，官方 IDE 与 kiro-cli 都用同一个常量。
+    /// 拿它当身份，两个不同的 Builder ID 账号会落到同一个 id 上 —— 第二个登录
+    /// 就把第一个的 token 覆盖掉，用户看到的是「加了一个号，另一个号掉线了」。
+    #[test]
+    fn the_shared_builder_profile_is_not_an_identity() {
+        let shared = crate::server::core::providers::kiro::BUILDER_ID_PROFILE;
+        let first = json!({ "profileArn": shared, "accountId": "a@b.com", "accessToken": "t1" });
+        let second = json!({ "profileArn": shared, "accountId": "c@d.com", "accessToken": "t2" });
+        assert_eq!(identity_of(&first), "account:a@b.com");
+        assert_ne!(
+            identity_of(&first),
+            identity_of(&second),
+            "两个 Builder ID 账号必须是两个身份"
+        );
+        // 唯一的 profile 仍然优先于邮箱（Google / GitHub / IDC 都靠它）
+        let unique = json!({
+            "profileArn": "arn:aws:codewhisperer:us-east-1:1:profile/A",
+            "accountId": "a@b.com"
+        });
+        assert!(identity_of(&unique).starts_with("profile:"));
     }
 
     /// id 稳定、且不泄漏令牌明文

@@ -69,7 +69,10 @@ data class ProviderPreset(
      * 登录是否依赖「网关端口」收回调。
      * true 的四家（accio/accio-cn/codearts/antigravity）回调落在
      * `127.0.0.1:<网关端口>`，Core 态不监听该端口 → 网关未运行时登录必失败。
-     * 两个例外：`trae` 自己 bind 临时端口；`catpaw` 有 poll-token 兜底
+     *
+     * 不依赖它的三家各有各的理由：`trae` 与 `kiro` **自己 bind 回环端口**
+     * （Trae 随便挑一条，Kiro 必须抢官方 IDE 白名单里的那几条），回调由内核
+     * 自己的监听器接，与网关端口无关；`catpaw` 有 poll-token 兜底
      * （不经过浏览器，不受 PNA/CORS 影响），网关没开也能完成。
      */
     val needsGateway: Boolean = false,
@@ -403,8 +406,7 @@ object PresetRegistry {
         // ── 四家的登录通道现状（改前先核对内核能力位，别按印象写）──────
         //   tabbit       手机验证码 ✓（两段同步请求，客户端复用 `SmsLoginForm`）
         //   tabbit-intl  ✗（上游对国际站灰度 403，同代码打过去必然失败）
-        //   kiro         ✗（OAuth 属 UI 类待做；Google/GitHub 禁 WebView 内登录，
-        //                 所以它以后也只能走「系统浏览器 + 本机回调」）
+        //   kiro         浏览器登录 ✓（系统浏览器 + 本机白名单端口回调）
         //   astudio      本机登录页 ✓（手机号验证码 / 账号密码 + 极验滑块）
         // 一个通道**点了必然 400** 时不要给 —— 与豆包工作「网页登录通道还没在壳侧
         // 实现，就先不提供」同一处置。
@@ -443,15 +445,22 @@ object PresetRegistry {
             supportsCheckin = true,
         ),
 
-        // Kiro（AWS 的 AI IDE 订阅，`kiro.dev`）：粘贴官方 API key（`ksk_…`）
-        // 或整段 `kiro-auth-token.json`。
+        // Kiro（AWS 的 AI IDE 订阅，`kiro.dev`）：浏览器登录（门户 OAuth），
+        // 或粘贴官方 API key（`ksk_…`）/ 整段 `kiro-auth-token.json`。
         //
-        // ── 为什么没有「浏览器登录」通道 ──────────────────────────
-        // 内核的 OAuth 链（AWS Builder ID 设备码 + SSO OIDC）还没接，属 UI 类。
-        // 接的时候也**不能**做成 `EMBEDDED`：Google 与 GitHub 都禁止在 WebView
-        // 内完成 OAuth（会回 `disallowed_useragent`），只能走「系统浏览器 +
-        // 本机回环回调」即 `EXTERNAL`（与 Accio 同一形态）。
-        // 本次也不提供「导入桌面端登录态」—— 那份登录态是 kiro-cli 的 SQLite
+        // ── 为什么只有「浏览器登录」，没有内嵌 ────────────────────
+        // Google 与 GitHub 都禁止在 WebView 内完成 OAuth（回
+        // `disallowed_useragent`），所以 `EMBEDDED` 不在通道里 —— 给了就是个
+        // 必然失败的按钮。它与 Trae 的 `EXTERNAL` 是同形（start → 开系统浏览器
+        // → 轮询 `/wait`），客户端不需要新表单，也不需要发 `mode`：内核
+        // `start_kiro_login` 是专用入口（`browserLogin` 保持 false）。
+        //
+        // ── 与 Trae 的一个硬差别 ──────────────────────────────────
+        // 回调端口**不能**随便挑：门户把它与官方 IDE 注册过的那组固定端口比对，
+        // 白名单外的端口不报错、只是不再跳回来（症状是"点了登录什么都没发生"）。
+        // 内核会从 10 条候选里逐一抢（`kiro::CALLBACK_PORTS`），全被占才报错。
+        //
+        // 本次仍不提供「导入桌面端登录态」—— 那份登录态是 kiro-cli 的 SQLite
         // 与 Kiro IDE 的文件，Android 上两者都不存在（内核 `api::accounts` 对该家
         // 的 importDesktop 直接回 400 并说明原因）。
         // `IMPORT_FILE` 给的是**文本 JSON**（`kiro-auth-token.json`）这一条，
@@ -460,9 +469,9 @@ object PresetRegistry {
         // 不标签到：内核 `CHECKIN_PROVIDERS` 里没有它（上游没有可自动领的奖励）——
         // 勾上一个永远「不支持」的家比不勾更糟。
         ProviderPreset(
-            "kiro", "Kiro", "kiro.dev · 粘贴 API key / kiro-auth-token.json",
-            LoginKind.PASTE,
-            listOf(AuthChannel.PASTE, AuthChannel.IMPORT_FILE),
+            "kiro", "Kiro", "kiro.dev · 浏览器登录 / 粘贴 API key",
+            LoginKind.WEBVIEW,
+            listOf(AuthChannel.EXTERNAL, AuthChannel.PASTE, AuthChannel.IMPORT_FILE),
             pasteHint = "粘贴 ksk_ 开头的 API key，或整段 kiro-auth-token.json（含 accessToken / refreshToken）",
             pasteMultiline = true,
         ),

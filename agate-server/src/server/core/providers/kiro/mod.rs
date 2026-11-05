@@ -43,6 +43,7 @@
 //!   models       在线模型目录 + 上下文窗口表
 //!   usage        余额（`GetUsageLimits`）
 //!   refresh      OAuth 续期（社交登录 / AWS OIDC / 外部 IdP）
+//!   login        浏览器登录（门户 OAuth 四条分支 + 本机回调）
 //!   chat         会话式转发（读帧 → 写 SSE）
 //!   adapter      ProviderAdapter 的实现
 //! ```
@@ -59,6 +60,7 @@ pub mod events;
 pub mod eventstream;
 pub mod http;
 pub mod image;
+pub mod login;
 pub mod models;
 pub mod refresh;
 pub mod request;
@@ -89,11 +91,23 @@ pub const STREAM_TIMEOUT_MS: u64 = 10 * 60 * 1000;
 /// 控制面请求（目录 / 余额）的超时
 pub const CONTROL_TIMEOUT_MS: u64 = 30 * 1000;
 
-/// Kiro 门户（浏览器登录入口；本项目**不走**网页登录，保留用于文案）
+/// Kiro 门户（浏览器登录入口）。
 pub const PORTAL: &str = "https://app.kiro.dev";
 
 /// 社交登录换码服务：**与地区无关**（门户固定打 us-east-1 的 auth 服务）
 pub const AUTH_SERVICE: &str = "https://prod.us-east-1.auth.desktop.kiro.dev";
+
+/// 浏览器登录的回调端口：**必须**是这几条之一。
+///
+/// 门户把 `redirect_uri` 拿去与官方 IDE 注册过的那组端口比对，白名单外的端口
+/// 不会被拒（没有报错），而是**登录页根本不跳回来** —— 症状是"点了登录什么都
+/// 没发生"，比一句报错难查得多。所以这里不能像 Trae 那样让系统分配端口。
+///
+/// 全部大于 1024（Android 上非 root 进程绑不了低位端口），且官方 IDE 装的机器
+/// 上通常只有其中一个被占，逐个试即可。
+pub const CALLBACK_PORTS: [u16; 10] = [
+    3128, 4649, 6588, 8008, 9091, 49153, 50153, 51153, 52153, 53153,
+];
 
 /// Kiro IDE / kiro-cli 自报的桌面端 UA（社交登录刷新时用）
 pub const DESKTOP_UA: &str = "Kiro-Desktop/0.2.13 (darwin; arm64)";

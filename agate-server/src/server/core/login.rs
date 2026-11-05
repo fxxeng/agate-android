@@ -33,6 +33,7 @@ mod autoclaw;
 mod astudio;
 mod catpaw;
 pub mod codearts;
+mod kiro;
 mod lobsterai;
 mod qoder;
 mod officeace;
@@ -278,6 +279,14 @@ pub struct LoginService {
     /// 也不该让别的 provider 每次轮询都陪着带一份别人用不到的东西。
     /// 表里同一时刻最多一条（见 `login/trae.rs` 模块头）。
     trae_login: Arc<Mutex<HashMap<String, Arc<crate::server::core::providers::trae::login::Session>>>>,
+    /// Kiro 浏览器登录的额外状态（`state → 进行中的一轮`）。
+    ///
+    /// 与 [`Self::trae_login`] 同一形态、同一理由（活对象，持有本机回调监听器，
+    /// 不能进 `LoginTaskState`）。差别在**可以有多条**：Kiro 的回调端口必须从
+    /// 官方 IDE 那组白名单里抢，每轮抢到的端口不同，所以两轮并存时回调落到谁
+    /// 身上是确定的（各自的 `redirect_uri` 不同）—— 不像 Trae 那样必须独占。
+    /// 取消时按 state 摘掉自己那一条，端口当场还回去。
+    kiro_login: Arc<Mutex<HashMap<String, Arc<crate::server::core::providers::kiro::login::Session>>>>,
 }
 
 impl LoginService {
@@ -288,6 +297,7 @@ impl LoginService {
             tasks: LoginTasks::new(),
             autoclaw_oauth: Arc::new(Mutex::new(HashMap::new())),
             trae_login: Arc::new(Mutex::new(HashMap::new())),
+            kiro_login: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -298,6 +308,36 @@ impl LoginService {
     /// Trae 登录的待办表（`login/trae.rs` 用它挂这一轮的回调监听器）。
     pub(crate) fn trae_login(&self) -> &Arc<Mutex<HashMap<String, Arc<crate::server::core::providers::trae::login::Session>>>> {
         &self.trae_login
+    }
+
+    /// 登记一轮 Kiro 登录（key 是这次登录的 `state`）。
+    ///
+    /// 允许并存（每轮的端口不同，见 [`Self::kiro_login`] 的说明），所以不做
+    /// "先收掉上一轮"那一步 —— 那是 Trae 的语义（它同一时刻只能有一轮）。
+    pub(crate) fn put_kiro_login(
+        &self,
+        state: &str,
+        session: Arc<crate::server::core::providers::kiro::login::Session>,
+    ) {
+        self.kiro_login
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(state.to_string(), session);
+    }
+
+    /// 摘掉一轮 Kiro 登录（完成 / 失败 / 超时 / 取消四条路都要走到）。
+    ///
+    /// 摘掉之后由调用方 `close()` —— 这里不顺手 close，是因为「摘表」与
+    /// 「关端口」在同一把表锁里做会让 close 引发的等待方唤醒路径重入这张表
+    /// （与 `close_trae_login` 同一个锁序要求）。
+    pub(crate) fn take_kiro_login(
+        &self,
+        state: &str,
+    ) -> Option<Arc<crate::server::core::providers::kiro::login::Session>> {
+        self.kiro_login
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(state)
     }
 
     /// 取消一次登录：任务表那一步见 [`LoginTasks::cancel`]，这里多做的事是
@@ -328,6 +368,12 @@ impl LoginService {
             // 与 AutoClaw 那次「取消后立刻重试抢不到端口」是同一个坑。
             if state.starts_with("trae-") {
                 self.close_trae_login();
+            }
+            // Kiro：按 state 摘掉自己那一条并 close（端口当场还回去）。白名单
+            // 只有 10 条，占满就没得抢了 —— 而"取消后立刻重试"正是最容易连点
+            // 的动作，所以这里不能等 5 分钟超时。
+            if let Some(session) = self.take_kiro_login(state) {
+                session.close();
             }
         }
         canceled

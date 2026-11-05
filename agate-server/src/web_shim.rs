@@ -167,6 +167,17 @@ pub fn shim_js() -> &'static str {
   // Docker 远程面板里该地址属于浏览器所在电脑，不能自动回到容器，
   // 因此让用户把地址栏的最终 URL 粘回受保护接口。小浣熊单独改用
   // 官方授权页支持的 redirect 分支，直接把 authorization_code 导回网关。
+  //
+  // ── kiro 为什么**不在这里** ────────────────────────────────
+  // 它的回调同样落在 `http://localhost:<port>`（容器内部），远程面板一样收不到，
+  // 但"粘贴最终 URL"对它不够用：那一步之后还有**一次服务端 302**（门户把
+  // AWS 登录方式交回来 → 我们注册 AWS OIDC 客户端 → 再把浏览器送去 AWS），
+  // 中间状态在我们进程里，粘一个 URL 回来只覆盖最后一步。
+  // 所以面板里这一家目前**只能粘贴凭证**（ksk_ API key / kiro-auth-token.json）；
+  // 浏览器登录请用手机端 / 本机部署。要补上面板这条路，得先给
+  // `providers::kiro::login::Session` 加一个 `submit(url)` 入口，把外部的
+  // 回调注进同一套路由 —— 那是独立一件事，别顺手塞进 `needsManualCallback`：
+  // 塞进去只会给用户一个填完必然失败的输入框。
   function needsManualCallback(provider) {
     return provider === 'trae'
       || provider === 'accio' || provider === 'accio-cn'

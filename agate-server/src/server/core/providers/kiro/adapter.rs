@@ -199,7 +199,13 @@ impl ProviderAdapter for KiroAdapter {
         })
     }
 
-    /// 登录流程是 UI 类改动，本轮不做：添加账号走粘贴（`api::accounts` 的 Kiro 分支）
+    /// 有浏览器登录，但**不走**这条通用链。
+    ///
+    /// 通用链的契约是「`build_login_url` 给外站地址 + 等 `submit_login_callback`
+    /// 带回 code」。Kiro 两样都不成立：回调落在**本进程自己抢的白名单端口**上
+    /// （不是网关端口，门户只认那几条），而且中途要由我们 302 把浏览器送去
+    /// AWS —— 一次登录会经过两个不同的回调路径。所以它有自己的入口
+    /// （`LoginService::start_kiro_login`），与 Trae / AStudio 并列。
     fn supports_web_login(&self) -> bool {
         false
     }
