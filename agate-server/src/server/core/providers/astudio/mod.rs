@@ -50,11 +50,13 @@
 //!   chat         Responses 事件 → chat 帧（流式 / 聚合）
 //!   usage        余额（通用积分 / 星火积分 / 会员）
 //!   checkin      每日登录积分（用余额差观测）
+//!   adapter      ProviderAdapter 实现（注册表接线在这一个文件里收口）
 //! ```
 //!
 //! ── 硬约束 ──────────────────────────────────────────────────
 //! release 是 `panic=abort`：本目录零 unwrap/expect/panic。
 
+pub mod adapter;
 pub mod chat;
 pub mod checkin;
 pub mod client;

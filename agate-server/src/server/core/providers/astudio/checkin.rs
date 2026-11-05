@@ -23,6 +23,7 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
+use crate::server::core::account_store::AccountStore;
 use crate::server::core::proxies::ResolvedProxy;
 use crate::server::errors::GatewayError;
 
@@ -95,6 +96,15 @@ async fn total(
 ///
 /// 返回 `{success, msg, credit}` —— 与别家 claim 同一形状（`billing::checkin`
 /// 的汇总只认 `success` / `msg`）。
+pub async fn claim_for_account(
+    store: &AccountStore,
+    account_id: &str,
+) -> Result<Value, GatewayError> {
+    let (_, credentials, proxy, _) = super::adapter::prepare(store, account_id).await?;
+    claim_daily(&credentials, proxy.as_ref()).await
+}
+
+/// 同一个 claim 的核心（凭证已就绪）：见模块头。
 pub async fn claim_daily(
     credentials: &Credentials,
     proxy: Option<&ResolvedProxy>,

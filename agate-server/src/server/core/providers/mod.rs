@@ -632,6 +632,28 @@ pub enum ProviderKind {
     /// 归 **Agent 分段**：本家在上游 `agent2api-providers` 包里（该包不声明
     /// `provider_category`，默认 agent），`order` 是 31。
     Kiro,
+    /// AStudio（科大讯飞「星火 Astron Studio」桌面端）。
+    ///
+    /// ── 形态 ───────────────────────────────────────────────────
+    /// 上游对话走 OpenAI **Responses**（`POST {模型域}/model-gateway/v1/responses`，
+    /// 响应是 `response.*` 事件流）。`UpstreamKind` 是封闭枚举、没有这个变体，
+    /// 所以 `is_stateful() == true`：适配器自己读事件、翻成标准 chat 帧。
+    ///
+    /// ── 两套凭据各管一段 ───────────────────────────────────────
+    /// ```text
+    ///   modelBearerToken   只够调模型
+    ///   token + accountId  网页会话：余额 / 会员 / 签到
+    /// ```
+    /// 只有前者也能对话，那个账号只是没有余额行、不参与签到（公开视图用
+    /// `noSession` 如实标出，别说成「账号异常」）。
+    ///
+    /// ── 没有续期接口 ───────────────────────────────────────────
+    /// 凭据是登录时发的死票，失效只能重贴 —— `supports_refresh` 因此为 false，
+    /// 后台续期任务不会问它。
+    ///
+    /// 归 **Agent 分段**：在上游 `agent2api-providers` 包里（该包不声明
+    /// `provider_category`，默认 agent），`order` 是 32。
+    Astudio,
 }
 
 /// 一个提供商的静态元数据。
@@ -827,6 +849,10 @@ pub const PROVIDERS: &[ProviderMeta] = &[
     // 归 **Agent 分段**（`agent2api-providers` 包，order 31）。
     // 排在末尾：本仓按接入批次排（与 doubaowork 同一处置），不按上游 order。
     ProviderMeta::agent("kiro", "Kiro"),
+    // AStudio（科大讯飞）：单一站点、单一入口（粘贴 modelBearerToken /
+    // astron-session.json），没有地区伴生。标签逐字取上游 `pack.json`，
+    // 归 **Agent 分段**（order 32）。排在末尾：本仓按接入批次排。
+    ProviderMeta::agent("astudio", "AStudio"),
 ];
 
 /// provider id 在注册表里的下标（未知 id → None）。
@@ -922,6 +948,7 @@ pub fn kind_from_id(id: &str) -> Option<ProviderKind> {
         "tabbit" => Some(ProviderKind::Tabbit),
         "tabbit-intl" => Some(ProviderKind::TabbitIntl),
         "kiro" => Some(ProviderKind::Kiro),
+        "astudio" => Some(ProviderKind::Astudio),
         // 走到这里 = 上面的注册表判定已放行、这个 match 却没有对应分支：
         // 只可能是有人给 `PROVIDERS` 加了条目忘了加这里。开发期喊出来；
         // release 返回 None（见上：宁可为「未知」，不可误认成别家）。
@@ -975,6 +1002,7 @@ pub const fn kind_id(kind: ProviderKind) -> &'static str {
         ProviderKind::Tabbit => "tabbit",
         ProviderKind::TabbitIntl => "tabbit-intl",
         ProviderKind::Kiro => "kiro",
+        ProviderKind::Astudio => "astudio",
     }
 }
 

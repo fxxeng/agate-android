@@ -399,6 +399,14 @@ impl AccountStore {
             // 记录里的 access/refresh 是货真价实的登录态，掉进下面的 workbuddy
             // 兜底形状会随列表响应整串下发（同 doubaowork / tabbit 那一支）。
             self.to_kiro_public_account(record)
+        } else if record.provider() == super::astudio_accounts::ASTUDIO_PROVIDER_ID {
+            // AStudio：`key`（modelBearerToken）与网页会话的 `token` /
+            // `ssoSessionId` 一律不下发，只留 `hasToken` / `hasSession` /
+            // `noSession` / `available`（见 `astudio_accounts::to_astudio_public_account`）。
+            // 这一支**必须有**：本家的凭据是两套（模型 + 网页会话），且粘贴整段
+            // `astron-session.json` 时那些键会作为「未知字段」原样留在记录里 ——
+            // 掉进下面的 workbuddy 兜底形状就会随列表响应整串下发。
+            self.to_astudio_public_account(record)
         } else if record.provider() == super::atomcode_accounts::ATOMCODE_PROVIDER_ID {
             // AtomCode（AtomGit）：摘掉 `accessToken` 与 `refreshToken`，留
             // `tokenTail` / `canRefresh` / `hasToken`。refresh token 是长期有效的

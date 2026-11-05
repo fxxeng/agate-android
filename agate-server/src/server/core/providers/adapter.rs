@@ -1285,6 +1285,9 @@ pub fn adapter_for(kind: ProviderKind) -> &'static dyn ProviderAdapter {
         // 第 4 段读（见 `kiro/mod.rs` 模块头）—— 与 WorkBuddy / Qoder / Tabbit
         // 「两套账号就拆家」的判据不同，这里不拆。
         ProviderKind::Kiro => &super::kiro::KIRO_ADAPTER,
+        // AStudio 是单一站点、单一入口（粘贴 modelBearerToken / astron-session.json），
+        // 没有地区伴生，所以只有一个适配器实例（与 Kiro 同一处置，只是理由更简单）。
+        ProviderKind::Astudio => &super::astudio::adapter::ASTUDIO_ADAPTER,
     }
 }
 
@@ -1435,6 +1438,10 @@ pub fn implemented_kinds() -> Vec<ProviderKind> {
         // 循环不会问它。症状比别家更隐蔽一点：`kiro::models` 的兜底只有 `auto`
         // 一条，所以"漏登记"看起来不像是故障，像是「这家本来就只有 auto」。
         ProviderKind::Kiro,
+        // AStudio：适配器已接真身（会话式转发 / 目录 / 余额 / 签到），且有远程
+        // 目录（`/api/v1/model-manager/models`）—— 漏了就是「账号加了，模型列表
+        // 一直停在兜底那七条」
+        ProviderKind::Astudio,
     ]
 }
 

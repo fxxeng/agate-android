@@ -289,6 +289,24 @@ pub(super) fn identity_of_item(provider: &str, item: &Map<String, Value>) -> Res
         }
         return Ok(identity);
     }
+    // AStudio：`uid` → accountId → 令牌摘要（三级），与落库判重同一个函数
+    // （`credentials::identity`）。本家同样没有 uid / userId 键，不接这一支会
+    // 落进兜底报「缺少 userId」，整条导入失败。
+    //
+    // 额外要求 `from_fields` 成功：没有 modelBearerToken 的记录**不能**靠
+    // 「空令牌的摘要」混过去 —— 那会让一份坏记录以看似合法的身份入库，到第一次
+    // 对话才报「没有模型凭据」。
+    if provider == kind_id(ProviderKind::Astudio) {
+        let fields = Value::Object(item.clone());
+        if crate::server::core::providers::astudio::credentials::Credentials::from_fields(&fields)
+            .is_err()
+        {
+            return Err("缺少 modelBearerToken（无法标识 AStudio 账号）".to_string());
+        }
+        return Ok(crate::server::core::providers::astudio::credentials::identity(
+            &fields,
+        ));
+    }
     if user_id.is_empty() {
         return Err(format!("缺少 userId（无法标识 {provider} 账号）"));
     }
@@ -393,6 +411,18 @@ pub(super) fn identity_of_record(provider: &str, record: &StoredAccount) -> Opti
             &record.to_value(),
         );
         return (!identity.is_empty()).then_some(identity);
+    }
+    // AStudio：与 `identity_of_item` 调同一个函数（同一口径的唯一保证）
+    if provider == kind_id(ProviderKind::Astudio) {
+        let fields = record.to_value();
+        if crate::server::core::providers::astudio::credentials::Credentials::from_fields(&fields)
+            .is_err()
+        {
+            return None;
+        }
+        return Some(crate::server::core::providers::astudio::credentials::identity(
+            &fields,
+        ));
     }
     let user_id = record.user_id().trim().to_string();
     (!user_id.is_empty()).then_some(user_id)

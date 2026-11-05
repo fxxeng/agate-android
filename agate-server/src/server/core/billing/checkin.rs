@@ -471,6 +471,22 @@ pub async fn checkin_for(
                     .map_err(|error| error.message);
             claim_result(id, name, &display, true, claim)
         }
+        "astudio" => {
+            // AStudio：上游**没有领取接口**，签到 = 当天会话首次活跃时的发放。
+            // 只能「读余额 → 触发活跃 → 等 2.5 秒 → 再读余额」，**涨了才算成功**
+            // （见 `providers::astudio::checkin` 的模块头）。没涨如实报「未观测到
+            // 新发放」—— 把「可能发了也可能没发」写成成功会让签到台账变成一份
+            // 没发生过的断言。
+            //
+            // 只有模型凭据（无网页会话）的账号由实现直接回 `ineligible`：读不到
+            // 余额就观测不了发放，硬发请求只会得到两条 401。
+            let claim = crate::server::core::providers::astudio::checkin::claim_for_account(
+                store, &id,
+            )
+            .await
+            .map_err(|error| error.message);
+            claim_result(id, name, &display, true, claim)
+        }
         // 兜底只服务默认那家（WorkBuddy 国内版）——**不是**「剩下所有家」。
         // 这里曾经是无所不包的 `_`：一个 provider 只要没在上面列出，就会拿自己的
         // 令牌去打腾讯的签到接口，稳定报错且看不出原因（Qoder 接入前正是这个处境）。

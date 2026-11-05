@@ -1604,6 +1604,52 @@ pub async fn add_account(state: &ServerState, body: &Bytes) -> Response {
                 Err(error) => Err(AccountStoreError::new(error.message, error.status_code)),
             }
         }
+        // AStudio（科大讯飞「星火 Astron Studio」桌面端）：**粘贴** `modelBearerToken`
+        // 或整段 `astron-session.json`，也可以选一个 .json 凭证文件。
+        //
+        // ── 两套凭据，粘哪一套都能加 ────────────────────────────
+        // 只有 `modelBearerToken` → 能对话，没有余额行、不参与签到（公开形态用
+        // `noSession` 标出）；再加上 `token` + `accountId` → 余额 / 会员 / 签到
+        // 全通。**只粘网页会话是错的**：`Credentials::from_fields` 会报「没有
+        // 模型凭据」，而不是收下一个不能对话的账号。
+        //
+        // ── 为什么这里**不探活** ────────────────────────────────
+        // 身份离线可定（`uid` → `accountId` → 令牌摘要，见
+        // `account_store::astudio_accounts`），探活只会多一个失败点：网络抖一下
+        // 就加不进账号，而凭据其实没问题。真失效时第一次转发会拿到明确的 401
+        // （`errors::classify` 判成 TokenExpired）。本家**没有续期**，所以重贴
+        // 是唯一的修复动作 —— 文案里要把这一点说清。
+        //
+        // ── 不提供 importDesktop ────────────────────────────────
+        // 本机登录态是 Windows 注册表 `HKCU\Software\AStudioStorage` 与
+        // `~/.acode/astron-session.json`，Android 上两者都不存在（见
+        // `astudio/mod.rs` 模块头）。给入口只会稳定报「读不到登录态」。
+        Some(crate::server::core::providers::ProviderKind::Astudio) => {
+            if import_desktop {
+                return management_error(
+                    400,
+                    "AStudio 不支持导入桌面端登录态（本机没有它的注册表 / acode 目录），\
+                     请粘贴 modelBearerToken，或粘贴 / 选择 astron-session.json",
+                );
+            }
+            if auth_file_b64.is_some() && auth_file_content.is_none() {
+                return management_error(
+                    400,
+                    "AStudio 的凭证是文本 JSON（astron-session.json），\
+                     不支持二进制凭证文件；请选择 .json 文件或改用「填写凭证」",
+                );
+            }
+            // 文件内容当作「粘进输入框的那一段」交给同一个归一函数 ——
+            // 两条入口一条解析链（与 Kiro 同一处置）
+            let pasted = match auth_file_content {
+                Some(content) => json!({ "text": content }),
+                None => payload,
+            };
+            match crate::server::core::providers::astudio::credentials::normalize_paste(&pasted) {
+                Ok(fields) => store.add_astudio_account(&fields, import_name, "manual"),
+                Err(error) => Err(AccountStoreError::new(error.message, error.status_code)),
+            }
+        }
         // WorkBuddy 系的两家（国内版 / 国际版）：同一套凭证形态与落账号路径，
         // 差别只有归属 —— provider id 自己就是归属（拆家后不再从 payload 里的
         // `edition` 反推：那是账号的属性，而落哪一家是身份问题）。

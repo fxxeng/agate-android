@@ -259,6 +259,14 @@ pub(crate) fn refresh_meta(kind: ProviderKind) -> (bool, i64) {
             super::kiro::models::remote_refreshed(),
             super::kiro::models::last_refreshed_at(),
         ),
+        // AStudio 同样**不落盘**：清单随账号等级变（免费账号看得到 `-4b`
+        // 那条免费模型，付费账号看得到全部），落一份「全局事实」会让低等级
+        // 账号看到它无权使用的模型。`remote_refreshed()` 因此只看
+        // «本进程内跑到过远程目录»，与 kiro 同一处置。
+        ProviderKind::Astudio => (
+            super::astudio::models::remote_refreshed(),
+            super::astudio::models::last_refreshed_at(),
+        ),
     }
 }
 
