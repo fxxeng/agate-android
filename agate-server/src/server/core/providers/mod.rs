@@ -178,6 +178,10 @@ pub mod qoder;
 pub mod raccoon;
 pub mod refresh_flight;
 pub mod tabbit;
+/// Kiro（AWS 的 AI IDE 订阅）：会话式转发（AWS event stream）+ 三种凭证来源。
+///
+/// 不拆家：两个订阅地区共用账号与令牌，只是端点主机不同（地区从 profile ARN 读）。
+pub mod kiro;
 pub mod router;
 /// Trae（字节 AI IDE）。适配实现在 `trae/`：登录 / 凭据 / 目录 / 会话式转发
 /// 已接通（只支持国内 SOLO 通道；国际版是另一套协议，将来另立 kind），见
