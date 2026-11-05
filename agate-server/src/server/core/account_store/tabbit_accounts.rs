@@ -204,12 +204,9 @@ impl AccountStore {
         }
         record.insert(
             "unlockPro".to_string(),
-            Value::Bool(
-                payload
-                    .get("unlockPro")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(true),
-            ),
+            // 宽松布尔：界面把这一项当文本收（「填 0 关闭」），只认 JSON 布尔
+            // 会让「填了 0 却仍然发默认浏览器标记」静默成立
+            Value::Bool(credentials::bool_field(payload, "unlockPro", true)),
         );
         let client_version = pick(payload, &["clientVersion"]);
         if !client_version.is_empty() {

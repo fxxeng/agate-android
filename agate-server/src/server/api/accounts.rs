@@ -1522,39 +1522,12 @@ pub async fn add_account(state: &ServerState, body: &Bytes) -> Response {
             }
             // ── ① 归一化：把「随手复制的一段东西」变成可用凭证 ──────────
             // 用户会粘三种东西（`credentials` 模块头）：Cookie 头单行 / cURL 整段 /
-            // 裸 JWT。前两种的令牌藏在 cookie 串里，裸 JWT 则要合成 Cookie ——
-            // 都在 `normalize_input_text` + `Credentials::from_fields` 两处收敛，
-            // 不在这里另写一套切分规则（两处口径分叉会出现「同一个串，粘贴能加、
-            // 转发却报缺令牌」这种最难排查的形态）。
-            let mut fields = payload.clone();
-            let raw_paste = fields
-                .get("cookie")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .unwrap_or("")
-                .to_string();
-            let pasted_token = fields
-                .get("accessToken")
-                .and_then(Value::as_str)
-                .is_some_and(|text| !text.trim().is_empty());
-            if !raw_paste.is_empty() && !pasted_token {
-                let (token, cookie) = tb::normalize_input_text(&raw_paste);
-                if let Some(object) = fields.as_object_mut() {
-                    if !token.is_empty() {
-                        object.insert("accessToken".to_string(), Value::String(token));
-                    }
-                    // 只回填「看起来像 Cookie 串」的那份；裸 JWT 交给
-                    // `Credentials::from_fields` 合成（`synthetic_cookie`）
-                    object.insert(
-                        "cookie".to_string(),
-                        Value::String(if cookie.contains('=') {
-                            cookie
-                        } else {
-                            String::new()
-                        }),
-                    );
-                }
-            }
+            // 裸 JWT，而且**字段名不可靠** —— 上游桌面端的表单分「网页 Cookie」
+            // 与「登录 JWT」两栏，填反是常态。所以按**内容**判（
+            // `credentials::normalize_payload`，纯函数、有单测），不在这里另写
+            // 一套切分规则：两处口径分叉会出现「同一个串，粘贴能加、转发却报
+            // 缺令牌」这种最难排查的形态。
+            let mut fields = tb::normalize_payload(&payload);
             let parsed = match tb::Credentials::from_fields(&fields) {
                 Ok(parsed) => parsed,
                 Err(error) => return management_error(error.status_code, error.message),

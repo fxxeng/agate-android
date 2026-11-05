@@ -258,6 +258,62 @@ pub fn cookie_token(cookie: &str) -> String {
     cookie_map(cookie).get("token").cloned().unwrap_or_default()
 }
 
+/// 这段文本看起来是不是「一整段 Cookie / cURL」而不是一枚令牌。
+///
+/// ── 为什么按内容判而不按字段名判 ─────────────────────────────
+/// 上游桌面端的表单把「网页 Cookie」和「登录 JWT」当**两个**字段，用户很容易
+/// 把前者填进后者（那一栏的多行提示反而更鼓励这么干）；直接调用 API 的人
+/// 也常把整段 Cookie 塞进 `accessToken`。若只认字段名，这些输入会走
+/// 「令牌形态检查」被拒成一句莫名其妙的 400 —— 而它明明是完整的登录态。
+pub fn looks_like_cookie_paste(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    lower.contains("token=") || lower.contains("cookie:") || lower.contains(" -b ") || lower.starts_with("-b ")
+}
+
+/// 把用户填进**任意字段**的一段文本归一成 `{accessToken, cookie}` 形态。
+///
+/// 三条输入形态（粘贴 Cookie 单行 / Copy as cURL 整段 / 裸 JWT）都由这里收口，
+/// 与 [`normalize_input_text`] 共用同一套拆法 —— 两处各写一份会让「同一个串，
+/// 粘贴能加、调用方拿到的却是 400」这种最难排查的分歧出现。
+///
+/// 只在**确实像 Cookie 串**时才改写字段（见 [`looks_like_cookie_paste`]），
+/// 且只补空位、不覆盖用户已填的令牌：已经正确的 `{accessToken: "eyJ…"}` 原样
+/// 通过，`{cookie: "token=…; user_id=…"}` 会顺带补出同一个 `accessToken`
+/// （存储层与 `from_fields` 读到的是同一个值，语义不变）。
+pub fn normalize_payload(fields: &Value) -> Value {
+    let mut out = fields.clone();
+    let cookie_field = pick(fields, &["cookie"]);
+    let token_field = pick(fields, &["accessToken", "access_token", "token"]);
+    // 候选顺序：cookie 字段优先（那是它该在的位置），再看令牌字段
+    let token_field_empty = token_field.trim().is_empty();
+    let (source_key, source) = if !cookie_field.trim().is_empty() {
+        ("cookie", cookie_field)
+    } else if !token_field_empty {
+        ("accessToken", token_field)
+    } else {
+        return out;
+    };
+    if !looks_like_cookie_paste(&source) {
+        return out;
+    }
+    let (token, cookie) = normalize_input_text(&source);
+    let Some(object) = out.as_object_mut() else {
+        return out;
+    };
+    // 令牌位置：拆出什么就写什么。在 `accessToken` 里塞了 Cookie 串时**必须
+    // 覆盖原文** —— 留着它只会让 `shape_ok` 回一句「令牌格式无效」，把「填错
+    // 栏」指成「令牌坏了」。
+    if source_key == "accessToken" || token_field_empty {
+        object.insert("accessToken".to_string(), Value::String(token));
+    }
+    // 只有拆出真 Cookie 串时才回填 `cookie`：裸 JWT 交给 `Credentials::from_fields`
+    // 合成（`synthetic_cookie`），那里才知道 uid
+    if !cookie.is_empty() && cookie.contains('=') {
+        object.insert("cookie".to_string(), Value::String(cookie));
+    }
+    out
+}
+
 /// 把一段文本归一成「(令牌, Cookie, uid)」。
 ///
 /// 返回的 `cookie` 可能是空串（用户只给了裸 JWT）—— 调用方随后要按
@@ -339,7 +395,13 @@ pub fn pick(value: &Value, keys: &[&str]) -> String {
 }
 
 /// 宽松布尔：`false` / `0` / `off` / `no` / `关闭` / `否` 为假，其余按默认值
-fn bool_field(value: &Value, key: &str, default: bool) -> bool {
+/// 宽松布尔：`true` / `1` / `"on"` / `"开启"` 都算真，`0` / `"false"` / `"关闭"`
+/// 都算假，认不出来就用 `default`。
+///
+/// 上游桌面端把这几项当**文本**收（`unlockPro` 那一栏的提示就是「填 0 关闭」），
+/// 所以存储层也必须按同一个口径读，不能只认 JSON 布尔 —— 否则「填了 0 却仍然
+/// 发默认浏览器标记」这种静默偏差会一直存在。
+pub fn bool_field(value: &Value, key: &str, default: bool) -> bool {
     match value.get(key) {
         Some(Value::Bool(flag)) => *flag,
         Some(Value::String(text)) => {
@@ -481,6 +543,41 @@ mod tests {
         let error = Credentials::from_fields(&json!({ "cookie": "token=a\r\nX-Injected: 1" }))
             .expect_err("换行必须拒绝");
         assert_eq!(error.status_code, 400);
+    }
+
+    /// 字段名不决定语义：Cookie 串塞进 `accessToken` 也要能认出来
+    #[test]
+    fn cookie_paste_is_recognised_whatever_the_field_is_called() {
+        // ① 用户在「登录 JWT」栏里贴了整段 Cookie（上游表单的两栏很容易填反）
+        let out = normalize_payload(&serde_json::json!({
+            "cookie": "",
+            "accessToken": "token=jwt-1; user_id=u1; managed=tab_browser",
+        }));
+        assert_eq!(out["accessToken"], "jwt-1");
+        assert_eq!(out["cookie"], "token=jwt-1; user_id=u1; managed=tab_browser");
+
+        // ② Copy as cURL 整段扔进 accessToken：Cookie 要拆出来，令牌位被覆盖
+        let curl = "curl 'https://web.tabbit.com/api/v3/x' -b 'token=jwt-2; user_id=u2' -H 'accept: */*'";
+        let out = normalize_payload(&serde_json::json!({ "accessToken": curl }));
+        assert_eq!(out["accessToken"], "jwt-2");
+        assert_eq!(out["cookie"], "token=jwt-2; user_id=u2");
+
+        // ③ 已经正确的输入不被改坏：只**补空位**，不覆盖用户已填的令牌
+        //    （只给 Cookie 时会补出 `accessToken` —— 那是这里唯一的新增，
+        //    存储层与 `from_fields` 读到的都是同一个值，语义不变）
+        let out = normalize_payload(&serde_json::json!({ "cookie": "token=jwt-3; user_id=u3" }));
+        assert_eq!(out["cookie"], "token=jwt-3; user_id=u3");
+        assert_eq!(out["accessToken"], "jwt-3");
+        let both = normalize_payload(&serde_json::json!({
+            "cookie": "token=jwt-4; user_id=u4",
+            "accessToken": "jwt-4",
+        }));
+        assert_eq!(both["accessToken"], "jwt-4");
+        let bare = serde_json::json!({ "accessToken": "eyJhbGciOi.payload.sig" });
+        assert_eq!(normalize_payload(&bare), bare);
+        // 裸 JWT 不会被当成 Cookie 串改写
+        assert!(!looks_like_cookie_paste("eyJhbGciOi.payload.sig"));
+        assert!(looks_like_cookie_paste("token=abc; user_id=u"));
     }
 
     /// 归一化：JSON / Cookie 串 / 裸 JWT 三条路都要能出令牌
