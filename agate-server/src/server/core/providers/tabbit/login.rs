@@ -36,6 +36,7 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
+use crate::server::core::hostinfo::hostname;
 use crate::server::errors::GatewayError;
 use crate::server::logging;
 
@@ -101,16 +102,6 @@ fn device_info() -> Value {
         "browser_version": "1.17.16.0",
         "tabbit_version": DEFAULT_CLIENT_VERSION,
     })
-}
-
-/// 宿主名（上游 `hostname`）：拿不到就给 `unknown`，不失败。
-fn hostname() -> String {
-    std::env::var("COMPUTERNAME")
-        .or_else(|_| std::env::var("HOSTNAME"))
-        .map(|value| value.trim().to_string())
-        .ok()
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| "unknown".to_string())
 }
 
 /// 登录请求的头（上游 `login_headers`）。
