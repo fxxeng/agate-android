@@ -5,11 +5,11 @@
 
 > 文档用途：供后续开发者接手、评审和持续推进 Android 架构改造。
 
-> **验证分支当前状态（R33 / 2026-11-04）**：最近一次已验证 HEAD 为 `82e27c41e8`（CI Run `41830352114`，Rust 747/747、JVM 99/99、Instrumentation 2/2、JNI exports 12/12、Android/Rust 构建通过）。Batch 4C-1 已关闭。当前工作候选为 R33 + Batch 4D-1A 平台能力门禁；该候选尚未取得下一轮 CI，不得称为已验证提交。源码归档不含 `.git`，commit 身份以 CI 报告为准。
+> **验证分支当前状态（R34 / 2026-11-05）**：最近一次已验证 HEAD 为 `ba8a546d1dc9752309c00a8c947dc192619988da`（CI Run `41863623004` attempt 2；Rust 742 passed + 11 ignored，JVM 99/99，JNI exports 12/12，Instrumentation 2/2，R34 归档 767/767 blobs 与远端 tree 对账一致）。Batch 4D-1A 已关闭。
 >
 > 当前验证分支：`verify/arch-8faa5f5`（只允许推送该分支，不修改 `main`、不合并）
-> 当前已验证基线：R33 `82e27c41e8`
-> 当前工作候选：R33 + Batch 4D-1A；预计 Rust tests 753 项，尚待 CI。
+> 当前已验证基线：R34 `ba8a546d1dc9752309c00a8c947dc192619988da`
+> 当前工作候选：R34 + Batch 4D-2A/4D-2B（CoreTaskSupervisor 与三个低耦合 Core 循环接入）；尚未运行 CI，不得称为已验证提交。
 > 真机验收采用 APP 日常使用中的滚动证据，不作为独立架构批次的前置阻塞。
 
 ## 1. 项目目标与边界
@@ -2233,3 +2233,44 @@ Linux ARM64 资产不等同于 Android ARM64 可执行文件。Android 需要单
 - 预计 Rust tests 753（R33 747 + 本轮 6）；Android Rust ABI build、Gradle JVM、JNI exports、APK/ELF、Instrumentation 均需集中 CI 验证。
 - 当前批次没有增加 Kotlin/JNI ABI，不应仅因 Rust tests 通过就声称 Android 运行时支持 mihomo。
 - 分支继续只允许 `verify/arch-8faa5f5`；不触碰 `main`、不合并。Phase 2 真机验收继续滚动进行，不阻塞本批 CI。
+
+
+## 26. 2026-11-05 主线节奏修订与 Batch 4D-2A/4D-2B 候选
+
+### 26.1 主线决策（不以外部 AI 报告重排优先级）
+
+本项目的任务优先级由本仓库目标架构、当前源码依赖、已验证结果和实际开发风险决定。外部 AI 报告可作为单项审查输入，但不具有改变主线顺序、增加前置门槛或拆分任务节奏的权力。
+
+- 暂停把 CI Harness 改造作为独立主线批次；R35 CI Harness 仅为未验证候选，不作为本轮源码基线，也不要求先推送/验证 R35。
+- CI 保持现有足以验证主线的门禁；只在出现会实质影响结果可信度的问题时修复，不做流程专项扩张。
+- 真机验收持续滚动记录，不阻塞 Rust Core 生命周期与平台抽象的独立开发。CI、模拟器、真机证据必须分开标注。
+- 本轮唯一代码基线是 R34 归档及其 CI 报告，不混入 R35 CI-only patch。
+
+### 26.2 当前批次：4D-2A + 4D-2B（首轮实现候选）
+
+以 R34 为基线新增 `agate-server/src/task_supervisor.rs`：
+
+- 定义 `TaskScope::{Core, Gateway, Request, Sidecar}`，为后续各生命周期域预留统一分类；当前只接入 Core scope。
+- supervisor 记录稳定任务名、scope、取消 oneshot 和 JoinHandle；相同 scope/name 的活跃任务拒绝重复注册，已结束任务允许后续重新注册。
+- 任务通过 `TaskCancellation` 在安全点响应取消；三个循环在 sleep 和工作单元边界响应，不在正在执行的单轮同步/查询/调度动作中途强制 drop。
+- `shutdown_scope()` 先封闭该 scope 的新注册，再发送合作式取消并在总超时预算内 join；超时才 abort 剩余任务。返回 joined/aborted 数、timeout 状态和 panic 任务名（仅 unwind 构建可捕获；release `panic=abort` 无法恢复）。超时后仅 abort 未完成任务，不做无界二次等待；重复 shutdown 安全。
+- 通过 `shutdown_core_tasks(timeout)` 暴露 Core 级关闭入口，但本轮不把它接入 Desktop/headless/Android 宿主；宿主接线留在 4D-2D，避免误把 Activity/FGS 销毁当作 Core 退出。
+- 迁移 `scheduled_tasks`、`zcode_config_sync`、`usage_query_sweeper` 三个低耦合 Core 长循环到 supervisor；保留原有循环业务、tick/interval、首轮延迟、数据库行为与配置开关。
+- `sub_kernel` 命令 worker 与 mihomo child 仍归 Sidecar scope，本轮不改其队列、取消和关闭协议；留在 4D-2C 与 4D-3 平台进程能力接口共同设计。
+
+### 26.3 验收状态与限制
+
+- 已执行源码级修改与静态差异检查准备；当前容器没有 Cargo/Rustfmt，Rust 编译、单测、格式化均未执行，不能标记通过。
+- 新增 supervisor 单测覆盖：活跃任务重复注册、scope 隔离、取消并 join、重复 shutdown、panic 任务报告。实际测试结果待 GitHub CI。
+- 未改 JNI ABI、Kotlin RuntimeController、FGS、Gateway HTTP graceful shutdown、Desktop/headless 启动入口、Sidecar child 管理。
+- 本轮交付包是 R34 + 4D-2A/2B 候选源码快照，不是 Git commit；推送后以 CI 返回的 HEAD 确认提交身份。
+
+### 26.4 后续主线批次
+
+1. **4D-2C + 4D-2D**：统一 Sidecar command intake / queue / child process stop / worker join 契约，并完成 Desktop、headless、Android 正确宿主接线；与 4D-3 共用平台进程能力边界，避免两套 process manager。
+2. **4D-3**：Rust platform capability traits 与 Android/Desktop adapters，明确路径、进程、权限、网络与平台差异。
+3. **4E**：双实例互斥与资源所有权，避免两个 Core 实例竞争端口、数据库、Sidecar 和后台循环。
+4. **Phase 5**：在 JNI/平台边界稳定后评估 JNI 与 UniFFI，不预设全面迁移。
+5. **Phase 6**：可观测性、压力/泄漏/崩溃恢复与发布门禁。
+
+以上顺序是主线计划，不因外部报告的评分、建议或测试数量而改变；只有源码依赖或真实验证失败才允许调整。

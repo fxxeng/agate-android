@@ -68,22 +68,27 @@ const FIRST_DELAY_MS: u64 = 3_000;
 /// 收 `AccountStore` 而不是 `Arc<AccountStore>`：那个类型本身就是 `Arc<Inner>` 的
 /// Clone 壳（见 `account_store::store`），再套一层 Arc 只会让调用点多写一对括号。
 ///
-/// 用 `crate::spawn_task` 而不是裸 `tokio::spawn`：本函数可能在 setup 钩子（非
-/// 运行时线程）里被调用，裸 spawn 会 panic —— release 是 `panic=abort`。
+/// 通过 CoreTaskSupervisor 注册：支持从非 Tokio setup 线程启动，同时具备可等待的
+/// Core scope 取消契约。循环只在同步轮次之间响应取消，不中断正在执行的配置同步。
 pub fn spawn(store: AccountStore) {
-    // 模块自防：只许拉起一层循环。调用方（bootstrap）进程内只跑一次，
-    // 这里再兜一道，避免未来出现第二个调用点时叠加双循环（同步双发）。
-    static STARTED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
-    if STARTED.set(()).is_err() {
-        return;
+    let registration = crate::task_supervisor::core_task_supervisor().spawn(
+        crate::task_supervisor::TaskScope::Core,
+        "zcode_config_sync",
+        move |mut cancellation| async move {
+            if !cancellation.wait_or_cancel(Duration::from_millis(FIRST_DELAY_MS)).await {
+                return;
+            }
+            loop {
+                sync_once(&store).await;
+                if !cancellation.wait_or_cancel(Duration::from_millis(SYNC_INTERVAL_MS)).await {
+                    break;
+                }
+            }
+        },
+    );
+    if let Err(error) = registration {
+        logging::log("[ZCode]", &format!("注册配置同步循环失败：{error}"));
     }
-    crate::spawn_task(async move {
-        tokio::time::sleep(Duration::from_millis(FIRST_DELAY_MS)).await;
-        loop {
-            sync_once(&store).await;
-            tokio::time::sleep(Duration::from_millis(SYNC_INTERVAL_MS)).await;
-        }
-    });
 }
 
 /// 一轮同步：两份配置各自挑代表账号 → 读取 → 落结论，互不影响。

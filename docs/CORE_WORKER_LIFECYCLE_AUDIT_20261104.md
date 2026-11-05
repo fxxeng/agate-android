@@ -1,9 +1,9 @@
 # Core Worker 生命周期审计与实施方案
 
 - 日期：2026-11-04
-- 源码基线：R33 `82e27c41e8`
+- 源码基线：R34 `ba8a546d1dc9752309c00a8c947dc192619988da`
 - 分支：`verify/arch-8faa5f5`
-- 状态：第一轮源码审计完成；生产 Worker 改造尚未开始
+- 状态：R34 源码审计已完成；4D-2A/4D-2B 首轮实现候选已落入交付源码，待 CI
 - 关联：`ANDROID_KOTLIN_RUST_MIGRATION_HANDOFF.md` 第 24.3 节
 
 ## 1. 结论
@@ -37,7 +37,7 @@ Agate Rust Core 不是单一 Worker。当前代码至少包含四种所有权范
 - JoinHandle 未保存；
 - `send()` 忽略 `sender.send()` 失败；
 - OnceLock sender 没有关闭/替换入口，因此正常生命周期中 receiver 不会因 sender drop 而结束；
-- `shutdown()` 当前仅调用 `runtime::kill_child()` 并写日志；在 R33 归档中未发现其生产调用点。它不关闭 worker、不 drain/drop 队列、不等待 worker 退出，也不能阻止正在执行的 Restart 在 kill 之后继续 spawn。
+- `shutdown()` 当前仅调用 `runtime::kill_child()` 并写日志；在 R34 归档中未发现其生产调用点。它不关闭 worker、不 drain/drop 队列、不等待 worker 退出，也不能阻止正在执行的 Restart 在 kill 之后继续 spawn。
 
 `core/sub_kernel/runtime.rs`：
 - 当前子进程句柄在 `static Mutex<Option<tokio::process::Child>>`；
@@ -137,3 +137,27 @@ CoreTaskSupervisor
 - 不依赖 Android `onDestroy` 做唯一清理保障。
 - 不因 Rust 使用 `std::process::Command` 就把它一律搬到 Kotlin。
 - 不宣称 Android mihomo sidecar 已支持；当前没有 Android 专用已验证资产。
+
+
+## 7. R34 基线上的 4D-2A/4D-2B 首轮实现候选（2026-11-05）
+
+本轮不是外部报告驱动的 CI 专项，而是直接推进 Core 生命周期主线。新增 `agate-server/src/task_supervisor.rs`，当前职责为任务登记、按 scope 去重、取消、限时 join、超时 abort 和 panic 结果报告。`TaskScope` 已定义 Core/Gateway/Request/Sidecar 四类，但本轮仅迁移 Core loops。
+
+迁移范围：
+- `scheduled_tasks::spawn` → Core scope / `scheduled_tasks`
+- `providers::zcode::config_sync::spawn` → Core scope / `zcode_config_sync`
+- `usage_query::spawn_sweeper` → Core scope / `usage_query_sweeper`
+
+迁移保留三个循环原有业务逻辑与节奏。Supervisor 的 Core shutdown API 已提供，但尚未连接宿主。这样可先形成可测试的 Rust Core task ownership，而不错误地把 Gateway stop 或 Android Service onDestroy 映射为 Core shutdown。
+
+未迁移：`sub_kernel::spawn_worker`、mihomo `CHILD`、AutoCheckin、Gateway HTTP serve、Request/session tasks。它们有不同取消/资源语义，分别在 4D-2C/2D/4D-3 等后续批次处理。
+
+### 本轮新增测试意图
+- 活跃同名任务重复注册不产生第二份任务；
+- Core shutdown 不影响 Gateway scope；
+- 取消后等待任务退出；
+- 重复 shutdown 稳定；
+- 任务 panic 通过 shutdown report 显式返回。
+
+### 验证限制
+当前执行环境未安装 Cargo/Rustfmt；本轮没有执行 Rust 编译、Rust 单测或格式化。所有新增测试均为待 CI 验证，不得标记 PASS。Android、模拟器和真机均未在本轮执行。

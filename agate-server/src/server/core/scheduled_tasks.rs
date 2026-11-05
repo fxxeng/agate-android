@@ -400,36 +400,53 @@ async fn run_backend(
 /// 任务的判定，空转成本与改造前的「两次读锁」同一量级。数据库不可用时整轮
 /// 跳过 —— 那时发不出任何可信的判定，宁可这一轮什么都不做。
 pub fn spawn(store: AccountStore, update: UpdateManager) {
-    crate::spawn_task(async move {
-        // 首轮先按持久化状态恢复排期：从未跑过的任务排到「现在」（于是全新安装
-        // 启动即跑一次，与改造前一致），跑过的沿用「上次尝试 + 间隔」——
-        // 已经到期的自然落到过去，这一轮就补上。
-        for task in TASKS.iter().filter(|task| task.runner == Runner::Backend) {
-            if let Err(error) = task_state::reschedule(&state_key(task.id), interval_ms(task)) {
-                logging::log("[Tasks]", &format!("恢复「{}」排期失败：{error}", task.label));
-            }
-        }
-        loop {
-            let Ok(states) = task_state::read_all() else {
-                tokio::time::sleep(Duration::from_millis(TICK_MS)).await;
-                continue;
-            };
+    let registration = crate::task_supervisor::core_task_supervisor().spawn(
+        crate::task_supervisor::TaskScope::Core,
+        "scheduled_tasks",
+        move |mut cancellation| async move {
+            // 首轮先按持久化状态恢复排期：从未跑过的任务排到「现在」（于是全新安装
+            // 启动即跑一次，与改造前一致），跑过的沿用「上次尝试 + 间隔」——
+            // 已经到期的自然落到过去，这一轮就补上。
             for task in TASKS.iter().filter(|task| task.runner == Runner::Backend) {
-                if !settings_of(config::scheduled_settings(), task.id).enabled {
-                    continue;
-                }
-                let Some(state) = states.get(&state_key(task.id)) else { continue };
-                // 在跑（长任务）或还没到点（含失败冷却 / 占位租约）都跳过
-                if state.running() || logging::now_ms() < state.due_at() {
-                    continue;
-                }
-                // 到点：跑一次（`run_backend` 内部按当前间隔重新排期）。
-                // 被跳过（另一进程抢到、或在最短间隔内）不算错误，只留 verbose。
-                if let Err(error) = run_backend(&store, &update, task, false).await {
-                    logging::verbose("[Tasks]", &format!("{}：{error}", task.label));
+                if let Err(error) = task_state::reschedule(&state_key(task.id), interval_ms(task)) {
+                    logging::log("[Tasks]", &format!("恢复「{}」排期失败：{error}", task.label));
                 }
             }
-            tokio::time::sleep(Duration::from_millis(TICK_MS)).await;
-        }
-    });
+            loop {
+                if cancellation.is_cancelled() {
+                    break;
+                }
+                let Ok(states) = task_state::read_all() else {
+                    if !cancellation.wait_or_cancel(Duration::from_millis(TICK_MS)).await {
+                        break;
+                    }
+                    continue;
+                };
+                for task in TASKS.iter().filter(|task| task.runner == Runner::Backend) {
+                    if cancellation.is_cancelled() {
+                        break;
+                    }
+                    if !settings_of(config::scheduled_settings(), task.id).enabled {
+                        continue;
+                    }
+                    let Some(state) = states.get(&state_key(task.id)) else { continue };
+                    // 在跑（长任务）或还没到点（含失败冷却 / 占位租约）都跳过
+                    if state.running() || logging::now_ms() < state.due_at() {
+                        continue;
+                    }
+                    // 到点：跑一次（`run_backend` 内部按当前间隔重新排期）。
+                    // 被跳过（另一进程抢到、或在最短间隔内）不算错误，只留 verbose。
+                    if let Err(error) = run_backend(&store, &update, task, false).await {
+                        logging::verbose("[Tasks]", &format!("{}：{error}", task.label));
+                    }
+                }
+                if !cancellation.wait_or_cancel(Duration::from_millis(TICK_MS)).await {
+                    break;
+                }
+            }
+        },
+    );
+    if let Err(error) = registration {
+        logging::log("[Tasks]", &format!("注册后台调度循环失败：{error}"));
+    }
 }

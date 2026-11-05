@@ -788,9 +788,10 @@ impl ServerState {
 
         // ── Core 级后台任务（进程生命周期，与网关启停解耦）───────────
         // 以下循环一律随 bootstrap 拉起：网关 stop 只停 HTTP 端口，这里
-        // 的任务照常跑；网关 start 也不重复拉起（各 spawn 自带 OnceLock
-        // 防重入）。**新增后台循环一律加在这个区块**，不要挂到网关启动
-        // 路径 —— start_gateway_tasks 只放「随网关开关而有意义」的动作
+        // 的任务照常跑；网关 start 不会重复拉起 Core loops（由
+        // CoreTaskSupervisor 按 scope/name 去重；Sidecar worker 保留自己的
+        // 单实例保护）。**新增进程级 Core 循环加在这个区块**，不要挂到网关
+        // 启动路径 —— start_gateway_tasks 只放「随网关开关而有意义」的动作
         //（当前只有内核 autostart）。
         //
         // · 订阅内核命令 worker：订阅页走 JNI 直调，网关停着也要能手动

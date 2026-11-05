@@ -28,6 +28,7 @@ pub mod paths;
 pub mod port_conflict;
 pub mod server;
 pub mod web_shim;
+pub mod task_supervisor;
 
 /// Agate Android：JNI 控制面（src/jni_bridge.rs，仅 Android 目标编译）。
 #[cfg(target_os = "android")]

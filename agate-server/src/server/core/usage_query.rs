@@ -456,17 +456,21 @@ pub const SWEEP_TICK_MS: u64 = 10_000;
 /// 起动每账号自动查询的心跳循环（`ServerState::bootstrap` 调一次，进程内
 /// 只有这一个循环）。循环体：扫到期账号 → 占位 → 并发查询 → 落记录 → 钩子。
 pub fn spawn_sweeper(store: AccountStore) {
-    // 模块自防：只许拉起一层心跳循环（理由同 config_sync::spawn）。
-    static STARTED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
-    if STARTED.set(()).is_err() {
-        return;
+    let registration = crate::task_supervisor::core_task_supervisor().spawn(
+        crate::task_supervisor::TaskScope::Core,
+        "usage_query_sweeper",
+        move |mut cancellation| async move {
+            loop {
+                sweep_due(&store).await;
+                if !cancellation.wait_or_cancel(Duration::from_millis(SWEEP_TICK_MS)).await {
+                    break;
+                }
+            }
+        },
+    );
+    if let Err(error) = registration {
+        logging::log("[Usage]", &format!("注册余额查询心跳失败：{error}"));
     }
-    crate::spawn_task(async move {
-        loop {
-            sweep_due(&store).await;
-            tokio::time::sleep(Duration::from_millis(SWEEP_TICK_MS)).await;
-        }
-    });
 }
 
 /// 一轮清扫：查一遍「配置了自动查询且到期」的账号。
