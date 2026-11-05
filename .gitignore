@@ -32,8 +32,13 @@ core-gateway/src/main/jniLibs/
 # 本地取回的 CI 产物（APK），不入库
 dist/
 
-# 本地同步的上游源码快照（用于比对分析，体积大且不属本项目产物），不入库
-upstream/
+# 本地同步的上游源码快照（用于比对分析，体积大且不属本项目产物），不入库。
+# **前导斜杠不能省**：写成 `upstream/` 会匹配任意层级的同名目录，把内核的
+# `agate-server/src/server/core/upstream/`（转发链源码）一起吃掉 —— 已跟踪的
+# 文件照旧能改，但**新增**文件从此静默不入库，本地编译一切正常、CI 却报
+# 「file not found for module」。2026-11-05 就是这么让 `image_compress.rs`
+# 在 CI 上凭空消失的。
+/upstream/
 
 # JVM 崩溃现场（Kotlin daemon 被 OOM 杀掉时会在工程根/模块根落这两个文件；
 # 内容是内存转储说明，没有分析价值但会污染 git status）
