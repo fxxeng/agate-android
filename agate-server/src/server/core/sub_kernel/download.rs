@@ -325,7 +325,7 @@ fn install_binary(archive_path: &std::path::Path, dir: &std::path::Path) -> Resu
             .map_err(|error| format!("解压内核失败: {error}"))?;
         // 可执行位与平台文件权限由宿主 adapter 处理。
         crate::server::core::sub_kernel::process::process_adapter()
-            .set_executable(&binary)
+            .set_executable(&binary_path)
             .map_err(|error| format!("设置内核可执行权限失败: {error}"))?;
     }
     Ok(())
