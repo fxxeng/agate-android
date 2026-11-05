@@ -232,33 +232,12 @@ pub fn error_message(event: &Value) -> String {
 /// body 都会被拒 —— 换号只会白扔另一个账号的额度。`too long` 一类的文案里也
 /// 常带 limit 字样，所以这条判据要排在额度**之前**（与 kiro 那条「输入过长
 /// 优先于一切判定」同一条纪律）。
+///
+/// 词表与四档分类共用 `errors` 里同一份（见那个模块的「判据只此一份」）：
+/// 各写一份必然分叉，症状是「HTTP 路径判 429、流内判 400」—— 同一个超长请求
+/// 有时换号有时不换，最难复盘的那类现场。
 pub fn status_for(message: &str) -> u16 {
-    let lower = message.to_ascii_lowercase();
-    let too_long = [
-        "context length",
-        "context_length",
-        "too long",
-        "maximum length",
-        "too large",
-        "too many tokens",
-    ];
-    if too_long.iter().any(|needle| lower.contains(needle)) {
-        return 400;
-    }
-    let quota = [
-        "rate limit",
-        "too many requests",
-        "quota",
-        "balance",
-        "credit",
-        "积分",
-        "额度",
-        "余额",
-    ];
-    if quota.iter().any(|needle| lower.contains(needle)) {
-        return 429;
-    }
-    502
+    super::errors::in_stream_status(message)
 }
 
 /// 取出 `usage`（顶层或包在 `response` 里，两种事件都有）

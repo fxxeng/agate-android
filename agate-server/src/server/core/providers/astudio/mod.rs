@@ -43,15 +43,27 @@
 //! ```text
 //!   endpoints    地址与客户端身份常量（纯）
 //!   credentials  凭据读/写/公开形态/身份（纯，无网络）
+//!   errors       四档分类 + 「输入过长」判定（纯，判据只此一份）
 //!   responses    Chat → Responses 请求体 + 流事件解读（纯，可离线测）
+//!   client       三套出网（Responses / 目录 Bearer / 账号面 Cookie）
+//!   models       目录缓存 + 解析 + 静态兜底
+//!   chat         Responses 事件 → chat 帧（流式 / 聚合）
+//!   usage        余额（通用积分 / 星火积分 / 会员）
+//!   checkin      每日登录积分（用余额差观测）
 //! ```
 //!
 //! ── 硬约束 ──────────────────────────────────────────────────
 //! release 是 `panic=abort`：本目录零 unwrap/expect/panic。
 
+pub mod chat;
+pub mod checkin;
+pub mod client;
 pub mod credentials;
 pub mod endpoints;
+pub mod errors;
+pub mod models;
 pub mod responses;
+pub mod usage;
 
 /// provider id（与内核 `PROVIDERS` 注册表、客户端 `PresetRegistry` 同一字面量）
 pub const ID: &str = "astudio";
