@@ -107,6 +107,24 @@ pub fn is_https_url(value: &str) -> bool {
     !authority.is_empty() && !authority.contains('@')
 }
 
+/// query 参数的百分号编码（只有 profile ARN 这类值需要）。
+///
+/// 不用 `url::form_urlencoded`：那套把空格编成 `+`，而 AWS 的 query 解析按
+/// RFC 3986 解，`+` 会被当成字面量。这里只做一条规则 —— 非 unreserved
+/// 一律 `%XX`，与上游插件 `profile_query` 同一做法。
+pub fn query_escape(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char)
+            }
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
+}
+
 /// 从 profile ARN 里取账号段（`arn:aws:codewhisperer:<region>:<account>:…`）。
 ///
 /// 拿不到就回空串 —— 这个值只用于展示与「同账号去重」的兜底，
@@ -207,5 +225,19 @@ mod tests {
         assert_eq!(account_of("arn:aws:codewhisperer:us-east-1:abc:profile/AAA"), "");
         assert_eq!(account_of(""), "");
         assert_eq!(account_of("arn:aws"), "");
+    }
+
+    /// ARN 拼进 query 时必须整段编码：`:` 与 `/` 不编码会让 URL 变成
+    /// 路径分隔符（服务端把 profile 的后半截当成新路径段）
+    #[test]
+    fn the_profile_arn_is_percent_encoded_for_the_query() {
+        assert_eq!(
+            query_escape("arn:aws:codewhisperer:us-east-1:1:profile/AAA"),
+            "arn%3Aaws%3Acodewhisperer%3Aus-east-1%3A1%3Aprofile%2FAAA"
+        );
+        // unreserved 原样保留（`-` `_` `.` `~` 与字母数字）
+        assert_eq!(query_escape("us-east-1_A.b~c"), "us-east-1_A.b~c");
+        // 空格是 `%20` 而不是 `+`（AWS 按 RFC 3986 解 query）
+        assert_eq!(query_escape("a b"), "a%20b");
     }
 }

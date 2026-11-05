@@ -53,7 +53,13 @@
 pub mod credentials;
 pub mod endpoints;
 pub mod errors;
+pub mod events;
 pub mod eventstream;
+pub mod http;
+pub mod image;
+pub mod models;
+pub mod request;
+pub mod usage;
 
 /// provider id（与内核 `PROVIDERS` 注册表、客户端 `PresetRegistry` 同一字面量）
 pub const ID: &str = "kiro";
