@@ -287,20 +287,20 @@ pub async fn login_start(State(state): State<ServerState>, body: Bytes) -> Respo
             }
         }
     }
-    // Qoder：设备授权，两站同构。拆家后界面上是两张卡片（`qoder` /
-    // `qoder-intl`），点哪张就发哪个 provider id —— 地区由 **provider id**
-    // 反查（与下面 ZCode 同一条理由：`edition` 是前端回显字段，拿它定地区
-    // 会让两张卡片共用一个表单时串味）。
-    if let Some(region) =
-        crate::server::core::providers::qoder::endpoints::Region::from_kind(kind)
+    // Qoder 系：设备授权，三站同构（千问办公也走这条 —— 它没有授权码那条路）。
+    // 拆家后界面上是三张卡片（`qoder` / `qoder-intl` / `qwenwork`），点哪张就发
+    // 哪个 provider id —— 站点由 **provider id** 反查（与下面 ZCode 同一条理由：
+    // `edition` 是前端回显字段，拿它定站点会让几张卡片共用一个表单时串味）。
+    if let Some(site) =
+        crate::server::core::providers::qoder::endpoints::Site::from_kind(kind)
     {
-        let handle = match state.login().start_qoder_login(region) {
+        let handle = match state.login().start_qoder_login(site) {
             Ok(handle) => handle,
             Err(error) => return management_error(400, error),
         };
         let task = handle.snapshot();
         return ok_json(json!({ "state": task.state, "authUrl": task.auth_url,
-            "edition": task.edition, "provider": region.provider_id() }));
+            "edition": task.edition, "provider": site.provider_id() }));
     }
     // ZCode：**服务端中介的 CLI 轮询**（`/oauth/cli/init` 拿授权地址，
     // 用户在浏览器里授权后由后台任务轮询换令牌）。响应形状与 Qoder 那条

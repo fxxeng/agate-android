@@ -304,15 +304,15 @@ pub(crate) fn is_zcode_family(provider_id: &str) -> bool {
     crate::server::core::providers::zcode::region::Region::from_provider_id(provider_id).is_some()
 }
 
-/// 这个 provider 是不是 **Qoder 系**（`qoder` 中国版 / `qoder-intl` 国际版）。
+/// 这个 provider 是不是 **Qoder 系**（`qoder` 中国版 / `qoder-intl` 国际版 /
+/// `qwenwork` 千问办公国内版 —— 三家用同一份实现与同一套凭证形态）。
 ///
 /// 与 [`is_accio_family`] / [`is_zcode_family`] 同一形态、同一理由：账号层有
-/// 几处判断只关心「是不是 Qoder」（公开形态、身份字段），不关心哪个地区 ——
-/// 那些分支走本函数，于是加地区或改名时只改这里一处，而不是散在各文件里的
+/// 几处判断只关心「是不是这一族」（公开形态、身份字段），不关心哪个站点 ——
+/// 那些分支走本函数，于是加站点或改名时只改这里一处，而不是散在各文件里的
 /// `id == "qoder"`（那种写法对国际版恒为假，是个不会报错的静默失配）。
 pub(crate) fn is_qoder_family(provider_id: &str) -> bool {
-    crate::server::core::providers::qoder::endpoints::Region::from_provider_id(provider_id)
-        .is_some()
+    crate::server::core::providers::qoder::endpoints::Site::from_provider_id(provider_id).is_some()
 }
 
 /// 小浣熊 provider id（账号存储内部多处要用）。

@@ -1210,8 +1210,10 @@ pub fn adapter_for(kind: ProviderKind) -> &'static dyn ProviderAdapter {
         ProviderKind::AutoClawIntl => &super::autoclaw::AUTOCLAW_INTL_ADAPTER,
         ProviderKind::Qoder => &super::qoder::QODER_ADAPTER,
         // Qoder 的两个地区是两个 provider、两个实例（同一份实现的按地区
-        // 参数化，见 `qoder::endpoints::Region` 与 `qoder::mod` 的模块头）
+        // 参数化，见 `qoder::endpoints::Site` 与 `qoder::mod` 的模块头）
         ProviderKind::QoderIntl => &super::qoder::QODER_INTL_ADAPTER,
+        // 千问办公与 Qoder 共用同一份实现（同一套协议栈，按站点参数化）
+        ProviderKind::Qwenwork => &super::qoder::QWENWORK_ADAPTER,
         ProviderKind::Chatglm => &super::chatglm::CHATGLM_ADAPTER,
         ProviderKind::CodeArts => &super::codearts::CODEARTS_ADAPTER,
         // Cline 的两个额度池是两个 provider、两个实例（同一份实现的按池
@@ -1326,6 +1328,11 @@ pub fn implemented_kinds() -> Vec<ProviderKind> {
         // 排期（拆家后的既定口径，与 WorkBuddy 两个地区同一理由）—— 不在的
         // 话国际版的目录刷新永远不会被调度。
         ProviderKind::QoderIntl,
+        // 千问办公（国内版）：与 Qoder 同一份实现、**不同的站点与缓存槽**
+        // （`catalog_cache::SCOPE_QWENWORK`），目录是它自己的 `qwork` 场景。
+        // 必须在列表里 —— 否则它的目录刷新永远不会被调度，清单停在
+        // `qwenwork_fallback()` 那三条（这就是本轮单测抓到的那类静默故障）。
+        ProviderKind::Qwenwork,
         ProviderKind::ClineFree,
         ProviderKind::ClinePass,
         // Accio 的两个地区各算一家（同一份实现、两套账号与目录缓存）

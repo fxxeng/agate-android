@@ -103,6 +103,7 @@ pub(super) async fn prefetch_stream_head(
                 // （Unknown 的 502 也一样），与 `drive_aggregate` 的口径一致
                 SseEvent::Error { status, kind, raw, message, pricing_url, queue } => {
                     record_limited(
+                        limit.site,
                         &limit.store,
                         &limit.account_id,
                         &limit.model,
@@ -250,6 +251,7 @@ pub(super) async fn drive_stream(
                     // 本身只能随流下发给客户端：流已开始，换号与排队退避都
                     // 不再可能（与首帧前错误的差别，见 prefetch_stream_head 的说明）
                     record_limited(
+                        limit.site,
                         &limit.store,
                         &limit.account_id,
                         &limit.model,
@@ -288,6 +290,7 @@ pub(super) async fn drive_stream(
                 }
                 SseEvent::Error { status, kind, raw, message, pricing_url, queue } => {
                     record_limited(
+                        limit.site,
                         &limit.store,
                         &limit.account_id,
                         &limit.model,
@@ -313,7 +316,7 @@ pub(super) async fn drive_stream(
 
     if let Some(message) = failed {
         telemetry.note_error(&message);
-        logging::log("[Qoder]", &format!("❌ {message}"));
+        logging::log(translator.site.log_tag(), &format!("❌ {message}"));
         // 失败前先把拆解器缓冲里已确定的内容冲刷出去（用户已经看到的部分不丢）
         for delta in translator.finish() {
             let frame = translator.chunk_frame(chat::delta_json(&delta), None);

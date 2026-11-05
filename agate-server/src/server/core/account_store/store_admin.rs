@@ -725,7 +725,7 @@ impl AccountStore {
     ///
     /// ── 判据：记录里的地区，而不是 id 前缀 ─────────────────────
     /// 拆家前「这个账号属于哪个地区」由记录的 `mode`（兜底 `edition`）字段
-    /// 表达（`Region::from_payload` 的读取口径）。id 虽然也带地区段
+    /// 表达（`Site::from_payload` 的读取口径）。id 虽然也带地区段
     /// （`qoder-global-…` / `qoder-cn-…`），但那是生成时的快照，记录的权威
     /// 表达一直是凭证字段 —— 与 WorkBuddy 拆家「判据是 edition」同一取舍。
     ///
@@ -745,16 +745,16 @@ impl AccountStore {
             if record.provider() != LEGACY_QODER_ID {
                 continue;
             }
-            let Some(region) =
-                crate::server::core::providers::qoder::endpoints::Region::from_payload(
+            let Some(site) =
+                crate::server::core::providers::qoder::endpoints::Site::from_payload(
                     &record.to_value(),
                 )
                 .ok()
-                .filter(|region| *region == crate::server::core::providers::qoder::endpoints::Region::Global)
+                .filter(|site| *site == crate::server::core::providers::qoder::endpoints::Site::QoderIntl)
             else {
                 continue;
             };
-            record.set_provider(region.provider_id());
+            record.set_provider(site.provider_id());
             moved += 1;
         }
         moved

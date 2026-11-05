@@ -9,8 +9,9 @@
 //!
 //! 身份字段（各家落盘字段的事实来源见 account_store 各模块）：
 //!   WorkBuddy = uid；CatPaw = uid（缺则 loginName）；raccoon / AutoClaw =
-//!   userId；Qoder = 地区 + userId（添加路径 `qoder_accounts` 按「地区 + userId」
-//!   判重，这里必须同口径 —— 只按 userId 会把国际版 / 中国版两条记录并成一条）；
+//!   userId；Qoder 系 = **provider（站点）+ userId**（添加路径 `qoder_accounts`
+//!   按「站点 + userId」判重，这里必须同口径 —— 只按 userId 会把同一个人在不同
+//!   站点的记录并成一条）；
 //!   Cline 两池 = account；自定义提供商（custom- 前缀）= apiKey（缺则账号 id，
 //!   与 `custom_accounts` 「同 key 合并」的幂等口径一致）。
 
@@ -22,6 +23,7 @@ use crate::server::core::account_store::priority::{
     normalize_priority_value, DEFAULT_PRIORITY, MAX_PRIORITY, MIN_PRIORITY,
 };
 use crate::server::core::account_store::state::StoredAccount;
+use crate::server::core::providers::qoder::endpoints::Site;
 use crate::server::core::providers::{
     is_known_provider_id, kind_id, ProviderKind, DEFAULT_PROVIDER_ID,
 };
@@ -110,15 +112,24 @@ pub(super) fn resolve_provider(item: &Map<String, Value>) -> Result<String, Stri
     }
 }
 
-/// Qoder 记录 / 导入条目上的地区标识（与 `qoder::Region::from_payload` 同键序：
+/// Qoder 系记录 / 导入条目上的**站点**（键序同 `qoder::Site::from_payload`：
 /// `mode` 优先、`edition` 兜底）。
 ///
 /// 三态返回：
-///   - `Ok(Some(region))`：解析成功；
-///   - `Ok(None)`：键缺失 → 调用方按国际版（添加路径对缺失的缺省就是国际版，
-///     两处缺省必须一致，否则同一条记录两边算出的身份对不上）；
+///   - `Ok(Some(site))`：兼容字段说了它自认为的地区；
+///   - `Ok(None)`：键缺失**或为空串** —— 兼容字段没有看法，调用方按 provider
+///     身份走。（空串按"没有看法"处理，是有意的：历史落盘里"没写"与"写空"
+///     是同一件事，把它当"说自己是国际版"会让 provider 为 `qoder` 的老记录
+///     被判成自相矛盾，白丢一条能导的记录。）
 ///   - `Err(())`：值存在但不是已知地区 —— 无法识别（条目失败 / 记录不参与匹配）。
-fn qoder_region(fields: &Map<String, Value>) -> Result<Option<String>, ()> {
+///
+/// ⚠️ 它与 `Site::from_payload` 回答的**不是同一个问题**：那个是「缺省当国际版」
+/// 的读取口径（拆家迁移要用它），这里只回答「兼容字段有没有说法」。
+///
+/// ⚠️ 解析出来的站点**只有地区档位**（`cn` / `global`），分不开 `qoder` 与
+/// `qwenwork` —— 两家都是 `cn`。身份一律以 provider 为准，这里的结果只用来
+/// 核对兼容字段有没有自相矛盾。
+fn qoder_site(fields: &Map<String, Value>) -> Result<Option<Site>, ()> {
     let raw = match fields
         .get("mode")
         .filter(|value| !value.is_null())
@@ -127,11 +138,11 @@ fn qoder_region(fields: &Map<String, Value>) -> Result<Option<String>, ()> {
         Some(raw) => raw,
         None => return Ok(None),
     };
-    match raw.as_str().ok_or(())?.trim() {
-        "" | "global" | "intl" => Ok(Some("global".to_string())),
-        "cn" => Ok(Some("cn".to_string())),
-        _ => Err(()),
+    let text = raw.as_str().ok_or(())?.trim();
+    if text.is_empty() {
+        return Ok(None);
     }
+    Site::parse(text).map(Some).map_err(|_| ())
 }
 
 /// 导入记录的业务身份；无法确定身份时 Err（该条失败，不做猜测性匹配）。
@@ -198,30 +209,29 @@ pub(super) fn identity_of_item(provider: &str, item: &Map<String, Value>) -> Res
         }
         return Ok(format!("{}\u{0}{}", text("domainId"), user_id));
     }
-    // Qoder：地区 + userId 两段身份（与 `qoder_accounts` 添加路径的判重口径
-    // 一致 —— 只按 userId 会把同一个人在两个地区的账号并成一条）。
-    // 拆家后两个地区是两家 provider（`qoder` / `qoder-intl`），判据按家族走；
-    // 地区仍从记录字段读（`mode` / `edition`），与 provider id 互为印证 ——
-    // 迁移保证了存量记录两者一致。
+    // Qoder 系：**站点 + userId** 两段身份（与 `qoder_accounts` 添加路径的判重
+    // 口径一致 —— 只按 userId 会把同一个人在不同站点的账号并成一条）。
+    // 拆家后三个站点是三家 provider（`qoder` / `qoder-intl` / `qwenwork`），
+    // 判据按家族走；站点直接取 **provider id**（它是权威，且 `mode` 只有
+    // `cn` / `global` 两档，分不开 qoder 与 qwenwork），`mode` / `edition`
+    // 只用来核对 —— 冲突或非法的记录视为无法识别。
     if crate::server::core::account_store::is_qoder_family(provider) {
         if user_id.is_empty() {
             return Err("缺少 userId（无法标识 Qoder 账号）".to_string());
         }
-        let region = match qoder_region(item) {
-            Ok(Some(region)) => region,
-            Ok(None) => {
-                // 键缺失：按 **provider id** 推（拆家后它是权威；导入条目
-                // 一律带 provider），provider 也不认识时按国际版兜底（与
-                // 添加路径对缺失 mode 的旧缺省一致）。
-                crate::server::core::providers::qoder::endpoints::Region::from_provider_id(provider)
-                    .map(|region| region.id().to_string())
-                    .unwrap_or_else(|| "global".to_string())
+        // `is_qoder_family` 已保证能反查到站点，取出来只为核对兼容字段
+        let known = crate::server::core::providers::qoder::endpoints::Site::from_provider_id(provider);
+        match qoder_site(item) {
+            // 兼容字段说的地区与 provider 冲突 → 这条记录不可信
+            Ok(Some(said)) if known.is_some_and(|known| known.id() != said.id()) => {
+                return Err("Qoder 地区与 provider 不一致".to_string())
             }
             Err(()) => {
                 return Err("Qoder 地区无法识别（mode / edition 必须是 global 或 cn）".to_string())
             }
-        };
-        return Ok(format!("{region}:{user_id}"));
+            _ => {}
+        }
+        return Ok(format!("{provider}:{user_id}"));
     }
     // Trae：账号标识是 `uid`（与 workbuddy / catpaw 同类，落在 uid 而不是 userId），
     // 且判重口径是 **(variant, uid) 两段** —— 见 `trae_accounts::add_trae_account`：
@@ -323,23 +333,21 @@ pub(super) fn identity_of_record(provider: &str, record: &StoredAccount) -> Opti
             .to_string();
         return (!account.is_empty()).then_some(account);
     }
-    // Qoder：地区 + userId（与 `identity_of_item` 同口径，地区取 `mode` /
-    // `edition`，键缺失按 provider id 推、再退国际版 —— 两处缺省必须一致）。
-    // 地区值非法的记录视为无法识别身份（不参与匹配，导入按新增走；正常数据
-    // 不会出现这种记录）。
+    // Qoder 系：站点 + userId（与 `identity_of_item` 同一口径 —— 站点取
+    // **provider id**，`mode` / `edition` 只用来核对，冲突或非法则视为无法
+    // 识别身份：不参与匹配，导入按新增走；正常数据不会出现这种记录）。
     if crate::server::core::account_store::is_qoder_family(provider) {
         let user_id = record.user_id().trim().to_string();
         if user_id.is_empty() {
             return None;
         }
-        let region = match qoder_region(record.fields()) {
-            Ok(Some(region)) => region,
-            Ok(None) => crate::server::core::providers::qoder::endpoints::Region::from_provider_id(provider)
-                .map(|region| region.id().to_string())
-                .unwrap_or_else(|| "global".to_string()),
+        let known = crate::server::core::providers::qoder::endpoints::Site::from_provider_id(provider);
+        match qoder_site(record.fields()) {
+            Ok(Some(said)) if known.is_some_and(|known| known.id() != said.id()) => return None,
             Err(()) => return None,
-        };
-        return Some(format!("{region}:{user_id}"));
+            _ => {}
+        }
+        return Some(format!("{provider}:{user_id}"));
     }
     // 自定义提供商：apiKey 非空即身份（同 key 合并），否则账号 id
     if provider.starts_with(crate::server::core::custom_providers::ID_PREFIX) {
@@ -434,6 +442,35 @@ mod tests {
 
     fn item(fields: serde_json::Value) -> Map<String, Value> {
         fields.as_object().expect("对象").clone()
+    }
+
+    #[test]
+    fn qoder_identity_is_scoped_by_site_so_two_products_never_merge() {
+        // 三家共用一套凭证形态，`mode` / `edition` 又只有 cn / global 两档 ——
+        // 身份若按地区算，千问办公与 Qoder 中国版的同一个人会被并成一条
+        // （导入时把另一家的记录整条覆写，连凭证一起丢）。
+        let qoder_cn = identity_of_item("qoder", &item(json!({"userId": "u1", "mode": "cn"})))
+            .expect("中国版应识别出身份");
+        let qwenwork =
+            identity_of_item("qwenwork", &item(json!({"userId": "u1", "mode": "cn"})))
+                .expect("千问办公应识别出身份");
+        let intl = identity_of_item("qoder-intl", &item(json!({"userId": "u1"})))
+            .expect("国际版（缺 mode）应识别出身份");
+        assert_ne!(qoder_cn, qwenwork, "两家产品绝不能并成一条");
+        assert_ne!(qoder_cn, intl, "两个地区绝不能并成一条");
+        // 同一个人的两个站点：身份必须带 provider，而不是只带地区
+        assert!(qwenwork.starts_with("qwenwork:"));
+        assert!(intl.starts_with("qoder-intl:"));
+        // 兼容字段与 provider 冲突 → 不可信（不猜、不并）
+        assert!(identity_of_item("qwenwork", &item(json!({"userId": "u1", "mode": "global"}))).is_err());
+        assert!(identity_of_item("qoder-intl", &item(json!({"userId": "u1", "edition": "cn"}))).is_err());
+        // 值非法 → 拒绝；空串 → 「没有看法」，按 provider 走（历史落盘里
+        // "没写"与"写空"是同一件事）
+        assert!(identity_of_item("qoder", &item(json!({"userId": "u1", "mode": "火星"}))).is_err());
+        assert_eq!(
+            identity_of_item("qoder", &item(json!({"userId": "u1", "mode": ""}))).expect("空串按没有看法"),
+            "qoder:u1"
+        );
     }
 
     #[test]

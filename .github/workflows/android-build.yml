@@ -24,6 +24,20 @@ jobs:
         with:
           workspaces: agate-server
 
+      # 内核单元测试必须由 CI 真跑一遍。
+      #
+      # 为什么单独一步、而且放在 NDK 之前：交叉编译只证明「能编过」，
+      # 而这里的 1138 条单测覆盖的是**行为契约**（站点身份与主机一一对应、
+      # 注册表里每家都在 implemented_kinds 里、账号 id 前缀不撞、行尾/编码
+      # 之外的接线点……）。2026-11 本地首次执行时就跑出过 8 个失败、其中 3 个
+      # 是真实缺陷；若只在本地跑，回归就靠人记得。
+      #
+      # 放前面还有一个实际原因：NDK 安装 + `cargo install cargo-ndk` 要花几分钟，
+      # 单测失败应该在那之前就停下来。
+      - name: 内核单元测试（cargo test --lib）
+        working-directory: agate-server
+        run: cargo test --lib
+
       - name: JDK 17
         uses: actions/setup-java@v4
         with:

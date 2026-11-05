@@ -74,6 +74,9 @@ pub const SCOPE_RACCOON: &str = "raccoon";
 pub const SCOPE_QODER_GLOBAL: &str = "qoderGlobal";
 /// Qoder 中国版
 pub const SCOPE_QODER_CN: &str = "qoderCn";
+/// 千问办公国内版（与 Qoder 同一套目录接口，但场景与条目形状不同，
+/// 因此单独一份缓存 —— 共用一个作用域会让两家的清单互相覆盖）
+pub const SCOPE_QWENWORK: &str = "qwenwork";
 /// CatPaw（`/api/agent/maas/model-types`）
 pub const SCOPE_CATPAW: &str = "catpaw";
 /// 智谱清言的远程模型目录（`operation/detail?tag=available_models`）

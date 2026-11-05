@@ -99,14 +99,15 @@ pub(crate) fn refresh_meta(kind: ProviderKind) -> (bool, i64) {
             super::raccoon::models::remote_refreshed(),
             super::raccoon::models::last_refreshed_at(),
         ),
-        // 拆家后两个地区各查**自己那一格**缓存（「来源 / 更新日期」列如实分开，
-        // 不再取两地区的最大值 —— 那会让两家显示同一次拉取时刻）
-        ProviderKind::Qoder | ProviderKind::QoderIntl => {
-            let region = super::qoder::endpoints::Region::from_kind(kind)
-                .unwrap_or(super::qoder::endpoints::Region::Cn);
+        // 拆家后每个站点各查**自己那一格**缓存（「来源 / 更新日期」列如实分开，
+        // 不再取各家的最大值 —— 那会让几家显示同一次拉取时刻）。
+        // 千问办公与 Qoder 同模块但不同站点、不同缓存槽（`catalog_cache::SCOPE_QWENWORK`）。
+        ProviderKind::Qoder | ProviderKind::QoderIntl | ProviderKind::Qwenwork => {
+            let site = super::qoder::endpoints::Site::from_kind(kind)
+                .unwrap_or(super::qoder::endpoints::Site::QoderCn);
             (
-                super::qoder::models::remote_refreshed(region),
-                super::qoder::models::last_refreshed_at(region),
+                super::qoder::models::remote_refreshed(site),
+                super::qoder::models::last_refreshed_at(site),
             )
         }
         ProviderKind::CodeArts => (

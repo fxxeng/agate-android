@@ -89,11 +89,16 @@ pub fn supports_checkin(account: &Value) -> bool {
     if provider == crate::server::core::providers::workbuddy::Region::Intl.provider_id() {
         return true;
     }
-    // Qoder 国际版同理（2026-10 拆家 + issue #140）：它有自己的签到链路
-    // （带设备风控身份领「每日 100 Credits」，见 `providers::qoder::checkin`
-    // 与 `qoder::risk`），放行同样必须写在 edition 判定之前。
-    if provider == crate::server::core::providers::qoder::endpoints::Region::Global.provider_id() {
-        return true;
+    // Qoder 系（三个站点）由**站点**自己回答「有没有签到链路」：
+    // 中国版 / 国际版都有（国际版是 2026-10 接入的设备风控签到，见
+    // `providers::qoder::checkin` 与 `qoder::risk`），千问办公没有。
+    // 这一段必须写在下面的 `edition` 一刀切之前 —— 千问办公的 `edition` 是
+    // `cn`，漏了这里会把它放进签到目标集合，然后拿它的令牌去打 Qoder 的
+    // 活动接口、稳定报错（而用户只看到「签到失败」）。
+    if let Some(site) =
+        crate::server::core::providers::qoder::endpoints::Site::from_provider_id(provider)
+    {
+        return site.supports_checkin();
     }
     if account.get("edition").and_then(Value::as_str) == Some("intl") {
         return false;
@@ -279,16 +284,20 @@ pub async fn checkin_for(
             claim_result(id, name, &display, true, claim)
         }
         "qoder" | "qoder-intl" => {
-            // Qoder 的每日权益以活动（campaign）形式下发，两个地区走同一条
-            // 实现按地区分支：中国版直接领；国际版要先带设备风控身份重新拉
-            // 活动列表（见 `qoder::checkin` 的模块头）。地区由 provider id
+            // Qoder 的每日权益以活动（campaign）形式下发，中国版 / 国际版走同一条
+            // 实现按站点分支：中国版直接领；国际版要先带设备风控身份重新拉
+            // 活动列表（见 `qoder::checkin` 的模块头）。站点由 provider id
             // 反查（拆家后它就是身份），与 AutoClaw 两个地区的分派同款。
-            let region = crate::server::core::providers::qoder::endpoints::Region::from_provider_id(
+            //
+            // **`qwenwork` 不进这一支**：千问办公没有 `sash` 一族活动接口
+            // （`Site::supports_checkin` 为假，`supports_checkin` 已把它挡在
+            // 目标集合之外）；给它一个会稳定 404 的分支比没有更糟。
+            let site = crate::server::core::providers::qoder::endpoints::Site::from_provider_id(
                 provider_id,
             )
-            .unwrap_or(crate::server::core::providers::qoder::endpoints::Region::Cn);
+            .unwrap_or(crate::server::core::providers::qoder::endpoints::Site::QoderCn);
             let claim =
-                crate::server::core::providers::qoder::checkin::claim_daily_checkin(store, region, &id)
+                crate::server::core::providers::qoder::checkin::claim_daily_checkin(store, site, &id)
                     .await
                     .map_err(|error| error.message);
             claim_result(id, name, &display, true, claim)

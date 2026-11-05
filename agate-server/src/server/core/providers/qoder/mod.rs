@@ -11,7 +11,7 @@
 //!     真正的 OpenAI chunk 是 `body` 里的**内层 JSON 字符串**。
 //!     业务错误也走这一层（HTTP 永远是 200，错误在 `statusCodeValue` 里）。
 //!   - 地区：国际版 `api3.qoder.sh` / 中国版 `gateway.qoder.com.cn`，
-//!     两边的模型目录与凭证**不通用**（见 `endpoints::Region`）。
+//!     各站点的模型目录与凭证**不通用**（见 `endpoints::Site`）。
 //!
 //! ── 为什么走会话式转发（`is_stateful`）────────────────────────
 //! 无状态路径假设「请求体由通用层序列化后原样发出、响应是 OpenAI 协议的 SSE」。
@@ -79,21 +79,22 @@ use crate::server::errors::GatewayError;
 use crate::server::logging;
 
 use self::chat::Translator;
-use self::endpoints::Region;
+use self::endpoints::Site;
 use self::stream::SseEvent;
 
-/// Qoder 适配器：**按地区参数化**（与 ZCode / Accio / AutoClaw 同款）。
+/// Qoder / 千问办公适配器：**按站点参数化**（与 ZCode / Accio / AutoClaw 同款）。
 ///
-/// 拆家后两个地区是两家 provider（`qoder` 中国版 / `qoder-intl` 国际版），
-/// 两个静态实例由 `adapter_for` 按 kind 给出；地区 → 身份的互查在
-/// `endpoints::Region`。适配器内部的链路（凭证、转发、签到）仍以凭证里的
-/// 地区为准 —— 拆家迁移保证了记录的 provider 与地区一致，这里的 `region`
-/// 用于「队首可用账号」的选取范围与模型清单的归属。
+/// 拆家后每个站点是**一家 provider**（`qoder` 中国版 / `qoder-intl` 国际版 /
+/// `qwenwork` 千问办公国内版），三个静态实例由 `adapter_for` 按 kind 给出；
+/// 站点 → 身份的互查在 `endpoints::Site`。适配器内部的链路（凭证、转发、
+/// 签到）仍以凭证里的站点为准 —— 拆家迁移保证了记录的 provider 与站点一致，
+/// 这里的 `site` 用于「队首可用账号」的选取范围与模型清单的归属。
 pub struct QoderAdapter {
-    region: Region,
+    site: Site,
 }
-pub static QODER_ADAPTER: QoderAdapter = QoderAdapter { region: Region::Cn };
-pub static QODER_INTL_ADAPTER: QoderAdapter = QoderAdapter { region: Region::Global };
+pub static QODER_ADAPTER: QoderAdapter = QoderAdapter { site: Site::QoderCn };
+pub static QODER_INTL_ADAPTER: QoderAdapter = QoderAdapter { site: Site::QoderIntl };
+pub static QWENWORK_ADAPTER: QoderAdapter = QoderAdapter { site: Site::QwenworkCn };
 
 /// 映射上绑的思考等级注入到请求体的哪个键。
 ///
@@ -123,6 +124,7 @@ fn response_id() -> String {
 /// 冷却键与编排层同源（`rateLimits[model]`，账号记录内的键天然带了 provider
 /// 维度），因此界面上的「限流」列与自动降级逻辑对两家表现一致。
 fn record_limited(
+    site: Site,
     store: &AccountStore,
     account_id: &str,
     model: &str,
@@ -139,14 +141,14 @@ fn record_limited(
     // reset_at 给 None：上游没在响应里给结构化恢复时间，由存储层落 10 分钟兜底
     store.mark_rate_limited(account_id, model, status as i64, None, None, message);
     logging::log(
-        "[Qoder]",
+        site.log_tag(),
         &format!("⚠️ 账号 {account_id} 对模型 {model} 已限额，进入冷却"),
     );
 }
 
 impl ProviderAdapter for QoderAdapter {
     fn kind(&self) -> ProviderKind {
-        self.region.kind()
+        self.site.kind()
     }
 
     /// Qoder **有**推理转发能力（本波次接入）。
@@ -166,7 +168,7 @@ impl ProviderAdapter for QoderAdapter {
     fn list_models(&self) -> Vec<Value> {
         // 拆家后每家只列**本地区**的清单（不再并集）：另一地区是另一家
         // provider 的事（见 `models::list_for` 与模块头）
-        models::list_for(self.region)
+        models::list_for(self.site)
     }
 
     /// 防御性报错：Qoder 的请求体要先编码再签名，通用层的序列化路径产不出
@@ -223,7 +225,7 @@ impl ProviderAdapter for QoderAdapter {
         account_id: &'a str,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, GatewayError>> + Send + 'a>> {
         Box::pin(async move {
-            refresh::ensure_fresh(store, self.region, account_id, false)
+            refresh::ensure_fresh(store, self.site, account_id, false)
                 .await
                 .map(|credentials| credentials.access_token)
         })
@@ -240,7 +242,7 @@ impl ProviderAdapter for QoderAdapter {
         account_id: &'a str,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, GatewayError>> + Send + 'a>> {
         Box::pin(async move {
-            refresh::ensure_fresh(store, self.region, account_id, true)
+            refresh::ensure_fresh(store, self.site, account_id, true)
                 .await
                 .map(|credentials| credentials.access_token)
         })
@@ -252,7 +254,7 @@ impl ProviderAdapter for QoderAdapter {
 
     fn credentials_expiring(&self, store: &AccountStore, account_id: &str) -> bool {
         store
-            .qoder_account_record(self.region, account_id)
+            .qoder_account_record(self.site, account_id)
             .and_then(|record| credentials::Credentials::from_payload(&record).ok())
             .is_some_and(|credentials| credentials.expiring())
     }
@@ -266,7 +268,7 @@ impl ProviderAdapter for QoderAdapter {
         store: &'a AccountStore,
         account_id: &'a str,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value, GatewayError>> + Send + 'a>> {
-        Box::pin(balance::query(store, self.region, account_id))
+        Box::pin(balance::query(store, self.site, account_id))
     }
 
     /// Qoder 有远程目录（`GET {gateway}algo/api/v2/model/list`），支持刷新。
@@ -296,12 +298,12 @@ impl ProviderAdapter for QoderAdapter {
             // 空 id = 本地区队首可用账号（自动路径的默认）；非空 = 用户在弹窗里点名的
             // 那条 —— 点名取不到时按「没账号」处理（本家没有可回落的环境变量
             // 登录态），文案由上面那行「未添加账号」的回答覆盖不到，改用明确的失败。
-            let Some(record) = store.qoder_account_record(self.region, account_id) else {
+            let Some(record) = store.qoder_account_record(self.site, account_id) else {
                 // 自动路径每次拉目录/启动都会走到这里，所以只打 verbose：
                 // 对不用 Qoder 的用户，这不是需要他关注的事
                 logging::verbose(
                     "[Models]",
-                    &format!("Qoder {}模型目录刷新跳过：尚未添加账号", self.region.label()),
+                    &format!("{} 模型目录刷新跳过：尚未添加账号", self.site.display_name()),
                 );
                 if account_id.is_empty() {
                     return ModelRefreshOutcome::unchanged();
@@ -445,7 +447,7 @@ impl ProviderAdapter for QoderAdapter {
                     "没有可用的 Qoder 账号：请在账号页添加并启用账号",
                 ));
             }
-            let mut context = chat::account_context(store, self.region, &account_id, false).await?;
+            let mut context = chat::account_context(store, self.site, &account_id, false).await?;
             // 代理：编排层给的优先（它与账号记录同源，但已经解析好），
             // 没有就用快照里的（例如目录刷新那条路径）
             let effective_proxy = proxy.or(context.proxy);
@@ -472,12 +474,12 @@ impl ProviderAdapter for QoderAdapter {
                 logging::verbose(
                     "[Qoder]",
                     &format!(
-                        "POST {} model={} upstream={} stream={} region={} account={}",
+                        "POST {} model={} upstream={} stream={} provider={} account={}",
                         plan.url,
                         if model_name.is_empty() { "(默认)" } else { &model_name },
                         plan.upstream_key,
                         stream,
-                        context.credentials.region.id(),
+                        context.credentials.site.provider_id(),
                         account_id,
                     ),
                 );
@@ -505,7 +507,7 @@ impl ProviderAdapter for QoderAdapter {
                         // 就把原错误交回 —— 那说明问题不在凭证的新旧上
                         chat::AttemptError::Auth(error) => {
                             context =
-                                refresh_after_auth(store, self.region, &account_id, &mut auth_retries, error, telemetry)
+                                refresh_after_auth(store, self.site, &account_id, &mut auth_retries, error, telemetry)
                                     .await?;
                             continue;
                         }
@@ -514,6 +516,7 @@ impl ProviderAdapter for QoderAdapter {
                             // 路径上看不到分类，只有适配器知道这一条是额度类错误
                             if error.status_code == 429 {
                                 record_limited(
+                                    self.site,
                                     store,
                                     &account_id,
                                     &model_name,
@@ -526,6 +529,7 @@ impl ProviderAdapter for QoderAdapter {
                         }
                         chat::AttemptError::Queued(queued) => {
                             queue_backoff(
+                                self.site,
                                 &mut queue_waits,
                                 &mut queue_waited_ms,
                                 queue_budget_ms,
@@ -538,11 +542,12 @@ impl ProviderAdapter for QoderAdapter {
                     }
                 }
 
-                let translator = Translator::new(response_id(), plan.model_name.clone(), plan.thinking);
+                let translator = Translator::new(response_id(), plan.model_name.clone(), plan.thinking, self.site);
                 // 限额记账的素材：流式分支的收尾发生在 handler 返回之后，那时
                 // 这里的局部变量都还在（被 move 进后台任务），所以先把要用的
                 // 那份句柄与标识克隆好（store 是 Arc 句柄，clone 很便宜）
                 let limit_ctx = LimitContext {
+                    site: self.site,
                     store: store.clone(),
                     account_id: account_id.clone(),
                     model: model_name.clone(),
@@ -576,6 +581,7 @@ impl ProviderAdapter for QoderAdapter {
                         // 下发任何字节，退避重发（和 HTTP 层的排队走同一条路）
                         Err(chat::AttemptError::Queued(queued)) => {
                             queue_backoff(
+                                self.site,
                                 &mut queue_waits,
                                 &mut queue_waited_ms,
                                 queue_budget_ms,
@@ -587,7 +593,7 @@ impl ProviderAdapter for QoderAdapter {
                         }
                         Err(chat::AttemptError::Auth(error)) => {
                             context =
-                                refresh_after_auth(store, self.region, &account_id, &mut auth_retries, error, telemetry)
+                                refresh_after_auth(store, self.site, &account_id, &mut auth_retries, error, telemetry)
                                     .await?;
                             continue;
                         }
@@ -605,6 +611,7 @@ impl ProviderAdapter for QoderAdapter {
                     // 非流式这一路也还没下发任何字节：排队同样可以退避重发
                     Err(chat::AttemptError::Queued(queued)) => {
                         queue_backoff(
+                            self.site,
                             &mut queue_waits,
                             &mut queue_waited_ms,
                             queue_budget_ms,
@@ -615,7 +622,7 @@ impl ProviderAdapter for QoderAdapter {
                         continue;
                     }
                     Err(chat::AttemptError::Auth(error)) => {
-                        context = refresh_after_auth(store, self.region, &account_id, &mut auth_retries, error, telemetry)
+                        context = refresh_after_auth(store, self.site, &account_id, &mut auth_retries, error, telemetry)
                             .await?;
                         continue;
                     }
@@ -642,7 +649,7 @@ impl ProviderAdapter for QoderAdapter {
 /// 它比「上游返回 401」更能告诉用户下一步该做什么。
 async fn refresh_after_auth(
     store: &AccountStore,
-    region: Region,
+    site: Site,
     account_id: &str,
     attempts: &mut usize,
     error: GatewayError,
@@ -656,7 +663,7 @@ async fn refresh_after_auth(
     // 续期本身可能在途（刷新接口一次往返），先记一条内部重试 —— 用户看到
     // 「凭证过期 → 续期 → 重发」这条链，才解释得通这次请求为什么慢了一拍
     telemetry.note_attempt_retry("上游鉴权失败，强制续期凭证后重试", Some(401), 0);
-    chat::account_context(store, region, account_id, true).await
+    chat::account_context(store, site, account_id, true).await
 }
 
 // ── 排队等待的次数与单次时长来自设置页「通用 → 排队等待」──────────
@@ -673,6 +680,7 @@ async fn refresh_after_auth(
 /// 给「等待响应超时」的那份预算。用户把它调小（例如 20 秒）就说明他不接受一次
 /// 请求卡那么久 —— 那就不等，直接给一条能看懂的排队错误。
 async fn queue_backoff(
+    site: Site,
     waits: &mut usize,
     waited_ms: &mut u64,
     budget_ms: u64,
@@ -691,7 +699,7 @@ async fn queue_backoff(
     *waited_ms += wait_ms;
     let seconds = wait_ms / 1000;
     logging::log(
-        "[Qoder]",
+        site.log_tag(),
         &format!(
             "⏳ 上游模型排队中{}，{seconds} 秒后重试（第 {}/{} 次）",
             if queued.detail.is_empty() { String::new() } else { format!("（{}）", queued.detail) },
@@ -734,6 +742,8 @@ async fn sleep_or_cancel(
 /// handler 返回前）与 `piping::drive_stream` 的中途错误都在错误现场落冷却；
 /// 后者在 handler 返回之后才跑，那些标识必须随任务一起带走。
 struct LimitContext {
+    /// 本请求的站点（冷却日志与文案按它取）
+    site: Site,
     store: AccountStore,
     account_id: String,
     model: String,
@@ -778,6 +788,7 @@ async fn drive_aggregate(
                 SseEvent::Done => break 'outer,
                 SseEvent::Error { status, kind, raw, message, pricing_url, queue } => {
                     record_limited(
+                        limit.site,
                         &limit.store,
                         &limit.account_id,
                         &limit.model,

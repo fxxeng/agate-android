@@ -211,6 +211,18 @@ object PresetRegistry {
             listOf(AuthChannel.DEVICE_CODE, AuthChannel.EXTERNAL, AuthChannel.PASTE),
             pasteHint = "粘贴个人访问令牌 PAT（pt-…）",
         ),
+        // 千问办公（国内版）：与 Qoder 同一套设备授权协议，只是站点不同
+        // （内核 `qoder::endpoints::Site::QwenworkCn`，见该文件模块头）。
+        //
+        // **没有粘贴通道**：它没有 PAT 交换（`Site::supports_pat` 为假，
+        // `/api/v1/jobToken/exchange` 不存在），粘什么都会得到一条 400 ——
+        // 给一个必然失败的输入框比不给更糟。
+        // **也标不上「签到」**：`sash` 一族活动接口对它不存在
+        // （`Site::supports_checkin` 为假），内核的 CHECKIN_PROVIDERS 里也没有它。
+        ProviderPreset(
+            "qwenwork", "千问办公 国内版", "设备授权登录", LoginKind.WEBVIEW,
+            listOf(AuthChannel.DEVICE_CODE, AuthChannel.EXTERNAL),
+        ),
         // Cline：设备码轮询；可导入
         ProviderPreset(
             "cline-free", "Cline Free", "设备码授权 · 免费池", LoginKind.WEBVIEW,

@@ -262,18 +262,37 @@ pub enum ProviderKind {
     /// 自己完成，见 `qoder/mod.rs`）；它参与全局队列与模型广告，`supports_chat()`
     /// 为 true。
     ///
-    /// ── 与 [`ProviderKind::QoderIntl`] 是同一套协议的两个地区（2026-10 拆家）──
+    /// ── 与 [`ProviderKind::QoderIntl`] / [`ProviderKind::Qwenwork`] 是同一套
+    /// 协议栈的三个站点（2026-10 拆家 → 2026-11 扩到千问办公）──
     /// 与 AutoClaw / Accio / ZCode 同一思路：地区是**provider 身份**而不是账号
     /// 属性。拆家前「地区是账号上的 `mode` 字段」的后果：模型管理里两地区账号
     /// 混在一个「模型来源」下拉里、一次刷新只能刷到队首账号所属地区的目录、
-    /// 「获取模型」弹窗也只有一个 Qoder 行。地区互查在
-    /// `qoder::endpoints::Region`（`kind` / `provider_id` / `from_provider_id`）。
+    /// 「获取模型」弹窗也只有一个 Qoder 行。站点互查在
+    /// `qoder::endpoints::Site`（`kind` / `provider_id` / `from_provider_id`）。
     Qoder,
     /// Qoder **国际版**（`qoder-intl`）。与 [`ProviderKind::Qoder`] 同一套协议、
     /// 不同站点（`openapi.qoder.sh` / `api3.qoder.sh`，见 `qoder::endpoints`）。
     /// 国际版有独立的「每日 100 Credits」签到链路（需要设备风控身份，见
     /// `qoder::checkin` 与 `qoder::risk`）。
     QoderIntl,
+    /// 千问办公 **国内版**（`qwenwork`，`gateway.qwenwork.cn`）。
+    ///
+    /// 与 Qoder 是**同一套协议栈**（同一个聊天路径、同一套 COSY 签名信封、
+    /// 同一把服务端 RSA 公钥），差异只有一批客户端身份常量与账号接口路径 ——
+    /// 所以适配实现是同一份（`qoder/`，按站点参数化，见
+    /// `qoder::endpoints::Site`），不是复制一份。
+    ///
+    /// ── 与 Qoder 的实质差别（这三条决定了界面上的入口）──────────
+    ///   - **没有 PAT 交换**：`/api/v1/jobToken/exchange` 不存在，设备授权拿到
+    ///     的那对令牌就是对话令牌（`Site::device_only`）；
+    ///   - **没有签到活动**：`sash` 一族接口对它不存在（`Site::supports_checkin`）；
+    ///   - **续期窗口宽一小时**：它的刷新令牌只在访问令牌仍有效时可用，晚一步
+    ///     整号作废（见 `qoder::credentials::QWENWORK_REFRESH_MARGIN_MS`）。
+    ///
+    /// 上游另有国际版（`qwenwork-intl`），本项目**不接**：授权页只认它自己
+    /// 登记的回调、设备码入口又被上游关掉，加进去只会得到一个永远失败的入口
+    /// （理由与依据见 `qoder::endpoints` 的模块头）。
+    Qwenwork,
     /// Cline **免费额度池**（`cline-free/...`）。官方 `api.cline.bot`。
     ///
     /// ── 为什么两池是两家而不是「一家的一个选项」（本次改动的核心）────
@@ -645,6 +664,10 @@ pub const PROVIDERS: &[ProviderMeta] = &[
     // 谁家 —— 国内版在前，与存量账号的归属一致。
     ProviderMeta::agent("qoder", "Qoder 中国版"),
     ProviderMeta::agent("qoder-intl", "Qoder 国际版"),
+    // 千问办公紧跟在 Qoder 后面：它与 Qoder 是同一套协议栈的两个产品
+    // （见 `ProviderKind::Qwenwork`），界面上顺着找得着。标签与上游插件包
+    // `pack.json` 的 `label` 逐字一致（「千问办公 国内版」）。
+    ProviderMeta::agent("qwenwork", "千问办公 国内版"),
     ProviderMeta::agent("cline-free", "Cline Free"),
     ProviderMeta::agent("cline-pass", "Cline Pass"),
     // Accio 两个地区**相邻**排列（与 AutoClaw 同一理由：同一条产品线的两个
@@ -804,6 +827,7 @@ pub fn kind_from_id(id: &str) -> Option<ProviderKind> {
         "autoclaw-intl" => Some(ProviderKind::AutoClawIntl),
         "qoder" => Some(ProviderKind::Qoder),
         "qoder-intl" => Some(ProviderKind::QoderIntl),
+        "qwenwork" => Some(ProviderKind::Qwenwork),
         "cline-free" => Some(ProviderKind::ClineFree),
         "cline-pass" => Some(ProviderKind::ClinePass),
         "accio" => Some(ProviderKind::Accio),
@@ -853,6 +877,7 @@ pub const fn kind_id(kind: ProviderKind) -> &'static str {
         ProviderKind::AutoClawIntl => "autoclaw-intl",
         ProviderKind::Qoder => "qoder",
         ProviderKind::QoderIntl => "qoder-intl",
+        ProviderKind::Qwenwork => "qwenwork",
         ProviderKind::ClineFree => "cline-free",
         ProviderKind::ClinePass => "cline-pass",
         ProviderKind::Accio => "accio",

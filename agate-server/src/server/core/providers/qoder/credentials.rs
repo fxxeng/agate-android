@@ -6,13 +6,25 @@ use crate::server::core::account_store::MAX_TOKEN_LENGTH;
 use crate::server::errors::GatewayError;
 use crate::server::logging;
 
-use super::endpoints::Region;
+use super::endpoints::Site;
 
 pub const REFRESH_MARGIN_MS: i64 = 5 * 60 * 1000;
 
+/// 临期判定窗口（千问办公）——**只对设备流那一族令牌成立**（`drt-`）：1 小时。
+///
+/// ── 为什么比 Qoder 宽这么多（这是账号报废级的差别）──────────────
+/// 千问办公的设备刷新令牌**只在访问令牌还有效时可用**：访问令牌过期太久之后
+/// 再去续期，上游直接回 `invalid_grant`（dumate2api 2026-10-29 实测：一个
+/// 7 天有效期的账号因为到期那一刻恰好没有流量，23 小时后才第一次续期，
+/// 额度与账号一起作废，只能重新登录）。
+///
+/// 所以窗口必须远大于「一次请求的耗时」，但又不能大到每次都刷（续期本身会
+/// 轮换令牌）。1 小时是参考实现的选择，这里照抄并留档。
+pub const QWENWORK_REFRESH_MARGIN_MS: i64 = 60 * 60 * 1000;
+
 #[derive(Clone)]
 pub struct Credentials {
-    pub region: Region,
+    pub site: Site,
     pub access_token: String,
     pub refresh_token: String,
     pub expires_at: Option<i64>,
@@ -27,7 +39,7 @@ impl Credentials {
         if !payload.is_object() {
             return Err(GatewayError::with_status(400, "Qoder 账号内容必须是 JSON 对象"));
         }
-        let region = Region::from_payload(payload)?;
+        let site = Site::from_payload(payload)?;
         let access_token = secret(payload, &["accessToken", "access", "token", "access_token"])?;
         if access_token.is_empty() {
             return Err(GatewayError::with_status(400, "缺少 Qoder access / accessToken"));
@@ -56,7 +68,7 @@ impl Credentials {
             .iter()
             .find_map(|key| timestamp(payload.get(*key)));
         let mut credentials = Self {
-            region,
+            site,
             access_token,
             refresh_token: refresh.clone(),
             expires_at,
@@ -69,6 +81,12 @@ impl Credentials {
             credentials.refresh_token = format!("{}|{}|{}", refresh, credentials.user_id, credentials.machine_id);
         }
         Ok(credentials)
+    }
+
+    /// 站点以 provider 身份为准（payload 里的 `mode` 只是兼容字段，见
+    /// `refresh::snapshot`）。
+    pub fn set_site(&mut self, site: Site) {
+        self.site = site;
     }
 
     pub fn complete_identity(&mut self) -> Result<(), GatewayError> {
@@ -117,7 +135,14 @@ impl Credentials {
     }
 
     pub fn expiring(&self) -> bool {
-        self.can_refresh() && self.expires_at.is_some_and(|expiry| expiry <= logging::now_ms() + REFRESH_MARGIN_MS)
+        // 千问办公的窗口宽得多（见 [`QWENWORK_REFRESH_MARGIN_MS`]）：它的刷新
+        // 令牌只在访问令牌仍有效时可用，晚一步就整号作废。
+        let margin = if self.site.is_qwenwork() {
+            QWENWORK_REFRESH_MARGIN_MS
+        } else {
+            REFRESH_MARGIN_MS
+        };
+        self.can_refresh() && self.expires_at.is_some_and(|expiry| expiry <= logging::now_ms() + margin)
     }
 
     pub fn to_value(&self) -> Value {
@@ -127,7 +152,7 @@ impl Credentials {
             if value.is_empty() { Value::Null } else { Value::String(value.to_string()) }
         };
         json!({
-            "mode": self.region.id(),
+            "mode": self.site.id(),
             "accessToken": text_or_null(&self.access_token),
             "refreshToken": text_or_null(&self.refresh_token),
             "expiresAt": self.expires_at,

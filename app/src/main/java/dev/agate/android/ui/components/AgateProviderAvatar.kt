@@ -30,6 +30,11 @@ object ProviderIcons {
         "catpaw" to R.drawable.provider_catpaw,
         "autoclaw" to R.drawable.provider_autoclaw,
         "qoder" to R.drawable.provider_qoder,
+        // 千问办公（国内版）：与 Qoder 同一套协议栈的不同产品，**图标不能共用**
+        // —— 用户会以为自己加错了家。取自官网 `site.webmanifest` 的 512×512
+        // 官方图标（qwenwork.cn，2026-11 取），缩到 256 与其它家同尺寸。
+        // `normalize()` 不动它：`qwenwork` 不带 `-intl` / `-cn` 后缀。
+        "qwenwork" to R.drawable.provider_qwenwork,
         "accio" to R.drawable.provider_accio,
         "zcode" to R.drawable.provider_zcode,
         "codearts" to R.drawable.provider_codearts,

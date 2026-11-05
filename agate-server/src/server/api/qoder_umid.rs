@@ -22,7 +22,8 @@ use crate::server::ServerState;
 
 /// GET /api/qoder-umid
 pub async fn get_status(_state: State<ServerState>) -> Response {
-    ok_json(risk::status(crate::server::core::providers::qoder::endpoints::Region::Global))
+    // 组件只服务**国际版**（`risk` 的检测路径按站点取），故这里钉死 `QoderIntl`
+    ok_json(risk::status(crate::server::core::providers::qoder::endpoints::Site::QoderIntl))
 }
 
 /// POST /api/qoder-umid/install
