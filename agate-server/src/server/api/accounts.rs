@@ -1607,6 +1607,11 @@ pub async fn add_account(state: &ServerState, body: &Bytes) -> Response {
         // AStudio（科大讯飞「星火 Astron Studio」桌面端）：**粘贴** `modelBearerToken`
         // 或整段 `astron-session.json`，也可以选一个 .json 凭证文件。
         //
+        // 本分支只处理「粘贴 / 文件导入」；登录走的是本机登录页
+        // （`core::login::astudio` + `providers::astudio::login_page`，
+        // 手机号验证码 / 账号密码 + 极验滑块），落库同样走
+        // `add_astudio_account` —— 两条路只有「凭证从哪来」不同。
+        //
         // ── 两套凭据，粘哪一套都能加 ────────────────────────────
         // 只有 `modelBearerToken` → 能对话，没有余额行、不参与签到（公开形态用
         // `noSession` 标出）；再加上 `token` + `accountId` → 余额 / 会员 / 签到

@@ -196,6 +196,14 @@ fn proxies_summary() -> Value {
 ///     并给出可行的替代（粘贴凭证 / 导入桌面端登录态）；
 ///   - 注册表里没有的 id → 400「未知的提供商」（不静默回落 workbuddy：
 ///     那会把一次小浣熊登录发起成 workbuddy 登录）。
+///
+/// ── 三条不走上面的分派，各自有专用分支（顺序即下面的判断顺序）──────
+///   - `raccoon`（`mode:"browser"`）/ `catpaw`：要给回调基址
+///   - `astudio`：本机登录页，结果走进程内 channel（**没有回调、没有 code**）
+///   - `autoclaw` 国际版：授权地址要先过一次风控验证码，走
+///     `/api/session/login/oauth/start`
+/// 加新家时先确认它属于哪一类 —— 直接塞进通用分支的后果是「报 400 说不支持，
+/// 而那家其实是支持的，只是发起方式不同」（AutoClaw 国际版当初就这么被挡过）。
 pub async fn login_start(State(state): State<ServerState>, body: Bytes) -> Response {
     // 请求里的 `edition` 不再参与地区判定：拆家后界面上两张卡片各发各的
     // provider id，那是权威（`edition` 只是前端回显字段，见下面 Qoder /
@@ -446,6 +454,28 @@ pub async fn login_start(State(state): State<ServerState>, body: Bytes) -> Respo
         let task = handle.snapshot();
         return ok_json(json!({ "state": task.state, "authUrl": task.auth_url,
             "edition": task.edition, "provider": provider_id }));
+    }
+    // AStudio：登录页是**我们自己起在本机回环**上的（手机号/密码 + 极验滑块），
+    // 页面完成后直接经进程内的 channel 把会话交回来 —— 没有回调 URL、也没有可
+    // 换的 code。因此它既不是通用网页登录链（那条要外站地址 + callback），
+    // 也不是 CatPaw 的「上游推到我方端口」。见 `core::login::astudio` 的模块头。
+    if kind == crate::server::core::providers::ProviderKind::Astudio {
+        let handle = match state.login().start_astudio_login().await {
+            Ok(handle) => handle,
+            Err(error) => return management_error(400, error),
+        };
+        let task = handle.snapshot();
+        let (Some(task_state), Some(auth_url)) = (task.state, task.auth_url) else {
+            return management_error(500, "AStudio 登录页未能生成地址，请重试");
+        };
+        return ok_json(json!({
+            "state": task_state,
+            "authUrl": auth_url,
+            "edition": task.edition,
+            // 回显归属：前端按它决定用哪个 provider 的文案（页面上不出现 provider 名，
+            // 全部由壳侧标题负责）
+            "provider": "astudio",
+        }));
     }
     // CatPaw：上游把 token **推**到我们的 loopback 回调上（见 core::login::catpaw），
     // 所以这里除了发起还要把回调基址告诉它 —— 那必须是本网关自己的监听地址，

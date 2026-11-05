@@ -134,7 +134,7 @@ impl LoginService {
                     .to_string(),
             );
         }
-        let state = random_hex()?;
+        let state = super::random_hex()?;
         let device_id = oauth::new_oauth_device_id();
         let endpoint = self.callback_endpoint(gateway_base, vendor, local_browser).await;
         let navigate = oauth::navigate_uri(&endpoint.base, vendor);
@@ -435,13 +435,3 @@ impl LoginService {
     }
 }
 
-/// 32 位小写 hex 随机串（与 CatPaw 的 `random_hex` 同一强度与形态）。
-///
-/// 不复用那边的私有函数：两处都只是十行，而跨模块暴露一个「只是为了少写十行」
-/// 的工具函数会让 `core::login` 的模块边界变模糊。这里的用途是**安全**的
-/// （一次性 state），所以两边都必须用密码学随机源。
-fn random_hex() -> Result<String, String> {
-    let mut bytes = [0u8; 16];
-    getrandom::getrandom(&mut bytes).map_err(|_| "无法生成安全的登录随机串".to_string())?;
-    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
-}

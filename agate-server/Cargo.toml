@@ -63,7 +63,11 @@ axum = "0.8"
 # 供登录链路与 Antigravity 未配代理的账号使用）依赖它 —— 显式出口（直连 /
 # 指定代理）都显式关掉了自动探测（见 `egress::build_client`），转发链路的
 # 「直连就是直连」语义不受影响。
-reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls", "socks", "system-proxy"] }
+# `multipart` 只服务于 AStudio 登录链：它的三个登录端点（发码 / 手机号登录 /
+# 账号密码登录）都是 multipart 表单，极验三件是表单字段而不是 JSON。
+# 这是上游协议的既定形态，不手搓 boundary —— 手写的 multipart 一旦编码细节
+# 有偏差，症状是上游返回一句无信息量的 400。
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "multipart", "rustls-tls", "socks", "system-proxy"] }
 # MonkeyCode 会话转发的 WebSocket 任务流（providers/monkeycode/stream.rs）：
 # 上游是 `wss://…/api/v1/users/tasks/stream`，TLS 走 rustls —— 与 reqwest 的
 # `rustls-tls` 同一条栈（rustls + tokio-rustls 各一份；根证书同为 webpki-roots

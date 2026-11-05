@@ -97,8 +97,8 @@ impl LoginService {
     /// 拼出来的（`build_authorize_url`），这家要先问一次 `login-config`。
     pub async fn start_catpaw_login(&self, callback_base: &str) -> Result<LoginTaskHandle, String> {
         let entry = fetch_login_entry().await?;
-        let state = random_hex()?;
-        let sid = random_hex()?;
+        let state = super::random_hex()?;
+        let sid = super::random_hex()?;
         let redirect = format!("{}{}", callback_base.trim_end_matches('/'), CALLBACK_PATH);
         let mut url = url::Url::parse(&entry)
             .map_err(|_| "CatPaw 登录入口地址无效".to_string())?;
@@ -269,14 +269,6 @@ async fn fetch_login_entry() -> Result<String, String> {
         .map(str::to_string)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "CatPaw 登录服务未返回登录入口地址".to_string())
-}
-
-/// 32 位小写 hex 随机串（客户端用 `crypto.getRandomValues(16)` 生成 state/sid，
-/// 这里沿用同一强度与形态）。
-fn random_hex() -> Result<String, String> {
-    let mut bytes = [0u8; 16];
-    getrandom::getrandom(&mut bytes).map_err(|_| "无法生成安全的登录随机串".to_string())?;
-    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
 /// 把回调里拿到的 `token` 加工成 `add_catpaw_account` 认得的 payload

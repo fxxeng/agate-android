@@ -400,10 +400,14 @@ object PresetRegistry {
         // 那一半。**顺序与内核 `PROVIDERS` 尾部逐条对齐**：本仓按接入批次排在末尾，
         // 不按上游 order（与 qwenwork / tabbit 同一处置）。
         //
-        // ── 四家都只有「粘贴」一条通道，理由各不相同但结论相同 ──────
-        // 内核 `supports_web_login()` 对这四家**如实为 false**（登录链/登录页属
-        // UI 类，单独立项）。给一条点了必然 400 的通道比少给一条更糟 ——
-        // 与豆包工作「网页登录通道还没在壳侧实现，就先不提供」同一处置。
+        // ── 四家的登录通道现状（改前先核对内核能力位，别按印象写）──────
+        //   tabbit       手机验证码 ✓（两段同步请求，客户端复用 `SmsLoginForm`）
+        //   tabbit-intl  ✗（上游对国际站灰度 403，同代码打过去必然失败）
+        //   kiro         ✗（OAuth 属 UI 类待做；Google/GitHub 禁 WebView 内登录，
+        //                 所以它以后也只能走「系统浏览器 + 本机回调」）
+        //   astudio      本机登录页 ✓（手机号验证码 / 账号密码 + 极验滑块）
+        // 一个通道**点了必然 400** 时不要给 —— 与豆包工作「网页登录通道还没在壳侧
+        // 实现，就先不提供」同一处置。
 
         // Tabbit 两个站点：上游在 **web 插件包**里（`provider_category: "web"`），
         // 两个站账号不通用、签名 key 不同，所以是两个 id、各填各的 Cookie
@@ -443,7 +447,10 @@ object PresetRegistry {
         // 或整段 `kiro-auth-token.json`。
         //
         // ── 为什么没有「浏览器登录」通道 ──────────────────────────
-        // 内核的 OAuth 链（AWS Builder ID 设备码 + SSO OIDC）还没接，属 UI 类；
+        // 内核的 OAuth 链（AWS Builder ID 设备码 + SSO OIDC）还没接，属 UI 类。
+        // 接的时候也**不能**做成 `EMBEDDED`：Google 与 GitHub 都禁止在 WebView
+        // 内完成 OAuth（会回 `disallowed_useragent`），只能走「系统浏览器 +
+        // 本机回环回调」即 `EXTERNAL`（与 Accio 同一形态）。
         // 本次也不提供「导入桌面端登录态」—— 那份登录态是 kiro-cli 的 SQLite
         // 与 Kiro IDE 的文件，Android 上两者都不存在（内核 `api::accounts` 对该家
         // 的 importDesktop 直接回 400 并说明原因）。
@@ -460,8 +467,18 @@ object PresetRegistry {
             pasteMultiline = true,
         ),
 
-        // AStudio（科大讯飞「星火 Astron Studio」桌面端）：粘贴 `modelBearerToken`
-        // 或整段 `astron-session.json`。
+        // AStudio（科大讯飞「星火 Astron Studio」桌面端）：本机登录页（手机号验证码 /
+        // 账号密码 + 极验滑块），或粘贴 `modelBearerToken` / `astronSession.json`。
+        //
+        // ── 登录页为什么能在这里跑 ──────────────────────────────
+        // 上游的登录页**不是某个第三方站点**，而是插件自己发的一段静态 HTML：
+        // 它只依赖 `static.geetest.com` 的脚本，接口都打回同一个进程；极验滑块
+        // 必须在真实页面里完成，所以网关起一个只监听 127.0.0.1 的小服务
+        // （`providers/astudio/login_page.rs`），登录窗打开 `http://127.0.0.1:<端口>/?t=…`
+        // 即可。`network_security_config.xml` 本来就为内核回环放行了明文，
+        // `AuthWebViewSheet` 对 http(s) 一律放行 —— 两处都不用改。
+        // 收尾也不靠读 Cookie（`webLoginCookies` 保持 false）：页面自己带着结果
+        // 回来，壳侧只管轮询 `/wait`。
         //
         // ── 两套凭据，粘哪一套都能加 ────────────────────────────
         //   只 `modelBearerToken`      → 能对话；没有余额行、不参与签到
@@ -474,10 +491,12 @@ object PresetRegistry {
         // 签到能标上：内核 `CHECKIN_PROVIDERS` 里有它。但只有模型凭据的账号
         // 由实现直接回 `ineligible`，不会空打 —— 界面上「无网页会话」是如实陈述，
         // 不是「账号异常」（账号列表里读 `noSession` 那个标记）。
+        // **登录路径一定两套凭据都有**（登录时顺便查了模型 key），所以它加的
+        // 账号不会有「无网页会话」这个提示 —— 只有粘贴路径可能有。
         ProviderPreset(
-            "astudio", "AStudio", "讯飞星辰 · 粘贴 modelBearerToken / astron-session.json",
-            LoginKind.PASTE,
-            listOf(AuthChannel.PASTE, AuthChannel.IMPORT_FILE),
+            "astudio", "AStudio", "讯飞星辰 · 手机号登录 / 粘贴 astron-session.json",
+            LoginKind.WEBVIEW,
+            listOf(AuthChannel.EMBEDDED, AuthChannel.PASTE, AuthChannel.IMPORT_FILE),
             pasteHint = "粘贴 modelBearerToken，或整段 astron-session.json（带上 token / accountId 时余额与签到才可用）",
             pasteMultiline = true,
             supportsCheckin = true,

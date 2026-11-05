@@ -30,6 +30,7 @@
 mod accio;
 mod atomcode;
 mod autoclaw;
+mod astudio;
 mod catpaw;
 pub mod codearts;
 mod lobsterai;
@@ -1429,6 +1430,23 @@ fn finish_task_error(handle: &LoginTaskHandle, message: &str) {
         task.error = Some(message.clone());
         task.finished_at = Some(logging::now_ms());
     });
+}
+
+/// 32 位小写 hex 的登录随机串（16 字节，**密码学随机源**）。
+///
+/// ── 为什么收在父模块 ────────────────────────────────────────
+/// 原来 `login/autoclaw.rs` 与 `login/catpaw.rs` 各有一份逐字相同的实现，两边
+/// 都写着「不复用对方的私有函数」——但那个顾虑是「跨子模块暴露工具会让边界
+/// 变模糊」。放到 `core::login` 这一层就没有那个问题：它本来就是登录层的
+/// 公共动作（一次登录一个一次性随机标识），子模块共用来得比各抄一份更清楚。
+///
+/// 用途都是**安全**的（CSRF 口径的一次性 state / 本机页凭证），所以必须走
+/// `getrandom`；拿不到系统熵就如实报错，不退化成时间戳 —— 可预测的 state
+/// 等于没有。
+pub(super) fn random_hex() -> Result<String, String> {
+    let mut bytes = [0u8; 16];
+    getrandom::getrandom(&mut bytes).map_err(|_| "无法生成安全的登录随机串".to_string())?;
+    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
 #[cfg(test)]

@@ -34,10 +34,16 @@
 //! 就是为了绕开 OEM 代码页）、`~/.acode/` 下的 `astron-session.json`、
 //! `runtime/acode-home/config.toml`。给了入口只会稳定报「读不到登录态」。
 //!
-//! ── 登录（手机号 / 账号密码 + 极验滑块）不在这条线上 ─────────
+//! ── 登录（手机号验证码 / 账号密码 + 极验滑块）────────────────
 //! 上游的做法是自己在 `127.0.0.1` 起一个登录页，页面里加载极验脚本、完成滑块后
-//! 把结果交回进程内的表。这属于**客户端交互**，按项目约束单独立项（方案先评审）：
-//! 本模块只保证「粘贴 modelBearerToken / astron-session.json」这条路完整可用。
+//! 把结果交给进程内的表。这套做法在 Android 上**同样成立**（网关本来就跑在
+//! 手机上）：`login_page` 起一个临时端口的极简 HTTP 服务 + 一段静态 HTML，
+//! 客户端的登录窗打开 `http://127.0.0.1:<端口>/?t=…` 即可 —— 不需要内嵌某个
+//! 第三方站点，也不需要读 Cookie 收尾（页面自己把结果带回来）。
+//! 编排在 `core::login::astudio`，落库仍走 `add_astudio_account`。
+//!
+//! ⚠️ 「本机登录态」那条路仍然不接：它读的是 Windows 注册表与 `~/.acode/`，
+//! 与登录页是两件事（前者是读桌面端已有的凭据，后者是自己走一遍登录）。
 //!
 //! ── 子模块分工 ──────────────────────────────────────────────
 //! ```text
@@ -50,6 +56,8 @@
 //!   chat         Responses 事件 → chat 帧（流式 / 聚合）
 //!   usage        余额（通用积分 / 星火积分 / 会员）
 //!   checkin      每日登录积分（用余额差观测）
+//!   auth         登录协议：极验配置 / 发码 / 两种登录 / 收尾查模型凭据
+//!   login_page   本机登录页（127.0.0.1 上的极简服务 + 静态 HTML）
 //!   adapter      ProviderAdapter 实现（注册表接线在这一个文件里收口）
 //! ```
 //!
@@ -57,12 +65,14 @@
 //! release 是 `panic=abort`：本目录零 unwrap/expect/panic。
 
 pub mod adapter;
+pub mod auth;
 pub mod chat;
 pub mod checkin;
 pub mod client;
 pub mod credentials;
 pub mod endpoints;
 pub mod errors;
+pub mod login_page;
 pub mod models;
 pub mod responses;
 pub mod usage;

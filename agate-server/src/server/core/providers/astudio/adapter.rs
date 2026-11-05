@@ -207,7 +207,18 @@ impl ProviderAdapter for AStudioAdapter {
         })
     }
 
-    /// 登录页（手机号 / 密码 + 极验滑块）属客户端交互，本轮不做：走粘贴
+    /// **有**登录页，但**不走这条通用链**，所以如实答 false。
+    ///
+    /// 这个能力位问的是「能不能按通用网页登录链跑」：`build_login_url` 给一个
+    /// 外站授权地址，用户在浏览器里登录，回调带 code 回来
+    /// （`submit_login_callback` → `exchange_login_code`）。AStudio 两样都不成立：
+    /// 登录页是**我们自己起在 127.0.0.1 上**的（极验滑块只能在地页面里做），
+    /// 页面完成后交回的是**已经换好的完整会话**（含 modelBearerToken），
+    /// 没有 code 可换。所以它走专用入口
+    /// `LoginService::start_astudio_login`（见 `core::login::astudio`）。
+    ///
+    /// 答 false 的后果只有一个：`login_start` 的通用分支不会把它接走 —— 正是
+    /// 我们要的（那个分支会调 `build_login_url` 拿到 None 然后报 400）。
     fn supports_web_login(&self) -> bool {
         false
     }
