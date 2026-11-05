@@ -2340,3 +2340,63 @@ Linux ARM64 资产不等同于 Android ARM64 可执行文件。Android 需要单
 4. 再进入 4E 双实例互斥；之后 Phase 5 JNI/UniFFI ADR、Phase 6 观测/压力/恢复。
 
 外部 AI 报告不决定上述顺序；只有本仓库源码依赖、架构边界或实际 CI/运行证据才调整主线。
+
+
+## 28. R36 验证收官与 Batch 4D-3A 平台进程能力切片（2026-11-05）
+
+### 28.1 R36 正式验证基线
+
+- 验证分支：`verify/arch-8faa5f5`。
+- R36 HEAD：`e5a00f5b4c7d627f5ffa8346b03f2d0ba2593ee8`，基于 R35 `9be13754c7797b90f5ac49024195b3451a116022`。
+- CI Run：`42031750365`；`rust-tests` 与 `android-build` 双 Job success，总时长约 30m09s。
+- Rust：749 passed / 0 failed / 11 ignored；新增 3 项测试逐名通过，旧测试无删除。
+- Kotlin/JVM：99/99，12 类逐类与 R35 相同；Instrumentation：2/2。
+- JNI exports：12 项校验通过；Android Rust ABI（arm64-v8a / x86_64）、APK/ELF 检查通过。
+- R36 源码归档（tar.gz）SHA-256：`f20a75b79236f9bdaf9c7de80c57109e4f8cc0ecd9285846fb227f1715b5f441`。
+- 源码归档与远端 `e5a00f5b` tree：768/768 blob 完全匹配；本轮提交恰好 8 个文件，无未声明改动。
+- **证据边界：** headless SIGTERM → `shutdown_core()` → Sidecar/Core 关闭，以及 mihomo 子进程树/端口回收，在 CI 中只有编译证据，没有真实运行证据；设备端保持 `NOT RUN`，不能标记运行 PASS。
+
+### 28.2 Batch 4D-3A 目标与边界
+
+本切片开始落实平台能力抽象，但只抽取已经明确存在的 Sidecar OS 进程差异，不试图一次性重构全仓 `std::env`、目录、网络和时间访问。
+
+新增 `server/core/sub_kernel/process.rs`，定义窄范围 `ProcessAdapter`：
+- Tokio 子进程启动参数配置；
+- 标准进程命令启动参数配置；
+- 按 PID 清理经 secret 校验的遗留进程；
+- 下载解压后设置可执行权限。
+
+当前宿主实现：
+- Windows：隐藏控制台窗口（`CREATE_NO_WINDOW`）、`taskkill /F /PID`；可执行权限设置为 no-op。
+- Unix：命令参数配置为 no-op、通过 `kill -9` 清理 PID、设置 `0755` 可执行权限。
+- Android 目标在 OS 机制层会落入 Unix adapter；这**不表示 mihomo Android 资产受支持**。资产支持仍由既有平台矩阵独立门禁控制，Android 当前仍明确不支持 Sidecar。
+- 未知非 Windows/Unix 目标提供显式不支持行为，不静默假装成功。
+
+调用方迁移：
+- `runtime.rs` 的 mihomo 启动参数与 stale PID 清理改由 adapter 承担。
+- `download.rs` 的 Windows PowerShell 无窗口配置、Unix 可执行权限改由 adapter 承担；设置权限失败现在作为安装失败返回，不再忽略。
+- `stop_kernel()` 对当前 Child 的 wait 增加 3 秒上限；超时记录告警并依赖 `kill_on_drop(true)` 兜底。此处仍需设备/桌面实跑验证，不能仅凭编译声称 OS 一定完成回收。
+
+本切片没有引入第二套进程 manager；Child 所有权仍在 `runtime.rs`，worker/supervisor 归属仍由 R36 的 `TaskScope::Sidecar` 管理。
+
+### 28.3 同步修正文档与注释
+
+- `runtime.rs` 与 `server/mod.rs` 中过期的 `backend::shutdown` 注释统一改指 `agate_server::shutdown_core()`。
+- 后续所有归档 hash 必须同时写明容器格式，例如「源码归档（tar.gz）SHA-256」或「源码归档（zip）SHA-256」，避免对 zip 使用 tar.gz 的 hash。
+- 本节为 R37 候选记录；尚未经过 Rust/Android CI。不得将本节实现描述为已验证能力。
+
+### 28.4 本切片未触碰的内容
+
+- 不改 JNI exports、Kotlin RuntimeController、FGS、Gateway stop、HTTP graceful shutdown 语义。
+- 不改变 mihomo 平台资产矩阵，不宣称 Android 支持 Sidecar。
+- 不把全仓环境变量/主目录/配置目录访问一次性迁移到统一服务；Provider 私有环境变量、用户配置覆盖与启动层环境变量需要先分域，不能用一个通用 env adapter 粗暴替换。
+- 不把 Desktop/Tauri host exit hook 标记为已接线；当前快照没有 Tauri backend 宿主实现。
+
+### 28.5 验证状态与下一步
+
+- R36 是唯一已验证基线；本节代码是基于 R36 归档生成的 R37 候选，不是 Git commit。
+- 当前环境未运行 Cargo/rustc/rustfmt/Gradle；Rust 编译、Rust tests、Android ABI build、JNI 校验、Gradle、Instrumentation、模拟器和真机均未执行。
+- 下一步将 4D-3 从 Sidecar 进程能力扩展到路径/数据目录能力边界：先审计现有 `paths.rs`、配置目录、HOME/USERPROFILE 与 Android JNI 运行时覆盖，形成 `PathProvider` 最小接口；保留 Desktop/headless 环境变量优先级和旧名兼容语义，Android 不伪造桌面 HOME。
+- 之后再按实际依赖逐步覆盖网络/时间等平台能力；完成一个连贯切片后集中 CI，不为每个小改动单独触发。
+- R36 headless shutdown 和 mihomo 子进程回收的真实运行证据继续滚动收集，不阻塞独立 4D-3 开发。
+

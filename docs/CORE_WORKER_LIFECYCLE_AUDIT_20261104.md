@@ -206,3 +206,14 @@ CoreTaskSupervisor
 - Gateway stop 不调用 Core shutdown；Android JNI ABI 仍保持 12 exports。
 
 本执行环境未提供 Cargo/Rustfmt/Gradle，本候选未执行编译、单测、格式化、Android build、模拟器或真机测试。以上均为待 CI 项，不得提前标记 PASS。
+
+
+## 9. R36 验证状态与 4D-3A ProcessAdapter 衔接（2026-11-05）
+
+R36（`e5a00f5b4c7d627f5ffa8346b03f2d0ba2593ee8`，CI Run `42031750365`）已通过 Rust/Android 双 Job：Rust 749 passed / 11 ignored，JVM 99/99，Instrumentation 2/2。headless shutdown 与 Sidecar Child 实际退出仍只有编译证据，未有设备/进程运行证据。
+
+R37 候选开始抽取 Sidecar 的 OS 进程差异到 `server/core/sub_kernel/process.rs::ProcessAdapter`，覆盖 command flags、PID 清理和可执行权限；Child 所有权仍留在 `runtime.rs`，生命周期仍由 R36 的 Sidecar supervisor 管理。Unix adapter 被 Android 编译目标复用仅代表 OS API 机制共用，不代表 Android mihomo 资产获得支持。
+
+`stop_kernel()` 的 Child wait 现在有 3 秒上限，超时后依赖 `kill_on_drop(true)`。该路径必须在后续真实运行中确认子进程消失、端口释放；CI 编译/单测不能代替此证据。
+
+下一步平台抽象优先审计路径与数据目录：保留 Desktop/headless 的 `AGATE_PROXY_HOME`、旧名 `WORKBUDDY_PROXY_HOME`、`USERPROFILE` / `HOME` 优先级；Android 的私有目录由既有 JNI/runtime 配置入口提供，不应伪造桌面 HOME。Provider 自有环境变量不纳入同一个全局环境适配器。

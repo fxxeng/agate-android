@@ -281,17 +281,17 @@ fn install_binary(archive_path: &std::path::Path, dir: &std::path::Path) -> Resu
             .map_err(|error| format!("创建解压目录失败: {error}"))?;
         let archive = archive_path.to_string_lossy().to_string();
         let destination = extract_dir.to_string_lossy().to_string();
-        // powershell 也是控制台程序：桌面端不加 CREATE_NO_WINDOW 就会在解压那几秒
-        // 闪一个黑框（与内核进程本身同一个成因，见 runtime::start_kernel 的说明）
-        use std::os::windows::process::CommandExt;
-        let output = std::process::Command::new("powershell")
-            .args([
-                "-NoProfile",
-                "-NonInteractive",
-                "-Command",
-                &format!("Expand-Archive -LiteralPath '{archive}' -DestinationPath '{destination}' -Force"),
-            ])
-            .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
+        // PowerShell 的无控制台窗口标志由宿主进程 adapter 提供。
+        let mut command = std::process::Command::new("powershell");
+        command.args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            &format!("Expand-Archive -LiteralPath '{archive}' -DestinationPath '{destination}' -Force"),
+        ]);
+        crate::server::core::sub_kernel::process::process_adapter()
+            .configure_std_command(&mut command);
+        let output = command
             .output()
             .map_err(|error| format!("调用 PowerShell 解压失败: {error}"))?;
         if !output.status.success() {
@@ -323,9 +323,10 @@ fn install_binary(archive_path: &std::path::Path, dir: &std::path::Path) -> Resu
             .map_err(|error| format!("安装内核失败: {error}"))?;
         std::io::copy(&mut decoder, &mut binary)
             .map_err(|error| format!("解压内核失败: {error}"))?;
-        // 可执行位（unix 上从网络下载的二进制默认没有执行权限）
-        use std::os::unix::fs::PermissionsExt;
-        let _ = binary.set_permissions(std::fs::Permissions::from_mode(0o755));
+        // 可执行位与平台文件权限由宿主 adapter 处理。
+        crate::server::core::sub_kernel::process::process_adapter()
+            .set_executable(&binary)
+            .map_err(|error| format!("设置内核可执行权限失败: {error}"))?;
     }
     Ok(())
 }

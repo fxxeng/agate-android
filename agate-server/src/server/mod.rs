@@ -532,9 +532,9 @@ impl ServerState {
 
         // ── 定时签到与软件更新（切片 6）──────────────────────────
         // 两者都是进程级句柄（同 config / logging 的模式）：
-        // 定时签到的 stop() 要从**停机路径**（backend::shutdown，只有 Tauri 的
-        // AppState）调到，所以必须能从全局拿到；这里装入后 ServerState 里那份
-        // 与全局那份是同一实例。
+        // 定时签到的 stop() 由真实宿主退出入口 agate_server::shutdown_core()
+        // 调用，因此必须能从全局拿到；这里装入后 ServerState 里那份
+        // 与全局那份是同一实例。Android Activity/FGS 销毁不调用该进程退出入口。
         let auto_checkin = core::auto_checkin::init_global(AutoCheckin::new(
             store.clone(),
             billing.clone(),

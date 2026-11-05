@@ -772,16 +772,9 @@ async fn restart_with_config(
         .stdout(Stdio::from(log_file))
         .stderr(Stdio::from(log_err))
         .kill_on_drop(true);
-    // ── Windows：绝不给内核分配控制台窗口 ────────────────────────
-    // 桌面端是 GUI 子系统进程（没有控制台），启动控制台程序（mihomo）时系统会
-    // **新开一个控制台窗口**，标题就是 `-d` 指的内核目录。那个窗口不是装饰：
-    // 内核挂在它的控制台上，用户点 ✕ 关掉 = 控制台关闭事件把内核一起杀掉
-    //（实测「一关闭黑框，内核就停了」）。内核的 stdout/stderr 早已写进
-    // kernel.log，不需要控制台，所以直接不创建（CREATE_NO_WINDOW）。
-    #[cfg(windows)]
-    {
-        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-    }
+    // OS-specific creation flags belong to the host adapter.
+    crate::server::core::sub_kernel::process::process_adapter()
+        .configure_tokio_command(&mut command);
     // 最后一道启动闸：shutdown 可能发生在配置生成/写入期间。
     if crate::server::core::sub_kernel::is_shutting_down() {
         return Err("Sidecar 正在关闭，取消代理内核启动".to_string());
@@ -842,9 +835,16 @@ pub async fn stop_kernel() {
         return;
     };
     let _ = child.start_kill();
-    let _ = child.wait().await;
+    match tokio::time::timeout(Duration::from_secs(3), child.wait()).await {
+        Ok(Ok(_)) => log_line("🛑 已停止代理内核"),
+        Ok(Err(error)) => log_line(&format!("⚠️ 等待代理内核退出失败: {error}")),
+        Err(_) => {
+            // Child was spawned with kill_on_drop(true); dropping it after this
+            // bounded wait is the final OS-level kill-on-drop fallback.
+            log_line("⚠️ 等待代理内核退出超过 3 秒，交由 Child kill_on_drop 兜底");
+        }
+    }
     record_running(None, 0, None);
-    log_line("🛑 已停止代理内核");
 }
 
 // ─── 刷新与遗留进程 ────────────────────────────────────────
@@ -914,7 +914,7 @@ pub async fn run_refresh(sub_id: &str, providers: &[ProviderInput]) -> Result<()
 /// 启动前的遗留进程清理：状态文件里的 pid 还活着且确实是本内核
 /// （控制器以我们的 secret 响应）才杀 —— pid 复用会误伤无关进程。
 ///
-/// 桌面端正常退出走 backend::shutdown（杀内核），这里兜「上次崩溃 /
+/// 桌面端正常退出走 agate_server::shutdown_core()（杀内核），这里兜「上次崩溃 /
 /// 被任务管理器强杀」的情况。
 pub async fn cleanup_stale_kernel() {
     let state = read_state();
@@ -949,32 +949,9 @@ fn controller_alive_port(port: u16) -> bool {
     std::net::TcpStream::connect_timeout(&address, Duration::from_millis(300)).is_ok()
 }
 
-/// 按 pid 杀进程（Windows taskkill / unix kill；进程已退出返回 false）
+/// 按 pid 清理遗留进程；具体命令与平台差异由 HostProcessAdapter 承担。
 fn kill_by_pid(pid: u64) -> bool {
-    #[cfg(windows)]
-    {
-        // taskkill 是控制台程序：不加 CREATE_NO_WINDOW 时桌面端会闪一个黑框
-        // （这条路径在「清理上次运行遗留的内核进程」与端口回收时都会走）
-        use std::os::windows::process::CommandExt;
-        match std::process::Command::new("taskkill")
-            .args(["/F", "/PID", &pid.to_string()])
-            .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
-            .output()
-        {
-            Ok(output) => output.status.success(),
-            Err(_) => false,
-        }
-    }
-    #[cfg(not(windows))]
-    {
-        match std::process::Command::new("kill")
-            .args(["-9", &pid.to_string()])
-            .output()
-        {
-            Ok(output) => output.status.success(),
-            Err(_) => false,
-        }
-    }
+    crate::server::core::sub_kernel::process::process_adapter().kill_by_pid(pid)
 }
 
 // ─── 端口与监听器分配 ──────────────────────────────────────

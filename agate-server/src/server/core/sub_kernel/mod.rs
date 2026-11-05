@@ -52,6 +52,7 @@ use crate::server::core::proxy_pool;
 use crate::server::logging;
 
 pub mod download;
+mod process;
 pub mod runtime;
 
 /// 内核版本（pin 死：换版本时改这里并同步 4 份 sha256 —— 不追 latest，
