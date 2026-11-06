@@ -118,6 +118,22 @@ object GatewayRepository {
         val reasoning: Boolean,
         val isDefault: Boolean,
         /**
+         * 这条模型产出的是图片（`kind=image` / `output_modalities` 含 image）。
+         *
+         * ── 为什么必须单独一个位（2026-11-06）──────────────────────
+         * 生图通道接通之后，清单里第一次出现真正的图像条目。它们与对话模型
+         * 在**同一份清单**里，而三个既有能力位（工具 / 图像输入 / 思考）对它们
+         * 全是 false —— 那是如实的（生图模型确实不做工具调用、不收图），但
+         * 结果是界面把一条生图模型画成「三连灰」，用户完全看不出它是什么。
+         *
+         * 这个位的判据与内核 `shape::list_item` 同源：`kind == "image"` 或
+         * `output_modalities` 含 `image`。**不按名字猜** —— 名字里带 image 的
+         * 对话模型（多模态输入）不少。
+         */
+        val imageModel: Boolean = false,
+        /** 能不能做参考图编辑（只有部分家 / 部分型号支持）。 */
+        val imageEditing: Boolean = false,
+        /**
          * 启停状态。`/api/session` 的清单**只含已启用**的模型，所以从那边解析
          * 出来的行恒为 `true`；模型页会把 `/api/models/manage` 里「已禁用」的
          * 条目并进来（那时才是 `false`），用于置灰 + 画开关。
@@ -471,6 +487,8 @@ object GatewayRepository {
                 images = m.optBoolean("supports_images"),
                 reasoning = m.optBoolean("supports_reasoning"),
                 isDefault = m.optBoolean("is_default"),
+                imageModel = m.isImageModel(),
+                imageEditing = m.optBoolean("supports_image_editing"),
             )
         }
         return out
@@ -635,4 +653,24 @@ object GatewayRepository {
         }
         else -> type
     }
+}
+
+/**
+ * 这条条目是不是**生图模型**（与内核 `shape::list_item` / `providers::images::model_is_image`
+ * 同一判据：`kind=image` 或 `output_modalities` 含 image）。
+ *
+ * 两处形态的键名不同，所以两个都认：
+ *   - `/api/session`（走 `shape::list_item`）→ `kind` + `output_modalities`；
+ *   - `/api/models/manage`（走 `manage_view`）→ `kind` + `outputModalities`。
+ * 判据只有两行，抄一份比引一个跨层依赖便宜。
+ */
+internal fun JSONObject.isImageModel(): Boolean {
+    val kind = optString("kind").ifBlank { optString("type") }
+    if (kind.equals("image", ignoreCase = true)) return true
+    val modalities = optJSONArray("output_modalities") ?: optJSONArray("outputModalities")
+        ?: return false
+    for (index in 0 until modalities.length()) {
+        if (modalities.optString(index) == "image") return true
+    }
+    return false
 }

@@ -70,6 +70,10 @@ object ModelOps {
         val images: Boolean,
         val reasoning: Boolean,
         val isDefault: Boolean,
+        /** `kind=image`：生图模型（三个既有能力位对它全 false，见 ModelRow 的说明）。 */
+        val imageModel: Boolean = false,
+        /** 能不能做参考图编辑。 */
+        val imageEditing: Boolean = false,
     ) {
         fun toModelRow(): GatewayRepository.ModelRow = GatewayRepository.ModelRow(
             id = id,
@@ -85,6 +89,8 @@ object ModelOps {
             isDefault = isDefault,
             enabled = enabled,
             official = official,
+            imageModel = imageModel,
+            imageEditing = imageEditing,
         )
 
         companion object {
@@ -119,6 +125,11 @@ object ModelOps {
                         images = caps?.optBoolean("supportsImages") ?: false,
                         reasoning = caps?.optBoolean("supportsReasoning") ?: false,
                         isDefault = o.optBoolean("isDefault"),
+                        // manage_view 的三个图像键（2026-11-06 补）。
+                        // 缺这三个键时界面把生图模型画成「三连灰」—— 那三个位
+                        // 确实都是 false，但用户看不出它其实是生图模型。
+                        imageModel = o.isImageModel(),
+                        imageEditing = o.optBoolean("supportsImageEditing"),
                     )
                 }
                 return out

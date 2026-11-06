@@ -26,6 +26,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Assignment
 import androidx.compose.material.icons.filled.Dns
+import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Dashboard
@@ -128,6 +129,7 @@ object Routes {
     const val PROXY = "proxy"
     const val ROUTING = "routing"
     const val ASSISTANT = "assistant"
+    const val IMAGES = "images"
     const val SETTINGS = "settings"
     const val KEYS = "keys"
     const val SHOWCASE = "showcase"
@@ -158,6 +160,7 @@ private val DrawerSections: List<DrawerSection> = listOf(
         DrawerEntry(Routes.GATEWAY, "网关控制", Icons.Filled.Bolt),
         DrawerEntry(Routes.ROUTING, "路由预演", Icons.Filled.Route),
         DrawerEntry(Routes.PROXY, "出网代理池", Icons.Filled.Lan),
+        DrawerEntry(Routes.IMAGES, "图像创作", Icons.Filled.Image),
         DrawerEntry(Routes.ASSISTANT, "AI 运维助手", Icons.Filled.Verified),
     )),
     DrawerSection("设置", listOf(
@@ -555,6 +558,9 @@ fun AgateNavHost(
                 composable(Routes.ROUTING) {
                     // 路由预演：三策略 + 候选队列（含跳过原因）+ 自愈规则
                     RoutingPage(onOpenDrawer = ::openDrawer)
+                }
+                composable(Routes.IMAGES) {
+                    dev.agate.android.ui.images.ImagesPage(onOpenDrawer = { openDrawer() })
                 }
                 composable(Routes.ASSISTANT) {
                     // AI 运维助手：端口 SSE 流式对话 + 8 只工具（改动类先弹确认卡）

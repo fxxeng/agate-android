@@ -2310,8 +2310,11 @@ private fun ModelAggregateCard(
     val best = usable.firstOrNull() ?: ranked.first()
     val bestMult = best.takeIf { it.enabled }?.let { parseMultiplier(it.credits ?: "") }
     // 能力与上下文：取「第一条真的声明了这一项」的记录
-    val capsSource = ranked.firstOrNull { it.maxInput != null }
-        ?: ranked.firstOrNull { it.toolCall || it.images || it.reasoning }
+    // 只在这些**对话**模型里取样本：生图模型三个位全 false，把它当样本会让
+    // 这一家的能力摘要显示成「三连灰」，看起来像这家什么能力都没有。
+    val conversational = ranked.filter { !it.imageModel }
+    val capsSource = conversational.firstOrNull { it.maxInput != null }
+        ?: conversational.firstOrNull { it.toolCall || it.images || it.reasoning }
         ?: ranked.first()
 
     Column(
@@ -2475,6 +2478,16 @@ private fun ModelAggregateCard(
 private fun CapBadgeRow(m: GatewayRepository.ModelRow) {
     val C = agateColors()
     Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+        // ── 生图模型不画那三个位（2026-11-06）────────────────────
+        // 它们对生图模型**全是 false 且如实**：生图模型不做工具调用、不收图
+        // 输入、不想考。画成「工具✗ 图片✗ 思考✗」的结果是用户完全看不出
+        // 这是一条生图模型 —— 而生图通道接通之前清单里根本没有这类条目，
+        // 所以这个三连灰是这一批才**第一次出现**的显示错误。
+        if (m.imageModel) {
+            CapChip("生图", true)
+            if (m.imageEditing) CapChip("改图", true)
+            return@Row
+        }
         CapChip("工具", m.toolCall)
         CapChip("图片", m.images)
         CapChip("思考", m.reasoning)
@@ -2581,6 +2594,12 @@ private fun capsOf(m: GatewayRepository.ModelRow): String {
     val parts = ArrayList<String>()
     m.maxInput?.let { parts += "${fmtK(it)} 上下文" }
     m.maxOutput?.let { parts += "${fmtK(it)} 输出" }
+    // 生图模型：三个对话能力位全为 false（如实），照直画会变成一串「未声明」
+    if (m.imageModel) {
+        parts += "生图"
+        if (m.imageEditing) parts += "改图"
+        return parts.joinToString(" · ")
+    }
     if (m.toolCall) parts += "工具 ✓"
     if (m.images) parts += "图像 ✓"
     if (m.reasoning) parts += "思考 ✓"

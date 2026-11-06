@@ -439,6 +439,16 @@ pub fn manage_view(store: &AccountStore) -> Value {
                 "id": id, "name": item.get("name"), "credits": item.get("credits"),
                 "isDefault": item.get("isDefault").and_then(Value::as_bool).unwrap_or(false),
                 "provider": provider, "providerLabel": super::super::label_of(provider),
+                // ── 图像条目的三个键（2026-11-06）────────────────────
+                // 生图通道接通之后，管理视图里第一次出现 **`kind=image` 的行**。
+                // 不把这三件带出来的话，模型页只能按「工具 ✗ 图片 ✗ 思考 ✗」
+                // 画一条三连灰 —— 用户完全看不出它不是对话模型（那三个位为 false
+                // 是**如实**的：生图模型确实不做工具调用，也不收图）。
+                // 判据与出口同源（`shape::list_item` 读的是同一批键）。
+                "kind": item.get("kind"),
+                "outputModalities": item.get("output_modalities"),
+                "supportsImageGeneration": item.get("supports_image_generation"),
+                "supportsImageEditing": item.get("supports_image_editing"),
                 "source": source, "enabled": enabled, "aliases": aliases,
                 "capabilities": capability::effective(&item),
                 "capOverrides": cap_overrides,
@@ -560,6 +570,14 @@ pub fn manage_view(store: &AccountStore) -> Value {
                 // `builtin` / `remote` 不同源，标成 `manual`（映射页据它
                 // 区分「用户手工登记的模型」）。
                 "source": "manual", "enabled": enabled, "aliases": aliases,
+                // 图像三键与内置家同一处置（见上面那段说明）。自定义家目前
+                // **接不上生图通道**（没有 `ProviderAdapter` 可问能力位），
+                // 所以这三件在它这里通常是缺失/null —— 如实透出，界面据此
+                // 显示「未声明」而不是画一条误导性的三连灰。
+                "kind": item.get("kind"),
+                "outputModalities": item.get("output_modalities"),
+                "supportsImageGeneration": item.get("supports_image_generation"),
+                "supportsImageEditing": item.get("supports_image_editing"),
                 "capabilities": capability::effective(&item),
                 "capOverrides": cap_overrides,
                 "visibility": Value::Null,
