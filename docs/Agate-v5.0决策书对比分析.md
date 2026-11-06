@@ -50,7 +50,7 @@
 | F9 | 11 处 OkHttp / 13 处 Authorization / 7 处端口 | ✅方向属实 | 实测 10 文件持 OkHttpClient、13 处 Authorization、22 处 8787 字面 |
 | F10 | 调度两个事实源 | ✅属实且可修 | checkin_schedules 具备 next_run_at_ms 全套能力 |
 | F11 | 提供商页排序只写 prefs | ✅属实 | ProviderPage.kt:216；处置见 1.3-3 |
-| F12 | Kuku 引擎 Windows DLL | ✅属实 | engine.rs:49 `genflowengine.dll` + 注册表定位，Android 必空 |
+| F12 | Kuku 引擎 Windows DLL | ✅属实（已于 2026-11-06 修） | 当时 engine.rs:49 是 `genflowengine.dll` + 注册表定位，Android 必空；现改为纯算法 MD5 签名（`kuku/engine.rs`，对齐上游 3.4.1），任何平台都能换发——客户端那句「引擎依赖官方 Windows 客户端」的置灰理由已不成立 |
 | F13 | 主题重启丢失 | ✅属实 | MainActivity.kt:25 rememberSaveable |
 | F14 | Key 明文 prefs | ✅属实 | 归 P5 信封加密 |
 | F15 | 改名波及 ~100 文件、「5 处差异」记录不符 | ⚠半实 | 波及面属实；但「M0 记录与事实不符」误读时序——M0 记录是 M0 时点，2026-10-25 去上游化是后续动作。衍生发现 agate- 前缀见 1.2-6 |
