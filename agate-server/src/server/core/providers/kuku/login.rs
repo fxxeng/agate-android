@@ -71,9 +71,9 @@ pub type CompleteOutcome = (KukuCredentials, Option<String>);
 ///
 /// ── 复核失败**不阻断**登录，但**带警告**────────────────────
 /// 复核（`enrich_identity`）内部会先换发 genflowpro 作用域 STOKEN
-/// （`engine.rs`，需要本机客户端引擎 + Cookie 里的 PTOKEN）。走到警告
-/// 分支的情形：没找到客户端引擎 / Cookie 缺 PTOKEN 换不了，且原凭证的
-/// STOKEN 又过不了业务校验。用户在窗口里刚登录成功，凭证本身是有效的
+/// （`engine.rs`：纯算法签名 + 一次 passport 换发，**不依赖任何客户端**，
+/// 需要 Cookie 里的 PTOKEN）。走到警告分支的情形：Cookie 里没有 PTOKEN，
+/// 或换发被上游拒（errno=110003 等），且原凭证的 STOKEN 又过不了业务校验。用户在窗口里刚登录成功，凭证本身是有效的
 /// （BDUSS 有效），因此失败时**仍返回凭证**（uid 为空，账号层用 cookie
 /// 尾兜底 id）——转发与模型刷新会在需要时重新拿三件套并再次尝试换发
 /// （`session::refresh_triple` 的自愈路径）；同时返回一条警告，由登录
@@ -96,21 +96,21 @@ pub async fn complete_login(cookie: &str) -> Result<CompleteOutcome, GatewayErro
     match enrich_identity(&credentials, None, true).await {
         Ok(enriched) => Ok((enriched, None)),
         Err(error) => {
-                crate::server::logging::log(
-                    "[Login]",
-                    &format!(
-                        "⚠️ KukuAI 登录态已交回但复核未通过（{}）；先按有效凭证落库，\
-                         uid 留空待后续刷新补齐（复核包含换发业务会话令牌，\
-                         需要本机客户端引擎与 Cookie 里的 PTOKEN）",
-                        error.message
-                    ),
-                );
+            crate::server::logging::log(
+                "[Login]",
+                &format!(
+                    "⚠️ KukuAI 登录态已交回但复核未通过（{}）；先按有效凭证落库，\
+                     uid 留空待后续刷新补齐（复核含换发业务会话令牌，\
+                     需要 Cookie 里的 PTOKEN）",
+                    error.message
+                ),
+            );
             Ok((
                 credentials,
                 Some(
-                    "换发 KukuAI 业务会话令牌失败（未找到库库AI 客户端引擎，或登录 \
-                     Cookie 里缺 PTOKEN）：账号已添加，但模型刷新可能报「未登录」。\
-                     请安装 / 修复库库AI 客户端后重新添加，或重新粘贴完整 Cookie"
+                    "换发 KukuAI 业务会话令牌失败（登录 Cookie 里缺 PTOKEN，或上游拒绝了 \
+                     换发请求）：账号已添加，但模型刷新可能报「未登录」。请重新登录该账号，\
+                     取得含 PTOKEN 的完整 Cookie 后再添加一次"
                         .to_string(),
                 ),
             ))

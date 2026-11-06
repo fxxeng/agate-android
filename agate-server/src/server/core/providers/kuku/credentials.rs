@@ -449,7 +449,7 @@ pub async fn with_business_stoken(credentials: &KukuCredentials) -> KukuCredenti
 /// ── 换发业务会话令牌（2026-10-08 实测后加，见 `engine.rs` 模块头）────
 /// KukuAI 业务接口只认**按产品签发**的 STOKEN，网页登录 Cookie 里那份
 /// 通行证级 STOKEN 过不了校验。所以验证前先拿 `BDUSS + PTOKEN` 向百度
-/// 通行证换发一次；换发失败（没装客户端 / 缺 PTOKEN）不阻断 —— 按原
+/// 通行证换发一次；换发失败（缺 PTOKEN / 上游拒绝，见 `engine.rs`）不阻断 —— 按原
 /// 凭证继续走，行为与旧版一致。
 ///
 /// `userreport` 换会话三件套的同时带回 `uk`；`settings/profile` 带昵称（best-effort）。

@@ -85,6 +85,10 @@ sha2 = "0.10"
 # 见 providers/loomy/sign.rs）。与 sha2/md-5/hmac 同属 RustCrypto digest 0.10
 # 那条链，不引入新的哈希依赖树。
 sha1 = "0.10"
+# KukuAI 的会话令牌换发签名（MD5，providers/kuku/engine.rs）。原来是加载官方
+# Windows 客户端的 genflowengine.dll 算这一个 MD5；改成纯算法后 Android 也能换发。
+# 与 sha2/sha1 同属 RustCrypto digest 0.10 那条链，锁文件里本来就有（不新增依赖树）。
+md-5 = "0.10"
 # 「从其他工具导入」：解析 cc-switch 里 Codex 供应商的 config.toml 字符串
 # （提取激活 model_provider 的 base_url，见 core/import_ccswitch.rs）
 toml = "0.9"
