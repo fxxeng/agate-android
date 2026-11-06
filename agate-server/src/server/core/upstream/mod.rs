@@ -59,6 +59,12 @@ pub mod image_compress;
 /// 以及 ModelScope 异步任务的轮询。
 mod image_tasks;
 mod images;
+/// 出站 `multipart/form-data` 编码（本仓唯一一处拼多段表单的地方）。
+///
+/// 公开而非 `mod`：provider 层要直接用它拼参考图上传（见
+/// `providers::raccoon::image_generation`），用例也要能逐字节钉住分隔符与
+/// 文件段的形状。
+pub mod multipart;
 pub mod refusal;
 pub mod request;
 mod payload;

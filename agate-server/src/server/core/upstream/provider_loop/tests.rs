@@ -527,3 +527,70 @@ fn a_deterministic_404_skips_the_in_place_resend() {
         "404 的豁免不许顺手把 400 也豁免了"
     );
 }
+
+/// 出站多段表单必须**逐字节**到达上游。
+///
+/// 这条钉住的是「请求体从 `Value` 换成了字节」这一步：参考图是二进制，
+/// 任何一次「按文本处理」的假设都会把图改坏，而症状是上游回 200、用户拿到
+/// 一张花图 —— 比一个明确的 400 难查得多。所以让上游用真的 multipart 解析器
+/// （axum 的 `Multipart`，与入口解析客户端上传的是同一个）读回来比对字节。
+#[tokio::test]
+async fn multipart_payload_reaches_upstream_byte_for_byte() {
+    use base64::Engine;
+    use crate::server::core::upstream::multipart::MultipartForm;
+
+    async fn echo(mut form: axum::extract::Multipart) -> axum::Json<serde_json::Value> {
+        let mut prompt = String::new();
+        let mut files = Vec::new();
+        while let Some(field) = form.next_field().await.expect("字段应当可读") {
+            let name = field.name().unwrap_or("").to_string();
+            let filename = field.file_name().unwrap_or("").to_string();
+            let bytes = field.bytes().await.expect("字段字节应当可读");
+            if name == "prompt" {
+                prompt = String::from_utf8_lossy(&bytes).to_string();
+            } else {
+                files.push(serde_json::json!({
+                    "name": name,
+                    "filename": filename,
+                    "base64": base64::engine::general_purpose::STANDARD.encode(&bytes),
+                }));
+            }
+        }
+        axum::Json(serde_json::json!({ "prompt": prompt, "files": files }))
+    }
+
+    let app = axum::Router::new().route("/images/edits", axum::routing::post(echo));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/images/edits", listener.local_addr().unwrap());
+    let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+    // 故意塞进 CRLF 与一段「长得像 boundary」的文本：朴素按分隔符切分的实现
+    // 会在这里切错，而正确的实现原样送出。
+    let raw: &[u8] = b"\x89PNG\r\n\x1a\n--agate-lookalike\r\n\x00\x01tail";
+    let mut form = MultipartForm::new();
+    form.text("prompt", "把背景换成蓝色")
+        .file("image", "reference-1.png", "image/png", raw.to_vec());
+    let form = form.finish().expect("拼装应当成功");
+
+    let transport = TransportRequest {
+        url,
+        headers: vec![("Content-Type".into(), form.content_type())],
+        payload: form.bytes.clone(),
+        proxy: None,
+        system_proxy_when_unset: false,
+    };
+    let response = send_chat_request(&transport).await.expect("应当发得出去");
+    let status = response.status();
+    let text = response.text().await.unwrap();
+    task.abort();
+    assert!(status.is_success(), "上游回 {status}: {text}");
+
+    let value: serde_json::Value = serde_json::from_str(&text).expect("上游回 JSON");
+    assert_eq!(value["prompt"], serde_json::json!("把背景换成蓝色"));
+    assert_eq!(value["files"][0]["name"], serde_json::json!("image"));
+    assert_eq!(value["files"][0]["filename"], serde_json::json!("reference-1.png"));
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(value["files"][0]["base64"].as_str().unwrap())
+        .unwrap();
+    assert_eq!(decoded, raw, "参考图字节必须原样到达上游");
+}

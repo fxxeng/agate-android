@@ -21,6 +21,7 @@
 
 use std::time::Duration;
 
+use bytes::Bytes;
 use serde_json::{json, Value};
 
 use crate::server::core::egress;
@@ -65,8 +66,17 @@ pub struct TransportRequest {
     pub url: String,
     /// 请求头（由适配器给出；不含出网代理相关）
     pub headers: Vec<(String, String)>,
-    /// 已序列化的请求体（由编排层从适配器的 `plan.body` 序列化而来）
-    pub payload: String,
+    /// 要发出去的**字节**（由编排层从适配器的计划定稿）。
+    ///
+    /// ── 为什么不是 `String` ────────────────────────────────────
+    /// 绝大多数请求是 JSON，但生图的参考图编辑是 `multipart/form-data`
+    /// —— 里面直接嵌二进制图片。用 `String` 表达就必须给字节做一次「假装是
+    /// 文本」的往返，而任何一步的字符集假设都会把图改坏（症状是「上传成功、
+    /// 图是花的」）。所以这里只认字节，「是不是 JSON」留给上层决定。
+    ///
+    /// 用 `Bytes` 而不是 `Vec<u8>`：同一次尝试里它会被克隆进 reqwest 的
+    /// body，而请求体上限是 16 MiB —— 克隆应当是 O(1)，不是再抄一份。
+    pub payload: Bytes,
     /// 出网代理（账号级；与 provider 无关，由编排层解析后带上）
     pub proxy: Option<ResolvedProxy>,
     /// 账号未配代理时本家是否**跟随系统代理**出网（编排层按适配器的能力位填，

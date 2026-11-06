@@ -77,7 +77,7 @@ pub fn build_daily_activity_request(
     Ok(TransportRequest {
         url: chat_completions_url(session, Region::Intl),
         headers,
-        payload,
+        payload: payload.into_bytes().into(),
         proxy,
         // 保活是转发链路的旁支，口径跟转发一致（workbuddy 不覆写能力位 = 直连）
         system_proxy_when_unset: false,
@@ -153,7 +153,7 @@ pub fn build_web_conversation_request(
     Ok(TransportRequest {
         url: web_conversations_url(session, Region::Intl),
         headers,
-        payload,
+        payload: payload.into_bytes().into(),
         proxy,
         // 与桌面端保活同一口径：转发链路的旁支，workbuddy 不覆写能力位 = 直连
         system_proxy_when_unset: false,

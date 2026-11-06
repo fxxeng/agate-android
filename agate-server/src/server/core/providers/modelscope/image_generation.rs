@@ -172,18 +172,18 @@ pub fn build(
     let token = super::credentials::token_of(account).map_err(|error| {
         GatewayError::with_status(401, format!("读取 ModelScope 账号失败：{error}"))
     })?;
-    Ok(ImageRequestPlan {
-        url: format!("{}/images/generations", region.inference_base_url()),
-        headers: vec![
+    Ok(ImageRequestPlan::with_response(
+        format!("{}/images/generations", region.inference_base_url()),
+        vec![
             ("Content-Type".to_string(), "application/json".to_string()),
             ("Authorization".to_string(), format!("Bearer {token}")),
             // 声明异步：不带这个头，上游会按同步接口处理（一次请求等几十秒），
             // 而本仓的「读响应」那一步是按任务号轮询的（见模块头）。
             ("X-ModelScope-Async-Mode".to_string(), "true".to_string()),
         ],
-        body: out,
-        response: ImageResponseKind::ModelscopeAsync,
-    })
+        out,
+        ImageResponseKind::ModelscopeAsync,
+    ))
 }
 
 #[cfg(test)]

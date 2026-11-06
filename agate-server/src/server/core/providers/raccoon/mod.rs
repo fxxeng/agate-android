@@ -150,6 +150,15 @@ impl ProviderAdapter for RaccoonAdapter {
         true
     }
 
+    /// 本家有参考图编辑通道（`POST {llm_base}/images/edits`，multipart 出站）。
+    ///
+    /// 与生成同一层级：能不能改某条模型由目录条目的 `supports_image_editing`
+    /// 决定，本家那条合成条目声明为 true（见 image_generation 的 model_row）。
+    /// 两者的分工是「家有没有这条路」与「这条模型能不能走」，不能互相替代。
+    fn supports_image_editing(&self) -> bool {
+        true
+    }
+
     /// 构造上游生图请求。
     fn build_image_request(
         &self,

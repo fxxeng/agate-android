@@ -16,16 +16,23 @@
 //! `size` 要**归一**：官方出图工具要求边长 16 对齐、至少 1024² 像素，且只认
 //! 那八个常见宽高比。直接把客户端的 `1024x1792` 发过去会被拒。
 //!
-//! ── 编辑：暂不支持（能力位为 false）───────────────────────────
-//! 上游的 `/images/edits` 是 **multipart**（重复的 `image` 字段带参考图），
-//! 而本仓的 `ImageRequestPlan` 目前只有 JSON 体。所以 `supports_image_editing`
-//! 声明为 false —— 声明成 true 会让 `/v1/images/edits` 接受请求、然后在构造
-//! 请求时失败，用户看到的是「点了没反应」而不是「这条路还没开」。
+//! ── 编辑：multipart 出站（2026-11-06）─────────────────────────
+//! 上游的 `/images/edits` 是 **`multipart/form-data`**：重复的 `image` 字段带
+//! 参考图，`prompt` / `size` 是普通文本字段。拼装在
+//! [`crate::server::core::upstream::multipart`]（本仓唯一一处），这里只负责把
+//! 客户端的 data URL 拆成「字节 + MIME」。
+//!
+//! 参考图到这一步**一定**已经是内联 data URL：`api::image_input::prepare`
+//! 在我们自己的入口就把外链下载、校验并内联了。这里仍然逐张校验一遍，理由是
+//! 这条函数不只有那一个调用方 —— 「上游拿到一个它读不懂的字段」会在上游那一侧
+//! 变成一句和请求内容无关的 400。
 
 use axum::http::HeaderMap;
+use base64::Engine;
 use serde_json::{json, Value};
 
 use crate::server::core::providers::images::{ImageOperation, ImageRequestPlan};
+use crate::server::core::upstream::multipart::MultipartForm;
 use crate::server::errors::GatewayError;
 
 /// 本站给这条合成条目用的 id（与上游插件的 `raccoon-image` 同名）。
@@ -36,6 +43,9 @@ const WIRE_MODEL: &str = "gpt-image-1";
 
 /// 默认尺寸（未指定时与 OpenAI 协议的默认值一致）。
 const DEFAULT_SIZE: &str = "1024x1024";
+
+/// 一次编辑最多带几张参考图（与上游一致）。
+const MAX_REFERENCES: usize = 16;
 
 /// 目录里那条合成条目。
 ///
@@ -48,8 +58,8 @@ pub fn model_row() -> Value {
         "kind": "image",
         "output_modalities": ["image"],
         "supports_image_generation": true,
-        // 见模块头：multipart 出站还没做，这里如实为 false
-        "supports_image_editing": false,
+        // 参考图编辑走 `/images/edits`（multipart 出站），见模块头
+        "supports_image_editing": true,
         "supportsToolCall": false,
         "supportsImages": false,
         "supportsReasoning": false,
@@ -132,22 +142,8 @@ fn prompt_of(body: &Value) -> Result<String, GatewayError> {
     Ok(parts.join("\n"))
 }
 
-/// 构造上游生图请求。
-pub fn build(
-    account: &Value,
-    body: &Value,
-    base_url: &str,
-    _client_headers: &HeaderMap,
-    operation: ImageOperation,
-) -> Result<ImageRequestPlan, GatewayError> {
-    if operation == ImageOperation::Edit {
-        // 能力位已声明 false，候选链本来就不会把编辑派过来；真到了说明
-        // 目录与能力位不同步，说清原因而不是拼一个注定失败的请求。
-        return Err(GatewayError::bad_request(
-            "小浣熊参考图编辑尚未支持（上游是 multipart 上传，本网关还没实现）",
-        )
-        .with_code(ImageOperation::Edit.unsupported_code()));
-    }
+/// 两个入口共用的前置检查（模型名、张数、只认 `auto` 那几档的字段）。
+fn validate_request(body: &Value) -> Result<(), GatewayError> {
     let model = body
         .get("model")
         .and_then(Value::as_str)
@@ -177,6 +173,16 @@ pub fn build(
             }
         }
     }
+    Ok(())
+}
+
+/// 鉴权与身份头。
+///
+/// `Content-Type` 也在这里给：生成是 `application/json`，编辑由
+/// [`ImageRequestPlan::multipart`] 负责替换成带 boundary 的那一版（它的
+/// boundary 与报文字节必须逐字一致，所以只能由拼装处写）。两边都先写一份
+/// JSON 反而更稳：**没有任何一条路会漏掉 Content-Type**。
+fn identity_headers(account: &Value) -> Result<Vec<(String, String)>, GatewayError> {
     let token = account
         .get("auth")
         .and_then(|auth| auth.get("accessToken"))
@@ -197,14 +203,106 @@ pub fn build(
     ];
     // 桌面端身份头是上游的风控基线（与对话链路同一套，见 `headers::append_identity`）。
     super::headers::append_identity(&mut headers, account)?;
-    Ok(ImageRequestPlan::openai(
-        format!("{base_url}/images/gen"),
+    Ok(headers)
+}
+
+/// 一张参考图：上游要的字节 + 它声明的类型。
+fn reference_bytes(image: &Value) -> Result<(&'static str, Vec<u8>), GatewayError> {
+    let value = image
+        .get("image_url")
+        .and_then(Value::as_str)
+        .ok_or_else(|| GatewayError::bad_request("参考图缺少 image_url"))?;
+    let (mime, encoded) = value
+        .strip_prefix("data:")
+        .and_then(|value| value.split_once(";base64,"))
+        .ok_or_else(|| {
+            GatewayError::bad_request("小浣熊参考图需要内联 data URL（网关入口会先下载并内联外链）")
+        })?;
+    // 只认这三种：上游按 MIME 决定怎么解，丢一张它读不懂的进去，回来的是一句
+    // 和请求内容无关的 400。
+    let mime = match mime {
+        "image/png" => "image/png",
+        "image/jpeg" | "image/jpg" => "image/jpeg",
+        "image/webp" => "image/webp",
+        _ => {
+            return Err(GatewayError::bad_request(
+                "小浣熊参考图仅支持 PNG、JPEG 或 WebP",
+            ))
+        }
+    };
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .map_err(|_| GatewayError::bad_request("小浣熊参考图不是有效的 base64"))?;
+    Ok((mime, bytes))
+}
+
+/// 构造上游生图 / 图片编辑请求。
+pub fn build(
+    account: &Value,
+    body: &Value,
+    base_url: &str,
+    _client_headers: &HeaderMap,
+    operation: ImageOperation,
+) -> Result<ImageRequestPlan, GatewayError> {
+    validate_request(body)?;
+    match operation {
+        ImageOperation::Generate => {
+            let headers = identity_headers(account)?;
+            Ok(ImageRequestPlan::openai(
+                format!("{base_url}/images/gen"),
+                headers,
+                json!({
+                    "model": WIRE_MODEL,
+                    "prompt": prompt_of(body)?,
+                    "size": normalize_size(body)?,
+                }),
+            ))
+        }
+        ImageOperation::Edit => build_edit(account, body, base_url),
+    }
+}
+
+/// 构造 `/images/edits`（multipart）。
+///
+/// 字段名与上游一致：`prompt` / `size` 是文本字段，参考图一律叫 `image`
+/// （重复出现，顺序即客户端给的顺序）。`model` **不发** —— 上游这条路由不认它，
+/// 发了反而可能被它自己那套模型校验挡下。
+fn build_edit(
+    account: &Value,
+    body: &Value,
+    base_url: &str,
+) -> Result<ImageRequestPlan, GatewayError> {
+    let images = body
+        .get("images")
+        .and_then(Value::as_array)
+        .filter(|images| !images.is_empty() && images.len() <= MAX_REFERENCES)
+        .ok_or_else(|| {
+            GatewayError::bad_request(format!("小浣熊参考图编辑需要 1 至 {MAX_REFERENCES} 张图片"))
+        })?;
+    let headers = identity_headers(account)?;
+    let mut form = MultipartForm::new();
+    form.text("prompt", &prompt_of(body)?);
+    form.text("size", &normalize_size(body)?);
+    for (index, image) in images.iter().enumerate() {
+        let (mime, bytes) = reference_bytes(image)?;
+        let extension = match mime {
+            "image/png" => "png",
+            "image/webp" => "webp",
+            _ => "jpg",
+        };
+        form.file(
+            "image",
+            // 文件名由我们生成：客户端给的名字既不可信（头部注入），非 ASCII 时
+            // 还要按 RFC 7578 另做编码（见 multipart 模块头）。
+            &format!("reference-{}.{}", index + 1, extension),
+            mime,
+            bytes,
+        );
+    }
+    Ok(ImageRequestPlan::multipart(
+        format!("{base_url}/images/edits"),
         headers,
-        json!({
-            "model": WIRE_MODEL,
-            "prompt": prompt_of(body)?,
-            "size": normalize_size(body)?,
-        }),
+        form.finish()?,
     ))
 }
 
@@ -262,11 +360,119 @@ mod tests {
         assert!(error.message.contains(MODEL_ID), "{}", error.message);
     }
 
+    /// 「家有能力位」与「目录条目声明支持」必须**同时**为真，编辑入口才会把
+    /// 请求派到这家来（`providers::images::operation_providers` 取交集）。
+    ///
+    /// 这两处任缺一个，症状都不是「报个清楚的错」，而是入口直接回一句「模型
+    /// 没有可用的图片编辑通道」—— 用户会去换模型、重配账号，而真正的原因是
+    /// 我们少写了一行。这条测试就是钉住这一对。
     #[test]
-    fn editing_is_refused_until_multipart_exists() {
-        let body = json!({ "model": MODEL_ID, "prompt": "改一下" });
-        let error = build(&account(), &body, "https://api.example.com", &HeaderMap::new(), ImageOperation::Edit)
-            .expect_err("编辑尚未实现");
-        assert_eq!(error.code.as_deref(), Some(ImageOperation::Edit.unsupported_code()));
+    fn editing_capability_and_directory_flag_agree() {
+        use crate::server::core::providers::adapter::ProviderAdapter;
+        assert!(
+            super::super::RACCOON_ADAPTER.supports_image_editing(),
+            "适配器要声明编修通道"
+        );
+        assert_eq!(
+            model_row()["supports_image_editing"],
+            json!(true),
+            "目录条目要声明这条模型能改图"
+        );
+    }
+
+    /// 编辑走 multipart：报文里必须有 prompt、参考图**字节原样**，且
+    /// `Content-Type` 的 boundary 与报文分隔符逐字一致（两处各写一份就迟早
+    /// 不一致，症状是上游说「拿不到字段」，而报文看起来完全正常）。
+    #[test]
+    fn edit_builds_multipart_with_matching_boundary() {
+        use base64::Engine;
+        let raw: &[u8] = b"\x89PNG\r\n\x1a\nreference-bytes";
+        let encoded = base64::engine::general_purpose::STANDARD.encode(raw);
+        let body = json!({
+            "model": MODEL_ID,
+            "prompt": "把背景换成蓝色",
+            "size": "1024x1024",
+            "images": [{ "image_url": format!("data:image/png;base64,{encoded}") }],
+        });
+        let plan = build(
+            &account(),
+            &body,
+            "https://api.example.com",
+            &HeaderMap::new(),
+            ImageOperation::Edit,
+        )
+        .expect("编辑应当能构造请求");
+
+        assert!(plan.url.ends_with("/images/edits"), "{}", plan.url);
+        let form = plan.multipart.expect("编辑必须带多段表单");
+        // 头里的 boundary 与报文里的分隔符是同一个
+        let header = plan
+            .headers
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case("content-type"))
+            .map(|(_, value)| value.clone())
+            .expect("必须有 Content-Type");
+        assert_eq!(header, form.content_type());
+        assert!(
+            header.starts_with("multipart/form-data; boundary="),
+            "{header}"
+        );
+        // 参考图字节逐字节在报文里
+        assert!(form
+            .bytes
+            .windows(raw.len())
+            .any(|window| window == raw));
+        // prompt 是 UTF-8 文本字段
+        assert!(String::from_utf8_lossy(&form.bytes).contains("把背景换成蓝色"));
+        // 闭合分隔符
+        assert!(form
+            .bytes
+            .ends_with(format!("--{}--\r\n", form.boundary).as_bytes()));
+        // 可读近似里只有文件名与字节数，没有二进制
+        assert_eq!(form.preview["image"][0]["filename"], json!("reference-1.png"));
+    }
+
+    /// 参考图的三种坏形态各自有话说：少了、多了、不是 data URL。
+    /// 合成一句「参数错误」会让用户不知道去改哪。
+    #[test]
+    fn edit_validates_reference_images() {
+        let build_with = |body: Value| {
+            build(
+                &account(),
+                &body,
+                "https://api.example.com",
+                &HeaderMap::new(),
+                ImageOperation::Edit,
+            )
+        };
+        let error = build_with(json!({ "model": MODEL_ID, "prompt": "改一下" }))
+            .expect_err("没有参考图不能编辑");
+        assert!(error.message.contains("1 至 16"), "{}", error.message);
+
+        let too_many: Vec<Value> = (0..17)
+            .map(|_| json!({ "image_url": "data:image/png;base64,AA" }))
+            .collect();
+        assert!(build_with(json!({
+            "model": MODEL_ID,
+            "prompt": "改一下",
+            "images": too_many,
+        }))
+        .is_err());
+
+        let error = build_with(json!({
+            "model": MODEL_ID,
+            "prompt": "改一下",
+            "images": [{ "image_url": "https://example.com/a.png" }],
+        }))
+        .expect_err("外链必须由入口先内联");
+        assert!(error.message.contains("data URL"), "{}", error.message);
+
+        let error = build_with(json!({
+            "model": MODEL_ID,
+            "prompt": "改一下",
+            "images": [{ "image_url": "data:image/gif;base64,AA" }],
+        }))
+        .expect_err("只收 PNG / JPEG / WebP");
+        assert!(error.message.contains("PNG"), "{}", error.message);
     }
 }

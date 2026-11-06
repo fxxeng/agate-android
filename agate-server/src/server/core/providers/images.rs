@@ -26,6 +26,7 @@
 use serde_json::Value;
 
 use crate::server::core::models::model_id;
+use crate::server::core::upstream::multipart::MultipartBody;
 use crate::server::core::providers::adapter::adapter_for;
 use crate::server::core::providers::{kind_from_id, ProviderKind};
 
@@ -59,12 +60,29 @@ pub enum ImageResponseKind {
 ///
 /// 与 `ChatRequestPlan` 的分工相同：这里只管「往哪发、带什么头、发什么体」，
 /// 不发请求、不改响应。响应怎么读由 [`ImageResponseKind`] 决定，由转发层统一做。
+///
+/// ── `body` 与 `multipart` 的分工（读代码前先看这段）────────────
+/// `body` **恒**是一份 JSON：它是这次请求的可读描述，日志、调试报文与
+/// `pointer()` 查询读的都是它。
+///
+/// `multipart` 为 `Some` 时，真正发出去的**不是** `body` 序列化后的字节，
+/// 而是这里已拼好的多段表单 —— 上游那几家（目前只有 raccoon 的参考图编辑）
+/// 要的是 `multipart/form-data`，图片原样嵌在里面。此时 `body` 是同一件事的
+/// 可读近似（`{"prompt": …, "image": [{"filename", "content_type", "bytes"}]}`），
+/// 两者由同一个 [`crate::server::core::upstream::multipart::MultipartForm`] 生成，
+/// 不会各说各话。
+///
+/// 为什么要分成两个字段而不是把 `body` 换成枚举：`body` 的 `Value` 形态在本
+/// 模块之外被大量读（调试报文、日志），换成枚举会让那些读点全部改一遍，而
+/// 它们关心的本来就是「这份 JSON 长什么样」。
 #[derive(Debug)]
 pub struct ImageRequestPlan {
     pub url: String,
     pub headers: Vec<(String, String)>,
     pub body: Value,
     pub response: ImageResponseKind,
+    /// `Some` = 真正发出去的是这段字节，`body` 只是可读近似（见结构体说明）。
+    pub multipart: Option<MultipartBody>,
 }
 
 impl ImageRequestPlan {
@@ -74,6 +92,28 @@ impl ImageRequestPlan {
             headers,
             body,
             response: ImageResponseKind::Openai,
+            multipart: None,
+        }
+    }
+
+    /// 多段表单出站（参考图上传）。
+    ///
+    /// `Content-Type` 头**由这里写**：它的 boundary 必须与报文字节里的分隔符
+    /// 逐字一致，两处各写一遍就迟早会不一致（症状是上游回「拿不到字段」，
+    /// 而报文看起来完全正常）。调用方传进来的同名头会被替换掉。
+    pub fn multipart(
+        url: String,
+        mut headers: Vec<(String, String)>,
+        form: MultipartBody,
+    ) -> Self {
+        headers.retain(|(name, _)| !name.eq_ignore_ascii_case("content-type"));
+        headers.push(("Content-Type".to_string(), form.content_type()));
+        Self {
+            url,
+            headers,
+            body: form.preview.clone(),
+            response: ImageResponseKind::Openai,
+            multipart: Some(form),
         }
     }
 
@@ -93,6 +133,7 @@ impl ImageRequestPlan {
             headers,
             body,
             response,
+            multipart: None,
         }
     }
 }

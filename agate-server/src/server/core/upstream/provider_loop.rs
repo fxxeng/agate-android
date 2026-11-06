@@ -1096,6 +1096,10 @@ async fn attempt_queue(
             // 为什么不用 `UpstreamResponse` 表达响应形态：那个枚举的语义是
             // 「SSE 帧要按哪套协议翻译」，生图没有帧、也不翻译 —— 混进去会让
             // 下游的翻译分派多出一条永远到不了的死分支。
+            //
+            // 第三个元素是**已拼好的多段表单**（参考图上传）。它与 `plan.body`
+            // 互斥：`Some` 时真正发出去的是这段字节，`plan.body` 只是可读近似
+            // （见 `ImageRequestPlan` 的结构体说明）。对话计划永远是 `None`。
             let planned = match ctx.image {
                 Some(operation) => adapter
                     .build_image_request(&session, body, ctx.client_headers, operation)
@@ -1108,13 +1112,14 @@ async fn attempt_queue(
                                 response: crate::server::core::providers::adapter::UpstreamResponse::Chat,
                             },
                             Some(image.response),
+                            image.multipart,
                         )
                     }),
                 None => adapter
                     .build_chat_request(&session, body, ctx.client_headers)
-                    .map(|plan| (plan, None)),
+                    .map(|plan| (plan, None, None)),
             };
-            let (plan, image_kind) = match planned {
+            let (plan, image_kind, image_form) = match planned {
                 Ok(pair) => pair,
                 Err(error) => {
                     ctx.telemetry.finish_last_attempt(
@@ -1158,18 +1163,27 @@ async fn attempt_queue(
                     return Err(error);
                 }
             };
-            // 序列化失败只可能是内部数据坏了（适配器给出的 body 里含不可序列化的
-            // 值），按 500 收敛。同样要先给明细定稿（理由同上一条）。
-            let payload = match serde_json::to_string(&plan.body) {
-                Ok(payload) => payload,
-                Err(error) => {
-                    let gateway = GatewayError::new(format!("请求体序列化失败: {error}"));
-                    ctx.telemetry.finish_last_attempt(
-                        Some(i64::from(gateway.status_code)),
-                        Some(&gateway.message),
-                    );
-                    return Err(gateway);
-                }
+            // ── 请求体定稿：字节 ──────────────────────────────────────
+            // 两条来源互斥：多段表单（参考图上传，已拼好）直接发，其余一律把
+            // `plan.body` 序列化成 JSON。**不在这里按 provider 判** —— 谁需要
+            // 多段表单由适配器在构造时决定，编排层只认「有没有已拼好的字节」。
+            //
+            // `compose` 每次尝试都跑一遍：账号轮换与 401 刷新都会重建计划，
+            // 体也可能不同。多段表单那边是 `Bytes` 克隆（O(1)），不会为一次
+            // 重试再抄一份图片字节。
+            let payload: bytes::Bytes = match image_form.as_ref() {
+                Some(form) => form.bytes.clone(),
+                None => match serde_json::to_string(&plan.body) {
+                    Ok(payload) => payload.into_bytes().into(),
+                    Err(error) => {
+                        let gateway = GatewayError::new(format!("请求体序列化失败: {error}"));
+                        ctx.telemetry.finish_last_attempt(
+                            Some(i64::from(gateway.status_code)),
+                            Some(&gateway.message),
+                        );
+                        return Err(gateway);
+                    }
+                },
             };
             logging::verbose(
                 "[Upstream]",
