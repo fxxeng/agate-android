@@ -71,6 +71,7 @@ pub mod balance;
 pub mod credentials;
 /// 桌面端身份头（组织身份 / X-Client-* / X-Request-Id），见模块头。
 pub mod headers;
+pub mod image_generation;
 pub mod jwt;
 pub mod models;
 pub mod onboarding;
@@ -137,6 +138,33 @@ impl ProviderAdapter for RaccoonAdapter {
             headers,
             body.clone(),
         ))
+    }
+
+    /// 本家有生图通道（`POST {llm_base}/images/gen`）。
+    ///
+    /// **通道级**能力位：具体哪条模型能生图由目录条目的 `kind=image` 决定，
+    /// 两者在 `providers::images::operation_providers` 里取交集。本家的出图
+    /// 模型是合成的 `raccoon-image`（上游目录里没有这一条，见 image_generation
+    /// 模块头）。
+    fn supports_image_generation(&self) -> bool {
+        true
+    }
+
+    /// 构造上游生图请求。
+    fn build_image_request(
+        &self,
+        account: &Value,
+        body: &Value,
+        client_headers: &HeaderMap,
+        operation: crate::server::core::providers::images::ImageOperation,
+    ) -> Result<crate::server::core::providers::images::ImageRequestPlan, GatewayError> {
+        super::raccoon::image_generation::build(
+            account,
+            body,
+            &self.llm_base_url(),
+            client_headers,
+            operation,
+        )
     }
 
     /// 上游错误分类（判定依据见模块头）：

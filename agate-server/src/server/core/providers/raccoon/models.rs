@@ -192,10 +192,24 @@ fn read_state() -> CatalogState {
 /// 键名映射的理由见模块头（`name` 是模型 id、`displayName` 是展示名）。
 pub fn list() -> Vec<Value> {
     let state = read_state();
-    if state.models.is_empty() {
-        return fallback_models().iter().map(listing_entry).collect();
+    let mut models: Vec<Value> = if state.models.is_empty() {
+        fallback_models().iter().map(listing_entry).collect()
+    } else {
+        state.models.iter().map(listing_entry).collect()
+    };
+    // ── 合成的图像条目（唯一来源就在这里）────────────────────────
+    // 上游目录里没有出图模型：出图是独立路由（`/images/gen`），不是模型列表
+    // 里的一项。但本仓的目录是**所有**出口的唯一源头（`/v1/models`、管理页、
+    // 生图入口挑默认模型、`operation_providers`），少一处就变成「某处认、
+    // 某处不认」。所以在这里补一条，且只在真正缺失时补 —— 上游哪天开始在
+    // 目录里下发图像模型，这里不会多出一条重名。
+    let image_id = super::image_generation::MODEL_ID;
+    if !models.iter().any(|model| {
+        model.get("id").and_then(Value::as_str) == Some(image_id)
+    }) {
+        models.push(super::image_generation::model_row());
     }
-    state.models.iter().map(listing_entry).collect()
+    models
 }
 
 /// 源形态 → 聚合层的条目形态（键名映射；见模块头）。
