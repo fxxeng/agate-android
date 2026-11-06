@@ -83,6 +83,12 @@ pub mod adapter;
 pub mod balance;
 pub mod credentials;
 pub mod endpoints;
+/// 生图 / 图片编辑（`image_gen` 信封 + Gemini SSE 帧里的 `inlineData`）。
+///
+/// 独立一个文件而不是塞进 adapter：它有一套自己的参数口径（`size` 折成
+/// 宽高比 + 1K/2K/4K、参考图张数随型号变），与对话的构造几乎不重叠 ——
+/// 唯一的共用点是信封转换器本身。
+pub mod image_generation;
 pub mod login;
 pub mod models;
 pub mod oauth;

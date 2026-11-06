@@ -12,9 +12,10 @@
 //! 理由是有些家的「读」不是读一包 JSON：
 //!   - `ModelscopeAsync`：首包只有 `task_id`，要转 [`super::image_tasks`]
 //!     轮询 `/v1/tasks/{id}`；
-//!   - 后续会接的 Gemini（SSE 帧里的 inlineData）与豆包工作（对话流里取图、
-//!     再换无水印原图）同理。这些都属于「按上游协议读」，与 provider 凭证
-//!     无关，放在这里是唯一不漏的地方。
+//!   - `Gemini`：图在 **SSE 帧**里（`candidates[].content.parts[].inlineData`），
+//!     要逐帧解析、累积、再等 `finishReason` 才敢说收齐；
+//!   - 后续会接的豆包工作（对话流里取图、再换无水印原图）同理。这些都属于
+//!     「按上游协议读」，与 provider 凭证无关，放在这里是唯一不漏的地方。
 //!
 //! ── 本模块**不**报销积分（与上游的差异，别照搬）──────────────
 //! 上游在这里会 `report_usage({"credit": points_consumed})` 把消耗的积分
@@ -122,8 +123,26 @@ async fn collect_body(
     if let Some(capture) = capture.as_deref() {
         capture.attach_response(status, response.headers());
     }
+    // ── 流还是整包：由**上游实际回的 content-type** 决定，不由 kind 决定 ──
+    // Gemini 用 `:streamGenerateContent?alt=sse`，但上游在某些情形下（例如
+    // 网关层改写了端点）会回一整包 JSON。按 kind 硬走 SSE 会把一个完全正常的
+    // JSON 响应按行切开、逐行 `serde_json` 解析 —— 症状是「上游出图了，网关说
+    // 响应不是有效 JSON」。所以判据放在 content-type 上，两条路后面汇合。
+    let sse = kind == ImageResponseKind::Gemini
+        && response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.to_ascii_lowercase().contains("text/event-stream"));
+
     let mut stream = response.bytes_stream();
     let mut bytes = Vec::new();
+    let mut lines = super::super::protocol::SseLineBuffer::new();
+    let mut images: Vec<Value> = Vec::new();
+    let mut usage: Option<Value> = None;
+    // `finished`：上游明确说过「这一轮结束了」（Gemini 的 `finishReason=STOP`）。
+    // 语义只在 SSE 分支里有意义，普通 JSON 分支不看它。
+    let mut finished = false;
     let mut total = 0usize;
     while let Some(chunk) = stream.next().await {
         let chunk =
@@ -138,8 +157,43 @@ async fn collect_body(
         if let Some(capture) = capture.as_deref() {
             capture.push(&chunk);
         }
-        bytes.extend_from_slice(&chunk);
+        if !sse {
+            bytes.extend_from_slice(&chunk);
+            continue;
+        }
+        for payload in lines.push(&chunk) {
+            let Some(payload) = payload else {
+                // `[DONE]`：与 `finishReason=STOP` 同义，但两者未必都出现。
+                finished = true;
+                continue;
+            };
+            let frame: Value = serde_json::from_str(&payload)
+                .map_err(|_| ImageFailure::invalid("上游生图 SSE 含不完整的 JSON 帧"))?;
+            gemini_frame(&frame, &mut images, &mut usage, &mut finished)?;
+        }
     }
+    if sse {
+        for payload in lines.finish() {
+            let Some(payload) = payload else {
+                finished = true;
+                continue;
+            };
+            let frame: Value = serde_json::from_str(&payload)
+                .map_err(|_| ImageFailure::invalid("上游生图 SSE 被截断"))?;
+            gemini_frame(&frame, &mut images, &mut usage, &mut finished)?;
+        }
+        // ── 没有收尾信号就不算成功 ─────────────────────────────────
+        // 流断了但没有 `STOP` / `[DONE]`：最后一张图可能只到一半。截断的 PNG
+        // 解码出来是半张图，用户看到的是「生成了一张奇怪的东西」—— 比一个明确
+        // 的失败难判断得多，而且这次额度已经扣了。宁可报错让他重试。
+        if !finished {
+            return Err(ImageFailure::invalid(
+                "上游生图流没有正常收尾，未将可能截断的图片当作成功：请重试",
+            ));
+        }
+        return finish_images(images, usage, telemetry);
+    }
+
     let payload: Value = serde_json::from_slice(&bytes)
         .map_err(|_| ImageFailure::invalid("上游生图响应不是有效 JSON"))?;
     match kind {
@@ -161,7 +215,159 @@ async fn collect_body(
             }
             Err(failure_from(&payload, status))
         }
+        // 非流式的 Gemini 响应：整包就是一帧（`candidates` 直接在顶层）。
+        ImageResponseKind::Gemini => {
+            gemini_frame(&payload, &mut images, &mut usage, &mut finished)?;
+            finish_images(images, usage, telemetry)
+        }
     }
+}
+
+/// Gemini 系（`Gemini`）的收尾：把累积到的图折成标准形态。
+///
+/// 「一张都没拿到」单独给一条文案：Gemini 的纯文字回复也是 200 + `STOP`，
+/// 把它当成功，客户端会显示「生成完成但空白」。
+fn finish_images(
+    images: Vec<Value>,
+    usage: Option<Value>,
+    telemetry: &RequestTelemetry,
+) -> Result<Value, ImageFailure> {
+    if images.is_empty() {
+        return Err(ImageFailure::invalid(
+            "上游没有返回生成图片（可能被内容策略拦截），未将文字回复当作生图成功",
+        ));
+    }
+    if let Some(usage) = &usage {
+        telemetry.report_usage(usage);
+    }
+    let mut result = json!({
+        "created": crate::server::logging::now_ms() / 1000,
+        "data": images,
+    });
+    if let Some(usage) = usage {
+        result["usage"] = usage;
+    }
+    Ok(result)
+}
+
+/// 读一帧 Gemini 响应（SSE 的一帧，或整包 JSON）。
+///
+/// ── 三个容易漏的点 ──────────────────────────────────────────
+/// 1. **信封可能多一层 `response`**：Antigravity 的 v1internal 把 Gemini 的
+///    原生响应包在 `{"response": {...}}` 里，而直连 Gemini 的响应没有这层壳。
+///    所以先取 `response`，取不到就用整帧 —— 两边都能读。
+/// 2. **`thought: true` 的 part 是草稿图**：Gemini 3 的思考过程也会带
+///    `inlineData`，不跳过就会把思考阶段的草图当成结果交出去。
+/// 3. **失败也走 200**：内容策略拦截在流里表现为 `finishReason=SAFETY`
+///    或 `promptFeedback.blockReason`，HTTP 状态是正常的。不在这里转成错误，
+///    用户会拿到一个空的 `data: []`。
+fn gemini_frame(
+    frame: &Value,
+    images: &mut Vec<Value>,
+    usage: &mut Option<Value>,
+    finished: &mut bool,
+) -> Result<(), ImageFailure> {
+    let response = frame.get("response").unwrap_or(frame);
+    if response.get("error").is_some_and(|error| !error.is_null()) {
+        return Err(failure_from(response, 200));
+    }
+    if frame.get("error").is_some_and(|error| !error.is_null()) {
+        return Err(failure_from(frame, 200));
+    }
+    if let Some(metadata) = response
+        .get("usageMetadata")
+        .or_else(|| response.get("usage_metadata"))
+    {
+        let input = metadata
+            .get("promptTokenCount")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let output = metadata
+            .get("candidatesTokenCount")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let thought = metadata
+            .get("thoughtsTokenCount")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        *usage = Some(json!({
+            "input_tokens": input,
+            "output_tokens": output.saturating_add(thought),
+            "total_tokens": metadata
+                .get("totalTokenCount")
+                .and_then(Value::as_u64)
+                .unwrap_or(input.saturating_add(output).saturating_add(thought)),
+        }));
+    }
+    let Some(candidates) = response.get("candidates").and_then(Value::as_array) else {
+        // 没有 candidates 又有 blockReason ⇒ 提示词被拦了（这时还没出图，
+        // 也就没有候选可说）。
+        if response.pointer("/promptFeedback/blockReason").is_some() {
+            return Err(ImageFailure {
+                status: 400,
+                body: json!({
+                    "code": "content_policy_violation",
+                    "message": "上游内容策略拦截了生图提示词",
+                }),
+            });
+        }
+        return Ok(());
+    };
+    for candidate in candidates {
+        let reason = candidate.get("finishReason").and_then(Value::as_str);
+        if reason == Some("STOP") {
+            *finished = true;
+        }
+        if let Some(parts) = candidate
+            .pointer("/content/parts")
+            .and_then(Value::as_array)
+        {
+            for part in parts {
+                if part.get("thought").and_then(Value::as_bool) == Some(true) {
+                    continue;
+                }
+                let Some(inline) = part.get("inlineData").or_else(|| part.get("inline_data"))
+                else {
+                    continue;
+                };
+                let Some(data) = inline
+                    .get("data")
+                    .and_then(Value::as_str)
+                    .filter(|data| !data.is_empty())
+                else {
+                    continue;
+                };
+                let mime = inline
+                    .get("mimeType")
+                    .or_else(|| inline.get("mime_type"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                if !mime.starts_with("image/") {
+                    continue;
+                }
+                // 同一张图可能被重复下发（重连 / 多候选），按内容去重。
+                if images
+                    .iter()
+                    .any(|image| image.get("b64_json").and_then(Value::as_str) == Some(data))
+                {
+                    continue;
+                }
+                images.push(json!({ "b64_json": data, "mime_type": mime }));
+            }
+        }
+        if reason.is_some_and(|reason| {
+            matches!(reason, "SAFETY" | "IMAGE_SAFETY" | "PROHIBITED_CONTENT")
+        }) {
+            return Err(ImageFailure {
+                status: 400,
+                body: json!({
+                    "code": "content_policy_violation",
+                    "message": "上游内容策略拦截了图片输出",
+                }),
+            });
+        }
+    }
+    Ok(())
 }
 
 /// WorkBuddy 的生图响应：多一层信封，**成败看 `code` 而不是 HTTP 状态**。
@@ -274,5 +480,98 @@ mod tests {
         assert!(workbuddy_body(&payload, 200).is_err());
         let payload = json!({ "code": 0, "data": {} });
         assert!(workbuddy_body(&payload, 200).is_err());
+    }
+
+    /// Gemini 帧：图在 `inlineData`，`thought` part 是草稿图不算结果。
+    ///
+    /// 这条挡的是「把思考阶段的草图当成交付图」——Gemini 3 的思考过程也带
+    /// `inlineData`，不跳过的话用户会拿到一张没画完的图，而且没有任何提示。
+    #[test]
+    fn gemini_frame_reads_inline_images_and_skips_thoughts() {
+        let frame = json!({
+            "response": {
+                "candidates": [{
+                    "content": { "parts": [
+                        { "thought": true, "inlineData": { "mimeType": "image/png", "data": "DRAFT" } },
+                        { "inlineData": { "mimeType": "image/png", "data": "REAL" } },
+                        { "text": "已经画好了" }
+                    ]},
+                    "finishReason": "STOP"
+                }],
+                "usageMetadata": {
+                    "promptTokenCount": 12,
+                    "candidatesTokenCount": 1120,
+                    "thoughtsTokenCount": 80,
+                    "totalTokenCount": 1212
+                }
+            }
+        });
+        let mut images = Vec::new();
+        let mut usage = None;
+        let mut finished = false;
+        gemini_frame(&frame, &mut images, &mut usage, &mut finished).unwrap();
+        assert!(finished, "STOP 是正常收尾信号");
+        assert_eq!(images.len(), 1, "草稿图不算");
+        assert_eq!(images[0]["b64_json"], json!("REAL"));
+        assert_eq!(images[0]["mime_type"], json!("image/png"));
+        // 思考 token 计入 output（与对话链路的口径一致）
+        assert_eq!(usage.as_ref().unwrap()["output_tokens"], json!(1200));
+    }
+
+    /// 直连 Gemini 的响应没有 `response` 壳；同一段代码两条路都要读得出来。
+    #[test]
+    fn gemini_frame_accepts_both_envelope_shapes() {
+        let bare = json!({
+            "candidates": [{ "content": { "parts": [
+                { "inline_data": { "mime_type": "image/jpeg", "data": "IMG" } }
+            ]}}]
+        });
+        let mut images = Vec::new();
+        let mut usage = None;
+        let mut finished = false;
+        gemini_frame(&bare, &mut images, &mut usage, &mut finished).unwrap();
+        assert_eq!(images.len(), 1);
+        // snake_case 的 mime 也要认出来（Gemini 两种命名都出现过）
+        assert_eq!(images[0]["mime_type"], json!("image/jpeg"));
+    }
+
+    /// 内容策略拦截也走 200：不在这里转成错误，用户拿到的是空的 `data: []`。
+    /// 状态码给 400 —— 换号重发同一段提示词没有意义（而且这次额度已经扣了）。
+    #[test]
+    fn gemini_policy_blocks_become_client_errors() {
+        let prompt_block = json!({ "promptFeedback": { "blockReason": "SAFETY" } });
+        let mut images = Vec::new();
+        let mut usage = None;
+        let mut finished = false;
+        let failure =
+            gemini_frame(&prompt_block, &mut images, &mut usage, &mut finished).unwrap_err();
+        assert_eq!(failure.status, 400);
+        assert_eq!(failure.body["code"], json!("content_policy_violation"));
+        assert!(failure.body["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("提示词"));
+
+        let output_block = json!({
+            "candidates": [{ "finishReason": "IMAGE_SAFETY" }]
+        });
+        let failure =
+            gemini_frame(&output_block, &mut images, &mut usage, &mut finished).unwrap_err();
+        assert_eq!(failure.status, 400);
+        assert!(failure.body["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("输出"));
+    }
+
+    /// 一张都没拿到不能算成功：Gemini 的纯文字回复也是 200 + STOP。
+    #[test]
+    fn no_images_is_a_failure_even_after_a_clean_stop() {
+        let telemetry = RequestTelemetry::new();
+        let failure = finish_images(Vec::new(), None, &telemetry).unwrap_err();
+        assert!(failure.body["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("没有返回生成图片"));
     }
 }

@@ -35,11 +35,10 @@ use super::catalog;
 /// 上游响应的**形态**：不是所有家都回标准 OpenAI `{data:[{b64_json|url}]}`。
 ///
 /// ── 枚举里只放**已经接通**的形态（2026-11-06）─────────────────
-/// 上游另有 `Gemini`（SSE 帧里的 inlineData）与 `Doubao`（对话流里取图 +
-/// 换无水印原图）两种，本仓还没接，所以这里不出现这两个名字：留一个
-/// 「声明了但 `collect` 里没有分支」的变体，只会在运行时变成一个没人能
-/// 解释的 500。接一家就加一种，加到哪一种就实现到哪一种
-/// （`core::upstream::images::collect` 的 match 会强制代码跟上）。
+/// 上游另有 `Doubao`（对话流里取图 + 换无水印原图）一种，本仓还没接，所以
+/// 这里不出现那个名字：留一个「声明了但 `collect` 里没有分支」的变体，只会
+/// 在运行时变成一个没人能解释的 500。接一家就加一种，加到哪一种就实现到
+/// 哪一种（`core::upstream::images::collect` 的 match 会强制代码跟上）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ImageResponseKind {
     /// 标准 OpenAI Images：`{ "data": [{ "b64_json" | "url", "revised_prompt" }] }`。
@@ -54,6 +53,19 @@ pub enum ImageResponseKind {
     /// 是 200），图藏在 `data.data` 里。**不能**把它当 OpenAI 形态硬读 ——
     /// 顶层没有 `data` 数组，会被误判成「上游没给图」。
     Workbuddy,
+    /// Gemini / Antigravity：**SSE 帧**里的 `candidates[].content.parts[].inlineData`。
+    ///
+    /// 与另外三种的根本差别：图片不是「一包 JSON 的结果」，而是**一段流里的
+    /// 若干帧**。所以读法完全不同 —— 要逐帧解析、累积图、还要等 `finishReason`
+    /// 才敢说「收齐了」：
+    ///   - 只认 `finishReason == "STOP"` 为正常收尾。流断了却没有 STOP，说明
+    ///     图可能只到一半，**绝不能**当成功（截断的 PNG 解码后是半张图，用户
+    ///     看到的是「生成了一张奇怪的东西」，比报错更难判断）；
+    ///   - `SAFETY` / `IMAGE_SAFETY` / `PROHIBITED_CONTENT` 是内容策略拦截，
+    ///     单独给 400 + `content_policy_violation`（不罚账号，见 `collect`）；
+    ///   - `thought` 为 true 的 part 要跳过：Gemini 3 的思考过程也可能带
+    ///     `inlineData`（那是草稿图，不是结果）。
+    Gemini,
 }
 
 /// 一家 provider 为某次生图/编辑拼好的上游请求。

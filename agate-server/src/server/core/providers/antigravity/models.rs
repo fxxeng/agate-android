@@ -330,6 +330,28 @@ fn map_entry(id: &str, info: &Value) -> Option<Value> {
             item.insert("quota".to_string(), quota.clone());
         }
     }
+    // ── 生图条目（`gemini-*-image`）─────────────────────────────
+    // 这些 id 本来就在清单里（对话也能用它们，只是回的是文字 + 图），但目录
+    // 必须把「它是图片模型」这件事**明确说出来**，否则生图入口挑默认模型、
+    // `operation_providers` 的第三层过滤都认不出它来 —— 两处都只认
+    // `kind` / `output_modalities`，不按名字猜。
+    //
+    // `supports_image_editing` 与生成同真：本家的编辑就是同一个端点、同一份
+    // 信封（多几张参考图），没有单独路由可不可用的问题。张数上限按型号分
+    // （见 image_generation::reference_limit），那是**参数**不是能力。
+    //
+    // `supportsToolCall` 关掉：图片模型不吃 tools（信封里也不会带），留着 true
+    // 会让客户端在生图请求里附工具定义。
+    if super::image_generation::is_image_model(id) {
+        item.insert("kind".to_string(), Value::String("image".to_string()));
+        item.insert("output_modalities".to_string(), json!(["image"]));
+        item.insert("supports_image_generation".to_string(), Value::Bool(true));
+        item.insert("supports_image_editing".to_string(), Value::Bool(true));
+        item.insert("supportsToolCall".to_string(), Value::Bool(false));
+        // 图片模型不参与「默认模型」回落：`isDefault=true` 会让没指定模型的
+        // 对话请求挑中一条不能正常对话的条目。
+        item.insert("isDefault".to_string(), Value::Bool(false));
+    }
     Some(Value::Object(item))
 }
 
@@ -595,3 +617,51 @@ pub async fn refresh(
 
 /// 模型目录刷新结果（用于 `ProviderAdapter::refresh_models` 的返回）
 pub use crate::server::core::providers::adapter::ModelRefreshOutcome;
+
+#[cfg(test)]
+mod image_entry_tests {
+    use super::*;
+
+    /// 图像条目必须**明说**自己是图片模型：生图入口挑默认模型、以及
+    /// `operation_providers` 的第三层过滤都只认 `kind` / `output_modalities`，
+    /// 不按名字猜（`gemini-*-image` 在对话里也能用，只是回文字 + 图）。
+    #[test]
+    fn image_models_are_marked_for_the_image_channel() {
+        let entry = map_entry("gemini-3-pro-image", &Value::Null).expect("应当入册");
+        assert_eq!(entry["kind"], json!("image"));
+        assert_eq!(entry["output_modalities"], json!(["image"]));
+        assert_eq!(entry["supports_image_generation"], json!(true));
+        assert_eq!(entry["supports_image_editing"], json!(true));
+        // 图片模型不吃 tools；也不参与默认模型回落
+        assert_eq!(entry["supportsToolCall"], json!(false));
+        assert_eq!(entry["isDefault"], json!(false));
+    }
+
+    /// 反过来，对话模型不能被打上图片标记 —— 一旦打上，对话入口的反向门禁
+    /// 会把它拦下来（`image_generation_required`），那条模型就彻底不可用了。
+    #[test]
+    fn chat_models_keep_their_flags() {
+        let entry = map_entry("gemini-3-flash", &Value::Null).expect("应当入册");
+        assert!(entry.get("kind").is_none(), "{entry}");
+        assert!(entry.get("output_modalities").is_none());
+        assert!(entry.get("supports_image_generation").is_none());
+        assert_eq!(entry["supportsToolCall"], json!(true));
+        assert_eq!(entry["isDefault"], json!(true));
+    }
+
+    /// 内置兜底清单里的两条图片模型也要带上标记（它走同一个 `map_entry`，
+    /// 但这条测试钉住「有人改了 fallback_models 绕过 map_entry」的那种退化）。
+    #[test]
+    fn fallback_image_entries_are_marked() {
+        let models = fallback_models();
+        let image = models
+            .iter()
+            .find(|item| model_id_here(item) == "gemini-3-pro-image")
+            .expect("兜底清单应当含 gemini-3-pro-image");
+        assert_eq!(image["kind"], json!("image"));
+    }
+
+    fn model_id_here(item: &Value) -> String {
+        item.get("id").and_then(Value::as_str).unwrap_or("").to_string()
+    }
+}

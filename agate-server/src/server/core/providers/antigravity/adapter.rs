@@ -182,6 +182,43 @@ impl ProviderAdapter for AntigravityAdapter {
         true
     }
 
+    /// 本家有生图通道（`:streamGenerateContent` 的 `image_gen` 桶）。
+    ///
+    /// **通道级**能力位：哪条模型能生图由目录条目的 `kind=image` 决定
+    /// （`models::map_entry` 对 `gemini-*-image` 打标），两者在
+    /// `providers::images::operation_providers` 里取交集。
+    fn supports_image_generation(&self) -> bool {
+        true
+    }
+
+    /// 本家也能做参考图编辑 —— 不是另一条路由，而是**同一个端点**多带几张图。
+    ///
+    /// 这里如实为 true 的理由与 raccoon 那边不同：那家编辑要 multipart 出站
+    /// （另一条协议），这家只需要往同一条 user 消息里多塞几个 `image_url`。
+    fn supports_image_editing(&self) -> bool {
+        true
+    }
+
+    /// 构造上游生图 / 编辑请求（信封见 `antigravity_outbound`，响应是 Gemini SSE）。
+    ///
+    /// `body.model` 已经是本家发送名（`payload::image_send_body` 先改写过），
+    /// 所以这里**不再**走 `models::upstream_model_id` —— 重写两次会在别名链上
+    /// 发错名字（生图链路的通用约定，见 `ProviderAdapter::build_image_request`）。
+    fn build_image_request(
+        &self,
+        account: &Value,
+        body: &Value,
+        _client_headers: &HeaderMap,
+        operation: crate::server::core::providers::images::ImageOperation,
+    ) -> Result<crate::server::core::providers::images::ImageRequestPlan, GatewayError> {
+        let wire_model = body
+            .get("model")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or("");
+        super::image_generation::build(account, body, operation, wire_model)
+    }
+
     /// **账号未配代理时跟随系统代理**（`true`；仓内唯一覆写这一位的家）。
     ///
     /// ── 为什么本家是特例 ────────────────────────────────────────

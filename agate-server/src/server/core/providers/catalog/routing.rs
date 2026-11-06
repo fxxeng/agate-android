@@ -7,6 +7,7 @@ use crate::server::core::models::model_id;
 use crate::server::core::providers::{kind_from_id, kind_id, ProviderKind};
 
 use super::{adapter_for, all_kinds, manifest_for};
+use crate::server::core::providers::images::model_is_image;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct WireTarget {
@@ -220,13 +221,25 @@ pub fn wire_target_for_provider(model: &str, provider_id: &str, _account: Option
     resolved.unwrap_or_else(|| WireTarget { model: requested.to_string(), reasoning: None })
 }
 
+/// 「默认模型」的候选清单：**排除图片模型**。
+///
+/// ── 为什么必须排除（不做就会再错一次）─────────────────────────
+/// 这份清单唯一的消费者是对话入口的默认模型回落（`pipeline::resolve_model_for`
+/// 的三级回落链）。图片条目混进来之后的症状很难查：客户端没点名模型 →
+/// 回落挑中一条 `kind=image` → 对话入口的**反向门禁**把它拦下，回一句
+/// 「模型 X 是图片生成模型，请使用 POST /v1/images/generations」。
+/// 用户既没点名模型，也没打算生图，却被告知去用另一个端点。
+///
+/// 排除的成本是零：图片模型从来不参与「默认对话模型」这个概念。
 pub fn default_model_catalog() -> Vec<Value> {
     let rules = model_rules::current();
     let mut result = Vec::new();
     for kind in all_kinds().into_iter().filter(|kind| adapter_for(*kind).supports_default_model()) {
         for entry in manifest_for(kind) {
             let id = model_id(&entry);
-            if !id.is_empty() && rules.default_enabled(kind_id(kind), &id)
+            if !id.is_empty()
+                && rules.default_enabled(kind_id(kind), &id)
+                && !model_is_image(&entry)
                 && !result.iter().any(|item| model_id(item).eq_ignore_ascii_case(&id))
             {
                 result.push(entry);
@@ -343,5 +356,30 @@ mod tests {
         ]));
         let manifest = vec![serde_json::json!({ "id": "sn-glm-5-3" })];
         assert!(renamed_away_pairs(&rules, ProviderKind::Raccoon, &manifest).is_empty());
+    }
+
+    /// 图片模型不进「默认对话模型」候选。
+    ///
+    /// 混进去的症状：客户端没点名模型 → 回落挑中一条 `kind=image` → 对话入口
+    /// 的反向门禁拦下它，回一句「请使用 POST /v1/images/generations」。
+    /// 用户既没点名也没打算生图，却被告知去用另一个端点 —— 而这条路径上
+    /// 没有任何一处能看出是回落挑错了。
+    #[test]
+    fn image_models_are_never_default_chat_candidates() {
+        let chat = serde_json::json!({ "id": "gemini-3-flash" });
+        let image = serde_json::json!({
+            "id": "gemini-3-pro-image",
+            "kind": "image",
+            "output_modalities": ["image"],
+        });
+        assert!(!model_is_image(&chat));
+        assert!(model_is_image(&image));
+        // 判据本身（`default_model_catalog` 的过滤就是这一句）
+        let candidates: Vec<_> = [chat, image]
+            .into_iter()
+            .filter(|entry| !model_is_image(entry))
+            .collect();
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(model_id(&candidates[0]), "gemini-3-flash");
     }
 }
