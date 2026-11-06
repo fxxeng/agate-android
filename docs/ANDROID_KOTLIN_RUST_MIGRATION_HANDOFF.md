@@ -2536,7 +2536,7 @@ R39 已通过 GitHub Actions Run `42164811367`（工作流总时长约 33m18s，
 
 - `rust-tests`（Linux）：97s；`cargo fmt` 非阻塞 4s、`cargo check --all-targets` 35s、`cargo test --all-targets` 45s，全绿。
 - `windows-core-check`（`windows-latest` / MSVC）：140s；`cargo check --manifest-path agate-server/Cargo.toml --locked --all-targets` 104s，全绿，证明 Windows `cfg(windows)` 分支可编译。
-- `android-build`：1998s；Rust ABI 297s、Gradle 410s（JVM 单测 99/99 通过，12 个 suite）、JNI 导出 12 个符号与 Kotlin 声明完全一致、APK 内容与 AArch64 ELF 校验通过、Instrumentation（x86_64 模拟器）1221s 内 2 个测试类共 15 个用例 0 失败（CPU PSI settle 49 轮后放行）。
+- `android-build`：1998s；Rust ABI 297s、Gradle 410s（JVM 单测 99/99 通过，12 个 suite）、JNI 导出 12 个符号与 Kotlin 声明完全一致、APK 内容与 AArch64 ELF 校验通过、Instrumentation（x86_64 模拟器）步骤 1221s，含 CPU PSI settle 49 轮；`connectedDebugAndroidTest` 2m28s 内 2 个用例 0 失败（`nativeLibraryCoreRouterAndGatewayLifecycleWork`、`foregroundServicePreservesStartAfterStopOrderingBarrier`）。
 - 三 job 结论：`success`；无失败、无取消、无超时。
 
 仍需注意：Instrumentation 只在 x86_64 模拟器上跑，未覆盖真机 arm64 运行时；Windows 门禁只覆盖 Shared Core 编译，不含 Desktop Host UI/Tauri。

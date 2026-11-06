@@ -273,7 +273,7 @@ Provider 自己的 credentials 模块仍直接读取环境变量，属于各 Pro
 
 ### 11.3 R39 验证状态
 
-R39 `8c046f17dd` 已通过 CI Run `42164811367`：Linux Rust all-targets 测试、Windows Shared Core `cargo check --all-targets`、Android Gradle（JVM 99/99）+ JNI 12 符号比对 + APK 的 AArch64 ELF 校验 + x86_64 模拟器 Instrumentation（15 用例 0 失败）全部通过；三 job 均 `success`。
+R39 `8c046f17dd` 已通过 CI Run `42164811367`：Linux Rust all-targets 测试、Windows Shared Core `cargo check --all-targets`、Android Gradle（JVM 99/99）+ JNI 12 符号比对 + APK 的 AArch64 ELF 校验 + x86_64 模拟器 Instrumentation（2 用例 0 失败，`NativeRuntimeInstrumentedTest`）全部通过；三 job 均 `success`。
 
 ### 11.4 下一步
 
