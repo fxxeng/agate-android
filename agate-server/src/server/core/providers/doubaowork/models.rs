@@ -238,6 +238,32 @@ fn map_entry(row: &Value) -> Option<Value> {
             break;
         }
     }
+    // ── agent 模式三件（生图唯一的触发方式，见 `plan::AgentChoice`）──
+    // 这三个键**原样透传**到目录条目上，再由 `agent_choice` 读回来拼任务信封。
+    // 不透传的后果是生图永远挑不到任务模式 —— 而目录里看起来一切正常
+    // （每一条模式都在），只是"出图"这条路悄悄不通。
+    //
+    // `agent_mode` 允许是数字或数字字符串（上游两种都给过）；`model_item_key`
+    // 是上游认的模型标识（与 `id` 可能不同），`model_extra_params` 要原样回传
+    // （里面有 `provider_id` 等上游自己读的键，不能重新构造）。
+    if let Some(object) = entry.as_object_mut() {
+        for key in ["model_item_key", "model_extra_params"] {
+            if let Some(value) = row.get(key).filter(|value| !value.is_null()) {
+                object.insert(key.to_string(), value.clone());
+            }
+        }
+        if let Some(agent_mode) = row
+            .get("agent_mode")
+            .or_else(|| row.get("agentMode"))
+            .and_then(|value| match value {
+                Value::Number(_) => value.as_u64(),
+                Value::String(text) => text.trim().parse::<u64>().ok(),
+                _ => None,
+            })
+        {
+            object.insert("agent_mode".to_string(), Value::from(agent_mode));
+        }
+    }
     Some(entry)
 }
 
@@ -361,14 +387,36 @@ fn fallback_models() -> Vec<Value> {
         .collect()
 }
 
-/// 当前模型清单（内存 → 落盘缓存 → 内置兜底；**永远非空**）
-pub fn list() -> Vec<Value> {
+/// 上游目录的**本体**（内存 → 落盘缓存 → 内置兜底；不含合成条目）。
+///
+/// 与 [`list`] 的差别只有「生图那条合成条目」：需要判断「这个账号有没有能跑
+/// 任务的模式」的调用方（`agent_choice`）读这个，其余出口读 [`list`]。
+fn directory() -> Vec<Value> {
     with_state(|slot| {
         slot.as_ref()
             .map(|state| state.models.clone())
             .filter(|models| !models.is_empty())
             .unwrap_or_else(fallback_models)
     })
+}
+
+/// 当前模型清单（内存 → 落盘缓存 → 内置兜底；**永远非空**）。
+///
+/// 末尾追加**合成的生图条目**（[`super::image_generation::MODEL_ID`]）：
+/// 上游目录里没有"图片模型"这个概念（出图是 agent 干出来的活），但本仓的目录是
+/// **所有出口的唯一源头** —— `/v1/models`、管理页、生图入口挑默认模型、
+/// `operation_providers` 的第三层过滤全读它。不补这一条，生图请求根本不会被
+/// 派到本家。
+pub fn list() -> Vec<Value> {
+    let mut models = directory();
+    let image_id = super::image_generation::MODEL_ID;
+    if !models
+        .iter()
+        .any(|model| model.get("id").and_then(Value::as_str) == Some(image_id))
+    {
+        models.push(super::image_generation::model_row());
+    }
+    models
 }
 
 /// 这份清单是否来自**远程拉取**（`catalog::refresh_meta` 的「来源」列判据）
@@ -397,6 +445,42 @@ pub fn age_ms() -> i64 {
 /// 兜底会算进去，这是刻意的：见模块头第 3 条）。
 pub fn is_empty() -> bool {
     list().is_empty()
+}
+
+/// 挑一条**能跑任务**的目录条目（生图的前置条件）。
+///
+/// ── 判据只有 `agent_mode` ────────────────────────────────────
+/// 上游把"让 agent 干活"这件事挂在 `option.agent_mode != 0` 上（普通对话是
+/// 缺省 0）。所以这里只看它：优先 1（通用任务档，实测即客户端出图这一路），
+/// 其次 2，再次任何非 0 的值 —— 上游换编号时至少还有一条兜底，而不是直接断。
+///
+/// 一条都没有时返回 `None`：调用方要给「该账号没有可跑任务的模式」那句解释，
+/// 而不是拼一个注定不出图的请求发上去（那会浪费一次额度，还让用户以为是
+/// 提示词的问题）。
+pub fn agent_choice() -> Option<Value> {
+    // ⚠️ 用 `list()` 的**原始目录**而不是追加了合成生图条目之后的清单：
+    // 那条 `doubao-image` 是给生图入口认的（`kind=image`），它自己**不是**一条
+    // 能跑任务的模式，带 `agent_mode` 更不可能 —— 但把「挑任务模式」挂在
+    // 「含合成条目的清单」上，等于让一件事有两个来源。这里读的是目录本体。
+    let modes = directory();
+    let pick = |wanted: u64| {
+        modes
+            .iter()
+            .find(|item| item.get("agent_mode").and_then(Value::as_u64) == Some(wanted))
+            .cloned()
+    };
+    pick(1)
+        .or_else(|| pick(2))
+        .or_else(|| {
+            modes
+                .iter()
+                .find(|item| {
+                    item.get("agent_mode")
+                        .and_then(Value::as_u64)
+                        .is_some_and(|mode| mode != 0)
+                })
+                .cloned()
+        })
 }
 
 /// 客户端给的名字 → 本家内部的模型名。
@@ -660,5 +744,55 @@ mod tests {
         assert!(!is_empty());
         // 本单测进程没拉过远程目录 → 来源标记必须是 false（不能谎报「远程」）
         assert!(!remote_refreshed());
+    }
+
+    /// 生图那条合成条目**必须**出现在清单末尾：目录是所有出口的唯一源头
+    /// （`/v1/models`、管理页、生图入口挑默认模型、`operation_providers`），
+    /// 不补这一条，生图请求根本不会被派到本家。
+    #[test]
+    fn image_entry_is_appended_to_the_catalog() {
+        let items = list();
+        let image = items
+            .iter()
+            .find(|item| item.get("id").and_then(Value::as_str) == Some(super::super::image_generation::MODEL_ID));
+        let image = image.expect("清单里应当有合成生图条目");
+        assert_eq!(image["kind"], json!("image"));
+        assert_eq!(image["supports_image_generation"], json!(true));
+        // 兜底清单本身**没有**这一条（那是上游目录的形态，与合成条目是两件事）
+        assert!(fallback_models()
+            .iter()
+            .all(|item| item.get("id").and_then(Value::as_str)
+                != Some(super::super::image_generation::MODEL_ID)));
+    }
+
+    /// ⚠️ `agent_choice` 读的是**目录本体**，不是追加了合成条目的清单：
+    /// 那条 `doubao-image` 不是一条能跑任务的模式，混进候选里等于让
+    /// 「挑任务模式」有两个来源。
+    #[test]
+    fn agent_choice_ignores_the_synthetic_image_entry() {
+        // 兜底清单里没有 `agent_mode`（真实上游才有）⇒ 挑不出任务模式。
+        // 这正好钉住「不会退化成随便挑一条」这个性质。
+        assert!(agent_choice().is_none());
+    }
+
+    /// `agent_mode` 要从上游原始行透传到目录条目上（生图拼信封要用它）。
+    /// 数字与数字字符串两种形态都要认 —— 上游两种都给过。
+    #[test]
+    fn agent_mode_is_carried_over_in_both_shapes() {
+        let as_number = parse_catalog(&json!({
+            "data": { "entry_list": [{
+                "mode_id": "m1", "name": "通用任务", "agent_mode": 1,
+                "model_item_key": "k1", "model_extra_params": { "provider_id": "p" },
+            }]},
+        }));
+        assert_eq!(as_number.len(), 1);
+        assert_eq!(as_number[0]["agent_mode"], json!(1));
+        assert_eq!(as_number[0]["model_item_key"], json!("k1"));
+        assert_eq!(as_number[0]["model_extra_params"]["provider_id"], json!("p"));
+
+        let as_text = parse_catalog(&json!({
+            "data": { "entry_list": [{ "mode_id": "m2", "agent_mode": "2" }] },
+        }));
+        assert_eq!(as_text[0]["agent_mode"], json!(2));
     }
 }

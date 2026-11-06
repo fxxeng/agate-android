@@ -96,6 +96,26 @@ impl ProviderAdapter for DoubaoWorkAdapter {
         chat::build_chat_request(account, body, client_headers)
     }
 
+    /// 本家有生图通道 —— 但它**不是**一条生图路由，而是「在对话里派任务」。
+    ///
+    /// **通道级**能力位：哪条模型能生图由目录条目的 `kind=image` 决定
+    /// （`models::list()` 末尾补的那条合成条目），两者在
+    /// `providers::images::operation_providers` 里取交集。
+    fn supports_image_generation(&self) -> bool {
+        true
+    }
+
+    /// 构造上游生图请求（一次 `agent_mode != 0` 的对话请求）。
+    fn build_image_request(
+        &self,
+        account: &Value,
+        body: &Value,
+        client_headers: &HeaderMap,
+        operation: crate::server::core::providers::images::ImageOperation,
+    ) -> Result<crate::server::core::providers::images::ImageRequestPlan, GatewayError> {
+        super::image_generation::build(account, body, client_headers, operation)
+    }
+
     /// 上游错误分类（**判定顺序是契约**）：
     ///   1. `401` / `403` → [`UpstreamErrorClass::TokenExpired`]
     ///      （编排层会尝试刷新一次；本家 `supports_refresh = false`，

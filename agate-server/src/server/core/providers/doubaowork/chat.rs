@@ -737,6 +737,11 @@ fn attachment_markers(body: &Value) -> String {
 /// `auth.accessToken` 整串（最后这条靠 [`super::credentials::parse_cookie_string`]
 /// 拆开）。任一命中即可 —— 少一条兜底，某些编排层形态下就会得到一句
 /// 「缺少 Cookie」而账号其实配得好好的。
+/// 给同目录其它模块用的凭证读法（生图要拼同一份请求头）。
+pub fn credentials_for(account: &Value) -> Result<Credentials, GatewayError> {
+    credentials_from_session(account)
+}
+
 fn credentials_from_session(account: &Value) -> Result<Credentials, GatewayError> {
     let id = account
         .get("id")

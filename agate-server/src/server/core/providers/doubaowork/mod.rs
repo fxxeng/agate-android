@@ -75,6 +75,8 @@ pub mod adapter;
 pub mod chat;
 pub mod credentials;
 pub mod endpoints;
+/// 生图（在对话里派任务）+ 合成目录条目。见模块头。
+pub mod image_generation;
 pub mod login;
 pub mod models;
 pub mod plan;

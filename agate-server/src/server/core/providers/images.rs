@@ -34,11 +34,12 @@ use super::catalog;
 
 /// 上游响应的**形态**：不是所有家都回标准 OpenAI `{data:[{b64_json|url}]}`。
 ///
-/// ── 枚举里只放**已经接通**的形态（2026-11-06）─────────────────
-/// 上游另有 `Doubao`（对话流里取图 + 换无水印原图）一种，本仓还没接，所以
-/// 这里不出现那个名字：留一个「声明了但 `collect` 里没有分支」的变体，只会
-/// 在运行时变成一个没人能解释的 500。接一家就加一种，加到哪一种就实现到
-/// 哪一种（`core::upstream::images::collect` 的 match 会强制代码跟上）。
+/// ── 枚举里只放**已经接通**的形态（2026-11-06 五家全接）──────────
+/// 五家 provider 的四种外壳一一对应：OpenAI 系（loomy / raccoon）、异步任务
+/// （modelscope）、信封（workbuddy）、流式帧（antigravity 的 Gemini、
+/// doubaowork 的对话流）。再加形态就加变体 ——
+/// `core::upstream::images::collect` 的 `match` 会强制代码跟上，不存在
+/// 「声明了但没人读」的静默状态。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ImageResponseKind {
     /// 标准 OpenAI Images：`{ "data": [{ "b64_json" | "url", "revised_prompt" }] }`。
@@ -66,6 +67,19 @@ pub enum ImageResponseKind {
     ///   - `thought` 为 true 的 part 要跳过：Gemini 3 的思考过程也可能带
     ///     `inlineData`（那是草稿图，不是结果）。
     Gemini,
+    /// 豆包工作：**对话流里取图**，再换无水印原图。
+    ///
+    /// 上游没有独立的生图接口 —— 出图就是让 agent 干活，结果作为
+    /// `gen_image_block`（`block_type = 10010`）挂在 `/chat/completion` 那条
+    /// SSE 流里。所以读法有三种形态之外的两件额外的事：
+    ///   - **两种块都要收**：`10010` 给带水印的预览，`10084`（画布渲染）给
+    ///     **无水印原图**与对象键。只认前者拿到的是带角标那张，只认后者在画布块
+    ///     缺失时就什么都没有 —— 两边都收、按对象键合并；
+    ///   - **流里没给原图时补一次**：`/creativity/resource/get_without_watermark`
+    ///     用对象键换原图。实测同一张图，流里那份 `image_raw` 与那个接口返回的
+    ///     `cgen_wm0` **字节完全相同**，所以正常一次请求就够，补的那次只服务
+    ///     「旧版本 / 画布块缺失」。换不到就退回预览：有图总比报错好。
+    Doubao,
 }
 
 /// 一家 provider 为某次生图/编辑拼好的上游请求。

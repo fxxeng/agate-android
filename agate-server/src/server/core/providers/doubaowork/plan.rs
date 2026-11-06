@@ -128,6 +128,75 @@ pub const MESSAGE_STORAGE_TYPE: i64 = 1;
 /// （[Go参考] 对**已上传完成**的附件给的组合：`1/1/1`）
 const READY_STATE: i64 = 1;
 
+/// 一条**能跑任务**的模式（agent 模式）。
+///
+/// ── 为什么生图必须走它 ──────────────────────────────────────
+/// 豆包工作没有独立的生图接口：出图就是「在对话里派一次任务」，agent 自己调用
+/// 图像生成技能。而「派任务」这件事只由 `option.agent_mode != 0` 触发 ——
+/// 不带它的请求就是一次普通对话，上游会回一段文字，**永远不会出图**。
+///
+/// 字段来源是上游目录里那条模式的原始键（见 `models::parse_catalog` 的透传键）：
+/// `agent_mode` / `mode_id` / `model_item_key` / `model_extra_params`。
+pub struct AgentChoice {
+    pub agent_mode: u64,
+    pub mode_id: Option<String>,
+    pub model_key: String,
+    pub extra: Value,
+    /// 这条模式的思考档位（进 `option.need_deep_think` / `ext.use_deep_think`）
+    pub deep_think: i64,
+}
+
+impl AgentChoice {
+    /// 任务信封里 `thread_local_message_id` 要指向的那条消息之外的部分。
+    ///
+    /// 摘出来单独一个函数，是因为它有三个「必须一起出现」的字段（`option` 与
+    /// `ext` 各一份）：漏一处 ⇒ 上游按普通对话处理，症状是「请求成功、回了
+    /// 一段话、没有图」，而且日志里一切正常。
+    fn apply(&self, payload: &mut Value, message_id: &str) {
+        let task = json!({
+            "action": 0,
+            "thread_local_message_id": [message_id],
+            "client_option": {
+                "enable_sandbox": false,
+                "os": std::env::consts::OS,
+                "shared_folder_path": [],
+            },
+            "runtime_type": 2,
+            "agent_task_param": { "runtime_type": 2 },
+            "agent_task_param_change": {
+                "runtime_changed": true,
+                "device_changed": false,
+                "sandbox_auth_type_changed": false,
+            },
+            "need_modify_conversation": false,
+            "task_input_json": "{\"project_context\":{}}",
+        });
+        payload["option"]["need_deep_think"] = json!(self.deep_think);
+        payload["ext"]["use_deep_think"] = json!(self.deep_think.to_string());
+        payload["option"]["agent_mode"] = json!(self.agent_mode);
+        payload["option"]["model_config"] = json!({
+            "model_item_key": self.model_key,
+            "model_extra_params": self.extra,
+        });
+        payload["option"]["aggregate_params"] = json!({
+            "mode_id": self.mode_id.clone().unwrap_or_else(|| "3".to_string()),
+            "model_item_key": self.model_key,
+            "agent_mode": self.agent_mode.to_string(),
+        });
+        if let Some(provider) = self.extra.get("provider_id").and_then(Value::as_str) {
+            payload["option"]["aggregate_params"]["provider_id"] = json!(provider);
+        }
+        payload["ext"]["agent_mode"] = json!(self.agent_mode.to_string());
+        // 只有通用任务档（1 / 2）才带 `general_task_param`：其它 agent 档有自己的
+        // 任务形态，发错一份只会让上游判成非法请求。
+        if matches!(self.agent_mode, 1 | 2) {
+            payload["option"]["general_task_param"] = task.clone();
+            payload["ext"]["general_task_param"] = json!(task.to_string());
+            payload["ext"]["is_finish"] = json!("1");
+        }
+    }
+}
+
 /// 一次构造好的请求（URL / 头 / 体）。
 pub struct BuiltRequest {
     /// 上游完整 URL（**含风控 query**）
@@ -623,10 +692,24 @@ pub struct ReadyAttachments {
 ///
 /// `credentials` 给 Cookie 与风控指纹；`body` 是客户端原始请求体；
 /// `attachments` 是**已上传完成**的附件（见 [`ReadyAttachments`]）。
+///
+/// 普通对话的入口：不派任务（`agent` 为 `None`）。要跑任务（生图）用
+/// [`build_agent`] —— 两者的差别**只有** `option` / `ext` 里那几件 agent 字段，
+/// 分成两个函数是为了让「这条请求会不会让上游派任务」在调用点上一眼可见。
 pub fn build(
     credentials: &Credentials,
     body: &Value,
     attachments: &ReadyAttachments,
+) -> Result<BuiltRequest, GatewayError> {
+    build_agent(credentials, body, attachments, None)
+}
+
+/// 带 agent 模式的构造（生图的必经之路，见 [`AgentChoice`]）。
+pub fn build_agent(
+    credentials: &Credentials,
+    body: &Value,
+    attachments: &ReadyAttachments,
+    agent: Option<&AgentChoice>,
 ) -> Result<BuiltRequest, GatewayError> {
     let messages = body
         .get("messages")
@@ -720,16 +803,25 @@ pub fn build(
         "fp": credentials.fingerprint.fp,
     });
 
-    let payload = json!({
+    // 消息 id 先取出来：agent 任务的 `thread_local_message_id` 必须指向它，
+    // 而任务信封是在 payload 拼好之后才挂上去的（见 `AgentChoice::apply`）。
+    let message_id = endpoints::uuid_v4();
+    let mut payload = json!({
         "client_meta": client_meta,
         "messages": [{
-            "local_message_id": endpoints::uuid_v4(),
+            "local_message_id": message_id,
             "content_block": blocks,
             "message_status": 0,
         }],
         "option": option,
         "ext": ext,
     });
+    // ── agent 模式（生图唯一的触发方式）───────────────────────────
+    // 放在 payload 之后：上面那份 `option` / `ext` 是**普通对话**的形状，
+    // agent 字段是在它之上追加的。反过来（先建 agent 版再删）会漏键。
+    if let Some(agent) = agent {
+        agent.apply(&mut payload, &message_id);
+    }
 
     // ── URL：风控 query 必须带上（每个请求都现拼；`web_tab_id` 每次不同）──
     let query = endpoints::encode_query(&endpoints::security_params(&credentials.fingerprint));
