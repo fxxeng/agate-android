@@ -21,6 +21,7 @@ import okhttp3.Response
 import okhttp3.sse.EventSource
 import okhttp3.sse.EventSourceListener
 import okhttp3.sse.EventSources
+import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -95,8 +96,32 @@ object GatewayRepository {
         val providerUsage: Map<String, Boolean> = emptyMap(),
         /** /api/routing/queue → 实时出战队列（首页 v44 hq 卡）；解析失败沿用上份 */
         val routingQueue: List<QueueRow> = emptyList(),
-        /** /api/stats/summary overview → 平均时延（字段名随上游，读不到为 null 显示占位） */
+        /**
+         * 队列端点这次**真的回过结构**没有。以前只有 `routingQueue` 一个值：
+         * 端点没响应、响应结构和解析失败、真的没有候选，三种情况在界面上都是
+         * 「空列表」，于是只能靠一句「待结构核对」猜 —— 那句话掩盖了真 bug。
+         * 现在用它区分「暂不可用」与「当前无候选」。
+         */
+        val routingQueueFetched: Boolean = false,
+        /** 端点回显的模型名（查询参数优先，其次最近一次请求的模型），所有行共用。 */
+        val routingQueueModel: String? = null,
+        /**
+         * /api/stats/summary overview → 区间内**终态明细**的平均耗时。
+         * 内核返回 `avgDurationMs`，字段缺失 / 无带耗时的样本时为 null（界面显示 —）。
+         */
         val avgLatencyMs: Long? = null,
+        /**
+         * 下面四个是「明细可见」的拆分，与总 Token 的口径**不同**：总量来自
+         * `request_daily`（历史明细裁掉后仍在），拆分来自按区间现算的 `requests`
+         * 明细。`detailSamples` 是参与拆分的行数 —— 拿它跟 `requestsToday` 比，
+         * 界面才能如实说「基于 N/M 条明细」，不把残缺样本伪装成全量。
+         */
+        val inputTokensToday: Long = 0,
+        val outputTokensToday: Long = 0,
+        val detailSamples: Long = 0,
+        /** 同区间 token 用量最高的一家（来自 `providers[].totalTokens`，与报表同源）。 */
+        val topProviderLabel: String? = null,
+        val topProviderTokens: Long = 0,
         /** /api/session → models（客户端所见清单；M3 模型页数据源） */
         val models: List<ModelRow> = emptyList(),
     )
@@ -190,8 +215,16 @@ object GatewayRepository {
         val provider: String,
         val account: String,
         val model: String? = null,
+        /** 短状态标签（可出战 / 冷却中 / 限流…），不是原因长句。 */
         val note: String? = null,
+        /** 内核给的一句「为什么排这 / 为什么跳过」，可为空。 */
+        val detail: String? = null,
+        /** 来自 `blocked` 数组：被硬门禁挡下，不是可依次尝试的候选。 */
+        val blocked: Boolean = false,
     )
+
+    /** /api/routing/queue 的解析结果：候选行 + 端点回显的模型名。 */
+    internal data class RoutingQueue(val rows: List<QueueRow>, val model: String?)
 
     /**
      * SSE 与探活用的端口 —— **必须跟设置走**，不能写死。
@@ -404,6 +437,8 @@ object GatewayRepository {
                     }
                 }
                 val overview = summary?.optJSONObject("overview")
+                val parsedQueue = parseRoutingQueue(routing)
+                val topProvider = parseTopProvider(summary)
                 _snapshot.value = ConsoleSnapshot(
                     fetchedAtMs = System.currentTimeMillis(),
                     requestsToday = overview?.optLong("requests") ?: prev.requestsToday,
@@ -427,12 +462,29 @@ object GatewayRepository {
                     providerCounts = if (session != null) parsed.providerCounts else prev.providerCounts,
                     currentAccountIds = if (session != null) parsed.currentAccountIds else prev.currentAccountIds,
                     providerUsage = if (session != null) parsed.providerUsage else prev.providerUsage,
-                    routingQueue = parseRoutingQueue(routing) ?: prev.routingQueue,
-                    avgLatencyMs = firstNonNull(
-                        overview?.optLong("avgLatencyMs", -1L),
-                        overview?.optLong("latencyMs", -1L),
-                        overview?.optLong("avgDurationMs", -1L),
-                    ) ?: prev.avgLatencyMs,
+                    routingQueue = parsedQueue?.rows ?: prev.routingQueue,
+                    routingQueueFetched = parsedQueue != null,
+                    routingQueueModel = parsedQueue?.model ?: prev.routingQueueModel,
+                    // 端点回过结构就把读数按这次的真值刷新（包括 null），
+                    // 不能沿用上一份 —— 否则明细被清掉后平均时延会一直停在旧值。
+                    avgLatencyMs = if (overview != null) firstNonNull(
+                        overview.optLong("avgDurationMs", -1L),
+                        overview.optLong("avgLatencyMs", -1L),
+                        overview.optLong("latencyMs", -1L),
+                    ) else prev.avgLatencyMs,
+                    inputTokensToday = if (overview != null) {
+                        overview.longOrNull("inputTokens") ?: 0L
+                    } else prev.inputTokensToday,
+                    outputTokensToday = if (overview != null) {
+                        overview.longOrNull("outputTokens") ?: 0L
+                    } else prev.outputTokensToday,
+                    detailSamples = if (overview != null) {
+                        overview.longOrNull("detailSamples") ?: 0L
+                    } else prev.detailSamples,
+                    topProviderLabel = if (summary != null) topProvider?.first else prev.topProviderLabel,
+                    topProviderTokens = if (summary != null) {
+                        topProvider?.second ?: 0L
+                    } else prev.topProviderTokens,
                     models = session?.let { parseModels(it) } ?: prev.models,
                 )
             } finally {
@@ -441,23 +493,97 @@ object GatewayRepository {
         }
     }
 
-    /** 队列端点字段名未定案，按候选键防御解析；端点缺失/结构变化返回 null（沿用上份）。 */
-    private fun parseRoutingQueue(obj: JSONObject?): List<QueueRow>? {
+    /**
+     * `/api/routing/queue` 的**唯一**解析入口。
+     *
+     * ── 这里原本有个真 bug（2026-11-06 控制台卡片核对时发现）────────
+     * 旧实现按 `queue / entries / rows / items / candidates` 猜键，而内核
+     * `api::routing_api::get_routing_queue` 返回的是 **`ordered` + `blocked`**
+     * 两个数组（见 `core::routing::RoutePlan`）。五个候选键一个都不命中 ⇒
+     * 解析恒为 null ⇒ 快照里的队列永远空 ⇒ 界面只能显示「结构核对」占位。
+     * 判据现在直接钉在内核字段名上，不再防御性猜键：结构真变了就如实报
+     * 「暂不可用」，而不是继续拿一句占位糊过去。
+     *
+     * `ordered` 是「这一轮会依次尝试的候选」（第一条就是此刻真会用的账号），
+     * `blocked` 是被硬门禁挡下的（禁用 / 冷却 / 并发满 / 限流 / 无凭证）。
+     * 两者拼在一起展示，顺序保持内核给的优先级。
+     */
+    internal fun parseRoutingQueue(obj: JSONObject?): RoutingQueue? {
         if (obj == null) return null
-        val arr = listOf("queue", "entries", "rows", "items", "candidates")
-            .firstNotNullOfOrNull { key -> obj.optJSONArray(key) } ?: return null
-        val rows = ArrayList<QueueRow>(arr.length())
-        for (i in 0 until arr.length()) {
-            val r = arr.optJSONObject(i) ?: continue
-            rows += QueueRow(
-                provider = r.optString("provider", r.optString("providerId", "?")),
-                account = r.optString("account", r.optString("displayName", r.optString("accountId", "?"))),
-                model = r.optString("model", "").ifBlank { null },
-                note = r.optString("reason", r.optString("status", "")).ifBlank { null },
-            )
+        val ordered = obj.optJSONArray("ordered")
+        val blocked = obj.optJSONArray("blocked")
+        if (ordered == null && blocked == null) return null
+        // 端点只在传了 ?model= 时回显 model；没传就退回最近一次请求的模型，
+        // 再没有就 null（界面不显示模型名，不编一个出来）。
+        val model = obj.optString("model", "").ifBlank {
+            obj.optString("lastRequestModel", "")
+        }.ifBlank { null }
+        val rows = ArrayList<QueueRow>((ordered?.length() ?: 0) + (blocked?.length() ?: 0))
+        fun take(arr: JSONArray?, isBlocked: Boolean) {
+            if (arr == null) return
+            for (i in 0 until arr.length()) {
+                val r = arr.optJSONObject(i) ?: continue
+                val state = r.optString("state", "")
+                rows += QueueRow(
+                    provider = r.optString("providerLabel").ifBlank {
+                        r.optString("provider", "?")
+                    },
+                    account = r.optString("name").ifBlank { r.optString("id", "?") },
+                    model = model,
+                    note = stateLabel(state, isBlocked),
+                    detail = r.optString("reason", "").ifBlank { null },
+                    blocked = isBlocked,
+                )
+            }
         }
-        return rows
+        take(ordered, false)
+        take(blocked, true)
+        return RoutingQueue(rows, model)
     }
+
+    /** `core::routing::PlanEntry.state` 的短标签（与内核状态码表一一对应）。 */
+    private fun stateLabel(state: String, blocked: Boolean): String = when (state) {
+        "usable" -> "可出战"
+        "tried" -> "已尝试"
+        "disabled" -> "已禁用"
+        "cooldown" -> "冷却中"
+        "concurrency" -> "并发满"
+        "limiter" -> "限流"
+        "no-credentials" -> "无凭证"
+        else -> state.ifBlank { if (blocked) "已排除" else "候选" }
+    }
+
+    /**
+     * `providers[].totalTokens` 的冠军（与 `ReportsPage` 的排行同源同区间）。
+     * 只取 label 与原始 token 数，占比留给界面用 `tokensToday` 现算 ——
+     * 一处口径，避免仓库里再存一份已经算过的百分比。
+     */
+    internal fun parseTopProvider(summary: JSONObject?): Pair<String, Long>? {
+        val arr = summary?.optJSONArray("providers") ?: return null
+        var bestLabel: String? = null
+        var bestTokens = 0L
+        for (i in 0 until arr.length()) {
+            val p = arr.optJSONObject(i) ?: continue
+            val tokens = asLong(p.opt("totalTokens")) ?: 0L
+            if (tokens <= 0L) continue
+            val label = p.optString("label").ifBlank { p.optString("id") }
+            if (label.isBlank()) continue
+            if (tokens > bestTokens) {
+                bestTokens = tokens
+                bestLabel = label
+            }
+        }
+        return bestLabel?.let { it to bestTokens }
+    }
+
+    /** JSON 里的数字可能是数字也可能是数字串；JSONObject.NULL 一律按「没有」处理。 */
+    private fun asLong(raw: Any?): Long? = when (raw) {
+        is Number -> raw.toLong()
+        is String -> raw.trim().toLongOrNull()
+        else -> null
+    }
+
+    private fun JSONObject.longOrNull(key: String): Long? = asLong(opt(key))
 
     private fun firstNonNull(vararg v: Long?): Long? = v.firstOrNull { it != null && it >= 0 }
 

@@ -608,6 +608,56 @@ pub(super) fn sum_cache_windows(
     Ok(out)
 }
 
+/// 区间内**明细可见**的耗时与 token 拆分（`/api/stats/summary` 的 overview 补充字段）。
+///
+/// ── 为什么不是另一张聚合表 ──────────────────────────────────
+/// `overview.requests` / `tokens` 来自 `request_daily`：明细被保留期裁掉之后
+/// 它们仍然在，这是报表「历史曲线不空洞」的契约。而 `duration_ms` /
+/// `prompt_tokens` / `completion_tokens` 只存在于明细行里，没有进过日报 ——
+/// 给日报加列要一次 schema 迁移 + 老行回填，回填不到的日子仍得留空。
+/// 这里选择**同一条 SQL 按区间现算**，并把参与计算的条数一并返回：调用方
+/// 拿 `samples` 与 `overview.requests` 一比就知道覆盖是否完整，覆盖不全时
+/// 界面如实说「基于 N/M 条明细」，不把残缺样本伪装成全量。
+///
+/// ── 口径与日报一致 ──────────────────────────────────────────
+/// `status <> 0` 排除进行中行（它们还没有终态耗时/用量），`is_test = 0`
+/// 排除模型测试（与 `RequestStats::record` 折进日报的判据同源）。
+/// `duration_samples` 单独数 `duration_ms > 0` 的行：某些转发前就失败的请求
+/// 记成 0ms，把它们算进分母会把「平均时延」压成一个看着像很快的假数。
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct IntervalDetails {
+    /// 参与拆分的终态明细条数（覆盖度判据）。
+    pub samples: i64,
+    pub duration_sum_ms: i64,
+    /// 有耗时的条数 ——「平均时延」的分母。
+    pub duration_samples: i64,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+}
+
+pub(super) fn sum_interval_details(
+    conn: &Connection,
+    start_ms: i64,
+    end_ms: i64,
+) -> rusqlite::Result<IntervalDetails> {
+    conn.query_row(
+        "SELECT COUNT(*), COALESCE(SUM(duration_ms), 0), \
+         COALESCE(SUM(CASE WHEN duration_ms > 0 THEN 1 ELSE 0 END), 0), \
+         COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(completion_tokens), 0) \
+         FROM requests WHERE ts >= ?1 AND ts <= ?2 AND status <> 0 AND is_test = 0",
+        params![start_ms, end_ms],
+        |row| {
+            Ok(IntervalDetails {
+                samples: row.get(0)?,
+                duration_sum_ms: row.get(1)?,
+                duration_samples: row.get(2)?,
+                input_tokens: row.get(3)?,
+                output_tokens: row.get(4)?,
+            })
+        },
+    )
+}
+
 /// 插一条**进行中**的明细（status=0，转发开始前调用；见 `RequestStats::record_started`）。
 ///
 /// 幂等：同 id 已有进行中行时跳过（重复调用不产生第二行 —— 收尾的
@@ -1137,5 +1187,74 @@ mod tests {
             binds: Vec::new(),
         };
         assert_eq!(counts(&conn, &plan).expect("查询"), (0, 0, 0));
+    }
+
+    /// 插一行带耗时 / token 的明细（其余列走 DEFAULT）。
+    fn insert_detail(
+        conn: &Connection,
+        ts: i64,
+        status: i64,
+        duration_ms: i64,
+        prompt: i64,
+        completion: i64,
+        is_test: i64,
+    ) {
+        conn.execute(
+            "INSERT INTO requests (ts, model, status, duration_ms, prompt_tokens, \
+             completion_tokens, is_test) VALUES (?1, 'm', ?2, ?3, ?4, ?5, ?6)",
+            params![ts, status, duration_ms, prompt, completion, is_test],
+        )
+        .expect("插入明细");
+    }
+
+    /// 控制台新增的区间读数：只算「区间内 · 终态 · 非测试」的明细。
+    ///
+    /// 用真 SQLite + 真 schema 钉三件写歪：
+    ///   · status=0 的进行中行算进来 → 平均时延被没有终态的行污染；
+    ///   · is_test=1 的模型测试算进来 → 读数与报表（排除测试）对不上；
+    ///   · 区间是闭合毫秒边界，左端之前 / 右端之后都不能漏进来。
+    /// 另外 `detailSamples` 必须等于参与拆分的行数：界面靠它判覆盖度。
+    #[test]
+    fn interval_details_only_counts_terminal_non_test_rows_in_range() {
+        let conn = memory_db();
+        insert_detail(&conn, 1_000, 200, 100, 30, 20, 0); // 区间左端，算
+        insert_detail(&conn, 2_000, 500, 0, 10, 0, 0); // 区间右端，算（0ms 不算耗时分母）
+        insert_detail(&conn, 1_500, 0, 999, 999, 999, 0); // 进行中，排除
+        insert_detail(&conn, 1_500, 200, 777, 777, 777, 1); // 模型测试，排除
+        insert_detail(&conn, 999, 200, 888, 888, 888, 0); // 区间外，排除
+        insert_detail(&conn, 2_001, 200, 888, 888, 888, 0); // 区间外，排除
+
+        let d = sum_interval_details(&conn, 1_000, 2_000).expect("区间聚合");
+        assert_eq!(d.samples, 2);
+        assert_eq!(d.duration_sum_ms, 100);
+        assert_eq!(d.duration_samples, 1, "0ms 的那条不能进平均时延分母");
+        assert_eq!(d.input_tokens, 40);
+        assert_eq!(d.output_tokens, 20);
+        assert_eq!(d.duration_sum_ms / d.duration_samples, 100, "均值只能按有耗时的行算");
+    }
+
+    /// 0ms 的「转发前就失败」行仍算一条样本，但不能把均值压成假快。
+    #[test]
+    fn zero_duration_rows_do_not_drag_down_the_average() {
+        let conn = memory_db();
+        insert_detail(&conn, 100, 500, 0, 5, 0, 0);
+        insert_detail(&conn, 200, 200, 400, 0, 0, 0);
+        let d = sum_interval_details(&conn, 0, 1_000).expect("区间聚合");
+        assert_eq!(d.samples, 2);
+        assert_eq!(d.duration_samples, 1);
+        assert_eq!(d.duration_sum_ms / d.duration_samples, 400, "不是 400/2=200");
+    }
+
+    /// 空区间：五个数全是 0（COALESCE 兜住 SUM 的 NULL）。
+    /// 这条对应新装用户首次打开控制台 —— 不能因为读 NULL 转 i64 报错。
+    #[test]
+    fn an_empty_interval_reports_five_zeros() {
+        let conn = memory_db();
+        let d = sum_interval_details(&conn, 0, 1_000).expect("区间聚合");
+        assert_eq!(d.samples, 0);
+        assert_eq!(d.duration_sum_ms, 0);
+        assert_eq!(d.duration_samples, 0);
+        assert_eq!(d.input_tokens, 0);
+        assert_eq!(d.output_tokens, 0);
     }
 }

@@ -143,6 +143,10 @@ pub(super) fn summarize(
     daily: &BTreeMap<String, DailyEntry>,
     cache_totals: &[(i64, i64)],
     entries: &[SummaryRow],
+    // 区间内明细可见的耗时 / token 拆分（SQL 侧一次聚合，见
+    // `sql::sum_interval_details`）。`Default::default()` = 库不可用时的降级，
+    // 与 `usage_summary` 的空库路径同形。
+    details: sql::IntervalDetails,
     range: &str,
     now: i64,
     custom: Option<(NaiveDate, NaiveDate)>,
@@ -184,6 +188,18 @@ pub(super) fn summarize(
             "activeDays": totals.active_days,
             "streak": consecutive,
             "topModel": top_model,
+            // 下面四个是「明细可见」读数，不是区间全量：明细被保留期裁掉之后
+            // 它们会比 `requests` 少，`detailSamples` 就是让界面判覆盖度的那把尺。
+            // 恒为数字（无样本时 avgDurationMs 为 null、其余为 0），前端不必判
+            // 两种空形态；旧前端不认识这几个键，直接忽略。
+            "avgDurationMs": if details.duration_samples > 0 {
+                Value::from(details.duration_sum_ms / details.duration_samples)
+            } else {
+                Value::Null
+            },
+            "inputTokens": details.input_tokens,
+            "outputTokens": details.output_tokens,
+            "detailSamples": details.samples,
         },
         // 按 provider 维度的区间汇总（**新增字段，不改既有字段**）。
         // 前端按「存在则展示、缺失则隐藏」消费，所以旧前端拿到它只会忽略。
@@ -252,4 +268,71 @@ pub(super) fn fold_into_daily(day: &mut DailyEntry, item: &RequestEntry) {
         i64::from(success),
         item.total_tokens,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    //! `overview` 里四个「明细可见」读数的装配判据。
+    //!
+    //! 这里只测「SQL 算好的数有没有被如实搬进 JSON、均值有没有按带耗时的
+    //! 行数做分母」；SQL 本身在 `sql.rs` 的真内存库测试里钉。两边都不重算
+    //! 对方那一层，避免一份口径被测两遍、改一处另一处还绿。
+
+    use super::*;
+
+    fn empty_summary(details: sql::IntervalDetails) -> Value {
+        summarize(
+            &BTreeMap::<String, DailyEntry>::new(),
+            &[],
+            &[],
+            details,
+            "today",
+            0,
+            None,
+        )
+    }
+
+    #[test]
+    fn overview_exposes_detail_readings_with_a_coverage_count() {
+        let out = empty_summary(sql::IntervalDetails {
+            samples: 7,
+            duration_sum_ms: 1_400,
+            duration_samples: 4,
+            input_tokens: 900,
+            output_tokens: 300,
+        });
+        let overview = &out["overview"];
+        assert_eq!(overview["avgDurationMs"], json!(350), "1400 / 4");
+        assert_eq!(overview["inputTokens"], json!(900));
+        assert_eq!(overview["outputTokens"], json!(300));
+        assert_eq!(overview["detailSamples"], json!(7));
+    }
+
+    /// 没有带耗时的样本时 `avgDurationMs` 必须是 JSON null，不是 0。
+    /// 界面靠 null 显示「—」；给 0 会被读成「请求瞬时返回」这种假快。
+    #[test]
+    fn avg_duration_is_null_without_timed_samples() {
+        let out = empty_summary(sql::IntervalDetails {
+            samples: 3,
+            duration_sum_ms: 0,
+            duration_samples: 0,
+            input_tokens: 12,
+            output_tokens: 0,
+        });
+        let overview = &out["overview"];
+        assert!(overview["avgDurationMs"].is_null());
+        assert_eq!(overview["detailSamples"], json!(3));
+        assert_eq!(overview["inputTokens"], json!(12));
+    }
+
+    /// 降级路径（库不可用 / 空库）：四个键恒在且是数字，前端不必判 null 形状。
+    #[test]
+    fn default_details_still_produce_a_stable_shape() {
+        let out = empty_summary(sql::IntervalDetails::default());
+        let overview = &out["overview"];
+        assert!(overview["avgDurationMs"].is_null());
+        assert_eq!(overview["inputTokens"], json!(0));
+        assert_eq!(overview["outputTokens"], json!(0));
+        assert_eq!(overview["detailSamples"], json!(0));
+    }
 }

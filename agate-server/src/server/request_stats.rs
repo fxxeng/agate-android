@@ -661,11 +661,35 @@ impl RequestStats {
                 // 报表侧排除模型测试（见 `select_summary_rows` 的说明）：
                 // 趋势图与排行回答的是「真实流量长什么样」
                 let entries = sql::select_summary_rows(conn, now - SUMMARY_WINDOW_MS, now)?;
-                Ok((daily, cache_totals, entries))
+                // 区间边界与 `summarize` 内部**同一个 `range_bounds`、同一入参**
+                // （纯函数，调两次结果必然一致）。这里只为把日期键换算成明细表
+                // ts 的毫秒范围 —— 耗时 / 输入 / 输出这三个读数只在明细里，
+                // 控制台卡片要展示它们就得按区间现算一次。
+                let (start_date, end_date) = report::range_bounds(
+                    report::normalize_range(range),
+                    &daily,
+                    today(),
+                    custom,
+                );
+                let details = match (
+                    NaiveDate::parse_from_str(&start_date, "%Y-%m-%d"),
+                    NaiveDate::parse_from_str(&end_date, "%Y-%m-%d"),
+                ) {
+                    (Ok(start), Ok(end)) => sql::sum_interval_details(
+                        conn,
+                        local_midnight_ms(start),
+                        local_midnight_ms(end + ChronoDuration::days(1)).saturating_sub(1),
+                    )?,
+                    // `range_bounds` 产出的键必然合法；真解析不了时不查 SQL，
+                    // 用零样本降级（界面据此显示「—」），绝不 unwrap —— 本仓
+                    // release 是 panic=abort，一次日期解析失败就是进程闪退。
+                    _ => sql::IntervalDetails::default(),
+                };
+                Ok((daily, cache_totals, entries, details))
             })
         };
-        let (daily, cache_totals, entries) = loaded.unwrap_or_default();
-        summarize(&daily, &cache_totals, &entries, range, now, custom)
+        let (daily, cache_totals, entries, details) = loaded.unwrap_or_default();
+        summarize(&daily, &cache_totals, &entries, details, range, now, custom)
     }
 
     /// 明细查询：倒序（新在前）分页。

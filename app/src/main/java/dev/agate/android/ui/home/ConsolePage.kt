@@ -56,6 +56,7 @@ import dev.agate.core.Gateway
 import dev.agate.core.GatewayPrefs
 import dev.agate.android.data.GatewayRepository
 import dev.agate.android.data.LogOps
+import dev.agate.android.data.UsageCache
 import dev.agate.android.navigation.Routes
 import dev.agate.android.ui.components.agateCard
 import dev.agate.android.ui.components.AgateBadge
@@ -71,14 +72,21 @@ import dev.agate.android.ui.theme.agateColors
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
 
 /**
  * 首页·控制台（M3-2R，对齐 v44 Tab 1 结构，自上而下）：
  * 页头（汉堡/控制台/实时日志）→ 新手 3 步向导（accent 边框，可 ✕）→
- * Hero 渐变状态卡（呼吸点 + URL 复制胶囊 + meta 行 +「网络测速 ›」）→
+ * Hero 渐变状态卡（呼吸点 + URL 复制胶囊 + meta 行 +「健康自检 ›」）→
  * 停止态独立卡 → KPI 四联（成功率/平均时延/今日请求/活跃账号）→
  * 健康自检（默认收起，v44 hc-card）→ 实时出战队列（/api/routing/queue）→
  * 额度中心入口 → 今日 Token 消耗。
+ *
+ * ── 卡片读数口径（2026-11-06 全量补齐）─────────────────────────
+ * 每张卡只显示**真算过**的数：总请求 / Token 来自 `request_daily`（历史明细
+ * 裁掉后仍在），平均时延 / 输入 / 输出来自按区间现算的 `requests` 明细，
+ * 各家占比来自 `providers[].totalTokens`，队列来自 `ordered` + `blocked`。
+ * 明细覆盖不全时明说「基于 N/M 条明细」，不用占位文案假装功能还在路上。
  * SSE 事件列表不再放首页（网关控制页已有事件总线区块）。
  */
 @Composable
@@ -201,6 +209,8 @@ fun ConsolePage(
                 ),
                 StatCell(
                     label = "平均时延",
+                    // 内核 `avgDurationMs`：区间内「有耗时的终态明细」的均值。
+                    // 没有样本就是 —，不拿 0ms 的转发前失败行凑一个假快的数。
                     value = snap.avgLatencyMs?.let { "${it}ms" } ?: "—",
                     valueColor = C.accent,
                 ),
@@ -218,7 +228,7 @@ fun ConsolePage(
 
         Spacer(Modifier.height(12.dp))
 
-        // ── 健康自检（v44 hc-card：默认收起，点「网络测速 ›」展开）──
+        // ── 健康自检（v44 hc-card：默认收起，点「健康自检 ›」展开）──
         if (hcOpen) {
             HealthCard(snap = snap, snapError = snapError, onClose = { hcOpen = false })
             Spacer(Modifier.height(12.dp))
@@ -227,6 +237,8 @@ fun ConsolePage(
         // ── 实时出战队列（v44 hq：编号 = 候选队列位置）──
         QueueCard(
             queue = snap.routingQueue,
+            fetched = snap.routingQueueFetched,
+            model = snap.routingQueueModel,
             inFlight = snap.inFlight,
             onNavigate = onNavigate,
         )
@@ -234,17 +246,20 @@ fun ConsolePage(
         Spacer(Modifier.height(12.dp))
 
         // ── 额度中心入口（v44 .quota-entry）──
+        // 只读额度查询的**本地缓存**（UsageCache），绝不为控制台每 5 秒的快照
+        // 去打各家上游 —— 余额接口有风控。没查过就如实说「点此查看」。
+        val quota = remember(snap.fetchedAtMs) { quotaDigest() }
         EntryCard(
             icon = "◔",
             title = "额度中心",
-            sub = "余额与水位待额度端点接入",
+            sub = quotaSub(quota),
             onClick = { onNavigate(Routes.QUOTA) },
         )
 
         Spacer(Modifier.height(12.dp))
 
         // ── 今日 Token 消耗（v44 token-big）──
-        TokenCard(tokens = snap.tokensToday, fetched = snap.fetchedAtMs > 0, onNavigate = onNavigate)
+        TokenCard(snap = snap, onNavigate = onNavigate)
 
         Spacer(Modifier.height(28.dp))
         }
@@ -334,14 +349,14 @@ private fun HeroCard(
             Icon(Icons.Filled.ContentCopy, contentDescription = "复制", tint = H.pillText.copy(alpha = 0.8f), modifier = Modifier.size(16.dp))
         }
 
-        // hero-meta：运行时长 · 今日请求 · 网络测速 ›
+        // hero-meta：运行时长 · 今日请求 · 健康自检 ›
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("已运行 ${fmtUptime(status?.uptimeSec ?: 0)}", color = H.sub, fontSize = 12.sp)
             Dot()
             Text("今日 $requestsToday 次请求", color = H.sub, fontSize = 12.sp)
             Spacer(Modifier.weight(1f))
             Text(
-                if (hcOpen) "收起自检 ⌄" else "网络测速 ›",
+                if (hcOpen) "收起自检 ⌄" else "健康自检 ›",
                 color = H.sub,
                 fontSize = 12.sp,
                 fontWeight = FontWeight.SemiBold,
@@ -471,7 +486,7 @@ private fun HealthCard(snap: GatewayRepository.ConsoleSnapshot, snapError: Strin
             .animateContentSize(),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("健康自检（GET /health 口径）", color = C.textMain, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+            Text("健康自检（本机只读端点）", color = C.textMain, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
             if (snapError == null) AgateBadge("status ok", BadgeTone.GREEN) else AgateBadge("异常", BadgeTone.RED)
         }
         HcRow(
@@ -480,14 +495,29 @@ private fun HealthCard(snap: GatewayRepository.ConsoleSnapshot, snapError: Strin
             if (snap.upstreamConfigured == true) "ok" else "待配置",
             snap.upstreamConfigured == true,
         )
-        HcRow("回环探活", snapError ?: "127.0.0.1:8787 /health · 正常", "通", snapError == null)
+        // 端口跟着设置走：写死 8787 时改过端口的用户会看到一条不存在的探活地址。
+        HcRow(
+            "回环探活",
+            snapError ?: "127.0.0.1:${GatewayPrefs.port(ctx)} /health · 正常",
+            if (snapError == null) "通" else "断",
+            snapError == null,
+        )
         HcRow(
             "凭证状态",
             "登录态 " + (snap.loggedIn?.let { if (it) "已登录" else "未登录" } ?: "未知") + " · 模型 ${snap.modelCount}",
             snap.loggedIn?.let { if (it) "可刷新" else "缺失" } ?: "—",
             snap.loggedIn == true,
         )
-        HcRow("出网连通", "上游延迟均值（测速样本）", "—", null)
+        // 原先这行是「出网连通 / 上游延迟均值（测速样本） / —」：既没测过速，
+        // 也没有一个真读数，纯占位。这里换成同一份区间明细算出的平均上游耗时，
+        // 并**明确写它不是实时测速** —— 界面只写真算过的东西。
+        HcRow(
+            "上游响应",
+            if (snap.detailSamples > 0) "近 ${snap.detailSamples} 条终态请求均值 · 非实时测速"
+            else "暂无终态明细样本",
+            snap.avgLatencyMs?.let { "${it}ms" } ?: "—",
+            null,
+        )
 
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             listOf("/v1/chat/completions", "/v1/messages", "/v1/responses").forEach { ep ->
@@ -529,6 +559,8 @@ private fun HcRow(name: String, desc: String, value: String, ok: Boolean?) {
 @Composable
 private fun QueueCard(
     queue: List<GatewayRepository.QueueRow>,
+    fetched: Boolean,
+    model: String?,
     inFlight: Int,
     onNavigate: (String) -> Unit,
 ) {
@@ -543,14 +575,25 @@ private fun QueueCard(
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("实时出战队列", color = C.textMain, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
-            AgateChip(text = "排队 $inFlight", selected = inFlight > 0)
+            // 这个数是 /api/stats/requests 的 running（在途请求），不是队列长度 ——
+            // 写「排队」会让人以为队列里有 N 个待选账号。
+            AgateChip(text = "在途 $inFlight", selected = inFlight > 0)
         }
         Spacer(Modifier.height(4.dp))
-        Text("编号 = 候选队列位置 · 在「路由」里调整", color = C.textDim, fontSize = 11.sp)
+        Text(
+            (model?.let { "当前模型 $it · " } ?: "") + "编号 = 候选优先级 · 点此去「路由」调整 ❯",
+            color = C.textDim,
+            fontSize = 11.sp,
+            modifier = Modifier.clickable { onNavigate(Routes.ROUTING) },
+        )
         Spacer(Modifier.height(8.dp))
         if (queue.isEmpty()) {
             Text(
-                if (inFlight > 0) "队列数据待 /api/routing/queue 结构核对" else "队列空闲 · 暂无在途请求",
+                when {
+                    !fetched -> "队列端点暂不可用（/api/routing/queue 未响应）"
+                    inFlight > 0 -> "当前无排队候选 · $inFlight 个请求正在直连处理"
+                    else -> "当前没有候选账号（未添加，或全部被门禁排除）"
+                },
                 color = C.textSub,
                 fontSize = 12.sp,
                 modifier = Modifier.padding(vertical = 6.dp),
@@ -564,26 +607,42 @@ private fun QueueCard(
                         .background(C.insetBg, RoundedCornerShape(14.dp))
                         .border(
                             1.dp,
-                            if (i == 0) C.accent.copy(alpha = 0.55f) else C.border,
+                            if (i == 0 && !row.blocked) C.accent.copy(alpha = 0.55f) else C.border,
                             RoundedCornerShape(14.dp),
                         )
                         .padding(horizontal = 12.dp, vertical = 10.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Box(
-                        Modifier.size(24.dp).background(if (i == 0) C.accent else C.textDim.copy(alpha = 0.2f), CircleShape),
+                        Modifier.size(24.dp).background(
+                            if (i == 0 && !row.blocked) C.accent else C.textDim.copy(alpha = 0.2f),
+                            CircleShape,
+                        ),
                         contentAlignment = Alignment.Center,
                     ) {
-                        Text("${i + 1}", color = if (i == 0) C.onAccent else C.textSub, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        Text(
+                            if (row.blocked) "·" else "${i + 1}",
+                            color = if (i == 0 && !row.blocked) C.onAccent else C.textSub,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                        )
                     }
                     Spacer(Modifier.width(12.dp))
                     Column(Modifier.weight(1f)) {
-                        Text(row.account, color = C.textMain, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-                        Text(row.provider + (row.model?.let { " · $it" } ?: ""), color = C.textSub, fontSize = 12.sp)
+                        Text(row.account, color = C.textMain, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
+                        Text(row.provider + (row.model?.let { " · $it" } ?: ""), color = C.textSub, fontSize = 12.sp, maxLines = 1)
+                        row.detail?.let {
+                            Text(it, color = C.textDim, fontSize = 11.sp, maxLines = 1)
+                        }
                     }
-                    row.note?.let { AgateBadge(it, BadgeTone.BLUE) }
+                    row.note?.let {
+                        AgateBadge(it, if (row.blocked) BadgeTone.AMBER else BadgeTone.BLUE)
+                    }
                 }
                 Spacer(Modifier.height(6.dp))
+            }
+            if (queue.size > 6) {
+                Text("另有 ${queue.size - 6} 个候选 · 完整选路见「路由」", color = C.textDim, fontSize = 11.sp)
             }
         }
     }
@@ -614,8 +673,18 @@ private fun EntryCard(icon: String, title: String, sub: String, onClick: () -> U
 
 /* ── 今日 Token 消耗（v44 .token-big）── */
 @Composable
-private fun TokenCard(tokens: Long, fetched: Boolean, onNavigate: (String) -> Unit) {
+private fun TokenCard(snap: GatewayRepository.ConsoleSnapshot, onNavigate: (String) -> Unit) {
     val C = agateColors()
+    val fetched = snap.fetchedAtMs > 0
+    val hasDetails = snap.detailSamples > 0
+    // 占比与「大头」来自 providers[].totalTokens（request_daily 口径），
+    // 与总量同源；输入 / 输出来自区间明细，覆盖度可能不足。两件事分开说。
+    val providerPart = snap.topProviderLabel?.let { label ->
+        val pct = if (snap.tokensToday > 0) {
+            snap.topProviderTokens * 100.0 / snap.tokensToday
+        } else 0.0
+        " · $label ${"%.0f".format(pct)}%"
+    }.orEmpty()
     Column(
         Modifier
             .fillMaxWidth()
@@ -625,17 +694,38 @@ private fun TokenCard(tokens: Long, fetched: Boolean, onNavigate: (String) -> Un
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("今日 Token 消耗", color = C.textMain, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
-            if (fetched) AgateBadge("tnum", BadgeTone.GRAY)
+            // 原来这颗徽标写的是 CSS 类名「tnum」（等宽数字样式），被当成文案
+            // 抄进了界面。换成真说明：总量取自按日汇总，明细覆盖多少也在这里。
+            if (fetched) AgateBadge(
+                if (hasDetails) "明细 ${snap.detailSamples}/${snap.requestsToday}" else "按日汇总",
+                BadgeTone.GRAY,
+            )
         }
         Spacer(Modifier.height(6.dp))
         Text(
-            if (fetched) fmtTokens(tokens) else "—",
+            if (fetched) fmtTokens(snap.tokensToday) else "—",
             color = C.textMain,
             fontSize = 24.sp,
             fontWeight = FontWeight.Bold,
         )
         Spacer(Modifier.height(4.dp))
-        Text("输入 / 输出拆分与各家占比待 stats 端点字段接入", color = C.textSub, fontSize = 12.sp)
+        Text(
+            when {
+                !fetched -> "等待首份快照"
+                snap.requestsToday <= 0 -> "今日暂无请求记录"
+                hasDetails -> "输入 ${fmtTokens(snap.inputTokensToday)} · 输出 ${fmtTokens(snap.outputTokensToday)}$providerPart"
+                else -> "输入 / 输出暂无明细样本$providerPart"
+            },
+            color = C.textSub,
+            fontSize = 12.sp,
+        )
+        if (fetched && hasDetails && snap.detailSamples < snap.requestsToday) {
+            Text(
+                "拆分只覆盖上述明细，其余请求仅有按日汇总",
+                color = C.textDim,
+                fontSize = 11.sp,
+            )
+        }
         Spacer(Modifier.height(6.dp))
         Text(
             "完整报表 ❯",
@@ -672,6 +762,56 @@ private fun fmtTokens(n: Long): String = when {
     n >= 100_000_000 -> "%.1f亿".format(n / 100_000_000.0)
     n >= 10_000 -> "%.1f万".format(n / 10_000.0)
     else -> n.toString()
+}
+
+/**
+ * 额度中心入口卡的一行**真读数**，只读 [UsageCache] 里的上一次批量结果。
+ *
+ * 为什么不把它塞进 `GatewayRepository` 的 5 秒快照：批量余额查询会真的打到
+ * 各家上游，官方有频次风控；控制台每 5 秒刷一次等于把风控当心跳打。缓存是
+ * `UsageCache` 的唯一语义（5 分钟新鲜期 + 20 秒硬节流），进额度中心时才可能
+ * 真正发请求 —— 这里只是把那份已有结果读出来，没查过就返回 null。
+ */
+private data class QuotaDigest(
+    val checked: Int,
+    val failed: Int,
+    val skipped: Int,
+    val atMs: Long?,
+)
+
+private fun quotaDigest(): QuotaDigest? {
+    val body: JSONObject = UsageCache.cached(null) ?: return null
+    val rows = body.optJSONArray("results") ?: return null
+    var checked = 0
+    var failed = 0
+    for (i in 0 until rows.length()) {
+        val row = rows.optJSONObject(i) ?: continue
+        checked++
+        // error 是 JSON null 时 optString 会得到字符串 "null"，必须按类型取
+        val err = (row.opt("error") as? String)?.trim().orEmpty()
+        if (err.isNotEmpty() || row.optJSONObject("usage") == null) failed++
+    }
+    return QuotaDigest(
+        checked = checked,
+        failed = failed,
+        skipped = body.optInt("skipped", 0),
+        atMs = UsageCache.updatedAt(null),
+    )
+}
+
+private fun quotaSub(digest: QuotaDigest?): String {
+    if (digest == null) {
+        return "余额 / 水位 / 额度包 · 点此查看（默认读缓存，不主动打上游）"
+    }
+    return buildString {
+        append("已查 ${digest.checked} 个账号")
+        if (digest.failed > 0) append(" · 失败 ${digest.failed}")
+        if (digest.skipped > 0) append(" · 不支持 ${digest.skipped}")
+        digest.atMs?.let {
+            append(" · ").append(android.text.format.DateFormat.format("HH:mm", it))
+            append(" 缓存")
+        }
+    }
 }
 
 /** 崩溃痕迹的文本形态（与日志页 `dump` 同一字段序，复制出去能直接读）。 */
