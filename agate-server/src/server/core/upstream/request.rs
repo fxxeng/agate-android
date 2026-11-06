@@ -84,6 +84,31 @@ pub struct TransportRequest {
     pub system_proxy_when_unset: bool,
 }
 
+impl TransportRequest {
+    /// 复制一份、**只换 URL**（其余字段逐字沿用）。
+    ///
+    /// ── 为什么不是 `#[derive(Clone)]`（这一条是刻意的约束）────────
+    /// 入口容错（`upstream::network`）需要拿一份改了域名的请求去重发，但它
+    /// **只该改 URL**：换掉头（比如把 Authorization 一起换）或换掉请求体，
+    /// 都会让「重发同一份请求」变成「发了另一份请求」—— 而后者在出问题时的
+    /// 症状是「凭证突然失效」「图片是花的」这类与容错毫无关系的样子。
+    ///
+    /// 提供一个只暴露 URL 的方法，比给整个结构 derive Clone 再靠自觉更稳：
+    /// 以后谁想改别的字段，必须先在这里加一句 —— 那时候就必须回答
+    /// 「换入口时改这个字段对不对」。
+    ///
+    /// `payload` 是 `Bytes`，克隆是 O(1)；`headers` 与 `proxy` 都很小。
+    pub fn clone_for_url(&self, url: &str) -> Self {
+        Self {
+            url: url.to_string(),
+            headers: self.headers.clone(),
+            payload: self.payload.clone(),
+            proxy: self.proxy.clone(),
+            system_proxy_when_unset: self.system_proxy_when_unset,
+        }
+    }
+}
+
 /// 归一化后的上游错误：`{code, message}`
 ///
 /// `message` 的兜底是响应文本的前 500 个字符（Node 的 `text.slice(0, 500)`）。
@@ -165,6 +190,24 @@ pub async fn send_chat_request(
         None if plan.system_proxy_when_unset => egress::client_for_system_proxy(),
         None => egress::client_for(None),
     };
+    send_chat_with_client(plan, client).await
+}
+
+/// 用**调用方给的** Client 发一次上游请求。
+///
+/// ── 为什么要有这个变体（入口容错的接缝）────────────────────────
+/// 「把域名钉在一个已校验过的地址上」这件事只能在建 Client 时做
+/// （`resolve_to_addrs`，见 `egress::image_download_client` 的说明）。
+/// 入口容错的地址兜底就是这个场景：换个地址 = 换一个 Client，而 URL 与
+/// 请求体完全不变。所以发送这一步要能接受外部 Client，否则容错层只能在
+/// URL 上做文章（换域名可以，换地址不行）。
+///
+/// 代理与系统代理的口径仍由 `plan` 决定 —— 这里不重复判断，调用方负责在建
+/// Client 时把出口带对（见 `upstream::network` 的用法）。
+pub async fn send_chat_with_client(
+    plan: &TransportRequest,
+    client: std::sync::Arc<reqwest::Client>,
+) -> Result<reqwest::Response, UpstreamRequestError> {
     let mut builder = client.post(&plan.url).body(plan.payload.clone());
     for (key, value) in &plan.headers {
         builder = builder.header(key, value);

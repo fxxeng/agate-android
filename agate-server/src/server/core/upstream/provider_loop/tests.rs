@@ -56,6 +56,8 @@ async fn zcode_http_200_quota_json_is_classified_before_streaming_without_resend
         let capture = crate::server::core::debug_traffic::TrafficCapture::begin("quota-test");
         let result = send_with_retry(
             adapter,
+            // 测试替身按「这家没有入口容错策略」处理（只有 workbuddy 国内版有）
+            "test-provider",
             &transport,
             &mut budget,
             Some(&capture),
@@ -114,6 +116,7 @@ async fn zcode_http_auth_and_quota_errors_keep_their_status() {
         let (transport, _, task) = mock_upstream(status, "application/json", body).await;
         let result = send_with_retry(
             &ZCODE_ADAPTER,
+            "zcode",
             &transport,
             &mut RetryBudget::new(0),
             None,
@@ -149,6 +152,7 @@ async fn zcode_unknown_or_malformed_success_json_returns_an_error() {
         let (transport, _, task) = mock_upstream(200, "application/json", body).await;
         let result = send_with_retry(
             &ZCODE_ADAPTER,
+            "zcode",
             &transport,
             &mut RetryBudget::new(0),
             None,
@@ -187,6 +191,8 @@ async fn zcode_success_sse_and_other_providers_json_remain_unconsumed() {
         let (transport, _, task) = mock_upstream(200, content_type, body).await;
         let result = send_with_retry(
             adapter,
+            // 测试替身按「这家没有入口容错策略」处理（只有 workbuddy 国内版有）
+            "test-provider",
             &transport,
             &mut RetryBudget::new(0),
             None,
@@ -478,6 +484,7 @@ async fn a_real_413_response_is_sent_once_and_handed_back() {
     let capture = crate::server::core::debug_traffic::TrafficCapture::begin("payload-too-large");
     let result = send_with_retry(
         &ZCODE_ADAPTER,
+        "zcode",
         &transport,
         &mut budget,
         Some(&capture),

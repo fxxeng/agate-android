@@ -65,6 +65,12 @@ mod images;
 /// `providers::raccoon::image_generation`），用例也要能逐字节钉住分隔符与
 /// 文件段的形状。
 pub mod multipart;
+/// 上游**入口容错**（备用入口 / 地址兜底 / 熔断）。见该文件模块头。
+///
+/// 公开而非 `mod`：用例要直接驱动「换入口 / 换地址 / 熔断」这三条判定，
+/// 而它们是纯函数 —— 藏起来就没法钉住「只有 502/503/504 才换入口」这类
+/// 边界（那些边界判错的症状是「限额失败被白跑两次」）。
+pub mod network;
 pub mod refusal;
 pub mod request;
 mod payload;

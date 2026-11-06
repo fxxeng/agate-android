@@ -1229,6 +1229,7 @@ async fn attempt_queue(
             }
             match send_with_retry(
                 adapter,
+                provider_id,
                 &transport,
                 &mut budget,
                 capture.as_deref(),
@@ -2669,12 +2670,22 @@ fn cancelled_failure() -> OutboundFailure {
 async fn send_or_cancel(
     transport: &TransportRequest,
     telemetry: &crate::server::core::upstream::usage::RequestTelemetry,
+    // `None` = 用默认出口（按代理 / 系统代理 / 直连三选一，见 `send_chat_request`）。
+    // `Some` = 入口容错层已经建好了带钉地址的 Client（见 `upstream::network`）：
+    // 换地址只能在建 Client 时做（`resolve_to_addrs`），所以这一步要能收外部 Client。
+    pinned: Option<std::sync::Arc<reqwest::Client>>,
 ) -> Result<reqwest::Response, super::request::UpstreamRequestError> {
+    let send = |pinned: Option<std::sync::Arc<reqwest::Client>>| async move {
+        match pinned {
+            Some(client) => super::request::send_chat_with_client(transport, client).await,
+            None => send_chat_request(transport).await,
+        }
+    };
     let Some(token) = telemetry.cancel_token() else {
-        return send_chat_request(transport).await;
+        return send(pinned).await;
     };
     tokio::select! {
-        result = send_chat_request(transport) => result,
+        result = send(pinned) => result,
         _ = token.cancelled() => Err(super::request::UpstreamRequestError {
             message: cancellation::MANUAL_TERMINATED.to_string(),
             reason: cancellation::MANUAL_TERMINATED.to_string(),
@@ -2729,6 +2740,8 @@ async fn sleep_or_cancel(
 /// 管（见 [`take_switch`]），两者互不抵扣。
 async fn send_with_retry(
     adapter: &dyn ProviderAdapter,
+    // 这一轮选中的家（`upstream::network::policy_for` 按它查入口容错策略）。
+    provider_id: &str,
     transport: &TransportRequest,
     budget: &mut RetryBudget,
     capture: Option<&crate::server::core::debug_traffic::TrafficCapture>,
@@ -2738,6 +2751,17 @@ async fn send_with_retry(
     // 读取失败可能意味着额度已经消耗，因此那条出口会置 `stop`（不再换号）。
     image: Option<crate::server::core::providers::images::ImageResponseKind>,
 ) -> Result<super::images::ImageResponse, OutboundFailure> {
+    // ── 入口容错会话（见 `upstream::network`）─────────────────────
+    // 每个候选家建一个：策略是**按家**的静态表，绝大多数家拿到的是「什么都不
+    // 做」的会话（`policy` 为 None，后续每条判定都会立刻返回）。
+    //
+    // 为什么放在这一层而不是适配器里：换入口 / 换地址之后**必须重发同一份
+    // 请求体**，而「重发」这件事只有本函数在做（退避重试也在这里）。放进
+    // 适配器就要为每一家再写一遍重发逻辑，并各自维护熔断状态。
+    let mut network = super::network::Session::new(provider_id, transport.url.as_str());
+    // 容错层要改的是 URL，而 `transport` 是借用进来的 —— 换入口时复制一份
+    // 改好的 transport，只在本轮的发送里用它。`payload` 是 `Bytes`，克隆 O(1)。
+    let mut live_url = transport.url.clone();
     loop {
         // 手动终止：发送前先看令牌（退避睡眠 / 上一轮失败之后回到这里）。
         // 出口是 `cancelled_failure`，但调用方（attempt_queue）在分类动作之前
@@ -2750,13 +2774,59 @@ async fn send_with_retry(
         // 退避重发也走本循环（外面看不见），退避期间阶段是「重试中」，
         // 睡醒重发时必须推回去 —— 否则那一段等待首字节的时间会被显示成
         // 「重试中」，而它其实已经在等上游出字了。
+        // ── 熔断开着就直接发备用入口（一次连接超时都不花）────────────
+        // 官方入口长时间不可用期间，没有这一步的话**每个**请求都要先吃一次
+        // 连接超时（默认 20~30 秒）才轮到备用入口 —— 用户看到的是「网关整体
+        // 变慢几十秒」，而不是「有个入口坏了」。`preflight` 只在熔断真的开着
+        // 时才改 URL，其余情况一个字节都不动。
+        if let Some(note) = network.preflight(&mut live_url) {
+            logging::verbose("[Upstream]", &note);
+        }
         telemetry.note_phase(LogPhase::Waiting);
-        let response = match send_or_cancel(transport, telemetry).await {
+        // ── 本轮实际要发的 transport ────────────────────────────────
+        // 正常情况下它等价于入参（`live_url` 初始就是 `transport.url`）；
+        // 换过入口之后只有 URL 不同，其余字段一律沿用。
+        //
+        // 地址兜底时容错层会给出一个固定地址：那种情况下要**另建一个 Client**
+        // （`resolve_to_addrs` 只能建 Client 时设），否则钉的地址用不上。
+        let current = transport.clone_for_url(live_url.as_str());
+        // ── 地址兜底：钉住连接地址，但**保留原 host 做 TLS** ──────────
+        // `resolve_to_addrs` 的语义是「这个 host 的建连地址就是这些」——
+        // 第一个参数必须是**请求里的域名**（SNI 与证书校验都拿它比），
+        // 不是 IP。传 IP 的后果很具体：证书 SAN 里没有 IP，于是每一跳都
+        // 在 TLS 握手阶段失败，地址兜底看起来「永远不通」。
+        let pinned = network.pinned_socket().and_then(|socket| {
+            let host = url::Url::parse(&current.url).ok()?.host_str()?.to_string();
+            crate::server::core::egress::image_download_client(
+                current.proxy.as_ref(),
+                current.system_proxy_when_unset,
+                &host,
+                std::slice::from_ref(&socket),
+            )
+            .ok()
+            .map(std::sync::Arc::new)
+        });
+        let response = match send_or_cancel(&current, telemetry, pinned).await {
             Ok(response) => response,
             Err(error) => {
                 // 手动终止：不把它当传输失败去退避重发（原因不是链路抖动）
                 if telemetry.is_cancelled() {
                     return Err(cancelled_failure());
+                }
+                // ── 入口容错优先于退避重发 ─────────────────────────
+                // 同一份请求原地重发，坏掉的入口还是那个入口；而换入口 / 换地址
+                // 是**引入新变量**。所以先问容错层，它说「换好了」就用新目标
+                // 立刻重发一次（不睡退避间隔 —— 用户等的是能不能通，不是间隔）。
+                //
+                // 只有 workbuddy 国内版有策略，其余家 `after_transport_failure`
+                // 直接返回 None，下面那条既有路径逐字不变。
+                if network.after_transport_failure(&mut live_url).is_some() {
+                    telemetry.note_attempt_retry("入口容错", None, 0);
+                    logging::console_line(
+                        "[Upstream]",
+                        "入口连接失败，已切换入口 / 地址后立刻重发（不占用退避预算）",
+                    );
+                    continue;
                 }
                 // 传输层失败（DNS/代理/连接）：按设置退避重发，吸收链路抖动；
                 // 次数用完才收敛成 502，与改造前的兜底一致
@@ -2786,6 +2856,9 @@ async fn send_with_retry(
             }
         };
         if !adapter.is_error_response(response.status().as_u16(), response.headers()) {
+            // 成功就把这个入口的熔断清掉：下次仍然先试官方入口
+            // （熔断是「暂时别撞它」，不是「永久换走」）。
+            network.success();
             // ── 生图：2xx 之后还要把响应读完 ──────────────────────────
             // 对话链路的 2xx 只是「流可以开始给了」，所以原样返回让上层去消费；
             // 生图的 2xx 只是一包 JSON 的开头，必须在这里读完（异步任务还要
@@ -2891,6 +2964,21 @@ async fn send_with_retry(
         // 上，直接换下一个账号继续试（见 `direct_switch_status` 与动作 3），
         // 换满仍失败才把错误给客户端。两处合起来才是「这个码直接换号」的
         // 完整语义。
+        // ── 网关级 5xx：先试入口容错，再谈退避 / 换号 ──────────────
+        // 502/503/504 常常是「这个入口坏了」而不是「这个账号坏了」。先换入口
+        // （引入新变量、不睡间隔），比原地重发同一份请求或直接换号更对症。
+        // 同样只有 workbuddy 国内版有策略，其余家这一句返回 None，下面逐字不变。
+        if network
+            .after_status(status, &body, &mut live_url)
+            .is_some()
+        {
+            telemetry.note_attempt_retry("入口容错", Some(i64::from(status)), 0);
+            logging::console_line(
+                "[Upstream]",
+                &format!("入口返回 HTTP {status}，已切换入口 / 地址后立刻重发"),
+            );
+            continue;
+        }
         let advice = if !degraded && matches!(class, UpstreamErrorClass::ContentBlocked { .. }) {
             None
         } else if direct_switch_status(i64::from(status)) {
