@@ -125,7 +125,7 @@ impl Session {
 
     /// 本次尝试应该连哪个地址（`None` = 走域名解析）。
     ///
-    /// 调用方把它交给 `egress::image_download_client` 那一族「钉地址」的构造器。
+    /// 调用方把它交给 `egress::pinned_address_client` 那一族「钉地址」的构造器。
     pub fn pinned_socket(&self) -> Option<SocketAddr> {
         self.pinned.map(|ip| SocketAddr::new(ip, 443))
     }

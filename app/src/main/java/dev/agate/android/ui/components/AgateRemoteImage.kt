@@ -57,6 +57,12 @@ import java.util.concurrent.TimeUnit
  */
 object AgateImageLoader {
 
+    /**
+     * 单张图的字节上限（10 MiB）。超了走失败态而不是把内存吃穿 ——
+     * 理由见 [`boundedRead`]。
+     */
+    internal const val MAX_IMAGE_BYTES = 10 * 1024 * 1024
+
     /** 下载用：短超时、不跟随跨域跳转（链接由内核自己发，不需要跟）。 */
     private val client: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(8, TimeUnit.SECONDS)
@@ -112,12 +118,26 @@ object AgateImageLoader {
             val ctx = appContext() ?: return null
             return runCatching {
                 val uri = android.net.Uri.parse(url)
-                ctx.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                ctx.contentResolver.openInputStream(uri)?.use { boundedRead(it) }
             }.getOrNull()
         }
         return try {
             client.newCall(Request.Builder().url(url).build()).execute().use { response ->
-                if (!response.isSuccessful) null else response.body?.bytes()
+                // 刻意写成**嵌套 if 返回 null** 而不是 `return null`：`use` 是
+                // inline 函数，块里的 `return` 会直接跳出发 `fetch`（行为对，但
+                // 读代码的人容易以为是跳过这次响应）。这样写没有歧义。
+                if (!response.isSuccessful) {
+                    null
+                } else {
+                    val body = response.body
+                    // 先看 `Content-Length` 再读：超限时连流都不用开始读，
+                    // 比「读一半再放弃」省一次传输，也让失败更快。
+                    if (body == null || body.contentLength() > MAX_IMAGE_BYTES) {
+                        null
+                    } else {
+                        body.byteStream().use { boundedRead(it) }
+                    }
+                }
             }
         } catch (_: IOException) {
             null
@@ -125,6 +145,35 @@ object AgateImageLoader {
             // URL 不合法的形态（内核不会发，但客户端不该因此崩）
             null
         }
+    }
+
+    /**
+     * 读字节，**超上限即放弃**。
+     *
+     * ── 为什么必须有上限（2026-11-06 审计）──────────────────────────
+     * `readBytes()` 一次性把整个流读进内存。内核自己发的链接是安全的（图已
+     * 归一化、服务端带 `no-store`），但**参考图来自相册**：用户选一张
+     * 50 MP 的图，`decodeSampled` 里那句 `inJustDecodeBounds` 只省**解码**
+     * 内存，省不了**读字节**的内存 —— 先要 100 MB 字节，才轮到降采样。
+     *
+     * 上限取 10 MiB，与内核参考图单张上限同量级：一张 4096×4096 的 PNG 通常
+     * 十几 MB，10 MiB 能覆盖常规生成结果；真超了就走失败态（比 OOM 好）。
+     *
+     * `internal` 而非 `private`：上限是「差一位就是 OOM」的那种参数，
+     * 要能被单测直接钉住（见 `BoundedReadTest`）。
+     */
+    internal fun boundedRead(input: java.io.InputStream): ByteArray? {
+        val out = java.io.ByteArrayOutputStream()
+        val buffer = ByteArray(16 * 1024)
+        var total = 0
+        while (true) {
+            val read = input.read(buffer)
+            if (read < 0) break
+            total += read
+            if (total > MAX_IMAGE_BYTES) return null
+            out.write(buffer, 0, read)
+        }
+        return out.toByteArray()
     }
 
     /** 缓存里 Application Context（由 `install` 注入，避免持有 Activity）。 */

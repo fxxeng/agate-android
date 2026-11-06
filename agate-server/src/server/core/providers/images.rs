@@ -275,6 +275,10 @@ pub fn operation_providers(model: &str, operation: ImageOperation) -> Vec<String
 ///
 /// 分开写两种原因：模型确实存在但没有任何家声明能力（要更新/换家），与模型
 /// 压根不在任何目录里（名字错了）。合成一句话会让用户去改错的地方。
+///
+/// ⚠️ **本函数只回答「能力」问题，不回答「权限」问题**。当候选家存在、只是
+/// 被网关 Key 的 provider 白名单排除时，必须用 [`key_scope_message`] ——
+/// 两件事混用的症状见下面那条注释。
 pub fn unsupported_message(model: &str, operation: ImageOperation) -> String {
     let known = catalog::providers_for_model(model);
     if known.is_empty() {
@@ -288,6 +292,29 @@ pub fn unsupported_message(model: &str, operation: ImageOperation) -> String {
          或它的自定义提供商尚未支持生图。请换一个 {} 模型（kind=image）",
         operation.label(),
         known.join("、"),
+        operation.label()
+    )
+}
+
+/// 「模型有能力，但这把 Key 不允许任何能用它的家」时给用户看的话。
+///
+/// ── 为什么必须与 [`unsupported_message`] 分开（2026-11-06 审计发现）──
+/// `operation_providers()` 只看能力位、**不看 Key**。所以「候选非空但全被 Key
+/// 排除」这条路径以前会走到 `unsupported_message`，输出「目录里有这家……
+/// 但它没有声明这类能力，请换一个模型」——后半句恰好自证前提为假（这家明明
+/// 声明了），而用户按提示去换模型，换到任何一家都被同一把 Key 挡住，死循环。
+///
+/// 这一条要给出**能照做的下一步**：去改 Key 的允许列表，或者换一把 Key。
+/// 同时把那几家点名，让人知道该放开谁。
+pub fn key_scope_message(model: &str, operation: ImageOperation, providers: &[String]) -> String {
+    let names = if providers.is_empty() {
+        String::from("（无）")
+    } else {
+        providers.join("、")
+    };
+    format!(
+        "模型 '{model}' 的{}通道在（{names}），但这把网关 Key 不允许其中任何一家：\
+         请在 Key 设置里放开上述家，或改用另一把 Key",
         operation.label()
     )
 }
@@ -314,5 +341,53 @@ mod tests {
             ImageOperation::Generate.unsupported_code(),
             ImageOperation::Edit.unsupported_code()
         );
+    }
+    /// 「Key 不允许」与「模型没能力」必须说成两句不同的话。
+    ///
+    /// 混用的后果是死循环：`operation_providers` 只看能力位，所以「候选非空但
+    /// 全被 Key 排除」以前会落到 `unsupported_message`，输出「目录里有这家……
+    /// 但它没有声明这类能力，请换一个模型」。用户照着换模型，换到任何一家都被
+    /// 同一把 Key 挡住 —— 而两句话的下一步动作完全不同（改 Key vs 换模型）。
+    #[test]
+    fn key_exclusion_message_points_at_the_key_not_the_model() {
+        let providers = vec!["loomy".to_string(), "raccoon".to_string()];
+        let message = key_scope_message("raccoon-image", ImageOperation::Generate, &providers);
+
+        // 必须点名是哪几家（用户才知道该放开谁）
+        assert!(message.contains("loomy"), "{message}");
+        assert!(message.contains("raccoon"), "{message}");
+        // 必须指向 Key，而不是「换模型」
+        assert!(message.contains("Key"), "{message}");
+        assert!(
+            !message.contains("换一个图片生成模型"),
+            "不能与 unsupported_message 共用那句误导性建议：{message}"
+        );
+        // 模型名与操作要出现，否则用户不知道是哪次请求被打回
+        assert!(message.contains("raccoon-image"), "{message}");
+        assert!(message.contains("图片生成"), "{message}");
+    }
+
+    /// 空候选（极端情况）也不能输出「在（）」这种空括号。
+    #[test]
+    fn key_exclusion_message_survives_empty_provider_list() {
+        let message = key_scope_message("x-image", ImageOperation::Edit, &[]);
+        assert!(!message.contains("（）"), "{message}");
+        assert!(message.contains("图片编辑"), "{message}");
+    }
+
+    /// 两者判据不同：`unsupported_message` 说的是「能力」，`key_scope_message`
+    /// 说的是「权限」。同一段输入下，两句话不应有任何一句相同的关键建议。
+    #[test]
+    fn the_two_failure_messages_are_not_interchangeable() {
+        let capability = unsupported_message("some-model", ImageOperation::Generate);
+        let scope = key_scope_message(
+            "some-model",
+            ImageOperation::Generate,
+            &["loomy".to_string()],
+        );
+        assert_ne!(capability, scope);
+        // 前者不出现 Key 字样，后者必须出现 —— 这是两类问题的分水岭
+        assert!(!capability.contains("Key"), "{capability}");
+        assert!(scope.contains("Key"), "{scope}");
     }
 }

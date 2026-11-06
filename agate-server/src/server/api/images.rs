@@ -309,14 +309,31 @@ fn resolve_model(
         .with_code("model_not_found"));
     }
     let candidates = crate::server::core::providers::images::operation_providers(&requested, operation);
+    // ── 两种「没有可用通道」必须分开报（2026-11-06 审计）────────────
+    // `operation_providers` **只看能力位、不看 Key**，所以这里有两件不同的事：
+    //   · `candidates` 为空      → 真的没有家声明这个能力（该更新/换模型）
+    //   · 非空但全被 Key 排除    → 模型能用，是这把 Key 的允许列表拦住了
+    // 混成一句的后果：后者会输出「目录里有这家，但它没有声明这类能力」——
+    // 后半句自证前提为假，而用户按「换一个模型」的提示换到任何一家，都会被
+    // 同一把 Key 挡住，形成死循环。所以第二种情况要指名哪几家 + 说清下一步。
+    if candidates.is_empty() {
+        return Err(GatewayError::bad_request(
+            crate::server::core::providers::images::unsupported_message(&requested, operation),
+        )
+        .with_code(operation.unsupported_code()));
+    }
     if !candidates
         .iter()
         .any(|provider| key_scope::allows_provider(scope, provider))
     {
         return Err(GatewayError::bad_request(
-            crate::server::core::providers::images::unsupported_message(&requested, operation),
+            crate::server::core::providers::images::key_scope_message(
+                &requested,
+                operation,
+                &candidates,
+            ),
         )
-        .with_code(operation.unsupported_code()));
+        .with_code("key_scope_excluded"));
     }
     Ok(requested)
 }

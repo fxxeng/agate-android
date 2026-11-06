@@ -327,7 +327,16 @@ pub fn client_without_redirects(proxy: Option<&ResolvedProxy>) -> Arc<reqwest::C
 ///
 /// 跳转也交给调用方逐步跟（`Policy::none()`）：每一跳都要重新做上面那件事，
 /// 自动跟转会绕过校验。
-pub fn image_download_client(
+///
+/// ── 名字为什么叫 `pinned_address_client` 而不是 `image_download_client` ──
+/// 它最初只为「下载上游图片」而写，但很快被两处复用了：**入口容错的地址兜底**
+/// （`provider_loop.rs`，与图片无关）与参考图外链下载。留着旧名字的代价是
+/// 下一个人读 `provider_loop` 时以为「这里在下载图片」，从而另造一个同样的
+/// 构造器 —— 而 `redirect(Policy::none())` + `resolve_to_addrs` 这两件事必须
+/// 成对出现（少一个就是安全缺口），分散成两份实现迟早走样。
+///
+/// 2026-11-06 审计发现并改名，行为零改动。
+pub fn pinned_address_client(
     proxy: Option<&ResolvedProxy>,
     system_proxy_when_unset: bool,
     host: &str,

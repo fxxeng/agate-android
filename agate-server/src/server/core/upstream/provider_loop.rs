@@ -2797,7 +2797,7 @@ async fn send_with_retry(
         // 在 TLS 握手阶段失败，地址兜底看起来「永远不通」。
         let pinned = network.pinned_socket().and_then(|socket| {
             let host = url::Url::parse(&current.url).ok()?.host_str()?.to_string();
-            crate::server::core::egress::image_download_client(
+            crate::server::core::egress::pinned_address_client(
                 current.proxy.as_ref(),
                 current.system_proxy_when_unset,
                 &host,

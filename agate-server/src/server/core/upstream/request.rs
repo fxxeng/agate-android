@@ -197,7 +197,7 @@ pub async fn send_chat_request(
 ///
 /// ── 为什么要有这个变体（入口容错的接缝）────────────────────────
 /// 「把域名钉在一个已校验过的地址上」这件事只能在建 Client 时做
-/// （`resolve_to_addrs`，见 `egress::image_download_client` 的说明）。
+/// （`resolve_to_addrs`，见 `egress::pinned_address_client` 的说明）。
 /// 入口容错的地址兜底就是这个场景：换个地址 = 换一个 Client，而 URL 与
 /// 请求体完全不变。所以发送这一步要能接受外部 Client，否则容错层只能在
 /// URL 上做文章（换域名可以，换地址不行）。

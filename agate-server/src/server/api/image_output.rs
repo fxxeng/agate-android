@@ -159,7 +159,7 @@ pub(super) async fn download(
         {
             return Err(failure("拒绝从本机或内网地址下载上游图片"));
         }
-        let client = crate::server::core::egress::image_download_client(
+        let client = crate::server::core::egress::pinned_address_client(
             proxy,
             system_proxy,
             host,
