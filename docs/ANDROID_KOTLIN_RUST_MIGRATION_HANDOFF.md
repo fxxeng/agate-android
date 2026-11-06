@@ -5,11 +5,11 @@
 
 > 文档用途：供后续开发者接手、评审和持续推进 Android 架构改造。
 
-> **验证分支当前状态（R37 / 2026-11-06）**：最近一次已验证提交为 `c1466fedd5`（CI Run `42066887374`，rust-tests 与 android-build 双 Job success；Rust 749 passed / 0 failed / 11 ignored；Kotlin/JVM 99/99；Instrumentation 2/2）。原候选 `db6f329f` 因 `&File` / `&Path` 类型错误双红，验证方一行修复后通过；以修复提交归档为准。R37 的 Windows `#[cfg(windows)]` 分支尚无 Windows target 编译证据。
+> **验证分支当前状态（R39 候选 / 2026-11-06）**：最近一次已验证提交为 R38 `f5eff2148f3e976c250c0b53fdf1794a2c257cf8`（CI Run `42133955196`；Rust 752 passed / 0 failed / 11 ignored；Kotlin/JVM 99/99；Instrumentation 2/2；Android arm64-v8a / x86_64 通过）。R38 的 4D-3B 已关闭。
 >
 > 当前验证分支：`verify/arch-8faa5f5`（只允许推送该分支，不修改 `main`、不合并）
-> 当前已验证基线：R37 `c1466fedd5`（完整 SHA 以 GitHub 提交记录为准；本轮反馈仅提供短 SHA）
-> 当前工作候选：R37 + Batch 4D-3B PathProvider 最小路径边界；尚未运行 CI。Desktop Tauri 宿主代码仍不在本仓库快照中；Android 不把 Activity/FGS 销毁当作 Core 退出事件。
+> 当前已验证基线：R38 `f5eff2148f3e976c250c0b53fdf1794a2c257cf8`
+> 当前工作候选：R39 Batch 4D-3C-A + Windows Shared Core CI job；尚未运行 CI。Android job 不构建 Desktop Host/Tauri UI；Windows job 只编译共享 `agate-server` Core。
 > 真机验收采用 APP 日常使用中的滚动证据，不作为独立架构批次的前置阻塞。
 
 ## 1. 项目目标与边界
@@ -2490,3 +2490,56 @@ Linux ARM64 资产不等同于 Android ARM64 可执行文件。Android 需要单
 5. Phase 6：可观测性、压力/泄漏/崩溃恢复与发布门禁。
 
 Desktop Host 独立拆分作为仓库/产品结构工作单独规划，不阻塞共享 Core 的 4D-3B/4D-3C。真机与 Desktop 真实运行证据继续滚动收集，不作为独立 Rust 主线批次的前置阻塞。
+
+
+## 30. R39 / Batch 4D-3C-A + Windows Core CI boundary（2026-11-06）
+
+### 30.1 基线与范围
+
+- 基线：R38 `f5eff2148f3e976c250c0b53fdf1794a2c257cf8`，CI Run `42133955196`。
+- 分支：`verify/arch-8faa5f5`。
+- 当前候选：R39；尚未运行 CI。
+- 本批聚焦旧账号导入路径收口，并建立 Windows Shared Core 编译门禁；不包含 Desktop Host UI/Tauri 工程。
+
+### 30.2 Batch 4D-3C-A：旧账号导入路径收口
+
+审计发现 `account_store/autoclaw_import.rs`、`raccoon_import.rs`、`workbuddy_import.rs` 仍直接读取 `USERPROFILE` / `HOME`。其中 AutoClaw 与 Raccoon 的旧目录定位在主目录缺失时回退到 `.`，与 R38 的“无有效 HOME 不扫描工作目录”原则不一致。
+
+本批改动：
+- AutoClaw 旧账号目录改为复用 `crate::paths::user_home_dir()`，无有效 HOME 时返回 `None`，导入函数返回明确错误，不再扫描 CWD。
+- Raccoon 旧账号目录同样改为共享路径解析，无有效 HOME 时不再回退 CWD。
+- WorkBuddy macOS 官方客户端 auth 目录改为复用 `user_home_dir()`，统一绝对路径、空值与 NUL 校验规则。
+- 增加 AutoClaw/Raccoon 旧目录派生纯函数测试，覆盖无 HOME 与有效 HOME。
+- Provider credentials 下的 AutoClaw/CatPaw/Raccoon/Qoder/Cline 路径读取仍保留：这些是 Provider 自身的凭证发现逻辑，不属于本批通用旧账号迁移入口，避免扩大兼容性改动。
+
+### 30.3 Windows Shared Core 编译门禁
+
+`.github/workflows/android-build.yml` 增加独立 `windows-core-check` job：
+- Runner：`windows-latest`（默认 MSVC target）。
+- 命令：`cargo check --manifest-path agate-server/Cargo.toml --locked --all-targets`。
+- 目的：编译共享 Rust Core 的 Windows `cfg(windows)` 路径。
+- 不构建 Tauri、桌面 UI、安装包或签名产物。
+- Android job 仍只负责 Android Rust ABI、JNI、Kotlin、APK 与 Instrumentation；不会为 Desktop Host UI 增加构建步骤。
+
+该 job 当前只是源码候选配置，必须由 GitHub Actions 实际执行后才能标记通过。
+
+### 30.4 PathProvider 尚存审计项
+
+- `resolve_config_dir_override()` 当前将非空环境变量直接转成 PathBuf；相对路径仍可能被接受。
+- `validate_config_dir_path()` 已用于 Android JNI 注入，但环境变量覆盖路径没有经过同一校验入口。
+- 本批没有改变环境变量相对路径语义，避免未经兼容性评估就改变桌面/headless 行为。
+- 下一批 4D-3C-B 应明确契约：环境变量覆盖是否必须为绝对路径、非法值是忽略还是显式报错；并统一 `config_dir()` 与 `has_config_dir_override()` 的解析结果，不能各自维护不同规则。
+
+### 30.5 验证状态
+
+- 已完成源码修改与静态审查；本轮环境没有 Cargo/rustc/rustfmt/Gradle，未执行 Rust 编译、单测、Windows target check、Android ABI、Gradle、Instrumentation、模拟器或真机测试。
+- Windows workflow YAML 尚未由 GitHub Actions 解析执行。
+- R39 是候选，不是已验证提交。
+- 交付包必须包含完整源码、patch、README、更新后的 HANDOFF/AUDIT、Docs.zip、SHA256SUMS，并做 patch dry-run/apply、归档解包逐文件比对。
+
+### 30.6 后续批量顺序
+
+1. R39 集中 CI：Linux Rust tests + Windows Shared Core check + Android build。
+2. 4D-3C-B：PathProvider 环境变量路径校验契约与重复解析收口。
+3. 4D-3C-D：网络、时间等平台能力按实际差异审计，不机械抽象。
+4. 进入 4E：双实例互斥、数据库/数据目录、端口、Sidecar 与后台任务资源所有权。

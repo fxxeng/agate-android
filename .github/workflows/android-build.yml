@@ -34,6 +34,21 @@ jobs:
       - name: Rust all-targets tests
         run: cargo test --manifest-path agate-server/Cargo.toml --locked --all-targets
 
+  windows-core-check:
+    # Shared Rust Core 的 Windows 平台编译门禁；不构建 Tauri/Desktop UI。
+    # Android job 只验证 Android Host 与 Android ABI，不承担桌面 Host 构建。
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain (Windows MSVC)
+        uses: dtolnay/rust-toolchain@stable
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: agate-server
+      - name: Windows Shared Core all-targets check
+        run: cargo check --manifest-path agate-server/Cargo.toml --locked --all-targets
+
   android-build:
     runs-on: ubuntu-latest
     steps:

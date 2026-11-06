@@ -51,12 +51,8 @@ fn auth_directory_windows() -> Option<PathBuf> {
 /// 官方客户端凭证目录（macOS）：`~/Library/Application Support/CodeBuddyExtension/…`
 /// （路径取自官方 FAQ 排障步骤的 `ls` 命令，逐字一致）
 fn auth_directory_macos() -> Option<PathBuf> {
-    let home = std::env::var("USERPROFILE")
-        .or_else(|_| std::env::var("HOME"))
-        .ok()
-        .filter(|value| !value.trim().is_empty())?;
     Some(
-        PathBuf::from(home)
+        crate::paths::user_home_dir()?
             .join("Library")
             .join("Application Support")
             .join("CodeBuddyExtension")

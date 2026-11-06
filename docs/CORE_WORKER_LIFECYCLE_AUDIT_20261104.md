@@ -1,10 +1,10 @@
 # Core Worker 生命周期审计与实施方案
 
 - 日期：2026-11-04
-- 当前已验证基线：R37 修复态 `c1466fedd5`（CI Run `42066887374`；短 SHA 来自第 37 轮验证反馈）
+- 当前已验证基线：R38 `f5eff2148f3e976c250c0b53fdf1794a2c257cf8`（CI Run `42133955196`）
 - 分支：`verify/arch-8faa5f5`
-- 状态：4D-2A/4D-2B、4D-2C/headless 4D-2D、4D-3A 已完成 CI 验证；4D-3B PathProvider 为当前源码候选，待 CI
-- 关联：`ANDROID_KOTLIN_RUST_MIGRATION_HANDOFF.md` 第 29 章
+- 状态：4D-3B 已完成 CI 验证；4D-3C-A + Windows Shared Core CI job 为当前 R39 候选，待 CI
+- 关联：`ANDROID_KOTLIN_RUST_MIGRATION_HANDOFF.md` 第 30 章
 
 ## 1. 结论
 
@@ -252,3 +252,29 @@ R38 是基于 R37 修复态的候选。当前环境未运行 Cargo/rustc/rustfmt
 ### 10.5 后续
 
 先集中验证 4D-3B，再推进 4D-3C 剩余平台能力边界，随后 4E 双实例互斥与资源所有权。Desktop Host 拆分单独规划，不阻塞共享 Core 主线。
+
+
+## 11. R39 / Batch 4D-3C-A 与 Windows Shared Core CI（2026-11-06）
+
+### 11.1 旧账号导入路径问题
+
+R38 后仍有三个 account_store 旧数据导入模块直接解析 HOME：
+- AutoClaw：缺失 HOME 时回退 `.`，构造 `./.autoclaw-proxy`。
+- Raccoon：缺失 HOME 时回退 `.`，构造 `./.raccoon-proxy`。
+- WorkBuddy macOS auth 目录：自行读取 USERPROFILE/HOME，未复用统一有效绝对路径校验。
+
+R39 候选统一改为 `crate::paths::user_home_dir()`；AutoClaw/Raccoon 无有效 HOME 时返回 None 并中止对应导入，不写入或扫描 CWD。WorkBuddy 复用同一 HOME 解析器。
+
+Provider 自己的 credentials 模块仍直接读取环境变量，属于各 Provider 的外部 CLI/桌面登录态兼容职责，本批不作机械替换。
+
+### 11.2 Windows 编译门禁
+
+新增独立 `windows-core-check` workflow job，在 `windows-latest` 执行 Shared Core `cargo check --all-targets`。这只验证 `agate-server` crate 的 Windows 平台条件编译，不构建 Desktop Host/Tauri UI，也不进入 Android build job。
+
+### 11.3 R39 验证状态
+
+R39 目前为候选。当前环境未运行 Cargo/rustfmt/Gradle；Windows job 也未实际触发。必须等待 GitHub Actions 结果，不得把 workflow 文件已修改等同于 Windows 编译通过。
+
+### 11.4 下一步
+
+先集中验证 R39；随后完成 PathProvider 环境变量路径校验契约（4D-3C-B），再审计必要的平台网络/时间差异，最后进入 4E 资源所有权治理。

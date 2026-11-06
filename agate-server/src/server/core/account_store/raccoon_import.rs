@@ -46,12 +46,12 @@ fn take_id(taken: &mut std::collections::HashSet<String>, id: &str) {
 }
 
 /// 旧网关的账号目录（源项目 `~/.raccoon-proxy`）
-fn legacy_directory() -> PathBuf {
-    let home = std::env::var("USERPROFILE")
-        .or_else(|_| std::env::var("HOME"))
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("."));
-    home.join(".raccoon-proxy")
+fn legacy_directory() -> Option<PathBuf> {
+    legacy_directory_from_home(crate::paths::user_home_dir())
+}
+
+fn legacy_directory_from_home(home: Option<PathBuf>) -> Option<PathBuf> {
+    home.map(|home| home.join(".raccoon-proxy"))
 }
 
 /// config.json 里的一次性导入标记（架构文档 §3.3）
@@ -166,7 +166,9 @@ impl AccountStore {
     /// `{ currentAccountId, accounts: [{ id, name, userId, token, refreshToken,
     /// tokenTail, tokenExpiresAt, addedAt, updatedAt, office* }] }`。
     fn import_legacy_accounts_file(&self) -> Result<(usize, usize), String> {
-        let path = legacy_directory().join("accounts.json");
+        let path = legacy_directory()
+            .ok_or_else(|| "未发现有效的 HOME / USERPROFILE，跳过旧 Raccoon 账号导入".to_string())?
+            .join("accounts.json");
         let text = std::fs::read_to_string(&path)
             .map_err(|error| format!("未找到旧网关账号文件 {}（{error}）", path.display()))?;
         let value: Value = serde_json::from_str(&text)
@@ -336,4 +338,20 @@ impl AccountStore {
             .map_err(|error| format!("导入落盘失败: {}", error.message))?;
         }
         Ok((added, skipped))
-    }}
+    }
+}
+
+#[cfg(test)]
+mod path_tests {
+    use super::legacy_directory_from_home;
+    use std::path::PathBuf;
+
+    #[test]
+    fn legacy_directory_requires_a_user_home() {
+        assert_eq!(legacy_directory_from_home(None), None);
+        assert_eq!(
+            legacy_directory_from_home(Some(PathBuf::from("/home/agate"))),
+            Some(PathBuf::from("/home/agate/.raccoon-proxy")),
+        );
+    }
+}
