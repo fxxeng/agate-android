@@ -1,9 +1,10 @@
 # Core Worker 生命周期审计与实施方案
 
-- 日期：2026-11-04
-- 当前已验证基线：R39 `8c046f17dd`（CI Run `42164811367`）
+- 日期：2026-11-06（持续更新）
+- 当前已验证基线：R39 `8c046f17dd61a942eedde01c070c0ac0dc3e29aa`（CI Run `42164811367`）
+- 当前工作候选：R40 Batch 4D-3D（待 CI）
 - 分支：`verify/arch-8faa5f5`
-- 状态：4D-3B 已完成 CI 验证；4D-3C-A + Windows Shared Core CI job 已于 R39 完成 CI 验证
+- 状态：4D-3B、4D-3C-A 与 Windows Shared Core 编译门禁已完成 CI 验证
 - 关联：`ANDROID_KOTLIN_RUST_MIGRATION_HANDOFF.md` 第 30 章
 
 ## 1. 结论
@@ -263,7 +264,7 @@ R38 后仍有三个 account_store 旧数据导入模块直接解析 HOME：
 - Raccoon：缺失 HOME 时回退 `.`，构造 `./.raccoon-proxy`。
 - WorkBuddy macOS auth 目录：自行读取 USERPROFILE/HOME，未复用统一有效绝对路径校验。
 
-R39 候选统一改为 `crate::paths::user_home_dir()`；AutoClaw/Raccoon 无有效 HOME 时返回 None 并中止对应导入，不写入或扫描 CWD。WorkBuddy 复用同一 HOME 解析器。
+R39 候选中 AutoClaw/Raccoon 的旧目录定位改为 `crate::paths::user_home_dir()`，不再构造 CWD 相对旧目录。启动期「无有效 HOME 不写一次性导入标记」的保证来自 `account_bootstrap::run()` 在三家 importer 调用前的统一门禁；不能把它误写成 importer 在任何直接调用场景下都自行保证不写标记。WorkBuddy 仅 macOS auth 目录在 R39 复用同一 HOME 解析器，Windows `LOCALAPPDATA` 当时尚未收口（由 R40 处理）。
 
 Provider 自己的 credentials 模块仍直接读取环境变量，属于各 Provider 的外部 CLI/桌面登录态兼容职责，本批不作机械替换。
 
@@ -277,4 +278,38 @@ R39 `8c046f17dd` 已通过 CI Run `42164811367`：Linux Rust all-targets 测试�
 
 ### 11.4 下一步
 
-先集中验证 R39；随后完成 PathProvider 环境变量路径校验契约（4D-3C-B），再审计必要的平台网络/时间差异，最后进入 4E 资源所有权治理。
+R39 已通过 CI；R40 正在完成 PathProvider 环境变量路径契约与平台路径校验，待集中 CI。随后审计必要的平台网络/时间差异，再进入 4E 资源所有权治理。
+
+
+## 12. R40 / Batch 4D-3D PathProvider 与账号导入边界审计（2026-11-06）
+
+### 12.1 R39 报告复核与纠正
+
+- R39 CI Run `42164811367` 三 job success：Rust 754 passed / 11 ignored；Windows Shared Core `cargo check --locked --all-targets`；Android arm64-v8a / x86_64、JVM 99/99、JNI 12 exports、Instrumentation 1 类 2 用例通过。
+- `emulator-5554 - 15` 中的 `15` 是 shard 标签，不是测试数；Instrumentation 不是 15 个用例。
+- 账号导入标记保护的实际所有权在 `account_bootstrap::run()`：有效 HOME 检查发生在 Raccoon/CatPaw/AutoClaw 导入调用之前，缺失 HOME 时提前 return。各 importer 自身在正常扫描流程结束后会写一次性标记，因此不能把「单个 importer 遇到 HOME 缺失」描述成其内部保证不写标记；保证来自 bootstrap 的前置门禁。
+
+### 12.2 R40 路径契约
+
+- config override 保留历史兼容：`AGATE_PROXY_HOME` > `WORKBUDDY_PROXY_HOME`；trim 空白；过滤 NUL；仍接受非空相对路径。
+- Android JNI 注入路径仍强制绝对路径，和 Desktop/headless 环境变量契约有意不同。
+- `resolve_absolute_path()` 为 Windows `LOCALAPPDATA` 等宿主目录提供独立严格解析，不把相对路径解释为 CWD。
+- WorkBuddy 桌面 auth 路径仅在 Windows/macOS 构造；Windows `LOCALAPPDATA` 经严格解析。
+- `default_config_dir()` 的 `./.agate` fallback 暂时保留并由测试固定：它是默认配置存储兼容行为，不等于旧数据导入扫描 CWD。删除它需要独立的无 HOME 数据目录迁移方案。
+
+### 12.3 导入门禁测试边界
+
+R40 为 `account_bootstrap` 的有效 HOME 门禁增加纯决策测试，确保 `false` 不进入旧账号导入序列、`true` 才允许继续。该测试不是数据库集成测试；一次性标记不落盘的完整行为仍需后续可注入配置存储/测试数据库后补强。Android 真机无 HOME 场景继续滚动收集日志，不阻塞架构主线。
+
+### 12.4 CI 门禁治理
+
+`windows-core-check` 增加 15 分钟 timeout。`docs/CI_RELEASE_GATES.md` 记录该 job 应设为 required status check；GitHub branch protection/ruleset 需要仓库管理员在远端设置，不能由 YAML 文件宣称已强制执行。
+
+### 12.5 当前状态
+
+R40 是未验证候选。静态检查不代表编译通过；尚无 R40 Linux Rust test、Windows compile、Android ABI、Gradle/JVM、Instrumentation 或真机证据。R39 仍是最后一个已验证基线。
+
+
+### 12.6 4D-3C-D 网络、时间与进程平台能力初审
+
+静态审计见 `docs/PLATFORM_CAPABILITY_AUDIT_4D3C_D.md`。没有证据支持再引入通用 NetworkProvider / ClockProvider：时间使用 `SystemTime` 表示墙上时间、`Instant` 表示经过时间；网络使用 std/Tokio/Axum/reqwest 跨平台接口；OS 差异由 `cfg(unix/windows)` 与 `ProcessAdapter` 处理。Android loopback/权限/Doze、Windows 防火墙、Sidecar 进程退出与端口释放仍需运行证据，编译不替代运行验证。

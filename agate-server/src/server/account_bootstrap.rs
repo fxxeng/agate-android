@@ -184,35 +184,34 @@ pub(crate) fn run(store: &AccountStore) {
     // 绝对主目录就跳过整组导入，且不触碰任何 provider 的导入标记。
     // 显式 Android 配置目录（AGATE_PROXY_HOME）不能代替旧桌面目录，不能据此
     // 猜测 `~/.raccoon-proxy` 等旧文件的位置。
-    if crate::paths::user_home_dir().is_none() {
+    let legacy_imports = run_legacy_imports_if_home(crate::paths::user_home_dir().as_deref(), || {
+        // 小浣熊旧数据一次性导入（架构文档 §3.3，W3-T4）：
+        //   `~/.raccoon-proxy/accounts.json`（旧网关多账号）+
+        //   `~/.box-agent/config/auth.json`（桌面端实时登录态）→ raccoon 账号。
+        // 触发条件是「raccoon 账号列表为空 **且** config 里没有 raccoonImported」，
+        // 幂等且失败不阻断（两个来源各自缺失就跳过，见该方法的说明）。
+        store.import_legacy_raccoon_data();
+        // CatPaw 旧数据一次性导入（架构文档 §9，W5-T-d4）：
+        //   `~/.meituan-catpaw/catpaw-proxy-accounts.json`（原项目多账号）+
+        //   `~/.meituan-catpaw/auth.json`（桌面端实时登录态）→ catpaw 账号。
+        // 触发条件是「catpaw 账号列表为空 **且** config 里没有 catpawImported」，
+        // 与上面那条同构（标记键、幂等性、失败不阻断都一致）。
+        store.import_legacy_catpaw_data();
+        // AutoClaw 旧数据一次性导入（架构文档 §10.2 末条，W4b-T-c2）：
+        //   `~/.autoclaw-proxy/accounts.json`（原项目多账号）+
+        //   `%APPDATA%/AutoClaw/auth.json`（桌面端实时登录态；备来源
+        //   `~/.openclaw-autoclaw/openclaw.json`）→ autoclaw 账号。
+        // 触发条件是「autoclaw 账号列表为空 **且** config 里没有 autoclawImported」，
+        // 与上面两条同构（标记键、幂等性、失败不阻断都一致）。
+        // 三条导入追加式共存，各看自己那一家的账号列表与标记键。
+        store.import_legacy_autoclaw_data();
+    });
+    if legacy_imports.is_none() {
         logging::log(
             "[Accounts]",
             "ℹ️  未发现有效的 HOME / USERPROFILE，跳过旧桌面账号导入；未写入迁移标记，补齐主目录后可重试",
         );
-        return;
     }
-
-    // 小浣熊旧数据一次性导入（架构文档 §3.3，W3-T4）：
-    //   `~/.raccoon-proxy/accounts.json`（旧网关多账号）+
-    //   `~/.box-agent/config/auth.json`（桌面端实时登录态）→ raccoon 账号。
-    // 触发条件是「raccoon 账号列表为空 **且** config 里没有 raccoonImported」，
-    // 幂等且失败不阻断（两个来源各自缺失就跳过，见该方法的说明）。
-    store.import_legacy_raccoon_data();
-    // CatPaw 旧数据一次性导入（架构文档 §9，W5-T-d4）：
-    //   `~/.meituan-catpaw/catpaw-proxy-accounts.json`（原项目多账号）+
-    //   `~/.meituan-catpaw/auth.json`（桌面端实时登录态）→ catpaw 账号。
-    // 触发条件是「catpaw 账号列表为空 **且** config 里没有 catpawImported」，
-    // 与上面那条同构（标记键、幂等性、失败不阻断都一致）。
-    store.import_legacy_catpaw_data();
-    // AutoClaw 旧数据一次性导入（架构文档 §10.2 末条，W4b-T-c2）：
-    //   `~/.autoclaw-proxy/accounts.json`（原项目多账号）+
-    //   `%APPDATA%/AutoClaw/auth.json`（桌面端实时登录态；备来源
-    //   `~/.openclaw-autoclaw/openclaw.json`）→ autoclaw 账号。
-    // 触发条件是「autoclaw 账号列表为空 **且** config 里没有 autoclawImported」，
-    // 与上面两条同构（标记键、幂等性、失败不阻断都一致）。
-    // 三条导入**追加式共存**：各看自己那一家的账号列表与自己那个标记键，
-    // 互不影响，先后顺序不改变任何结果（后一条只增不改前面的账号）。
-    store.import_legacy_autoclaw_data();
 }
 
 /// 旧版单账号 `auth.json` → 一个 workbuddy 账号（仅当账号列表为空时导入一次）。
@@ -252,4 +251,41 @@ fn read_legacy_session() -> Option<serde_json::Value> {
         return None;
     }
     Some(value)
+}
+
+/// 只有存在有效桌面用户主目录时才执行三家旧账号导入。
+///
+/// 把导入动作作为 FnOnce 延迟传入：None 分支不会调用闭包，因此不会触发
+/// importer 的一次性标记写入；此门禁必须包住全部 provider 导入调用。
+fn run_legacy_imports_if_home<T>(
+    home: Option<&std::path::Path>,
+    import: impl FnOnce() -> T,
+) -> Option<T> {
+    home.map(|_| import())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::run_legacy_imports_if_home;
+    use std::cell::Cell;
+    use std::path::Path;
+
+    #[test]
+    fn missing_home_does_not_invoke_importers_or_write_their_markers() {
+        let invoked = Cell::new(false);
+        let result = run_legacy_imports_if_home(None, || invoked.set(true));
+        assert_eq!(result, None);
+        assert!(!invoked.get());
+    }
+
+    #[test]
+    fn valid_home_allows_legacy_import_sequence() {
+        let invoked = Cell::new(false);
+        let result = run_legacy_imports_if_home(Some(Path::new("/home/agate")), || {
+            invoked.set(true);
+            7
+        });
+        assert_eq!(result, Some(7));
+        assert!(invoked.get());
+    }
 }

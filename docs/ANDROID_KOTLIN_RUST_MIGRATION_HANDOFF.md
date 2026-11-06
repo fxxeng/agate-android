@@ -5,11 +5,11 @@
 
 > 文档用途：供后续开发者接手、评审和持续推进 Android 架构改造。
 
-> **验证分支当前状态（R39 候选 / 2026-11-06）**：最近一次已验证提交为 R38 `f5eff2148f3e976c250c0b53fdf1794a2c257cf8`（CI Run `42133955196`；Rust 752 passed / 0 failed / 11 ignored；Kotlin/JVM 99/99；Instrumentation 2/2；Android arm64-v8a / x86_64 通过）。R38 的 4D-3B 已关闭。
+> **验证分支当前状态（R40 候选 / 2026-11-06）**：最近一次已验证提交为 R39 `8c046f17dd61a942eedde01c070c0ac0dc3e29aa`（CI Run `42164811367`；Rust 754 passed / 0 failed / 11 ignored；Kotlin/JVM 99/99；Instrumentation 1 个测试类、2 个用例通过；Android arm64-v8a / x86_64 与 Windows Shared Core 编译通过）。R39 的 4D-3C-A 与 Windows 编译门禁已关闭。
 >
 > 当前验证分支：`verify/arch-8faa5f5`（只允许推送该分支，不修改 `main`、不合并）
-> 当前已验证基线：R38 `f5eff2148f3e976c250c0b53fdf1794a2c257cf8`
-> 当前工作候选：R39 Batch 4D-3C-A + Windows Shared Core CI job；尚未运行 CI。Android job 不构建 Desktop Host/Tauri UI；Windows job 只编译共享 `agate-server` Core。
+> 当前已验证基线：R39 `8c046f17dd61a942eedde01c070c0ac0dc3e29aa`
+> 当前工作候选：R40 Batch 4D-3D（PathProvider 路径契约、WorkBuddy 平台路径、账号导入门禁测试、CI 门禁约束文档）；尚未运行 CI。Android job 不构建 Desktop Host/Tauri UI；Windows job 只编译共享 `agate-server` Core。
 > 真机验收采用 APP 日常使用中的滚动证据，不作为独立架构批次的前置阻塞。
 
 ## 1. 项目目标与边界
@@ -2547,3 +2547,47 @@ R39 已通过 GitHub Actions Run `42164811367`（工作流总时长约 33m18s，
 2. 4D-3C-B：PathProvider 环境变量路径校验契约与重复解析收口。
 3. 4D-3C-D：网络、时间等平台能力按实际差异审计，不机械抽象。
 4. 进入 4E：双实例互斥、数据库/数据目录、端口、Sidecar 与后台任务资源所有权。
+
+
+## 31. R40 / Batch 4D-3D PathProvider 契约与平台路径收口（2026-11-06）
+
+### 31.1 基线与范围
+
+- 基线：R39 `8c046f17dd61a942eedde01c070c0ac0dc3e29aa`，CI Run `42164811367`（三 job success）。
+- 当前候选：R40 Batch 4D-3D；本地静态审查完成，等待集中 CI。
+- 本批不改变 JNI ABI、Kotlin 生命周期、Cargo 依赖或 Android Host/Desktop Host 的职责边界。
+
+### 31.2 配置目录覆盖契约（保守兼容）
+
+- Android JNI `set_config_dir_override()`：继续要求非空、绝对路径且不含 NUL；重复相同路径幂等，不同路径拒绝覆盖。
+- Desktop/headless 环境变量：`AGATE_PROXY_HOME` 优先于旧名 `WORKBUDDY_PROXY_HOME`；空白值视为未设置；新变量无效（含 NUL）时继续尝试旧变量。
+- **相对路径继续接受**：这是 R39 前已有行为，本批不把它改成绝对路径强制校验，避免未经兼容评估改变 Desktop/headless 的相对路径部署语义。该行为已用纯函数测试明确固定。
+- `config_dir()` 与 `has_config_dir_override()` 仍复用同一个 Provider resolver，因此不会出现「配置路径采用一个值、迁移判断采用另一个值」的双重解析。
+- 新增 `resolve_absolute_path()` 专用于必须定位宿主真实目录的环境变量（本批 Windows `LOCALAPPDATA`），不与兼容性更宽松的 config override 混用。
+
+### 31.3 WorkBuddy 与旧账号导入门禁
+
+- WorkBuddy Windows `%LOCALAPPDATA%` 现在经过 trim、非空、绝对路径和 NUL 校验；相对/空值不再被解释为 CWD 下目录。
+- WorkBuddy 官方登录态目录仅在 Windows/macOS 平台构造；Android/Linux 不再伪造桌面客户端路径。
+- `account_bootstrap::run()` 的 HOME 门禁位于 Raccoon/CatPaw/AutoClaw 三家导入方法之前；无有效 HOME 时提前返回，因此不会调用写一次性标记的导入方法。新增 2 个门禁决策单测（缺失 HOME 不调用导入闭包、有效 HOME 允许执行）。
+- 注意：该单测验证门禁分支决策，不等价于数据库集成测试；导入标记的真实落盘行为仍需后续集成测试/设备日志证据。
+
+### 31.4 默认配置目录 CWD fallback 的处理决定
+
+`default_config_dir()` 的 `./.agate` fallback 与「旧桌面数据导入不得扫描 CWD」不是同一行为：前者是历史默认配置存储落点，后者是迁移器定位用户旧数据的路径。R40 不擅自把默认配置目录迁到临时目录或新平台目录，以免造成现有 headless 部署数据迁移/丢失；本批将其抽成纯函数并增加回归测试，明确固定当前兼容行为。后续若要移除该 fallback，必须先定义无 HOME 时的稳定持久目录与迁移方案。
+
+### 31.5 Windows CI 门禁
+
+- `windows-core-check` 增加 15 分钟 job timeout。
+- 新增 `docs/CI_RELEASE_GATES.md`，登记 Windows Shared Core check 是应纳入 branch protection 的 required check。
+- GitHub branch protection / ruleset 属仓库远端设置，源码 workflow 无法自行启用；当前文档明确标记为「需仓库管理员配置」，不能宣称已具备强制阻断能力。
+
+### 31.6 网络、时间与进程平台能力初审（4D-3C-D）
+
+静态审计记录见 `docs/PLATFORM_CAPABILITY_AUDIT_4D3C_D.md`。本轮未发现需要新增通用 NetworkProvider / ClockProvider 的证据：时间分别使用 `SystemTime`（epoch）与 `Instant`（经过时间），网络使用标准库/Tokio/Axum/reqwest 跨平台接口；真正 OS 差异已由 `cfg(unix/windows)` 与 `ProcessAdapter` 承担。该结论不代表 Android/Windows 网络、时钟或进程运行验证通过。
+
+### 31.7 验证状态与后续
+
+- 本地完成差异审查、YAML 结构解析和文档一致性检查；当前执行环境未提供 Cargo/rustc/rustfmt/Gradle，R40 尚未执行编译、Rust 单测、Windows job、Android ABI、Gradle、Instrumentation、模拟器或真机验证。
+- R39 Instrumentation 真实口径为 **1 个测试类、2 个用例**；`emulator-5554 - 15` 中的 `15` 是 shard 标签，不是用例数。
+- 下一批：集中验证 R40；之后进入 4E 双实例互斥与资源所有权（Core 实例、数据目录、数据库、端口、Sidecar、后台任务），将设备运行证据滚动收集，不作为架构批次的前置阻塞。

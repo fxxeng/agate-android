@@ -34,22 +34,21 @@ use crate::server::core::account_store::store::{AccountStore, AccountStoreError}
 use crate::server::core::providers::{kind_from_id, kind_id, ProviderKind};
 use crate::server::logging;
 
-/// 官方客户端凭证目录（Windows）：`%LOCALAPPDATA%\CodeBuddyExtension\…`
+/// 官方客户端凭证目录（Windows）：`%LOCALAPPDATA%\CodeBuddyExtension\…`。
+#[cfg(windows)]
 fn auth_directory_windows() -> Option<PathBuf> {
-    std::env::var("LOCALAPPDATA")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .map(|base| {
-            PathBuf::from(base)
-                .join("CodeBuddyExtension")
+    crate::paths::resolve_absolute_path(std::env::var("LOCALAPPDATA").ok().as_deref()).map(
+        |base| {
+            base.join("CodeBuddyExtension")
                 .join("Data")
                 .join("Public")
                 .join("auth")
-        })
+        },
+    )
 }
 
-/// 官方客户端凭证目录（macOS）：`~/Library/Application Support/CodeBuddyExtension/…`
-/// （路径取自官方 FAQ 排障步骤的 `ls` 命令，逐字一致）
+/// 官方客户端凭证目录（macOS）：`~/Library/Application Support/CodeBuddyExtension/…`。
+#[cfg(target_os = "macos")]
 fn auth_directory_macos() -> Option<PathBuf> {
     Some(
         crate::paths::user_home_dir()?
@@ -60,6 +59,22 @@ fn auth_directory_macos() -> Option<PathBuf> {
             .join("Public")
             .join("auth"),
     )
+}
+
+/// 只在已知桌面平台定位官方客户端目录；Android/Linux 不伪造桌面目录。
+fn auth_directory() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        auth_directory_windows()
+    }
+    #[cfg(target_os = "macos")]
+    {
+        auth_directory_macos()
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        None
+    }
 }
 
 /// 当前（不带时间戳）登录态文件的文件名。
@@ -126,13 +141,9 @@ impl AccountStore {
                 )))
             }
         };
-        let dir = auth_directory_windows()
-            .or_else(auth_directory_macos)
-            .ok_or_else(|| {
-                AccountStoreError::bad_request(
-                    "无法定位用户目录，找不到官方客户端的登录态文件",
-                )
-            })?;
+        let dir = auth_directory().ok_or_else(|| {
+            AccountStoreError::bad_request("无法定位用户目录，找不到官方客户端的登录态文件")
+        })?;
         let Some(path) = select_auth_file(&dir, intl) else {
             return Err(AccountStoreError::bad_request(format!(
                 "未在官方客户端目录找到登录态文件（{}）：请先在官方 Tencent WorkBuddy 客户端里登录一次",

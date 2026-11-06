@@ -137,22 +137,44 @@ pub fn has_config_dir_override() -> bool {
     CONFIG_DIR_OVERRIDE.get().is_some() || path_provider().config_dir_override().is_some()
 }
 
-/// 解析配置目录覆盖：新变量优先，旧变量只作为兼容回退；空白视为未设置。
+/// 解析配置目录覆盖：新变量优先，旧变量只作为兼容回退；空白与含 NUL 的值视为未设置。
+///
+/// 注意：环境变量覆盖继续接受非空相对路径，这是 R39 之前的既有行为；
+/// 改成只接受绝对路径会改变 Desktop/headless 部署语义，需另行做兼容性决策。
+/// Android JNI 注入不走这里，仍由 `validate_config_dir_path()` 强制绝对路径。
 fn resolve_config_dir_override(primary: Option<&str>, legacy: Option<&str>) -> Option<PathBuf> {
     [primary, legacy]
         .into_iter()
         .flatten()
         .map(str::trim)
-        .find(|value| !value.is_empty())
+        .filter(|value| !value.is_empty() && !value.contains('\0'))
         .map(PathBuf::from)
+        .next()
 }
 
-/// 默认配置目录：`{用户主目录}/.agate`
+/// 解析必须是绝对路径的宿主目录环境变量（例如 Windows LOCALAPPDATA）。
+///
+/// 与 `resolve_config_dir_override()` 不同，这类路径用于定位宿主已有数据，
+/// 不应把相对路径解释为当前工作目录下的目录。
+pub(crate) fn resolve_absolute_path(value: Option<&str>) -> Option<PathBuf> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && !value.contains('\0'))
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+}
+
+/// 默认配置目录：`{用户主目录}/.agate`。
+///
+/// 无可用 HOME 时保留历史 `./.agate` fallback，避免在没有明确迁移策略前
+/// 改变 Desktop/headless 的既有数据落点。该 fallback 仅用于默认配置存储，
+/// 不得被旧桌面数据导入器复用；后者必须使用 `user_home_dir()` 并在 None 时跳过。
 fn default_config_dir() -> PathBuf {
-    path_provider()
-        .user_home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".agate")
+    default_config_dir_from_home(path_provider().user_home_dir())
+}
+
+fn default_config_dir_from_home(home: Option<PathBuf>) -> PathBuf {
+    home.unwrap_or_else(|| PathBuf::from(".")).join(".agate")
 }
 
 /// 旧桌面设置文件的路径（`{config_dir}/desktop-settings.json`）。
@@ -170,7 +192,10 @@ pub fn legacy_desktop_settings_file() -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::{legacy_config_dir_from_home, resolve_config_dir_override, resolve_user_home, validate_config_dir_path};
+    use super::{
+        default_config_dir_from_home, legacy_config_dir_from_home, resolve_absolute_path,
+        resolve_config_dir_override, resolve_user_home, validate_config_dir_path,
+    };
     use std::path::{Path, PathBuf};
 
     #[test]
@@ -222,6 +247,18 @@ mod tests {
     }
 
     #[test]
+    fn default_config_dir_keeps_legacy_relative_fallback_without_home() {
+        assert_eq!(
+            default_config_dir_from_home(None),
+            PathBuf::from("./.agate"),
+        );
+        assert_eq!(
+            default_config_dir_from_home(Some(PathBuf::from("/home/agate"))),
+            PathBuf::from("/home/agate/.agate"),
+        );
+    }
+
+    #[test]
     fn config_dir_override_prefers_new_name_and_falls_back_to_legacy() {
         assert_eq!(
             resolve_config_dir_override(Some("/data/agate"), Some("/old/agate")),
@@ -232,6 +269,49 @@ mod tests {
             Some(PathBuf::from("/old/agate")),
         );
         assert_eq!(resolve_config_dir_override(Some(" "), Some("")), None);
+    }
+
+    #[test]
+    fn config_dir_override_preserves_relative_path_compatibility() {
+        assert_eq!(
+            resolve_config_dir_override(Some("  ./agate-data  "), None),
+            Some(PathBuf::from("./agate-data")),
+        );
+    }
+
+    #[test]
+    fn config_dir_override_skips_nul_and_uses_legacy_fallback() {
+        assert_eq!(
+            resolve_config_dir_override(Some("/bad\0path"), Some("/legacy/agate")),
+            Some(PathBuf::from("/legacy/agate")),
+        );
+        assert_eq!(resolve_config_dir_override(Some("/bad\0path"), None), None);
+    }
+
+    #[test]
+    fn absolute_path_resolver_rejects_empty_relative_and_nul_values() {
+        assert_eq!(resolve_absolute_path(None), None);
+        assert_eq!(resolve_absolute_path(Some("  ")), None);
+        assert_eq!(resolve_absolute_path(Some("relative/data")), None);
+        assert_eq!(resolve_absolute_path(Some("/bad\0path")), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn absolute_path_resolver_accepts_unix_absolute_path() {
+        assert_eq!(
+            resolve_absolute_path(Some(" /var/lib/agate ")),
+            Some(PathBuf::from("/var/lib/agate")),
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn absolute_path_resolver_accepts_windows_absolute_path() {
+        assert_eq!(
+            resolve_absolute_path(Some(r" C:\Users\agate\AppData\Local ")),
+            Some(PathBuf::from(r"C:\Users\agate\AppData\Local")),
+        );
     }
 
     #[test]
