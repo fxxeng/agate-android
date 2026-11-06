@@ -513,7 +513,7 @@ private fun HealthCard(snap: GatewayRepository.ConsoleSnapshot, snapError: Strin
         // 并**明确写它不是实时测速** —— 界面只写真算过的东西。
         HcRow(
             "上游响应",
-            if (snap.detailSamples > 0) "近 ${snap.detailSamples} 条终态请求均值 · 非实时测速"
+            if (snap.detailSamples > 0) "今日 ${snap.detailSamples} 条终态明细均值 · 非实时测速"
             else "暂无终态明细样本",
             snap.avgLatencyMs?.let { "${it}ms" } ?: "—",
             null,
@@ -581,7 +581,9 @@ private fun QueueCard(
         }
         Spacer(Modifier.height(4.dp))
         Text(
-            (model?.let { "当前模型 $it · " } ?: "") + "编号 = 候选优先级 · 点此去「路由」调整 ❯",
+            // 这个名可能来自 ?model=，也可能只是「最近一次请求的模型」——
+            // 两种都写「模型」，不冒充当前选路正在用的模型。
+            (model?.let { "模型 $it · " } ?: "") + "编号 = 候选优先级 · 点此去「路由」调整 ❯",
             color = C.textDim,
             fontSize = 11.sp,
             modifier = Modifier.clickable { onNavigate(Routes.ROUTING) },
@@ -591,7 +593,7 @@ private fun QueueCard(
             Text(
                 when {
                     !fetched -> "队列端点暂不可用（/api/routing/queue 未响应）"
-                    inFlight > 0 -> "当前无排队候选 · $inFlight 个请求正在直连处理"
+                    inFlight > 0 -> "当前无排队候选 · 另有 $inFlight 个在途请求（队列是即时快照）"
                     else -> "当前没有候选账号（未添加，或全部被门禁排除）"
                 },
                 color = C.textSub,
@@ -775,6 +777,8 @@ private fun fmtTokens(n: Long): String = when {
 private data class QuotaDigest(
     val checked: Int,
     val failed: Int,
+    val noData: Int,
+    /** 凭证不完整的账号数（内核 `core::usage_query::resolve_batch_targets` 的口径）。 */
     val skipped: Int,
     val atMs: Long?,
 )
@@ -784,16 +788,22 @@ private fun quotaDigest(): QuotaDigest? {
     val rows = body.optJSONArray("results") ?: return null
     var checked = 0
     var failed = 0
+    var noData = 0
     for (i in 0 until rows.length()) {
         val row = rows.optJSONObject(i) ?: continue
         checked++
-        // error 是 JSON null 时 optString 会得到字符串 "null"，必须按类型取
+        // error 是 JSON null 时 optString 会得到字符串 "null"，必须按类型取。
+        // 「没返回 usage」与「查询报错」是两件事：额度中心也把它们分开显示。
         val err = (row.opt("error") as? String)?.trim().orEmpty()
-        if (err.isNotEmpty() || row.optJSONObject("usage") == null) failed++
+        when {
+            err.isNotEmpty() -> failed++
+            row.optJSONObject("usage") == null -> noData++
+        }
     }
     return QuotaDigest(
         checked = checked,
         failed = failed,
+        noData = noData,
         skipped = body.optInt("skipped", 0),
         atMs = UsageCache.updatedAt(null),
     )
@@ -806,7 +816,8 @@ private fun quotaSub(digest: QuotaDigest?): String {
     return buildString {
         append("已查 ${digest.checked} 个账号")
         if (digest.failed > 0) append(" · 失败 ${digest.failed}")
-        if (digest.skipped > 0) append(" · 不支持 ${digest.skipped}")
+        if (digest.noData > 0) append(" · 无数据 ${digest.noData}")
+        if (digest.skipped > 0) append(" · 凭证不全 ${digest.skipped}")
         digest.atMs?.let {
             append(" · ").append(android.text.format.DateFormat.format("HH:mm", it))
             append(" 缓存")
