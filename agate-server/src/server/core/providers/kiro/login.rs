@@ -96,12 +96,40 @@ struct Ctx {
     tx: mpsc::Sender<Result<KiroCredentials, String>>,
 }
 
+/// 一次回调的处置结果 —— **不含渲染**。
+///
+/// 同一个判定要服务两个入口：本机端口（手机 / 同机部署）把 `Next` 变成 302、
+/// 把 `Page` 变成 HTML；远程面板（Docker，浏览器够不到容器内的回环端口）把
+/// `Next` 变成「请浏览器再去这个地址」、把 `Page` 变成一次接口返回。
+/// 判定只写一份，两个入口各自渲染 —— 抄第二份判定的症状是「本机能登、面板
+/// 卡在 AWS 那一步」这种只在一种部署里出现的故障。
+enum Outcome {
+    /// 浏览器还要再去一个地址（门户交给我们的 AWS 授权页）
+    Next(String),
+    /// 这一轮有结论了（凭证已送进 channel，或失败原因已送出）
+    Page {
+        ok: bool,
+        title: &'static str,
+        detail: String,
+    },
+}
+
+/// 面板里粘贴回调后的结果。
+pub enum Submitted {
+    /// 还要让浏览器再去这个地址（AWS 授权页）—— 用户回来得**再粘一次**
+    ContinueTo(String),
+    /// 这一轮结束：凭证已送进 channel，落库由调用方的后台任务收尾
+    Finished,
+}
+
 /// 进行中的一轮登录（`Drop` 不释放端口 —— 收尾必须显式 [`Self::close`]）。
 pub struct Session {
     pub auth_url: String,
     pub port: u16,
     results: tokio::sync::Mutex<mpsc::Receiver<Result<KiroCredentials, String>>>,
     abort: tokio::task::AbortHandle,
+    /// 与监听器共享同一份判定状态（面板粘贴走 [`Self::submit`] 要用）
+    ctx: Arc<Ctx>,
 }
 
 impl Session {
@@ -114,7 +142,7 @@ impl Session {
         let state = random_token(24);
         let verifier = random_token(48);
         let (tx, rx) = mpsc::channel(1);
-        let ctx = Ctx {
+        let ctx = Arc::new(Ctx {
             state: state.clone(),
             verifier: verifier.clone(),
             redirect: format!("http://localhost:{port}"),
@@ -122,8 +150,8 @@ impl Session {
             proxy,
             pending: Arc::new(Mutex::new(None)),
             tx,
-        };
-        let abort = loopback::serve(listener, router(ctx)).await;
+        });
+        let abort = loopback::serve(listener, router(ctx.clone())).await;
         let challenge = pkce_challenge(&verifier);
         let auth_url = format!(
             "{PORTAL}/signin?state={}&code_challenge={}&code_challenge_method=S256&redirect_uri={}&redirect_from=KiroIDE",
@@ -136,6 +164,7 @@ impl Session {
             port,
             results: tokio::sync::Mutex::new(rx),
             abort,
+            ctx,
         })
     }
 
@@ -155,29 +184,88 @@ impl Session {
             None => Err("登录窗口已关闭，请重新发起".to_string()),
         }
     }
+
+    /// 远程面板：把用户粘回来的一条回调地址**注入同一套判定**。
+    ///
+    /// 与 Trae 的 `submit_callback` 同构 —— 这里只负责让这次回调进入判定，
+    /// 凭证仍由 `Ctx::tx` 送出去、由后台那条 [`Self::complete`] 统一落库。
+    /// 落库路径只有一条：两个入口各写一套的结果是「同一个账号加出两条」。
+    ///
+    /// 路径决定这是哪一跳（两者端口相同、路径不同）：门户那一步回来的是
+    /// `<PORTAL_PATH>`，AWS 回来的是 `<AWS_PATH>`。判错会拿一次性材料去换
+    /// 不该换的码，所以认不出就直接拒，不猜。
+    pub async fn submit(&self, callback_url: &str) -> Result<Submitted, String> {
+        let parsed = url::Url::parse(callback_url.trim())
+            .map_err(|_| "这不是一个有效的登录回调地址".to_string())?;
+        let aws_path = callback_step(parsed.path()).ok_or_else(|| {
+            format!(
+                "这不是 Kiro 的登录回调地址（路径应为 {PORTAL_PATH} 或 {AWS_PATH}，收到的是 {}）",
+                parsed.path()
+            )
+        })?;
+        let query: HashMap<String, String> = parsed
+            .query_pairs()
+            .map(|(key, value)| (key.into_owned(), value.into_owned()))
+            .collect();
+        submitted(handle(&self.ctx, &query, aws_path).await)
+    }
 }
 
-fn router(ctx: Ctx) -> Router {
+/// 面板粘回来的地址属于哪一跳：`Some(false)` 门户、`Some(true)` AWS、`None` 认不出。
+///
+/// 抽成纯函数是为了能离线测：判错会拿一次性授权材料去换不该换的码，而那个
+/// 错误的现场表现只是「登录没有完成」，看不出是哪一步错了。
+fn callback_step(path: &str) -> Option<bool> {
+    match path {
+        PORTAL_PATH => Some(false),
+        AWS_PATH => Some(true),
+        _ => None,
+    }
+}
+
+/// 判定结果 → 面板答复。
+///
+/// 成败口径只写这一份：`Outcome::Page` 的 `ok` 是唯一判据，别在调用点
+/// 重新看一遍 detail 是否为空。
+fn submitted(outcome: Outcome) -> Result<Submitted, String> {
+    match outcome {
+        Outcome::Next(url) => Ok(Submitted::ContinueTo(url)),
+        Outcome::Page { ok: true, .. } => Ok(Submitted::Finished),
+        Outcome::Page { detail, .. } => Err(detail),
+    }
+}
+
+/// 把判定结果渲染成本机端口上的响应。
+fn render(outcome: Outcome) -> Response {
+    match outcome {
+        Outcome::Next(url) => axum::response::Redirect::to(&url).into_response(),
+        Outcome::Page { ok, title, detail } => {
+            loopback::page(ok, title, &detail).into_response()
+        }
+    }
+}
+
+fn router(ctx: Arc<Ctx>) -> Router {
     Router::new()
         .route(PORTAL_PATH, get(portal_step))
         .route(AWS_PATH, get(aws_step))
         .with_state(ctx)
 }
 
-async fn portal_step(State(ctx): State<Ctx>, Query(query): Query<HashMap<String, String>>) -> Response {
-    route(ctx, query, false).await
+async fn portal_step(State(ctx): State<Arc<Ctx>>, Query(query): Query<HashMap<String, String>>) -> Response {
+    render(handle(&ctx, &query, false).await)
 }
 
-async fn aws_step(State(ctx): State<Ctx>, Query(query): Query<HashMap<String, String>>) -> Response {
-    route(ctx, query, true).await
+async fn aws_step(State(ctx): State<Arc<Ctx>>, Query(query): Query<HashMap<String, String>>) -> Response {
+    render(handle(&ctx, &query, true).await)
 }
 
-/// 一条回调的完整处置。
-async fn route(
-    ctx: Ctx,
-    query: HashMap<String, String>,
+/// 一条回调的完整处置（两个入口共用）。
+async fn handle(
+    ctx: &Ctx,
+    query: &HashMap<String, String>,
     aws_path: bool,
-) -> Response {
+) -> Outcome {
     let got = query.get("state").cloned().unwrap_or_default();
     let pending = ctx
         .pending
@@ -189,32 +277,35 @@ async fn route(
         pending.as_ref().is_some_and(|aws| !aws.state.is_empty() && aws.state == got);
     // 认不出是谁的回调：本机端口谁都能打，不能拿一次性授权材料去换码
     if !from_portal && !from_aws {
-        return loopback::page(
-            false,
-            "这个地址不属于本次登录",
-            "请回到刚打开的登录页重新操作，或重新发起登录。",
-        )
-        .into_response();
+        return Outcome::Page {
+            ok: false,
+            title: "这个地址不属于本次登录",
+            detail: "请回到刚打开的登录页重新操作，或重新发起登录。".to_string(),
+        };
     }
     if let Some(error) = query.get("error") {
         let detail = query
             .get("error_description")
             .cloned()
             .unwrap_or_else(|| error.clone());
-        return fail(&ctx, &detail).await;
+        return fail(ctx, &detail).await;
     }
 
     if from_aws {
         let Some(aws) = pending.clone() else {
-            return fail(&ctx, "AWS 回调缺少登录状态").await;
+            return fail(ctx, "AWS 回调缺少登录状态").await;
         };
         if !aws_path {
-            return loopback::page(false, "这个地址不属于本次登录", "").into_response();
+            return Outcome::Page {
+                ok: false,
+                title: "这个地址不属于本次登录",
+                detail: String::new(),
+            };
         }
         let Some(code) = query.get("code").cloned().filter(|value| !value.is_empty()) else {
-            return fail(&ctx, "AWS 没有带回授权码").await;
+            return fail(ctx, "AWS 没有带回授权码").await;
         };
-        return exchange_aws(&ctx, &aws, &code).await;
+        return exchange_aws(ctx, &aws, &code).await;
     }
 
     // ── 门户那一步：按用户点的方式分派 ──────────────────────
@@ -230,13 +321,13 @@ async fn route(
     // 必然失败）。到这里已经是门户那一步，AWS 回调在上面的分支里返回过了。
     if let Some(aws) = &pending {
         if !aws.on_to_aws.is_empty() && asked == aws.portal_asked {
-            return axum::response::Redirect::to(&aws.on_to_aws).into_response();
+            return Outcome::Next(aws.on_to_aws.clone());
         }
     }
     match option.as_str() {
         "google" | "github" => {
             let Some(code) = query.get("code").cloned().filter(|value| !value.is_empty()) else {
-                return fail(&ctx, "Kiro 登录页没有带回授权码").await;
+                return fail(ctx, "Kiro 登录页没有带回授权码").await;
             };
             // 用户改选了社交登录：把上一轮 AWS 的待办清掉，免得那条残留状态
             // 在后续请求里仍被判成「这一轮还在等 AWS」
@@ -247,17 +338,17 @@ async fn route(
         }
         "builderid" | "awsidc" | "internal" => {
             let Some(issuer) = query.get("issuer_url").cloned() else {
-                return fail(&ctx, "Kiro 登录页没有说明 AWS 登录地址").await;
+                return fail(ctx, "Kiro 登录页没有说明 AWS 登录地址").await;
             };
             let Some(region) = query.get("idc_region").cloned() else {
-                return fail(&ctx, "Kiro 登录页没有说明 AWS 地区").await;
+                return fail(ctx, "Kiro 登录页没有说明 AWS 地区").await;
             };
             // 地区要拼进 AWS 的主机名、issuer 要被我们 302 过去：两条都先判形态
             if !endpoints::is_aws_region(&region) {
-                return fail(&ctx, "Kiro 登录页给的 AWS 地区不合法").await;
+                return fail(ctx, "Kiro 登录页给的 AWS 地区不合法").await;
             }
             if !endpoints::is_https_url(&issuer) {
-                return fail(&ctx, "Kiro 登录页给的 AWS 登录地址不是 https").await;
+                return fail(ctx, "Kiro 登录页给的 AWS 登录地址不是 https").await;
             }
             let provider = match option.as_str() {
                 "builderid" => "builderid",
@@ -271,24 +362,24 @@ async fn route(
                     if let Ok(mut guard) = ctx.pending.lock() {
                         *guard = Some(aws);
                     }
-                    axum::response::Redirect::to(&url).into_response()
+                    Outcome::Next(url)
                 }
-                Err(message) => fail(&ctx, &message).await,
+                Err(message) => fail(ctx, &message).await,
             }
         }
         "external_idp" => {
             fail(
-                &ctx,
+                ctx,
                 "公司自建身份提供商的浏览器登录暂不支持；请先在 kiro-cli 里登录，再用「粘贴凭证」导入",
             )
             .await
         }
-        other => fail(&ctx, &format!("Kiro 登录页返回了不认识的登录方式（{other}）")).await,
+        other => fail(ctx, &format!("Kiro 登录页返回了不认识的登录方式（{other}）")).await,
     }
 }
 
 /// Google / GitHub：单次 PKCE 换码。
-async fn exchange_social(ctx: &Ctx, option: &str, code: &str) -> Response {
+async fn exchange_social(ctx: &Ctx, option: &str, code: &str) -> Outcome {
     let body = json!({
         "code": code,
         "code_verifier": ctx.verifier,
@@ -370,7 +461,7 @@ async fn start_aws(
 }
 
 /// AWS 换码（浏览器带着 AWS 的授权码回来）。
-async fn exchange_aws(ctx: &Ctx, aws: &Aws, code: &str) -> Response {
+async fn exchange_aws(ctx: &Ctx, aws: &Aws, code: &str) -> Outcome {
     let body = json!({
         "clientId": aws.client_id,
         "clientSecret": aws.client_secret,
@@ -406,7 +497,7 @@ async fn exchange_aws(ctx: &Ctx, aws: &Aws, code: &str) -> Response {
 /// 三次收尾请求只有**最后一次必须成功**：profile 缺了还能在首次转发时补
 /// （`chat.rs` 有那条），邮箱缺了只影响账号名，而**没有 token 就真的没法用**。
 /// 所以前两步失败一律当"没问到"，不把一次已经花掉用户点击的登录判死。
-async fn finish(ctx: &Ctx, mut credentials: KiroCredentials) -> Response {
+async fn finish(ctx: &Ctx, mut credentials: KiroCredentials) -> Outcome {
     if credentials.profile.is_empty() {
         if let Ok(profile) = refresh::lookup_profile(&credentials, ctx.proxy.as_ref()).await {
             if !profile.is_empty() {
@@ -435,13 +526,21 @@ async fn finish(ctx: &Ctx, mut credentials: KiroCredentials) -> Response {
         &format!("✅ Kiro 浏览器登录完成（{}）", display_name(&credentials)),
     );
     let _ = ctx.tx.send(Ok(credentials)).await;
-    loopback::page(true, "登录完成", "Kiro 账号已添加，可以关闭这个标签页了。").into_response()
+    Outcome::Page {
+        ok: true,
+        title: "登录完成",
+        detail: "Kiro 账号已添加，可以关闭这个标签页了。".to_string(),
+    }
 }
 
-async fn fail(ctx: &Ctx, message: &str) -> Response {
+async fn fail(ctx: &Ctx, message: &str) -> Outcome {
     crate::server::logging::log("[Login]", &format!("❌ Kiro 登录未完成：{message}"));
     let _ = ctx.tx.send(Err(message.to_string())).await;
-    loopback::page(false, "登录没有完成", message).into_response()
+    Outcome::Page {
+        ok: false,
+        title: "登录没有完成",
+        detail: message.to_string(),
+    }
 }
 
 /// 账号名：`邮箱 (登录方式)`，缺什么就退一级。
@@ -653,5 +752,57 @@ mod tests {
     fn the_callback_ports_are_bindable_without_root() {
         assert_eq!(CALLBACK_PORTS.len(), 10, "与官方 IDE 注册的那一组逐条对齐");
         assert!(CALLBACK_PORTS.iter().all(|port| *port > 1024));
+    }
+
+    /// 面板粘贴：两条路径各自归位，其余一律拒。
+    ///
+    /// 判错的代价不是「文案不好看」：门户那一跳的材料（`state`）与 AWS 那一跳
+    /// 的（`aws.state`）是两套，认错就换不了码，而现场只表现为「登录没有完成」。
+    #[test]
+    fn the_callback_path_decides_which_step_it_is() {
+        assert_eq!(callback_step("/signin/callback"), Some(false), "门户那一跳");
+        assert_eq!(callback_step("/oauth/callback"), Some(true), "AWS 那一跳");
+        assert_eq!(callback_step("/callback"), None);
+        assert_eq!(callback_step("/"), None);
+        // 前缀相同不算：认路径必须逐字，不能让 `/signin/callback/x` 混进来
+        assert_eq!(callback_step("/signin/callback/x"), None);
+    }
+
+    /// 判定结果到面板答复的映射（成败口径只有一份）
+    #[test]
+    fn the_panel_answer_follows_the_outcome() {
+        assert!(
+            matches!(
+                submitted(Outcome::Next("https://oidc.us-east-1.amazonaws.com/authorize".into())),
+                Ok(Submitted::ContinueTo(url)) if url.contains("amazonaws.com")
+            ),
+            "AWS 那一跳要交给浏览器，不能当作完成"
+        );
+        assert!(matches!(
+            submitted(Outcome::Page { ok: true, title: "登录完成", detail: String::new() }),
+            Ok(Submitted::Finished)
+        ));
+        // 失败时把上游给的原因原样交出去（不要换成一句「登录失败」）
+        assert!(matches!(
+            submitted(Outcome::Page { ok: false, title: "登录没有完成", detail: "user cancelled".into() }),
+            Err(message) if message == "user cancelled"
+        ));
+    }
+
+    /// 本机端口那一跳仍然是跳转（拆出 `Outcome` 之后不能把这个行为弄丢）
+    #[test]
+    fn the_local_port_still_redirects_to_aws() {
+        let response = render(Outcome::Next(
+            "https://oidc.us-east-1.amazonaws.com/authorize?x=1".into(),
+        ));
+        // 303 See Other 而不是 302：axum 的 `Redirect::to` 就是这个语义，而
+        // AWS 授权页是 GET，浏览器按 GET 跳过去完全等价（这是改造前就有的行为）。
+        assert_eq!(response.status(), axum::http::StatusCode::SEE_OTHER);
+        let failed = render(Outcome::Page {
+            ok: false,
+            title: "登录没有完成",
+            detail: "x".into(),
+        });
+        assert_eq!(failed.status(), axum::http::StatusCode::OK, "失败也要给用户一页说明");
     }
 }

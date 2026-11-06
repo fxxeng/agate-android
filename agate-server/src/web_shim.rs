@@ -168,20 +168,22 @@ pub fn shim_js() -> &'static str {
   // 因此让用户把地址栏的最终 URL 粘回受保护接口。小浣熊单独改用
   // 官方授权页支持的 redirect 分支，直接把 authorization_code 导回网关。
   //
-  // ── kiro 为什么**不在这里** ────────────────────────────────
-  // 它的回调同样落在 `http://localhost:<port>`（容器内部），远程面板一样收不到，
-  // 但"粘贴最终 URL"对它不够用：那一步之后还有**一次服务端 302**（门户把
-  // AWS 登录方式交回来 → 我们注册 AWS OIDC 客户端 → 再把浏览器送去 AWS），
-  // 中间状态在我们进程里，粘一个 URL 回来只覆盖最后一步。
-  // 所以面板里这一家目前**只能粘贴凭证**（ksk_ API key / kiro-auth-token.json）；
-  // 浏览器登录请用手机端 / 本机部署。要补上面板这条路，得先给
-  // `providers::kiro::login::Session` 加一个 `submit(url)` 入口，把外部的
-  // 回调注进同一套路由 —— 那是独立一件事，别顺手塞进 `needsManualCallback`：
-  // 塞进去只会给用户一个填完必然失败的输入框。
+  // ── kiro 是**两跳**，但仍在同一个数组里 ────────────────────
+  // 它的回调同样落在 `http://localhost:<port>`（容器内部），远程浏览器够不到；
+  // 而且门户交回登录方式之后还有**一次服务端 302**（我们注册 AWS OIDC 客户端，
+  // 再把浏览器送去 AWS）。中间状态在我们进程里，所以第一跳粘回来之后要接着
+  // 把浏览器送到 AWS —— 这正是 `/api/session/login/callback` 返回
+  // `{continue:true, nextUrl}` 的用途，`waitForManualCallback` 的循环天然支持：
+  // 把 authUrl 换成 nextUrl 再问一次。第二跳（AWS 带回 code）才是终态。
+  //
+  // 也就是说面板里要粘**两次**：`localhost:…/signin/callback` 与
+  // `127.0.0.1:…/oauth/callback`（端口相同、路径不同）。提示文案据此切换，
+  // 否则用户第一跳完成后会以为卡住了。
   function needsManualCallback(provider) {
     return provider === 'trae'
       || provider === 'accio' || provider === 'accio-cn'
-      || provider === 'codearts' || provider === 'autoclaw-intl';
+      || provider === 'codearts' || provider === 'autoclaw-intl'
+      || provider === 'kiro';
   }
 
   function escapeHtml(value) {
@@ -261,12 +263,20 @@ pub fn shim_js() -> &'static str {
     var label = provider === 'raccoon' ? '小浣熊'
       : provider === 'trae' ? 'Trae'
       : provider.indexOf('accio') === 0 ? 'Accio'
-      : provider === 'codearts' ? 'CodeArts' : 'AutoClaw';
-    var callbackInstruction = '授权完成后，复制授权页浏览器地址栏中的<strong>完整地址</strong>，'
+      : provider === 'codearts' ? 'CodeArts'
+      : provider === 'kiro' ? 'Kiro' : 'AutoClaw';
+    var firstInstruction = '授权完成后，复制授权页浏览器地址栏中的<strong>完整地址</strong>，'
         + '粘贴到下面提交。不要复制授权页原始地址，也不要改动参数。';
+    // Kiro 的第二跳：浏览器这时已经被送去 AWS，粘回来的地址是
+    // `127.0.0.1:…/oauth/callback?…`（与第一跳同端口、不同路径）。
+    var awsInstruction = 'Kiro 还需要在 AWS 上完成登录（已为你打开 AWS 页面）。完成之后，'
+        + '同样复制浏览器地址栏中的<strong>完整地址</strong>粘贴到下面 —— 它应该以 '
+        + '<code>/oauth/callback</code> 结尾。';
+    var continued = false;
     while (true) {
+      var callbackInstruction = continued ? awsInstruction : firstInstruction;
       var callbackUrl = await ensureOverlay(
-        label + '需要粘贴回调地址',
+        label + (continued ? '还需要再粘贴一次地址' : '需要粘贴回调地址'),
         '<div style="margin-bottom:10px;">' + callbackInstruction + '</div>'
         + '<div style="margin-bottom:10px;">如果授权页没有打开，请先点击：<a href="'
         + escapeHtml(authUrl) + '" target="_blank" rel="noopener" style="color:#7fa7ff;word-break:break-all;">'
@@ -284,9 +294,10 @@ pub fn shim_js() -> &'static str {
           callbackUrl: callbackUrl,
         });
         if (submitted && submitted.nextUrl) {
-          // CodeArts 第一跳只有 secret，需要先打开 portal 的下一跳；下一轮
-          // 再粘贴浏览器最终回调地址即可完成换码。
+          // CodeArts 第一跳只有 secret、Kiro 第一跳只给了 AWS 登录方式 —— 两者
+          // 都要先把浏览器送到下一跳；下一轮再粘贴最终回调地址即可完成换码。
           authUrl = String(submitted.nextUrl);
+          continued = true;
           continue;
         }
         // Trae 是把 query 注入现有 listener 后异步换证；其它几家也统一

@@ -340,6 +340,21 @@ impl LoginService {
             .remove(state)
     }
 
+    /// 取一轮 Kiro 登录（只读，**不摘表**）。
+    ///
+    /// 与 [`Self::take_kiro_login`] 的分工：面板粘贴回调时这一轮还在进行中
+    /// （可能还要接着等第二跳），摘掉就等于把后面的回调弄丢了。
+    pub(crate) fn kiro_session(
+        &self,
+        state: &str,
+    ) -> Option<Arc<crate::server::core::providers::kiro::login::Session>> {
+        self.kiro_login
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .get(state)
+            .cloned()
+    }
+
     /// 取消一次登录：任务表那一步见 [`LoginTasks::cancel`]，这里多做的事是
     /// **把 AutoClaw 那条链的待办状态一起清掉**。
     ///
@@ -916,6 +931,28 @@ impl LoginService {
                 .submit_callback(query)
                 .map_err(|message| GatewayError::with_status(400, message))?;
             return Ok(LoginCallbackSubmission::Completed(String::new()));
+        }
+        // Kiro 是**两跳**：门户那一步回来时我们还要注册 AWS OIDC 客户端、再把
+        // 浏览器送去 AWS（这一步是服务端 302，不是客户端能自己拼的），所以第一
+        // 跳的答复是 `ContinueTo`，第二跳（AWS 带回 code）才是终态。
+        //
+        // 与 Trae 一样只「注入」不落库：凭证仍由 `Ctx::tx` 送出去、由后台那条
+        // `complete()` 统一写账号 —— 两个入口写两套的结果是「同一个号加出两条」。
+        // 也别把 kiro 塞进 `web_shim::needsManualCallback`：那批是「粘一次就完」
+        // 的家，塞进去会让流程在第一跳后就当作结束，用户停在 AWS 页面上。
+        if kind == ProviderKind::Kiro {
+            let session = self
+                .kiro_session(state)
+                .ok_or_else(|| GatewayError::with_status(404, "Kiro 登录上下文已结束，请重新发起"))?;
+            return match session.submit(callback_url).await {
+                Ok(crate::server::core::providers::kiro::login::Submitted::ContinueTo(next)) => {
+                    Ok(LoginCallbackSubmission::ContinueTo(next))
+                }
+                Ok(crate::server::core::providers::kiro::login::Submitted::Finished) => {
+                    Ok(LoginCallbackSubmission::Completed(String::new()))
+                }
+                Err(message) => Err(GatewayError::with_status(400, message)),
+            };
         }
         // Accio 的回调是标准 `code/state` 查询串。与 public callback 路由
         // 共用同一收尾函数，保证 PKCE pending、一次性消费和幂等语义一致。
