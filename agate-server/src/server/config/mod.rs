@@ -55,8 +55,8 @@
 //!
 //! 配置目录本身（`~/.agate`）的事实来源在 `crate::paths::config_dir`，
 //! 本模块只做转发；从 1.x 升级上来的一次性目录迁移在 `config_migration`，
-//! 这里只保留旧目录名常量与旧目录路径访问器（`LEGACY_DIR_NAME` 仍是全仓
-//! 唯一的字面量）。
+//! 旧版 `.workbuddy-proxy` 目录名与用户主目录解析统一由 `crate::paths` 提供；
+//! 本模块不再自行读取 HOME / USERPROFILE。
 
 use std::path::{Path, PathBuf};
 use std::sync::RwLock;
@@ -420,25 +420,6 @@ pub fn config_dir() -> PathBuf {
 pub fn config_file() -> PathBuf {
     config_dir().join("config.json")
 }
-
-/// 旧版配置目录名（仅用于一次性目录迁移）。
-///
-/// **这是全仓唯一一处允许出现 `.workbuddy-proxy` 字面量的地方** ——
-/// 别处的路径一律走 `config_dir()`（事实来源在 `gateway::config_dir`），
-/// 否则改名会出现两套口径。
-const LEGACY_DIR_NAME: &str = ".workbuddy-proxy";
-
-/// 旧版配置目录的完整路径（`{用户主目录}/.workbuddy-proxy`），供迁移使用。
-pub(crate) fn legacy_config_dir() -> PathBuf {
-    let home = std::env::var("USERPROFILE")
-        .or_else(|_| std::env::var("HOME"))
-        .unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home).join(LEGACY_DIR_NAME)
-}
-
-// 迁移本身（唯一入口 `config_migration::migrate_config_dir`）在
-// `server/config_migration.rs`；本模块只提供上面这个旧目录路径，
-// 保证 `.workbuddy-proxy` 字面量全仓只有一处。
 
 /// 读磁盘上残留的 `providerRoute` 覆盖值：`[(providerId, 优先级)]`，只含文件里
 /// 写了合法数字的那些键。账号存储把「按家分队」的旧号码合并成全局队列时，

@@ -84,7 +84,9 @@ pub fn migrate_config_dir() -> Result<MigrationOutcome, String> {
         return Ok(MigrationOutcome::NothingToDo);
     }
 
-    let legacy = crate::server::config::legacy_config_dir();
+    let Some(legacy) = paths::legacy_config_dir() else {
+        return Ok(MigrationOutcome::NothingToDo);
+    };
     let Ok(legacy_metadata) = std::fs::symlink_metadata(&legacy) else {
         return Ok(MigrationOutcome::NothingToDo);
     };
@@ -165,7 +167,7 @@ pub fn pending_reason() -> Option<String> {
     if std::fs::symlink_metadata(&target).is_ok() {
         return None;
     }
-    let legacy = crate::server::config::legacy_config_dir();
+    let legacy = paths::legacy_config_dir()?;
     if std::fs::symlink_metadata(&legacy).is_err() {
         return None;
     }

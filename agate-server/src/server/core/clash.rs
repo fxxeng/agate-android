@@ -91,12 +91,7 @@ pub struct ClashListener {
 /// Node 的 `os.homedir()` 在 Windows 上优先 USERPROFILE；这里按同一顺序取，
 /// 与壳侧 gateway::config_dir 的做法保持一致（不引入 dirs crate）。
 fn home_dir() -> Option<PathBuf> {
-    std::env::var("USERPROFILE")
-        .or_else(|_| std::env::var("HOME"))
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
+    crate::paths::user_home_dir()
 }
 
 /// Clash Verge 配置目录：候选顺序照抄 Node 版 `clashConfigDir()`。

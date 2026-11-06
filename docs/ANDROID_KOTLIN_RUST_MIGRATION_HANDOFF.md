@@ -5,11 +5,11 @@
 
 > 文档用途：供后续开发者接手、评审和持续推进 Android 架构改造。
 
-> **验证分支当前状态（R35 / 2026-11-05）**：最近一次已验证 HEAD 为 `9be13754c7797b90f5ac49024195b3451a116022`（CI Run `42010197461`，rust-tests 与 android-build 双 Job 一次成功、无 rerun；Rust 746 passed / 0 failed / 11 ignored；新增 4 项 Supervisor 测试逐名通过；源码归档 768/768 blobs 与远端 tree 对账一致）。Batch 4D-2A/4D-2B 已通过 CI。
+> **验证分支当前状态（R37 / 2026-11-06）**：最近一次已验证提交为 `c1466fedd5`（CI Run `42066887374`，rust-tests 与 android-build 双 Job success；Rust 749 passed / 0 failed / 11 ignored；Kotlin/JVM 99/99；Instrumentation 2/2）。原候选 `db6f329f` 因 `&File` / `&Path` 类型错误双红，验证方一行修复后通过；以修复提交归档为准。R37 的 Windows `#[cfg(windows)]` 分支尚无 Windows target 编译证据。
 >
 > 当前验证分支：`verify/arch-8faa5f5`（只允许推送该分支，不修改 `main`、不合并）
-> 当前已验证基线：R35 `9be13754c7797b90f5ac49024195b3451a116022`
-> 当前工作候选：R35 + Batch 4D-2C Sidecar worker shutdown protocol + headless host shutdown 接线；Desktop Tauri 宿主代码不在当前源码仓库快照中，Android 不把 Activity/FGS 销毁当作 Core 退出事件。该候选尚未运行 CI。
+> 当前已验证基线：R37 `c1466fedd5`（完整 SHA 以 GitHub 提交记录为准；本轮反馈仅提供短 SHA）
+> 当前工作候选：R37 + Batch 4D-3B PathProvider 最小路径边界；尚未运行 CI。Desktop Tauri 宿主代码仍不在本仓库快照中；Android 不把 Activity/FGS 销毁当作 Core 退出事件。
 > 真机验收采用 APP 日常使用中的滚动证据，不作为独立架构批次的前置阻塞。
 
 ## 1. 项目目标与边界
@@ -2400,3 +2400,93 @@ Linux ARM64 资产不等同于 Android ARM64 可执行文件。Android 需要单
 - 之后再按实际依赖逐步覆盖网络/时间等平台能力；完成一个连贯切片后集中 CI，不为每个小改动单独触发。
 - R36 headless shutdown 和 mihomo 子进程回收的真实运行证据继续滚动收集，不阻塞独立 4D-3 开发。
 
+
+
+## 29. R37 验证收官与 Batch 4D-3B PathProvider 路径边界（2026-11-06）
+
+### 29.1 R37 验证基线
+
+- 验证分支：`verify/arch-8faa5f5`。
+- R37 原始候选提交：`db6f329f7b`；CI Run `42065729794` 双 Job 失败，唯一编译错误是 `download.rs:328` 将 `&File` 传给要求 `&Path` 的 `set_executable()`。
+- 验证方修复提交：`c1466fedd5`；CI Run `42066887374`，`rust-tests` / `android-build` 双 Job success。后续工作以该修复提交为基线，不以原始候选为基线。
+- Rust：749 passed / 0 failed / 11 ignored；与 R36 测试集合逐名相同，本轮没有新增或删除测试。
+- Kotlin/JVM：99/99，12 类逐类与 R36 相同；Instrumentation：2/2。
+- JNI exports：12 项校验通过；Android Rust ABI（arm64-v8a / x86_64）、APK/ELF 检查通过。
+- R37 修复态源码归档（tar.gz）SHA-256：`c8d3d520159221ca1a7ead9f9730d7c98a24f833318c8564ca1886863cc0dc12`。
+- 修复态归档与远端 `c1466fed` tree：769/769 blob 全等；R37 本轮 7 文件变更（6 修改 + 1 新增）。
+- 警告口径：R36 是零错误、8 条存量 warning；R37 修复态 `agate-server (lib)` warning 数为 9（R36 的 8 条存量 + `configure_std_command` 1 条新增 unused warning）。不得写成零 warning。
+- 运行语义仍未验证：`stop_kernel()` 3 秒 wait 超时与 `kill_on_drop`、headless `shutdown_core()`、mihomo 进程树/端口回收均需真实运行证据。Windows ProcessAdapter 分支没有 Windows target 编译证据。
+- R37 首轮交付未包含 patch、README 变更清单、Docs.zip、SHA256SUMS；本轮 R38 恢复完整交付四件套，后续保持该规则。
+
+### 29.2 Desktop Host 是否剥离：架构决策
+
+**结论：剥离 Desktop Host 壳层，不剥离共享 Rust Core，也不删除共享 Core 中仍需服务 Desktop/headless 的平台兼容语义。**
+
+当前仓库事实：
+- `agate-server` 是独立 Rust crate，提供 `agate_server` library 与 `agate-server` headless binary；Cargo 注释明确该 crate 不依赖 Tauri，供 Desktop 与 headless 共用。
+- `app/` 与 `core-gateway/` 是 Android UI / Kotlin 平台层。
+- 当前 R37 源码归档没有 `src-tauri/`、Tauri backend 或 Desktop UI 工程；因此不能在本仓库声称已经完成 Desktop Host 拆分或 exit hook 接线。
+- `agate_server::shutdown_core()` 是共享 Core 的宿主退出 API；Desktop Host 应在其真实 App exit hook 调用，但宿主接线需要在包含 Tauri backend 的 Desktop Host 仓库完成。
+
+边界决策：
+1. Desktop Host 独立拥有 Tauri、窗口/托盘/菜单、桌面 UI、桌面通知、安装包/签名/自动更新、桌面专属生命周期与 OS 集成。
+2. `agate-server` 继续拥有跨平台业务：Gateway/API、Provider、Routing、Protocol、Account、Storage、Authentication、数据库、配置迁移与 Core worker。
+3. Desktop Host 通过 Rust library API 调用共享 Core，不复制 Provider/数据库/路由业务，也不把 Tauri 依赖重新塞回 `agate-server`。
+4. headless `agate-server` binary 作为独立宿主形态保留；Android Kotlin host 继续留在当前 Android 仓库。
+5. `AGATE_PROXY_HOME`、`WORKBUDDY_PROXY_HOME` 旧名兼容、`USERPROFILE` / `HOME` 的 Desktop/headless 语义仍由共享 Core 保留；Android 私有目录继续由 JNI 显式注入。不得为了剥离 Desktop 而删除这些兼容路径。
+6. 未来若要拆仓，优先拆 Desktop Host 工程；共享 Core 是否单独成仓需另做版本、构建、发布和依赖策略 ADR，不在本批搬动仓库。
+
+### 29.3 Batch 4D-3B：PathProvider 最小路径边界
+
+本批只统一共享 Core 的通用配置目录与用户主目录解析，不做全仓机械替换。
+
+实现：
+- `paths.rs` 新增 crate-private `PathProvider` 最小接口与 `EnvironmentPathProvider`。
+- 环境配置目录覆盖顺序固定为：Android JNI `CONFIG_DIR_OVERRIDE` > `AGATE_PROXY_HOME` > 旧名 `WORKBUDDY_PROXY_HOME` > 默认 `{user_home}/.agate`。
+- `USERPROFILE` 优先于 `HOME`；用户主目录解析要求绝对路径、非空、无 NUL。无有效主目录时 `user_home_dir()` 返回 `None`，不回退当前工作目录。
+- `.workbuddy-proxy` 旧配置目录路径统一迁入 `paths::legacy_config_dir()`。没有有效用户主目录时，配置迁移与 pending 检查跳过旧桌面目录扫描，避免 Android 工作目录被误认为桌面 HOME。
+- `clash` 配置导入与 `cc-switch` 数据库定位复用 `paths::user_home_dir()`，不再各自重复读取 HOME / USERPROFILE。
+- Android JNI 注入仍使用 `OnceLock<PathBuf>`；没有通过 `std::env::set_var` 修改进程全局环境。
+- Provider 自己的凭证目录、Provider 专属环境变量与非 UTF-8 路径读取本轮不统一替换，避免改变第三方 CLI 兼容语义。
+
+本批变更文件：
+1. `agate-server/src/paths.rs`
+2. `agate-server/src/server/config/mod.rs`
+3. `agate-server/src/server/config_migration.rs`
+4. `agate-server/src/server/core/clash.rs`
+5. `agate-server/src/server/core/import_ccswitch.rs`
+6. `docs/ANDROID_KOTLIN_RUST_MIGRATION_HANDOFF.md`
+7. `docs/CORE_WORKER_LIFECYCLE_AUDIT_20261104.md`
+
+新增纯函数测试覆盖：
+- `USERPROFILE` 优先级与 `HOME` 回退；
+- 相对/空白 HOME 拒绝；
+- 新环境变量优先、旧变量兼容回退；
+- 旧桌面目录仅由有效用户主目录派生。
+
+### 29.4 本批未做事项与边界
+
+- 不把 `PathProvider` 扩展成通用文件系统服务，不负责 mkdir、权限、canonicalize、目录迁移执行或 SQLite 生命周期。
+- 不将 Provider 凭证路径统一改写；Provider 专属目录与环境变量仍由各 Provider adapter 自己负责。
+- 不改变 `AGATE_PROXY_HOME` / `WORKBUDDY_PROXY_HOME` 既有优先级，不改变 Android JNI 注入方式。
+- 不删除 Desktop/headless 兼容路径，不将 Tauri Host 代码搬入当前仓库。
+- 不改变 JNI ABI、Kotlin RuntimeController、FGS、Gateway stop、Sidecar ProcessAdapter 或 mihomo 资产矩阵。
+- 不添加 Windows CI target 或 CI Harness 专项；Windows ProcessAdapter 分支仍需未来在合适的跨平台验证批次补齐编译证据。
+
+### 29.5 验证状态
+
+- 本轮源码基线为 R37 修复态 `c1466fedd5`，R38 是候选，不是 Git commit。
+- 当前执行环境没有 Cargo/rustc/rustfmt/Gradle；本轮未执行 Rust 编译、Rust 单测、Windows target check、Android ABI build、Gradle、Instrumentation、模拟器或真机测试。
+- 已执行静态检查：变更文件清单核对、调用点引用检查、差异空白检查、归档结构/哈希校验、Patch dry-run / apply / 全树逐字节比对。
+- CI 通过前不得将 R38 标记为已验证。
+- R37 `stop_kernel()` 3 秒超时、kill_on_drop 的 OS 回收行为，R36/R37 headless shutdown 与 Sidecar 实际退出仍保持设备/宿主运行未证。
+
+### 29.6 后续主线顺序
+
+1. R38 Batch 4D-3B 集中 CI 验证。
+2. 继续 4D-3C：只审计剩余共享 Core 平台能力（网络/时间/文件系统等），按真实调用依赖分切片，不进行全仓机械抽象。
+3. 进入 4E：双实例互斥与资源所有权，重点覆盖 Core 实例、数据目录、数据库、端口、Sidecar 和后台任务。
+4. Phase 5：平台边界稳定后再做 JNI / UniFFI ADR。
+5. Phase 6：可观测性、压力/泄漏/崩溃恢复与发布门禁。
+
+Desktop Host 独立拆分作为仓库/产品结构工作单独规划，不阻塞共享 Core 的 4D-3B/4D-3C。真机与 Desktop 真实运行证据继续滚动收集，不作为独立 Rust 主线批次的前置阻塞。

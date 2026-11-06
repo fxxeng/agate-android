@@ -60,12 +60,7 @@ fn unsupported_label(app_type: &str) -> &'static str {
 /// 用户主目录（Windows 优先 USERPROFILE，与壳侧 / 各家凭证读取同一顺序，
 /// 不引入 dirs crate）。
 fn home_dir() -> Option<PathBuf> {
-    std::env::var("USERPROFILE")
-        .or_else(|_| std::env::var("HOME"))
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
+    crate::paths::user_home_dir()
 }
 
 /// cc-switch 的数据库路径（`~/.cc-switch/cc-switch.db`）。

@@ -1,10 +1,10 @@
 # Core Worker 生命周期审计与实施方案
 
 - 日期：2026-11-04
-- 当前已验证基线：R35 `9be13754c7797b90f5ac49024195b3451a116022`（CI Run `42010197461`）
+- 当前已验证基线：R37 修复态 `c1466fedd5`（CI Run `42066887374`；短 SHA 来自第 37 轮验证反馈）
 - 分支：`verify/arch-8faa5f5`
-- 状态：4D-2A/4D-2B 已由 R35 验证通过；4D-2C / headless 4D-2D 为当前源码候选，待 CI
-- 关联：`ANDROID_KOTLIN_RUST_MIGRATION_HANDOFF.md` 第 24.3 节
+- 状态：4D-2A/4D-2B、4D-2C/headless 4D-2D、4D-3A 已完成 CI 验证；4D-3B PathProvider 为当前源码候选，待 CI
+- 关联：`ANDROID_KOTLIN_RUST_MIGRATION_HANDOFF.md` 第 29 章
 
 ## 1. 结论
 
@@ -217,3 +217,38 @@ R37 候选开始抽取 Sidecar 的 OS 进程差异到 `server/core/sub_kernel/pr
 `stop_kernel()` 的 Child wait 现在有 3 秒上限，超时后依赖 `kill_on_drop(true)`。该路径必须在后续真实运行中确认子进程消失、端口释放；CI 编译/单测不能代替此证据。
 
 下一步平台抽象优先审计路径与数据目录：保留 Desktop/headless 的 `AGATE_PROXY_HOME`、旧名 `WORKBUDDY_PROXY_HOME`、`USERPROFILE` / `HOME` 优先级；Android 的私有目录由既有 JNI/runtime 配置入口提供，不应伪造桌面 HOME。Provider 自有环境变量不纳入同一个全局环境适配器。
+
+
+## 10. R37 验证收官与 Batch 4D-3B 路径能力边界（2026-11-06）
+
+### 10.1 R37 验证口径
+
+- 原候选 `db6f329f7b` 因 `download.rs` 将 `&File` 传入 `&Path` 参数而编译失败。
+- 验证方修复为 `&binary_path` 后提交 `c1466fedd5`，CI Run `42066887374` 双 Job success。
+- Rust 749 passed / 11 ignored；Kotlin/JVM 99/99；Instrumentation 2/2。
+- R37 新增的 ProcessAdapter 97 行没有新增单测；Rust 测试集合与 R36 逐名相同。
+- Windows `#[cfg(windows)]` ProcessAdapter 实现没有 Windows target 编译证据；`configure_std_command` 在 Linux/Android 目标产生一条新增 dead_code warning。
+- `stop_kernel()` 3 秒 wait timeout / `kill_on_drop` 仍只有编译证据，没有真实 OS 进程回收证据。
+
+### 10.2 Desktop Host 与共享 Core 的边界
+
+Desktop Host 应拥有 Tauri、窗口/托盘/菜单、桌面 UI、桌面通知、安装包/签名/自动更新与桌面生命周期；共享 `agate-server` 保留 Gateway、Provider、Routing、Protocol、Account、Storage、Authentication、配置迁移与 Core worker。
+
+当前 Android 仓库快照不含 `src-tauri` 或 Tauri backend。`agate_server::shutdown_core()` 仅提供统一 Core 退出 API，Desktop Host 必须在其真实退出 hook 调用；当前不能标记 Desktop hook 已接线。
+
+### 10.3 4D-3B PathProvider 最小切片
+
+- `paths.rs` 增加 crate-private `PathProvider` 与 `EnvironmentPathProvider`，收口配置目录覆盖和用户主目录解析。
+- 优先级：Android JNI config override > `AGATE_PROXY_HOME` > `WORKBUDDY_PROXY_HOME` > `{USERPROFILE/HOME}/.agate`。
+- `USERPROFILE` 优先于 `HOME`；`user_home_dir()` 只返回有效绝对路径，不回退当前工作目录。
+- `.workbuddy-proxy` 旧目录派生迁入 `paths::legacy_config_dir()`；无有效 HOME 时不再把 `.` 当旧桌面目录扫描。
+- Clash 配置导入和 cc-switch 数据库定位复用统一 `user_home_dir()`。
+- Provider 凭证路径、Provider 专属环境变量和非 UTF-8 路径逻辑暂不机械替换，避免破坏上游 CLI 兼容。
+
+### 10.4 本批验证状态
+
+R38 是基于 R37 修复态的候选。当前环境未运行 Cargo/rustc/rustfmt/Gradle；Rust 编译、单测、Android ABI、Windows target、Gradle、Instrumentation、模拟器和真机均待验证。静态检查不能替代 CI。
+
+### 10.5 后续
+
+先集中验证 4D-3B，再推进 4D-3C 剩余平台能力边界，随后 4E 双实例互斥与资源所有权。Desktop Host 拆分单独规划，不阻塞共享 Core 主线。

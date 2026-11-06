@@ -13,6 +13,45 @@
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
+/// 平台路径能力的最小边界。
+///
+/// 当前 Desktop 与 headless 都遵循环境变量约定；Android 不伪造 HOME，
+/// 而是在 Core bootstrap 前通过 JNI 设置 config_dir override。
+/// Provider 只负责读取宿主环境，不创建目录、不写环境变量，也不缓存可变状态。
+pub(crate) trait PathProvider: Send + Sync {
+    fn config_dir_override(&self) -> Option<PathBuf>;
+    fn user_home_dir(&self) -> Option<PathBuf>;
+}
+
+/// 当前共享 Core 的环境路径适配器。
+///
+/// Windows 优先 USERPROFILE，其他宿主也兼容 USERPROFILE 后回退 HOME，
+/// 保持既有桌面/ headless 路径顺序。后续若 Desktop Host 需要显式注入
+/// 路径，可在宿主边界设置 config_dir override，而不是改写进程环境。
+struct EnvironmentPathProvider;
+
+impl PathProvider for EnvironmentPathProvider {
+    fn config_dir_override(&self) -> Option<PathBuf> {
+        resolve_config_dir_override(
+            std::env::var("AGATE_PROXY_HOME").ok().as_deref(),
+            std::env::var("WORKBUDDY_PROXY_HOME").ok().as_deref(),
+        )
+    }
+
+    fn user_home_dir(&self) -> Option<PathBuf> {
+        resolve_user_home(
+            std::env::var("USERPROFILE").ok().as_deref(),
+            std::env::var("HOME").ok().as_deref(),
+        )
+    }
+}
+
+static ENVIRONMENT_PATH_PROVIDER: EnvironmentPathProvider = EnvironmentPathProvider;
+
+fn path_provider() -> &'static dyn PathProvider {
+    &ENVIRONMENT_PATH_PROVIDER
+}
+
 /// Android 由 JNI 在 Core bootstrap 前注入应用私有目录。
 ///
 /// 不再通过 `std::env::set_var` 修改进程全局环境：Rust 运行时可能已经有
@@ -54,11 +93,11 @@ fn validate_config_dir_path(path: &Path) -> Result<(), String> {
 
 /// 配置目录：Android 显式覆盖优先，其次环境变量，最后 `{用户主目录}/.agate`。
 pub fn config_dir() -> PathBuf {
-    CONFIG_DIR_OVERRIDE.get().cloned().unwrap_or_else(|| {
-        env_path("AGATE_PROXY_HOME")
-            .or_else(|| env_path("WORKBUDDY_PROXY_HOME")) // 旧名兼容读
-            .unwrap_or_else(default_config_dir)
-    })
+    CONFIG_DIR_OVERRIDE
+        .get()
+        .cloned()
+        .or_else(|| path_provider().config_dir_override())
+        .unwrap_or_else(default_config_dir)
 }
 
 /// 返回可用于定位旧桌面数据的用户主目录。
@@ -67,10 +106,19 @@ pub fn config_dir() -> PathBuf {
 /// Android 服务的工作目录不是用户主目录；把 `.` 拼成 `~/.xxx` 会让启动期
 /// 导入器误扫应用工作目录，并可能把「没有找到旧文件」永久记成已迁移。
 pub fn user_home_dir() -> Option<PathBuf> {
-    resolve_user_home(
-        std::env::var("USERPROFILE").ok().as_deref(),
-        std::env::var("HOME").ok().as_deref(),
-    )
+    path_provider().user_home_dir()
+}
+
+/// 旧版 `.workbuddy-proxy` 配置目录。
+///
+/// 没有有效的绝对用户主目录时返回 None；Android 应用工作目录不是桌面用户
+/// 主目录，不能回退到 `.` 扫描或迁移旧桌面数据。
+pub(crate) fn legacy_config_dir() -> Option<PathBuf> {
+    legacy_config_dir_from_home(user_home_dir())
+}
+
+fn legacy_config_dir_from_home(home: Option<PathBuf>) -> Option<PathBuf> {
+    home.map(|home| home.join(".workbuddy-proxy"))
 }
 
 fn resolve_user_home(userprofile: Option<&str>, home: Option<&str>) -> Option<PathBuf> {
@@ -86,28 +134,25 @@ fn resolve_user_home(userprofile: Option<&str>, home: Option<&str>) -> Option<Pa
 /// 是否存在显式配置目录覆盖（Android JNI 注入或桌面/headless 环境变量）。
 /// 配置迁移需要据此判断用户是否已经指定独立数据目录。
 pub fn has_config_dir_override() -> bool {
-    CONFIG_DIR_OVERRIDE.get().is_some()
-        || env_path("AGATE_PROXY_HOME").is_some()
-        || env_path("WORKBUDDY_PROXY_HOME").is_some()
+    CONFIG_DIR_OVERRIDE.get().is_some() || path_provider().config_dir_override().is_some()
 }
 
-/// 读环境变量里的目录覆盖：未设置 / 全空白一律当未设置
-fn env_path(name: &str) -> Option<PathBuf> {
-    let custom = std::env::var(name).ok()?;
-    let trimmed = custom.trim();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(PathBuf::from(trimmed))
-    }
+/// 解析配置目录覆盖：新变量优先，旧变量只作为兼容回退；空白视为未设置。
+fn resolve_config_dir_override(primary: Option<&str>, legacy: Option<&str>) -> Option<PathBuf> {
+    [primary, legacy]
+        .into_iter()
+        .flatten()
+        .map(str::trim)
+        .find(|value| !value.is_empty())
+        .map(PathBuf::from)
 }
 
 /// 默认配置目录：`{用户主目录}/.agate`
 fn default_config_dir() -> PathBuf {
-    let home = std::env::var("USERPROFILE")
-        .or_else(|_| std::env::var("HOME"))
-        .unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home).join(".agate")
+    path_provider()
+        .user_home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".agate")
 }
 
 /// 旧桌面设置文件的路径（`{config_dir}/desktop-settings.json`）。
@@ -125,7 +170,7 @@ pub fn legacy_desktop_settings_file() -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::{resolve_user_home, validate_config_dir_path};
+    use super::{legacy_config_dir_from_home, resolve_config_dir_override, resolve_user_home, validate_config_dir_path};
     use std::path::{Path, PathBuf};
 
     #[test]
@@ -152,6 +197,41 @@ mod tests {
             resolve_user_home(Some("relative/profile"), Some("/home/fallback")),
             Some(PathBuf::from("/home/fallback")),
         );
+    }
+
+    #[test]
+    fn user_home_prefers_userprofile_then_home_and_rejects_relative_values() {
+        assert_eq!(
+            resolve_user_home(Some("/profile/agate"), Some("/home/agate")),
+            Some(PathBuf::from("/profile/agate")),
+        );
+        assert_eq!(
+            resolve_user_home(Some("relative/profile"), Some("/home/agate")),
+            Some(PathBuf::from("/home/agate")),
+        );
+        assert_eq!(resolve_user_home(Some("relative/profile"), None), None);
+    }
+
+    #[test]
+    fn legacy_config_dir_requires_a_valid_user_home() {
+        assert_eq!(
+            legacy_config_dir_from_home(Some(PathBuf::from("/home/agate"))),
+            Some(PathBuf::from("/home/agate/.workbuddy-proxy")),
+        );
+        assert_eq!(legacy_config_dir_from_home(None), None);
+    }
+
+    #[test]
+    fn config_dir_override_prefers_new_name_and_falls_back_to_legacy() {
+        assert_eq!(
+            resolve_config_dir_override(Some("/data/agate"), Some("/old/agate")),
+            Some(PathBuf::from("/data/agate")),
+        );
+        assert_eq!(
+            resolve_config_dir_override(Some("  "), Some("/old/agate")),
+            Some(PathBuf::from("/old/agate")),
+        );
+        assert_eq!(resolve_config_dir_override(Some(" "), Some("")), None);
     }
 
     #[test]
