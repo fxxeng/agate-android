@@ -1,4 +1,13 @@
-//! `POST /v1/images/generations`：OpenAI Images 形态的生图入口。
+//! OpenAI Images 的两个入口：`POST /v1/images/generations`（生图）与
+//! `POST /v1/images/edits`（带参考图的编辑）。
+//!
+//! ── 两个入口共用一个 `execute` ────────────────────────────────
+//! 它们只在**入参形态**上不同：生图是纯 JSON，编辑可能是 multipart（参考图是
+//! 文件字段）。所以编辑多一步 [`super::image_input::parse`]，把三种上传形态收成
+//! 与生图同构的 JSON，之后从校验到记账走的是同一段代码 —— 差别的全部内容就是
+//! [`ImageOperation`] 这一个枚举值，它在三个地方生效：默认模型从「能生图的里挑」
+//! 变成「能编辑的里挑」、能力门禁的错误码与文案、以及最终调
+//! `generate_images()` 还是 `edit_images()`。
 //!
 //! ── 与对话入口的分工 ──────────────────────────────────────────
 //! 这个 handler 只做三件事，其余全交给既有链路：
@@ -8,9 +17,9 @@
 //!      —— 与 `/v1/chat/completions` 是同一套目录 / 别名 / 白名单语义，只是
 //!      允许图片模型（对话入口反过来会拒绝图片模型，见那里 `image_generation_required`
 //!      那条门禁）；
-//!   ③ **转发与记账**：`upstream().generate_images()` 走同一条转发链（多账号
-//!      轮换、退避、冷却、手动终止都在那儿），响应再经 `image_output::normalize`
-//!      归一成标准的 `{created, data:[…]}`。
+//!   ③ **转发与记账**：`upstream().generate_images()` / `edit_images()` 走同一条
+//!      转发链（多账号轮换、退避、冷却、手动终止都在那儿），响应再经
+//!      `image_output::normalize` 归一成标准的 `{created, data:[…]}`。
 //!
 //! ── 为什么响应还要归一（上游不已经是 OpenAI 形态了吗）─────────────
 //! 不完全是。各家有三种「不是标准 OpenAI」的形态（异步任务、信封、对话流里
@@ -19,10 +28,11 @@
 //! 客户端（在国内网络里）根本连不上那个 CDN。所以网关**下载并转成 b64**（或转
 //! 存到本机缓存换一个我们自己的短链接），见 `image_output` 的模块头。
 //!
-//! ── 本文件目前只有「生成」这一半 ──────────────────────────────
-//! `/v1/images/edits`（带参考图的编辑）需要 multipart 解析，是下一批的事。
-//! 现在**不挂载**那条路由：它会是 404，而不是一个「接受请求但永远失败」的入口
-//! —— 后者最招人骂（看起来支持、点了没反应）。
+//! ── 编辑入口的参考图从哪来 ────────────────────────────────────
+//! 不在这个文件里：multipart 解析、外链下载、data URL 内联与「这真是张图片」的
+//! 校验全在 [`super::image_input`]。这里只负责在 `validate` 之后调它的 `prepare`
+//! —— 顺序是「参数对不对 → 模型有没有通道 → 再去下载参考图」，前三者都是几微秒
+//! 的判断，下载要几秒。
 
 use std::sync::Arc;
 
@@ -70,12 +80,25 @@ pub(super) fn parameter_supported(field: &str) -> bool {
     )
 }
 
+/// 「我们认识这个字段，但没人实现」的统一说法。
+///
+/// 两个入口的 `validate` 与 multipart 的 `parse` 共用这一份，免得同一件事在
+/// 两条路径上有两种措辞（客户端从 multipart 上来时先过 `parse`，从 JSON 上来时
+/// 先过 `validate`，措辞不一致会被当成两个不同的问题）。
+pub(super) fn mask_unsupported() -> GatewayError {
+    GatewayError::bad_request("当前图片接口不支持 mask 或 input_fidelity，请在 prompt 中描述修改范围")
+}
+
 /// 入口参数校验：把不认识的、越界的、还没实现的一律挡在网关里。
 ///
 /// 顺序有意义：**先判「能不能干」再判「参数对不对」**。`stream:true` 与
 /// `partial_images` 是「本网关不支持」，不是「你参数写错了」—— 两者都给 400，
 /// 但文案不同，用户看到的下一步操作也不同。
-pub(super) fn validate(payload: &mut Value) -> Result<(), GatewayError> {
+///
+/// `operation` 只影响三处判据：参考图是必需还是禁止、`images` 算不算已知字段、
+/// 以及文案里那句「图片生成 / 图片编辑」。其余约束两个入口是同一条 —— 它们背后
+/// 是同一批上游接口，能接受的参数本来就一样。
+pub(super) fn validate(payload: &mut Value, operation: ImageOperation) -> Result<(), GatewayError> {
     if !payload.is_object() {
         return Err(GatewayError::bad_request("请求体必须是 JSON 对象"));
     }
@@ -164,34 +187,64 @@ pub(super) fn validate(payload: &mut Value) -> Result<(), GatewayError> {
         .get("stream")
         .is_some_and(|value| !value.is_null() && value != &Value::Bool(false))
     {
-        return Err(GatewayError::bad_request(
-            "当前图片生成仅支持非流式响应，请使用 stream=false",
-        ));
+        return Err(GatewayError::bad_request(format!(
+            "当前{}仅支持非流式响应，请使用 stream=false",
+            operation.label()
+        )));
     }
     if payload
         .get("partial_images")
         .is_some_and(|value| !value.is_null() && value.as_u64() != Some(0))
     {
+        return Err(GatewayError::bad_request(format!(
+            "当前{}不支持 partial_images",
+            operation.label()
+        )));
+    }
+    let editing = operation == ImageOperation::Edit;
+    // 蒙版类参数两个入口都拒，且**先于**未知参数检查：让用户看到的是「不支持
+    // mask」而不是「不支持参数 mask」—— 前者说明我们认识这个字段，只是不做。
+    if ["mask", "input_fidelity"]
+        .iter()
+        .any(|key| payload.get(*key).is_some_and(|value| !value.is_null()))
+    {
+        return Err(mask_unsupported());
+    }
+    if payload.get("image").is_some() {
+        return Err(GatewayError::bad_request(if editing {
+            "JSON 请求体的参考图请放在 images[].image_url；multipart 表单可直接用 image 文件字段"
+        } else {
+            "参考图编辑走 POST /v1/images/edits，/generations 只接受纯文本生图"
+        }));
+    }
+    if !editing && payload.get("images").is_some() {
         return Err(GatewayError::bad_request(
-            "当前图片生成不支持 partial_images",
+            "参考图编辑走 POST /v1/images/edits（参考图放在 images[].image_url 或 multipart 的 image 字段），/generations 只接受纯文本生图",
         ));
     }
-    if payload.get("image").is_some() || payload.get("images").is_some() {
-        return Err(GatewayError::bad_request(
-            "参考图编辑走 POST /v1/images/edits（当前版本尚未提供），/generations 只接受纯文本生图",
-        ));
+    if editing
+        && !payload
+            .get("images")
+            .and_then(Value::as_array)
+            .is_some_and(|images| !images.is_empty() && images.len() <= 16)
+    {
+        return Err(GatewayError::bad_request("图片编辑需要 1 到 16 张参考图"));
     }
     // 默认给 b64_json：这是「客户端拿到就能显示」的那一种。要 url 也可以，
     // 但那时网关仍会把图片下载下来换成本机链接（见 `image_output`）。
     if payload.get("response_format").is_none_or(Value::is_null) {
         payload["response_format"] = json!("b64_json");
     }
-    if let Some(field) = payload
-        .as_object()
-        .and_then(|object| object.keys().find(|key| !parameter_supported(key)))
-    {
+    // `images` 只在编辑入口算已知字段：生图那边它已经被上面那条明确拒过了，
+    // 走到这里还能撞上它说明是别的拼写（`image_urls` 之类），仍按未知参数报。
+    if let Some(field) = payload.as_object().and_then(|object| {
+        object
+            .keys()
+            .find(|key| !parameter_supported(key) && !(editing && key.as_str() == "images"))
+    }) {
         return Err(GatewayError::bad_request(format!(
-            "当前图片生成不支持参数 {field}"
+            "当前{}不支持参数 {field}",
+            operation.label()
         )));
     }
     if payload
@@ -203,16 +256,17 @@ pub(super) fn validate(payload: &mut Value) -> Result<(), GatewayError> {
     Ok(())
 }
 
-/// 解析要生成的模型（与对话入口同一套目录语义，只是放行图片模型）。
+/// 解析要使用的模型（与对话入口同一套目录语义，只是放行图片模型）。
 fn resolve_model(
     state: &ServerState,
     payload: &mut Value,
     scope: Option<&KeyScope>,
+    operation: ImageOperation,
 ) -> Result<String, GatewayError> {
     if pipeline::model_field_text(payload).trim().is_empty() {
-        // 没点名模型 → 从目录里挑**第一个能生图的**（且这把 Key 允许的家）。
+        // 没点名模型 → 从目录里挑**第一个能做这件操作的**（且这把 Key 允许的家）。
         // 挑不出来就给 503 并说清下一步：这不是「你参数错了」，是「网关里没有
-        // 能生图的东西」—— 让人去加账号 / 换插件，而不是反复改 prompt。
+        // 能生图 / 能编辑的东西」—— 让人去加账号 / 换插件，而不是反复改 prompt。
         let models = crate::server::core::providers::catalog::models_response(state.store(), scope);
         let default = models
             .get("data")
@@ -223,12 +277,9 @@ fn resolve_model(
                         return false;
                     }
                     let model = crate::server::core::models::model_id(item);
-                    crate::server::core::providers::images::operation_providers(
-                        &model,
-                        ImageOperation::Generate,
-                    )
-                    .iter()
-                    .any(|provider| key_scope::allows_provider(scope, provider))
+                    crate::server::core::providers::images::operation_providers(&model, operation)
+                        .iter()
+                        .any(|provider| key_scope::allows_provider(scope, provider))
                 })
             })
             .and_then(|item| item.get("id"))
@@ -236,7 +287,10 @@ fn resolve_model(
         let Some(default) = default else {
             return Err(GatewayError::with_status(
                 503,
-                "没有可用的图片生成模型：请添加并启用支持生图的账号，并更新模型目录",
+                format!(
+                    "没有可用的{}模型：请添加并启用支持该能力的账号，并更新模型目录",
+                    operation.label()
+                ),
             ));
         };
         payload["model"] = default;
@@ -254,19 +308,15 @@ fn resolve_model(
         )
         .with_code("model_not_found"));
     }
-    let candidates =
-        crate::server::core::providers::images::operation_providers(&requested, ImageOperation::Generate);
+    let candidates = crate::server::core::providers::images::operation_providers(&requested, operation);
     if !candidates
         .iter()
         .any(|provider| key_scope::allows_provider(scope, provider))
     {
         return Err(GatewayError::bad_request(
-            crate::server::core::providers::images::unsupported_message(
-                &requested,
-                ImageOperation::Generate,
-            ),
+            crate::server::core::providers::images::unsupported_message(&requested, operation),
         )
-        .with_code(ImageOperation::Generate.unsupported_code()));
+        .with_code(operation.unsupported_code()));
     }
     Ok(requested)
 }
@@ -280,8 +330,9 @@ pub async fn generations(
 ) -> Response {
     let scope = key_scope.map(|Extension(scope)| scope);
     let started_at = logging::now_ms();
-    let client = crate::server::core::client::classify(&pipeline::user_agent_of(&headers));
-    let mut payload = match serde_json::from_slice::<Value>(&body) {
+    let ua = pipeline::user_agent_of(&headers);
+    let client = crate::server::core::client::classify(&ua);
+    let payload = match serde_json::from_slice::<Value>(&body) {
         Ok(payload) if payload.is_object() => payload,
         _ => {
             let error = GatewayError::bad_request("请求体必须是有效 JSON 对象");
@@ -289,22 +340,97 @@ pub async fn generations(
             return error.payload_response();
         }
     };
+    // 调试落盘放在校验**之前**：校验失败的请求恰恰是最需要看原文的那一类。
+    pipeline::write_debug_files(&body, "POST", ImageOperation::Generate.path(), &ua);
+    handle(
+        state,
+        payload,
+        ImageOperation::Generate,
+        headers,
+        scope,
+        client,
+        started_at,
+    )
+    .await
+}
+
+/// POST /v1/images/edits
+///
+/// 与 [`generations`] 的**全部**差异在 [`super::image_input::parse`] 这一行：
+/// 它把 multipart / JSON 两种形态收成同构 JSON（参考图内联成 data URL）。之后
+/// 走到的是同一个 [`handle`]。
+pub async fn edits(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    key_scope: Option<Extension<KeyScope>>,
+    request: axum::extract::Request,
+) -> Response {
+    let scope = key_scope.map(|Extension(scope)| scope);
+    let started_at = logging::now_ms();
+    let client = crate::server::core::client::classify(&pipeline::user_agent_of(&headers));
+    let payload = match super::image_input::parse(request, &state).await {
+        Ok(payload) => payload,
+        Err(error) => {
+            pipeline::record_early_failure(&state, started_at, "", "", &client, &error);
+            return error.payload_response();
+        }
+    };
+    handle(
+        state,
+        payload,
+        ImageOperation::Edit,
+        headers,
+        scope,
+        client,
+        started_at,
+    )
+    .await
+}
+
+/// 两个入口共用的一段：校验 → 解析模型 → （编辑时）准备参考图 → 转发 → 记账。
+async fn handle(
+    state: ServerState,
+    mut payload: Value,
+    operation: ImageOperation,
+    headers: HeaderMap,
+    scope: Option<KeyScope>,
+    client: String,
+    started_at: i64,
+) -> Response {
     let client_model = pipeline::model_field_text(&payload);
-    // **先校验参数、再解析模型**：顺序与上游一致，理由是错误文案的优先级 ——
-    // 「prompt 缺失」「stream 不支持」这类问题用户自己能改，而「模型没有生图
-    // 通道」要去管理页折腾。先报前者，用户改完一次就通了；反过来会让人先以为
-    // 是模型配错了。
-    let model = match validate(&mut payload)
-        .and_then(|()| resolve_model(&state, &mut payload, scope.as_ref()))
-    {
+    // **先校验参数、再解析模型、最后才去碰参考图**：三者的耗时差三个数量级
+    // （微秒 / 毫秒 / 秒级网络）。顺序反过来的症状是「prompt 写错了也要先等几秒
+    // 下载」。错误文案的优先级也是这个方向 —— 「prompt 缺失」「stream 不支持」
+    // 用户自己能改，而「模型没有生图通道」要去管理页折腾；先报前者，改完一次
+    // 就通了，反过来会让人先以为模型配错了。
+    let resolved = validate(&mut payload, operation)
+        .and_then(|()| resolve_model(&state, &mut payload, scope.as_ref(), operation));
+    let model = match resolved {
         Ok(model) => model,
         Err(error) => {
             pipeline::record_early_failure(&state, started_at, &client_model, "", &client, &error);
             return error.payload_response();
         }
     };
-    pipeline::write_debug_files(&body, "POST", "/v1/images/generations", &pipeline::user_agent_of(&headers));
-    match execute(&state, payload, headers, scope, client, started_at, model, client_model).await {
+    if operation == ImageOperation::Edit {
+        if let Err(error) = super::image_input::prepare(&mut payload).await {
+            pipeline::record_early_failure(&state, started_at, &client_model, "", &client, &error);
+            return error.payload_response();
+        }
+    }
+    match execute(
+        &state,
+        payload,
+        operation,
+        headers,
+        scope,
+        client,
+        started_at,
+        model,
+        client_model,
+    )
+    .await
+    {
         Ok(body) => pipeline::json_response(body),
         Err(error) => error.payload_response(),
     }
@@ -314,6 +440,7 @@ pub async fn generations(
 async fn execute(
     state: &ServerState,
     payload: Value,
+    operation: ImageOperation,
     headers: HeaderMap,
     scope: Option<KeyScope>,
     client: String,
@@ -321,9 +448,6 @@ async fn execute(
     model: String,
     client_model: String,
 ) -> Result<Value, GatewayError> {
-    // 请求体在调试模式下抄一份（与对话入口同一份开关，见 `capture_raw_body`）
-    let raw = serde_json::to_vec(&payload)
-        .map_err(|_| GatewayError::bad_request("图片请求无法序列化"))?;
     let telemetry = Arc::new(RequestTelemetry::with_id());
     let id = telemetry.id();
     state.request_stats().record_started(
@@ -345,10 +469,19 @@ async fn execute(
         id,
         started_at,
     ));
-    let raw_request = pipeline::capture_raw_body(&raw);
+    // 请求体在调试模式下抄一份（与对话入口同一份开关）。
+    // **只在调试模式开着时序列化**：编辑请求的 body 里是内联的参考图，可达十几
+    // MiB —— 为一个注定是 `None` 的结果先整份串行化一遍，是纯浪费。
+    let raw_request = if crate::server::core::debug_traffic::enabled() {
+        serde_json::to_vec(&payload)
+            .ok()
+            .and_then(|raw| pipeline::capture_raw_body(&raw))
+    } else {
+        None
+    };
     let request = ForwardRequest {
         body: payload.clone(),
-        // 生图恒为非流式：客户端请求里这个字段已被 `validate` 拒掉（只允许 false）
+        // 生图 / 编辑恒为非流式：客户端请求里这个字段已被 `validate` 拒掉（只允许 false）
         stream: false,
         // 不去重：生图的结果是**消耗性**的，两次相同 prompt 的请求本来就该
         // 各生成一张（用户点两次「再来一张」是正常操作）。去重会把第二次请求
@@ -362,7 +495,10 @@ async fn execute(
         proxy_override: None,
         image: None,
     };
-    let outcome = state.upstream().generate_images(request).await;
+    let outcome = match operation {
+        ImageOperation::Generate => state.upstream().generate_images(request).await,
+        ImageOperation::Edit => state.upstream().edit_images(request).await,
+    };
     let outcome = match outcome {
         Ok(ForwardOutcome::Completion { body }) => {
             // 归一化（下载 / 转码 / 换本机链接）是 CPU+网络密集型，可能超时，
@@ -401,4 +537,71 @@ async fn execute(
     );
     guard.complete();
     outcome
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// 生图入口必须明确拒绝参考图：两个入口各管一件事，混着来会让「为什么
+    /// 我的参考图没生效」变成一个要靠猜的问题。
+    #[test]
+    fn generation_rejects_reference_images() {
+        let mut body = json!({ "prompt": "画一只猫", "images": [{ "image_url": "data:image/png;base64,AA" }] });
+        let error = validate(&mut body, ImageOperation::Generate).unwrap_err();
+        assert!(error.message.contains("/v1/images/edits"), "{}", error.message);
+
+        let mut body = json!({ "prompt": "画一只猫", "image": "data:image/png;base64,AA" });
+        assert!(validate(&mut body, ImageOperation::Generate).is_err());
+    }
+
+    /// 编辑入口没有参考图就不是编辑 —— 让它过去只会收到一句上游的 400。
+    #[test]
+    fn editing_requires_reference_images() {
+        let mut body = json!({ "prompt": "把背景换成蓝色" });
+        let error = validate(&mut body, ImageOperation::Edit).unwrap_err();
+        assert!(error.message.contains("参考图"), "{}", error.message);
+
+        let mut body = json!({ "prompt": "把背景换成蓝色", "images": [] });
+        assert!(validate(&mut body, ImageOperation::Edit).is_err());
+
+        let mut body = json!({
+            "prompt": "把背景换成蓝色",
+            "images": [{ "image_url": "data:image/png;base64,AA" }],
+        });
+        assert!(validate(&mut body, ImageOperation::Edit).is_ok());
+    }
+
+    /// `images` 只在编辑入口算已知字段；生图那边是「走错门」而不是「不认识的
+    /// 参数」。两条报错文案不同，用户看到的下一步也不同。
+    #[test]
+    fn unknown_field_message_is_operation_aware() {
+        let mut body = json!({ "prompt": "画一只猫", "image_urls": ["x"] });
+        let error = validate(&mut body, ImageOperation::Generate).unwrap_err();
+        assert!(error.message.contains("图片生成"), "{}", error.message);
+
+        let mut body = json!({
+            "prompt": "把背景换成蓝色",
+            "images": [{ "image_url": "data:image/png;base64,AA" }],
+            "image_urls": ["x"],
+        });
+        let error = validate(&mut body, ImageOperation::Edit).unwrap_err();
+        assert!(error.message.contains("图片编辑"), "{}", error.message);
+    }
+
+    /// 蒙版类参数在**两个**入口都拒，且报「不支持 mask」而不是「不支持参数
+    /// mask」—— 前者说明我们认识它，只是不做。
+    #[test]
+    fn mask_is_rejected_with_an_honest_message() {
+        for operation in [ImageOperation::Generate, ImageOperation::Edit] {
+            let mut body = json!({ "prompt": "画一只猫", "mask": "data:image/png;base64,AA" });
+            if operation == ImageOperation::Edit {
+                body["images"] = json!([{ "image_url": "data:image/png;base64,AA" }]);
+            }
+            let error = validate(&mut body, operation).unwrap_err();
+            assert!(error.message.contains("mask"), "{}", error.message);
+            assert!(error.message.contains("prompt 中描述"), "{}", error.message);
+        }
+    }
 }

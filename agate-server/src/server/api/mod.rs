@@ -92,7 +92,9 @@ pub mod image_compress;
 pub mod image_assets;
 /// 生图响应归一（下载 / 转码 / 换本机链接），见该文件模块头。
 pub mod image_output;
-/// `POST /v1/images/generations` 入口。
+/// 图片编辑的入参归一（multipart / JSON / 外链 → data URL），见该文件模块头。
+pub mod image_input;
+/// `POST /v1/images/generations` 与 `POST /v1/images/edits` 入口。
 pub mod images;
 // 「从其他工具导入」的扫描接口（当前来源：cc-switch；存储读取见
 // `core::import_ccswitch`）

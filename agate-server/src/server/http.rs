@@ -842,9 +842,12 @@ pub fn gateway_router(state: ServerState) -> Router {
         .route("/v1/responses", post(api::protocol::responses_endpoint))
         .route("/v1/messages", post(api::protocol::messages_endpoint))
         .route("/v1/messages/count_tokens", post(api::chat::count_tokens))
-        // 生图：与对话入口同一条转发链（多账号轮换 / 冷却 / 退避 / 终止 / 记账），
-        // 只在「怎么构造请求」与「怎么读响应」两处不同，见 `api::images` 模块头。
+        // 生图与图片编辑：与对话入口同一条转发链（多账号轮换 / 冷却 / 退避 /
+        // 终止 / 记账），只在「怎么构造请求」与「怎么读响应」两处不同，见
+        // `api::images` 模块头。编辑多一步参考图归一（multipart / 外链 → data URL），
+        // 见 `api::image_input`。
         .route("/v1/images/generations", post(api::images::generations))
+        .route("/v1/images/edits", post(api::images::edits))
         .layer(middleware::from_fn(require_api_key))
         .with_state(state);
     open.merge(guarded)

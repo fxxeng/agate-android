@@ -56,7 +56,12 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"
 # 依赖树里（image 拉的），声明出来直接复用；tar 解析手写（几十行，见 risk.rs）
 flate2 = "1"
 url = "2"
-axum = "0.8"
+# `multipart` 只服务于 `/v1/images/edits`：OpenAI 兼容客户端上传参考图一律发
+# multipart/form-data（`image` 是文件字段，`prompt`/`size` 是普通字段）。
+# 理由与下面 reqwest 那条一样 —— **不手搓 boundary**：参考图是二进制，朴素地按
+# `--boundary` 切分会被图片里恰巧出现的同名字节切错，而错位的症状是「上传成功
+# 但图是花的」，比起一个明确的 400 更难查。
+axum = { version = "0.8", features = ["multipart"] }
 # 出站请求：rustls（纯 Rust，不依赖系统 openssl）+ socks5 出网代理。
 # `system-proxy` 打开 hyper-util 的系统代理匹配器（Windows / macOS 系统设置 +
 # 环境变量）：只有「跟随系统代理」那条出口（`egress::client_for_system_proxy`，
