@@ -12,7 +12,7 @@ use crate::server::core::model_rules;
 use crate::server::core::models::{list_item, list_response_from, model_id, suggest_from};
 use crate::server::core::providers::{kind_from_id, kind_id, ProviderKind};
 
-use super::routing::{builtin_target, entry_id_in_manifest};
+use super::routing::{builtin_target, entry_id_in_manifest, split_provider_prefix};
 use super::{active_manifests, aggregate_source, manifest_for, refresh_meta};
 
 /// 一家会对外广告哪些名字：清单里原生的上游 id + **已启用**的映射别名。
@@ -45,16 +45,37 @@ fn advertised_names(
         Some(kind) => super::routing::renamed_away_pairs(rules, kind, manifest),
         None => Vec::new(),
     };
-    let mut names: Vec<String> = manifest.iter()
+    // ── 同一对外名在这一家只广告一次（2026-11-07 真机反馈）──────────
+    // 重复的来源有两类，都在这一处收口：
+    //   ① 清单本身同一 id 出现两次（上游目录形态多变；`manage_view` 早有
+    //      `claimed` 兜底，说明这不是假想）；
+    //   ② `provider` 缺省的**全局映射**对每一家都生效（`map_or(true, ..)`
+    //      是它的语义），别名恰好与这家某个原生 id 同名 —— 旧残留
+    //      `sn-glm-5-3 → glm-5.3` 撞上 ZCode 原生的 `glm-5.3` 就是这种。
+    // 旧写法先 `collect()` 原生清单再 `extend()` 别名，两种重复都会留下。
+    // Model 形态被 `public_builtin_items` 的跨家 `claimed` 吃掉，Provider /
+    // Hybrid 的带前缀分支却各推一条 —— 界面上就是「同一模型重复显示」
+    // （ZCode 11 条清单变 13 条）。两个相同的对外名没有语义差别，且解析时
+    // `builtin_target` 本来就先按清单 id 匹配、撞名的别名根本不会生效。
+    // 按大小写不敏感去重，保留先出现的原生 id。
+    let mut names: Vec<String> = Vec::new();
+    let mut claimed: HashSet<String> = HashSet::new();
+    for id in manifest.iter()
         .map(model_id)
-        .filter(|id| {
-            !renamed.iter().any(|(hidden, _)| hidden.eq_ignore_ascii_case(id))
-        })
-        .collect();
-    names.extend(rules.mappings.iter()
+        .filter(|id| !renamed.iter().any(|(hidden, _)| hidden.eq_ignore_ascii_case(id)))
+    {
+        if claimed.insert(id.to_lowercase()) {
+            names.push(id);
+        }
+    }
+    for mapping in rules.mappings.iter()
         .filter(|mapping| mapping.enabled)
         .filter(|mapping| mapping.provider.as_deref().map_or(true, |owner| owner == provider))
-        .map(|mapping| mapping.alias.clone()));
+    {
+        if claimed.insert(mapping.alias.to_lowercase()) {
+            names.push(mapping.alias.clone());
+        }
+    }
     names
 }
 
@@ -275,18 +296,69 @@ pub fn advertised_model_ids(store: &AccountStore) -> Vec<String> {
 /// 自定义家的改名对白名单/门禁不生效，症状是「内置家改名后能调、自定义家改名后
 /// 404」—— 同一个功能两套行为，最难查。
 pub fn synonymous_names(name: &str) -> Vec<String> {
-    let mut out = synonyms_in(&model_rules::current(), name);
-    for provider in crate::server::core::custom_providers::list() {
-        for synonym in crate::server::core::custom_providers::synonymous_models(&provider, name) {
+    synonyms_expanded(
+        &model_rules::current(),
+        &crate::server::core::custom_providers::list(),
+        name,
+    )
+}
+
+/// 请求名在入口判定里要按哪些写法去比对。
+///
+/// `provider/model` 是 `/v1/models` 在 Provider / Hybrid 形态下给出的「锁家」
+/// 写法（见 `ListMode`），转发层早已用 `routing::split_provider_prefix` 把它
+/// 剥成裸名。但入口的三道判定（是否全关 / 清单里有没有 / Key 白名单）都发生在
+/// 转发层之前、按**原样**的请求名比对 —— 于是客户端从清单里复制的名字会被
+/// 判成「模型不存在」，错误提示还把同一个名字当「相近的模型」列出来
+/// （2026-11-07 真机反馈：`模型不存在: zcode/glm-5.3-flash（目录里相近的
+/// 模型: zcode/glm-5.3-flash ...）`）。
+///
+/// 这里刻意**不读当前清单形态**：无论配置是 Model 还是 Provider，带前缀写法
+/// 与裸名都是同一个模型的两种写法，判据应当与形态无关（否则切一次模式，
+/// 客户端记下的名字就集体失效）。只认已登记的 provider id 作前缀，真实模型名
+/// 里的斜杠不受影响。
+fn request_name_variants(name: &str) -> Vec<String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Vec::new();
+    }
+    let mut out = vec![trimmed.to_string()];
+    if let Some((_, bare)) = split_provider_prefix(trimmed) {
+        if !out.iter().any(|item| item.eq_ignore_ascii_case(&bare)) {
+            out.push(bare);
+        }
+    }
+    out
+}
+
+/// [`synonymous_names`] 的实质（规则快照与自定义家清单由调用方给，便于单测）。
+///
+/// 对 `request_name_variants` 的每一种写法分别展开同义名：带前缀名除了自己，
+/// 还要认裸名以及裸名自己的别名（例如 `zcode/sn-glm-5-3` → `glm-5.3`）。
+fn synonyms_expanded(
+    rules: &model_rules::ModelRules,
+    customs: &[Value],
+    name: &str,
+) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for seed in request_name_variants(name) {
+        for synonym in synonyms_in(rules, &seed) {
             if !out.iter().any(|n| n.eq_ignore_ascii_case(&synonym)) {
                 out.push(synonym);
+            }
+        }
+        for provider in customs {
+            for synonym in crate::server::core::custom_providers::synonymous_models(provider, &seed) {
+                if !out.iter().any(|n| n.eq_ignore_ascii_case(&synonym)) {
+                    out.push(synonym);
+                }
             }
         }
     }
     out
 }
 
-/// [`synonymous_names`] 的实质（规则快照由调用方给：清单出口已经读过一遍配置）。
+/// 单条写法的别名双向展开（规则快照由调用方给：清单出口已读过一遍配置）。
 fn synonyms_in(rules: &model_rules::ModelRules, name: &str) -> Vec<String> {
     let trimmed = name.trim();
     if trimmed.is_empty() {
@@ -315,6 +387,8 @@ fn synonyms_in(rules: &model_rules::ModelRules, name: &str) -> Vec<String> {
 ///   · **与清单形态无关**：固定按 `Model` 形态算裸名。`/v1/models` 的三种形态
 ///     只是**展示写法**（`provider/` 前缀是给人挑的），不是「这条模型存不存在」
 ///     的判据；跟着当前配置走会让「切到按提供商模式 → 所有裸名调用一起 404」。
+///     带前缀的请求名由 `synonymous_names` 归一出裸名后一起比对（2026-11-07），
+///     所以客户端照清单复制的 `zcode/glm-5.3-flash` 也能通过这道门禁。
 pub fn callable_manifest_contains(store: &AccountStore, model: &str) -> bool {
     let ids: Vec<String> = models_response_with_mode(store, None, ListMode::Model, &[])
         .get("data").and_then(Value::as_array)
@@ -752,5 +826,87 @@ mod tests {
         ]));
         let names = advertised_names(&rules, "raccoon", &raccoon_manifest());
         assert!(names.iter().any(|name| name == "sn-glm-5-3"));
+    }
+
+    /// 全局映射（provider 缺省）的别名与这一家的原生 id 撞名 → 只广告一次。
+    ///
+    /// 真机（2026-11-07）：ZCode 静态清单 11 条，模型页却显示 13 条，多出来的
+    /// 正是 `glm-5.3` / `glm-5.3-flash` 各一条逐字相同的 `zcode/...` 行。
+    /// 全局映射对每一家都生效，别名与本家原生 id 同名时旧写法会给出两个
+    /// 相同的对外名；Model 形态被 `claimed` 吃掉，Provider / Hybrid 的带前缀
+    /// 分支不去重，于是重复原样出现在 `/v1/models` 与 `/api/session`。
+    #[test]
+    fn global_alias_colliding_with_native_id_is_advertised_once() {
+        let rules = rules_with(json!([
+            { "alias": "glm-5.3", "target": "sn-glm-5-3", "enabled": true },
+            { "alias": "glm-5.3-flash", "target": "sn-glm-5-3-flash", "enabled": true }
+        ]));
+        let zcode = vec![
+            json!({ "id": "glm-5.3" }),
+            json!({ "id": "glm-5.3-flash" }),
+            json!({ "id": "glm-5.2" }),
+        ];
+        let names = advertised_names(&rules, "zcode", &zcode);
+        assert_eq!(names.len(), 3, "撞名的全局别名不该多出条目: {names:?}");
+        assert_eq!(
+            names.iter().filter(|name| name.as_str().eq_ignore_ascii_case("glm-5.3")).count(),
+            1,
+            "{names:?}"
+        );
+        assert_eq!(
+            names.iter().filter(|name| name.as_str().eq_ignore_ascii_case("glm-5.3-flash")).count(),
+            1,
+            "{names:?}"
+        );
+    }
+
+    /// 清单本身同一 id 出现两次时，这一家也只广告一次（`manage_view` 早有这层兜底）。
+    #[test]
+    fn duplicate_manifest_id_is_advertised_once() {
+        let rules = rules_with(json!([]));
+        let zcode = vec![
+            json!({ "id": "glm-5.3" }),
+            json!({ "id": "glm-5.3" }),
+            json!({ "id": "glm-5.3-flash" }),
+        ];
+        let names = advertised_names(&rules, "zcode", &zcode);
+        assert_eq!(
+            names.iter().map(String::as_str).collect::<Vec<_>>(),
+            vec!["glm-5.3", "glm-5.3-flash"],
+            "{names:?}"
+        );
+    }
+
+    /// 带 `provider/` 前缀的请求名要按裸名一起判；只拆已登记的 provider id。
+    #[test]
+    fn request_name_variants_only_strip_registered_provider_prefix() {
+        let variants = request_name_variants("zcode/glm-5.3-flash");
+        assert_eq!(
+            variants.iter().map(String::as_str).collect::<Vec<_>>(),
+            vec!["zcode/glm-5.3-flash", "glm-5.3-flash"],
+        );
+        // 真实模型名里的斜杠：head 不是已登记的 provider id，不能被切开
+        let real_name = request_name_variants("deepseek/deepseek-chat");
+        assert_eq!(
+            real_name.iter().map(String::as_str).collect::<Vec<_>>(),
+            vec!["deepseek/deepseek-chat"],
+        );
+        assert_eq!(
+            request_name_variants("glm-5.3").iter().map(String::as_str).collect::<Vec<_>>(),
+            vec!["glm-5.3"],
+        );
+        assert!(request_name_variants("  ").is_empty());
+    }
+
+    /// 带前缀名的等价集合要含裸名、以及裸名自己的别名（入口门禁据此放行）。
+    #[test]
+    fn prefixed_name_expands_to_bare_name_and_its_alias() {
+        let rules = rules_with(json!([
+            { "alias": "glm-5.3", "target": "sn-glm-5-3", "provider": "raccoon", "enabled": true }
+        ]));
+        let names = synonyms_expanded(&rules, &[], "zcode/sn-glm-5-3");
+        assert!(names.iter().any(|n| n == "zcode/sn-glm-5-3"), "{names:?}");
+        assert!(names.iter().any(|n| n == "sn-glm-5-3"), "裸名必须在: {names:?}");
+        assert!(names.iter().any(|n| n == "glm-5.3"), "裸名的别名也要展开: {names:?}");
     }
 }
