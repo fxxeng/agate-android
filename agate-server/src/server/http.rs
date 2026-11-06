@@ -330,6 +330,14 @@ pub fn panel_router(state: ServerState) -> Router {
             get(api::routing_api::get_routing).put(api::routing_api::put_routing),
         )
         .route("/api/routing/queue", get(api::routing_api::get_routing_queue))
+        // 会话粘滞的**运行期视图**：GET 列出「哪些会话粘在哪个账号」，DELETE 清掉
+        // 一条（省略 key = 清全部）。粘性优先于选路，所以某个会话反复失败时先看这里
+        // —— 它可能正粘在一个已经不可用的账号上。只动内存表，不碰持久化。
+        .route(
+            "/api/routing/sticky",
+            get(api::routing_api::get_routing_sticky)
+                .delete(api::routing_api::delete_routing_sticky),
+        )
         // 逐模型的**可用账号数**（胶囊上的读数）。POST 而不是 GET：模型名可能
         // 带逗号/斜杠，塞进查询串要双重转义，而这里要点名的是一批模型。
         .route(

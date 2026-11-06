@@ -95,6 +95,14 @@ pub(super) struct RouteState {
     breaker: Mutex<HashMap<String, BreakerEntry>>,
 }
 
+/// 一条「粘住了谁」的记录（排障用：回答「这个会话现在粘在哪个账号」）。
+pub(super) struct StickyEntry {
+    pub key: String,
+    pub account_id: String,
+    /// 最近一次命中的时刻（毫秒）
+    pub last_used: i64,
+}
+
 /// 粘性 / 垫底 / 退避的快照（选路纯函数的输入）。
 pub(super) struct RouteSnapshot {
     /// 会话键命中的账号 id（没有 = None）
@@ -350,6 +358,58 @@ impl RouteState {
         }
         if let Ok(mut table) = self.sticky.lock() {
             table.insert(key.to_string(), (account_id.to_string(), now));
+        }
+    }
+
+    /// 当前**有效**的粘滞绑定（按最近使用倒序），顺带做一次与
+    /// [`Self::sticky_lookup`] 同口径的惰性清理。
+    ///
+    /// 判据必须与 `sticky_lookup` **逐字一致**（超过 `ttl_ms` 就当没粘）。这里
+    /// 若把过期项也列出来，用户会看到一条"查得到、实际却不生效"的记录 —— 面板上
+    /// 表现为「明明粘着，请求还是换了号」，比不显示更糟。
+    ///
+    /// 排序只为让排障顺手（最近在用的在最前面）：粘滞表本身无序。
+    pub(super) fn sticky_entries(&self, now: i64, ttl_ms: i64) -> Vec<StickyEntry> {
+        let Ok(mut table) = self.sticky.lock() else {
+            return Vec::new();
+        };
+        // 物理保留窗口比命中窗口宽 8 倍（与 `sticky_lookup` 的 retain 同一数字）：
+        // 命中判据收紧到 ttl，但别让刚过期的条目立刻消失 —— 紧接着的一轮里
+        // 同一会话还可能需要它（客户端重试往往在几秒内）。
+        table.retain(|_, (_, last_seen)| now - *last_seen <= ttl_ms.saturating_mul(8));
+        if ttl_ms <= 0 {
+            return Vec::new();
+        }
+        let mut out: Vec<StickyEntry> = table
+            .iter()
+            .filter(|(_, (_, last_seen))| now - *last_seen <= ttl_ms)
+            .map(|(key, (account_id, last_seen))| StickyEntry {
+                key: key.clone(),
+                account_id: account_id.clone(),
+                last_used: *last_seen,
+            })
+            .collect();
+        out.sort_by(|a, b| b.last_used.cmp(&a.last_used));
+        out
+    }
+
+    /// 清掉粘滞绑定：`key` 为 `None` 时清全部，返回清掉的条数。
+    ///
+    /// 只动运行期内存表（进程重启也会清），不碰任何持久化状态。
+    pub(super) fn sticky_clear(&self, key: Option<&str>) -> usize {
+        let Ok(mut table) = self.sticky.lock() else {
+            return 0;
+        };
+        match key {
+            None => {
+                let removed = table.len();
+                table.clear();
+                removed
+            }
+            // 空串不是一个合法的会话键（`sticky_bind` 也不接受），
+            // 但"清全部"是省略参数 —— 传个空 key 不能悄悄升级成清全部。
+            Some("") => 0,
+            Some(key) => usize::from(table.remove(key).is_some()),
         }
     }
 
@@ -703,5 +763,51 @@ mod tests {
         state.sink_clear("a1");
         let snap = state.snapshot("", now, 0);
         assert!(!snap.sunk.contains_key("a1"), "成功后应当立刻解除垫底");
+    }
+
+    /// 粘滞视图只列**还有效**的绑定，且按最近使用倒序。
+    ///
+    /// 判据必须与 `sticky_lookup` 一致：过期的若也列出来，用户会看到一条
+    /// 「查得到、实际却不生效」的记录（面板上表现为「明明粘着，请求还是换了号」）。
+    #[test]
+    fn the_sticky_view_lists_only_live_bindings() {
+        let state = RouteState::new();
+        let now = 1_700_000_000_000i64;
+        let ttl = 5 * 60 * 1000i64;
+        state.sticky_bind("s-old", "a1", now - ttl - 1);
+        state.sticky_bind("s-newer", "a2", now - 1000);
+        state.sticky_bind("s-newest", "a3", now);
+
+        let entries = state.sticky_entries(now, ttl);
+        let keys: Vec<&str> = entries.iter().map(|entry| entry.key.as_str()).collect();
+        assert_eq!(keys, vec!["s-newest", "s-newer"], "过期的不能出现，且最近的在最前");
+        assert_eq!(entries[0].account_id, "a3");
+        assert_eq!(entries[1].account_id, "a2");
+
+        // TTL 关掉（`Off` 档给 0）时一条都不该列 —— 那时粘性本来就不生效
+        assert!(state.sticky_entries(now, 0).is_empty());
+    }
+
+    /// 清除：给 key 只清一条，省略清全部，空串不当成"清全部"。
+    #[test]
+    fn clearing_sticky_takes_one_or_all_but_not_empty() {
+        let state = RouteState::new();
+        let now = 1_700_000_000_000i64;
+        state.sticky_bind("s1", "a1", now);
+        state.sticky_bind("s2", "a2", now);
+
+        assert_eq!(state.sticky_clear(Some("missing")), 0, "不存在的 key 不该报错也不该计数");
+        assert_eq!(state.sticky_clear(Some("")), 0, "空串不能悄悄升级成清全部");
+        assert_eq!(state.sticky_entries(now, 60_000).len(), 2, "上面两次都没清掉东西");
+
+        assert_eq!(state.sticky_clear(Some("s1")), 1);
+        assert_eq!(state.sticky_entries(now, 60_000).len(), 1);
+
+        assert_eq!(state.sticky_clear(None), 1);
+        assert!(state.sticky_entries(now, 60_000).is_empty());
+
+        // 清完之后同一个会话还能重新绑上（不是"清过就废"）
+        state.sticky_bind("s1", "a9", now);
+        assert_eq!(state.sticky_lookup("s1", now, 60_000).as_deref(), Some("a9"));
     }
 }

@@ -320,6 +320,26 @@ impl UpstreamService {
         (snapshot.sunk, snapshot.resting, snapshot.open)
     }
 
+    /// 当前粘住的会话：`(会话键, 账号 id, 最近使用时刻)`，按最近使用倒序。
+    ///
+    /// 为什么放在服务上而不是让 `api` 直接读 `RouteState`：那张表是
+    /// `pub(super)` 的实现细节，而 ttl 的口径（`routing::sticky_ttl_ms`）与
+    /// 命中判据都在选路侧 —— API 层只该拿结果，不该复制一套判据
+    /// （复制出来的那套迟早与真正生效的那条分叉，症状是"面板显示粘着、
+    /// 请求却换了号"）。
+    pub fn route_sticky_facts(&self, now: i64, ttl_ms: i64) -> Vec<(String, String, i64)> {
+        self.route
+            .sticky_entries(now, ttl_ms)
+            .into_iter()
+            .map(|entry| (entry.key, entry.account_id, entry.last_used))
+            .collect()
+    }
+
+    /// 清掉粘滞绑定（`key` 为 `None` 清全部），返回清掉的条数。
+    pub fn route_clear_sticky(&self, key: Option<&str>) -> usize {
+        self.route.sticky_clear(key)
+    }
+
     /// 账号级活跃连接计数句柄（`api::accounts` 的 `/api/accounts/connections` 读它）。
     ///
     /// 返回克隆（内部 `Arc`）而不是引用：`ServerState` 的 handler 各持一份克隆，

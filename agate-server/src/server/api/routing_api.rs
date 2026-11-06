@@ -362,3 +362,72 @@ pub async fn get_routing_queue(
         "blocked": plan.blocked.iter().map(entry_json).collect::<Vec<_>>(),
     }))
 }
+
+/// GET /api/routing/sticky —— 现在粘住了哪些会话、各自粘在谁身上。
+///
+/// 排障用的：某个会话反复失败时，先看它是不是被粘在一个已经不可用的账号上。
+/// 粘性**优先于选路**（粘住期间不换号），要立刻重排只能等 TTL 过期或手工清。
+///
+/// 返回里带 `ttlMs`：判据是「超过 TTL 就算没粘」，而这个值由当前档位决定
+/// （`Auto` / `Session` / `Turn` / `Off` 各不相同）。前端若要显示倒计时，
+/// 必须用这个值算，不要自己写死 5 分钟。
+pub async fn get_routing_sticky(State(state): State<ServerState>) -> Response {
+    let now = crate::server::logging::now_ms();
+    let ttl = routing::sticky_ttl_ms(config::routing_settings().sticky);
+    // 名字一次建索引：粘滞表可能有几十条，逐条取账号列表是 O(n×m)
+    let accounts = routing::accounts_of(&state.store().list_accounts());
+    let names: HashMap<String, String> = accounts
+        .into_iter()
+        .filter_map(|account| {
+            let id = account.get("id").and_then(Value::as_str)?.to_string();
+            let name = account
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            Some((id, name))
+        })
+        .collect();
+    let rows: Vec<Value> = state
+        .upstream()
+        .route_sticky_facts(now, ttl)
+        .into_iter()
+        .map(|(key, account_id, last_used)| {
+            let account_name = names.get(&account_id).cloned().unwrap_or_default();
+            json!({
+                "key": key,
+                "accountId": account_id,
+                // 面板要能说「粘在谁身上」，所以补账号名；查不到（已删）就是空串
+                "accountName": account_name,
+                "lastUsedAt": last_used,
+                // 已经粘了多久（负数不可能，但时钟回拨时别给个负值）
+                "ageMs": (now - last_used).max(0),
+            })
+        })
+        .collect();
+    ok_json(json!({
+        "sticky": config::routing_settings().sticky.as_str(),
+        "ttlMs": ttl,
+        "count": rows.len(),
+        "items": rows,
+    }))
+}
+
+/// DELETE /api/routing/sticky[?key=…] —— 清掉一条（省略 `key` 则清全部）。
+///
+/// 只清运行期内存表（进程重启也会清），不动任何持久化状态，所以不需要确认。
+/// `key` 传空串按 400 拒绝：省略参数才是"清全部"，别让一个手滑的空值把整张表清了。
+pub async fn delete_routing_sticky(
+    State(state): State<ServerState>,
+    Query(query): Query<HashMap<String, String>>,
+) -> Response {
+    let key = query.get("key").map(|value| value.trim().to_string());
+    if matches!(&key, Some(value) if value.is_empty()) {
+        return errors::management_error(400, "key 不能是空串（想清全部请省略 key）");
+    }
+    let removed = state.upstream().route_clear_sticky(key.as_deref());
+    ok_json(json!({
+        "removed": removed,
+        "scope": if key.is_some() { "one" } else { "all" },
+    }))
+}
