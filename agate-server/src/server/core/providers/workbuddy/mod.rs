@@ -13,6 +13,9 @@
 //!             领养 / 开学季活动 + 幸运转盘 / 猫猫旅行 ——从参考项目
 //!             workbuddy2api 的 scripts/task_runner.py 与 school_open_day_2026.py
 //!             移植，见 growth/mod.rs 的模块头
+//! image_generation.rs 生图 / 参考图编辑（`/v2/images/{generations,edits}`）：
+//!             条目打标（`/v3/config` 的 `text-to-image` / `image-to-image`
+//!             标签）+ 请求构造，见该文件模块头
 //! ```
 //!
 //! ── 为什么是一个目录而不是单文件 ─────────────────────────────
@@ -29,6 +32,7 @@
 
 pub mod adapter;
 pub mod growth;
+pub mod image_generation;
 pub mod keepalive;
 pub mod normalize;
 pub mod region;

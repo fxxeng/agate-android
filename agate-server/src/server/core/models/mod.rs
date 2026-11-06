@@ -67,6 +67,7 @@ use serde_json::{json, Value};
 
 use crate::server::core::auth_http::send_raw;
 use crate::server::core::endpoints::{normalize_endpoint, user_agent_for_edition};
+use crate::server::core::providers::workbuddy::image_generation;
 use crate::server::core::providers::workbuddy::region::Region;
 use crate::server::core::providers::catalog_cache;
 use crate::server::core::proxies::ResolvedProxy;
@@ -190,6 +191,27 @@ struct CatalogState {
     remote_refreshed: bool,
 }
 
+/// 从一批上游条目里摘出**图像模型**，并按白名单过滤。
+///
+/// ── 为什么要单独摘，而不是让 [`is_chat_model`] 放行 ────────────
+/// `is_chat_model` 的判据是「`maxOutputTokens ≥ 16000`」这类**对话**特征，
+/// 图像模型天生没有（上游只给 id / name / tags）。所以它们必然被过滤掉 ——
+/// 这也是本仓此前 `/v1/models` 里一条图片模型都没有的原因（`hunyuan-image*`
+/// 还额外在黑名单里）。要支持生图，就得在**准入这一步**把它们分出来，而不是
+/// 在渲染期补救：目录是所有出口的唯一源头（`/v1/models`、管理页、生图入口挑
+/// 默认模型、`operation_providers`），少一处就变成「某处认、某处不认」。
+///
+/// 白名单对它同样生效（`MODEL_ALLOWLIST` 非空时只放名单内的），否则配了白名单
+/// 的用户会莫名其妙多出几条图片模型。
+fn image_entries(models: &[Value]) -> Vec<Value> {
+    image_generation::pick(models)
+        .into_iter()
+        .filter(|model| {
+            MODEL_ALLOWLIST.is_empty() || MODEL_ALLOWLIST.contains(&model_id(model).as_str())
+        })
+        .collect()
+}
+
 /// 目录准入过滤：对话模型判定 + 白名单（空白名单全量放行）
 fn apply_filters(models: Vec<Value>) -> Vec<Value> {
     models
@@ -241,7 +263,10 @@ fn filter_with_meta(models: Vec<Value>, picker: Option<&[String]>) -> Vec<Value>
         .iter()
         .map(|item| in_picker(&model_id(item)) || is_chat_model(item))
         .collect();
-    models
+    // 图像条目在**对话过滤之外**单独摘一遍，必须在 `models` 被消费前取：
+    // 它们是同一批上游条目里的另一类，混进 `keeps` 里判只会被对话判据整批判死。
+    let images = image_entries(&models);
+    let mut allowed: Vec<Value> = models
         .into_iter()
         .zip(keeps)
         .filter(|(model, keep)| {
@@ -254,7 +279,10 @@ fn filter_with_meta(models: Vec<Value>, picker: Option<&[String]>) -> Vec<Value>
             MODEL_ALLOWLIST.contains(&model_id(model).as_str())
         })
         .map(|(model, _)| model)
-        .collect()
+        .collect::<Vec<Value>>();
+    // 放末尾：列表顺序对多数客户端没有语义，而「对话模型在前」更符合习惯。
+    allowed.extend(images);
+    allowed
 }
 
 /// 白名单模型必须有可用定义：远程/传入清单缺失时回退内置定义
@@ -287,7 +315,11 @@ fn initial_state(region: Region) -> CatalogState {
             remote_refreshed: true,
         };
     }
-    let allowed = apply_filters(builtin_models());
+    let mut allowed = apply_filters(builtin_models());
+    // 内置图像条目：远程目录一次都没拉到时，用户至少还有两条能生图的模型
+    // （否则首次启动 + 刷新失败 = 生图入口直接 503「没有可用的图片生成模型」，
+    // 而那不是用户的配置问题）。远程目单一到就被整份替换掉。
+    allowed.extend(image_entries(&image_generation::builtin()));
     let models = if allowed.is_empty() { allowlist_fallback() } else { allowed };
     CatalogState { models, last_refreshed_at: 0, remote_refreshed: false }
 }
@@ -902,5 +934,41 @@ pub fn global_catalog(region: Region) -> ModelCatalog {
     match region {
         Region::Cn => WORKBUDDY_CATALOG.get_or_init(|| ModelCatalog::new(region)).clone(),
         Region::Intl => WORKBUDDY_INTL_CATALOG.get_or_init(|| ModelCatalog::new(region)).clone(),
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// 图像条目必须从**准入**这一步就进目录：`is_chat_model` 的判据是
+    /// `maxOutputTokens ≥ 16000` 这类对话特征，图像模型天生没有，混在一起
+    /// 只会被整批判死。
+    #[test]
+    fn image_entries_are_admitted_beside_chat_models() {
+        let rows = vec![
+            json!({ "id": "hy3", "maxOutputTokens": 32000 }),
+            json!({ "id": "some-chat", "maxOutputTokens": 64000 }),
+            json!({ "id": "hunyuan-image-alpha", "tags": ["text-to-image"] }),
+            json!({ "id": "hunyuan-image-alpha-edit", "tags": ["image-to-image"] }),
+        ];
+        let admitted = filter_with_meta(rows, None);
+        let ids: Vec<String> = admitted.iter().map(model_id).collect();
+        assert!(ids.contains(&"some-chat".to_string()));
+        // 对话模型在前，图像条目在后
+        assert_eq!(ids.last().map(String::as_str), Some("hunyuan-image-alpha-edit"));
+        let image = admitted.iter().find(|row| row["kind"] == json!("image"));
+        assert!(image.is_some_and(|row| row["supports_image_generation"] == json!(true)));
+    }
+
+    /// 内置兜底也带图像条目：否则「首次启动 + 远程刷新失败」时生图入口直接
+    /// 503，而那不是用户的配置问题。
+    #[test]
+    fn builtin_images_survive_the_chat_filter() {
+        let admitted = image_entries(&image_generation::builtin());
+        assert_eq!(admitted.len(), 2);
+        assert!(admitted.iter().all(|row| row["kind"] == json!("image")));
     }
 }

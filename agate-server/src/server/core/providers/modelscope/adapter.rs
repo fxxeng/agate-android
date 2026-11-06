@@ -256,16 +256,25 @@ impl ProviderAdapter for ModelscopeAdapter {
         account: &Value,
         body: &Value,
         _client_headers: &HeaderMap,
+        operation: crate::server::core::providers::images::ImageOperation,
     ) -> Result<crate::server::core::providers::images::ImageRequestPlan, GatewayError> {
         let wire_model = body
             .get("model")
             .and_then(Value::as_str)
             .unwrap_or("");
-        // 编辑还是生成，由**型号自己的能力**决定（两者互斥，见 capabilities）：
-        // Edit 系型号走带参考图那条，其余走纯生图。不读客户端意图 ——
-        // 这个接口没有「操作类型」字段，参考图在不在就是唯一判据。
-        let editing = image_generation::capabilities(wire_model)
-            .is_some_and(|(generation, editing)| editing && !generation);
+        // 操作类型由**入口**给（`/generations` 还是 `/edits`），不再从型号反推。
+        // 型号能力在这里只做**一致性校验**：两个系列互斥（见 capabilities），
+        // 拿生图型号去打编辑入口时上游会回一句看不出因果的 400，不如在这里说清。
+        // 走到这一步说明候选链已经放行过（编辑要求型号显式 `supports_image_editing`），
+        // 所以正常情况下这条永远不会触发 —— 它是防御，不是主判据。
+        let editing = operation == crate::server::core::providers::images::ImageOperation::Edit;
+        if !image_generation::supports(wire_model, editing) {
+            return Err(GatewayError::bad_request(format!(
+                "ModelScope 型号 {wire_model} 不支持{}，请换用该系列的对应型号",
+                operation.label()
+            ))
+            .with_code(operation.unsupported_code()));
+        }
         super::image_generation::build(account, body, self.region, editing)
     }
 

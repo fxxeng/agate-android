@@ -1097,8 +1097,8 @@ async fn attempt_queue(
             // 「SSE 帧要按哪套协议翻译」，生图没有帧、也不翻译 —— 混进去会让
             // 下游的翻译分派多出一条永远到不了的死分支。
             let planned = match ctx.image {
-                Some(_) => adapter
-                    .build_image_request(&session, body, ctx.client_headers)
+                Some(operation) => adapter
+                    .build_image_request(&session, body, ctx.client_headers, operation)
                     .map(|image| {
                         (
                             crate::server::core::providers::adapter::ChatRequestPlan {

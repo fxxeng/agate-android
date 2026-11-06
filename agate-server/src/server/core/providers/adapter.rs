@@ -1101,11 +1101,19 @@ pub trait ProviderAdapter: Send + Sync {
     /// 用账号凭证构造上游生图请求（URL / 头 / 体 / 响应形态）。
     ///
     /// ── 与 [`Self::build_chat_request`] 的差别 ────────────────────
-    /// - `body` 是客户端原始请求体**已经过入口校验与模型解析**的副本：`model`
-    ///   是客户端要的对外名（可能是别名/带前缀名），本方法的实现要自己按家
-    ///   解析发送名 —— 与对话链路一样走 `catalog::wire_target_for_provider`；
+    /// - `body` 里 `model` **已经是本家的发送名**（`upstream::payload::send_body`
+    ///   在进本方法之前先走 `image_send_body` 做了别名 / 前缀 / 映射的改写）。
+    ///   实现**不要**再解析一遍 —— 重写两次会在模型被映射成「另一家的原生 id」
+    ///   时发错名字（症状是上游 400，而映射看起来是对的）。
     /// - `n` / `size` / `response_format` 这些**网关统一处理**的字段不要在实现里
     ///   自行消化（响应格式与文件编码由 `api::image_output` 统一做，见那里模块头）。
+    ///   实现要负责的是「这个字段上游认不认」：不认就**明确拒绝**（400 带说明），
+    ///   别静默丢掉 —— 静默会让用户以为风格 / 质量生效了，而那类「看起来成功
+    ///   但没生效」最难查。
+    /// - `operation` 由调用方给出（入口是 `/generations` 还是 `/edits`）。
+    ///   **别从模型名里猜**「带 edit 就是编辑」：同一家可以把生成与编辑放在
+    ///   同一个模型上（WorkBuddy 的 `hunyuan-image-alpha` 就是两档），也可以
+    ///   放在两个模型上（ModelScope）。调用方手上本来就有这个信息。
     ///
     /// 默认返回 400：能力位为 false 的家本来就到不了这里（候选链会先过滤掉），
     /// 真到了说明能力位与实现不同步，这条错误文案要能让人一眼看出是配置问题。
@@ -1114,6 +1122,7 @@ pub trait ProviderAdapter: Send + Sync {
         _account: &Value,
         _body: &Value,
         _client_headers: &HeaderMap,
+        _operation: super::images::ImageOperation,
     ) -> Result<super::images::ImageRequestPlan, GatewayError> {
         Err(GatewayError::bad_request(format!(
             "{} 声明了生图能力但没有实现请求构造，请升级网关",

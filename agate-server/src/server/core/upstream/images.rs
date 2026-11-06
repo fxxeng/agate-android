@@ -37,6 +37,7 @@ use super::usage::RequestTelemetry;
 ///
 /// 与 `GatewayError` 的区别：这里还不知道「该不该换号重试」（那是适配器按
 /// 这家语义分类的事），只表达「这次没拿到图，原因是什么」。
+#[derive(Debug)]
 pub(super) struct ImageFailure {
     pub status: u16,
     pub body: Value,
@@ -146,6 +147,7 @@ async fn collect_body(
         ImageResponseKind::ModelscopeAsync => {
             super::image_tasks::collect(&payload, transport, telemetry).await
         }
+        ImageResponseKind::Workbuddy => workbuddy_body(&payload, status),
         ImageResponseKind::Openai => {
             if payload.get("error").is_some_and(|error| !error.is_null()) {
                 return Err(failure_from(&payload, status));
@@ -160,6 +162,39 @@ async fn collect_body(
             Err(failure_from(&payload, status))
         }
     }
+}
+
+/// WorkBuddy 的生图响应：多一层信封，**成败看 `code` 而不是 HTTP 状态**。
+///
+/// ```text
+/// { "code": 0, "msg": "ok", "request_id": "…",
+///   "data": { "data": [ {"url"|"b64_json": …} ], "usage": { "credit": 3 } } }
+/// ```
+///
+/// 为什么不能当 OpenAI 形态读：顶层没有 `data` 数组（`data` 是个对象），
+/// 硬读会落到「上游没给图」那条分支 —— 明明出图了却报失败，而且日志里看到
+/// 的是一个完全正常的 200 响应。
+///
+/// 积分（`usage.credit`）随响应原样带出，不单独上报：理由见模块头。
+fn workbuddy_body(payload: &Value, http_status: u16) -> Result<Value, ImageFailure> {
+    let code = payload.get("code").and_then(Value::as_i64).unwrap_or(0);
+    if code != 0 {
+        return Err(failure_from(payload, http_status));
+    }
+    let envelope = payload.get("data").filter(|data| data.is_object());
+    let data = envelope
+        .and_then(|data| data.get("data"))
+        .and_then(Value::as_array)
+        .filter(|items| !items.is_empty())
+        .ok_or_else(|| failure_from(payload, http_status))?;
+    let mut result = json!({
+        "created": crate::server::logging::now_ms() / 1000,
+        "data": data,
+    });
+    if let Some(usage) = envelope.and_then(|data| data.get("usage")) {
+        result["usage"] = usage.clone();
+    }
+    Ok(result)
 }
 
 /// 上游没给图（或给了错误）：把它的错误体折成一条能看懂的失败。
@@ -194,5 +229,50 @@ fn failure_from(payload: &Value, http_status: u16) -> ImageFailure {
     ImageFailure {
         status,
         body: json!({ "code": code, "message": format!("{upstream_status} {message}").trim() }),
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 信封形态的成败看 `code` 而不是 HTTP 状态：上游把失败也包在 200 里。
+    ///
+    /// 这条不能靠「顶层有没有 data 数组」判 —— 信封的 `data` 是个对象，
+    /// 按 OpenAI 形态读会一路走到「上游没给图」那条分支，日志里是一个完全
+    /// 正常的 200，用户拿到的却是一句失败。
+    #[test]
+    fn workbuddy_envelope_is_unwrapped_not_read_as_openai() {
+        let payload = json!({
+            "code": 0,
+            "msg": "ok",
+            "request_id": "r-1",
+            "data": {
+                "data": [{ "url": "https://example.com/a.png" }],
+                "usage": { "credit": 3 }
+            }
+        });
+        let body = workbuddy_body(&payload, 200).expect("应当读出图");
+        assert_eq!(body["data"][0]["url"], json!("https://example.com/a.png"));
+        // 积分随响应带出（本仓不单独上报，见模块头）
+        assert_eq!(body["usage"]["credit"], json!(3));
+    }
+
+    #[test]
+    fn workbuddy_error_code_wins_even_on_http_200() {
+        let payload = json!({ "code": 6004, "msg": "使用量已超出频率限制" });
+        let failure = workbuddy_body(&payload, 200).expect_err("code != 0 就是失败");
+        assert!(failure.body["message"].as_str().unwrap_or("").contains("频率限制"));
+    }
+
+    /// 信封里没有图（只有文字回复 / 被策略拦截）时不能当成功：客户端会拿到
+    /// 一个空的 `data: []` 并显示「生成完成但空白」。
+    #[test]
+    fn workbuddy_empty_envelope_is_a_failure() {
+        let payload = json!({ "code": 0, "data": { "data": [] } });
+        assert!(workbuddy_body(&payload, 200).is_err());
+        let payload = json!({ "code": 0, "data": {} });
+        assert!(workbuddy_body(&payload, 200).is_err());
     }
 }

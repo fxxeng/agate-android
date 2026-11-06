@@ -34,10 +34,11 @@ use super::catalog;
 /// 上游响应的**形态**：不是所有家都回标准 OpenAI `{data:[{b64_json|url}]}`。
 ///
 /// ── 枚举里只放**已经接通**的形态（2026-11-06）─────────────────
-/// 上游另有 `Gemini` / `Workbuddy` / `Doubao` 三种，本仓要接的家还没带上，
-/// 所以这里不出现在这些名字：留一个「声明了但 `collect` 里没有分支」的变体，
-/// 只会在运行时变成一个没人能解释的 500。接一家就加一种，加到哪一种就实现
-/// 到哪一种（`core::upstream::images::collect` 的 match 会强制代码跟上）。
+/// 上游另有 `Gemini`（SSE 帧里的 inlineData）与 `Doubao`（对话流里取图 +
+/// 换无水印原图）两种，本仓还没接，所以这里不出现这两个名字：留一个
+/// 「声明了但 `collect` 里没有分支」的变体，只会在运行时变成一个没人能
+/// 解释的 500。接一家就加一种，加到哪一种就实现到哪一种
+/// （`core::upstream::images::collect` 的 match 会强制代码跟上）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ImageResponseKind {
     /// 标准 OpenAI Images：`{ "data": [{ "b64_json" | "url", "revised_prompt" }] }`。
@@ -45,12 +46,20 @@ pub enum ImageResponseKind {
     /// ModelScope API-Inference 异步：首包只给 `task_id`，要轮询
     /// `/v1/tasks/{id}` 直到 `SUCCEED`（见 `core::upstream::image_tasks`）。
     ModelscopeAsync,
+    /// WorkBuddy 信封：`{ "code", "msg", "request_id",
+    /// "data": { "data": [...], "usage": { "credit" } } }`。
+    ///
+    /// 与 OpenAI 形态的差别只有「多一层壳」：`code != 0` 才是失败（HTTP 可能
+    /// 是 200），图藏在 `data.data` 里。**不能**把它当 OpenAI 形态硬读 ——
+    /// 顶层没有 `data` 数组，会被误判成「上游没给图」。
+    Workbuddy,
 }
 
 /// 一家 provider 为某次生图/编辑拼好的上游请求。
 ///
 /// 与 `ChatRequestPlan` 的分工相同：这里只管「往哪发、带什么头、发什么体」，
 /// 不发请求、不改响应。响应怎么读由 [`ImageResponseKind`] 决定，由转发层统一做。
+#[derive(Debug)]
 pub struct ImageRequestPlan {
     pub url: String,
     pub headers: Vec<(String, String)>,
@@ -65,6 +74,25 @@ impl ImageRequestPlan {
             headers,
             body,
             response: ImageResponseKind::Openai,
+        }
+    }
+
+    /// 非 OpenAI 响应形态的构造：**响应形态必须由调用方明写**，没有默认值。
+    ///
+    /// 刻意不提供 `Default` 或「按 provider 猜」的便利方法：猜错的后果是
+    /// 把 `{code,msg,data:{...}}` 当标准形态读，症状是「上游明明出图了，
+    /// 网关说上游没给图」。
+    pub fn with_response(
+        url: String,
+        headers: Vec<(String, String)>,
+        body: Value,
+        response: ImageResponseKind,
+    ) -> Self {
+        Self {
+            url,
+            headers,
+            body,
+            response,
         }
     }
 }

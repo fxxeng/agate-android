@@ -176,6 +176,39 @@ impl ProviderAdapter for WorkBuddyAdapter {
         Ok(ChatRequestPlan::chat(url, headers, with_system))
     }
 
+    /// 本家有生图能力（`/v2/images/generations`）。
+    ///
+    /// 这是**通道级**能力位：具体某条模型能不能生图，由目录条目的
+    /// `kind=image` + `supports_image_generation` 决定，两者在
+    /// `providers::images::operation_providers` 里取交集。所以这里恒为真并
+    /// 不代表对话模型也能生图 —— 它只说明「这家有这条上游路由」。
+    fn supports_image_generation(&self) -> bool {
+        true
+    }
+
+    /// 本家有参考图编辑通道（`/v2/images/edits`）。
+    ///
+    /// 服务端支持不代表每条模型都能编辑：`/v3/config` 里只有带
+    /// `image-to-image` 标签的条目才会被标成 `supports_image_editing = true`。
+    fn supports_image_editing(&self) -> bool {
+        true
+    }
+
+    /// 构造 `POST {endpoint}/v2/images/{generations,edits}`。
+    ///
+    /// 头的来源与对话完全一致（`chat_headers` 带官方客户端身份头与 UA）——
+    /// 上游按 UA / `X-IDE-*` 做客户端识别，生图路由与对话路由共用同一套校验，
+    /// 少给一个头会被当成非官方客户端。鉴权走同一个 accessToken。
+    fn build_image_request(
+        &self,
+        account: &Value,
+        body: &Value,
+        client_headers: &HeaderMap,
+        operation: crate::server::core::providers::images::ImageOperation,
+    ) -> Result<crate::server::core::providers::images::ImageRequestPlan, GatewayError> {
+        super::image_generation::build(account, body, self.region, client_headers, operation)
+    }
+
     /// 上游错误分类（照抄改造前 `upstream` 的判定与文案）：
     ///   - 401 → TokenExpired（刷新后同账号重试一次）
     ///   - 429 或 code 6004 → QuotaLimited（冷却 + 换账号）
@@ -825,7 +858,7 @@ pub(super) fn web_conversations_url(session: &Value, region: Region) -> String {
 /// 而现在两个地区同时存在，环境变量不该再决定某个 provider 打哪个站）。
 /// 账号记录里带 `endpoint` 时仍然以它为准 —— 那是 staging / 自建反向代理
 /// 用户的落点，也是同一个账号级别的覆盖能力。
-fn session_endpoint(session: &Value, region: Region) -> String {
+pub(super) fn session_endpoint(session: &Value, region: Region) -> String {
     let fallback = region
         .env_endpoint_override()
         .unwrap_or_else(|| region.default_endpoint().to_string());

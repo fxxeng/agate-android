@@ -56,6 +56,17 @@ pub fn capabilities(id: &str) -> Option<(bool, bool)> {
     }
 }
 
+/// 这个型号能不能做**这一类**操作。
+///
+/// 与 [`capabilities`] 的分工：那个回答「这条型号是哪一类」，这个回答「拿它做
+/// 这件事行不行」。分成两个是因为调用点问的不是同一件事 —— 目录制作用前者，
+/// 请求构造用后者（后者还要能被当成一道防御：入口放行的型号与操作必须自洽）。
+pub fn supports(id: &str, editing: bool) -> bool {
+    capabilities(id).is_some_and(|(generation, editable)| {
+        if editing { editable } else { generation }
+    })
+}
+
 /// 把一条目录条目标成图片模型（清单来自 `GET /models`，那条响应只有 id）。
 ///
 /// 在 `models::map_entry` 里调：目录是**所有**出口（`/v1/models`、管理页、

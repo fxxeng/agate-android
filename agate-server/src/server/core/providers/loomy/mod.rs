@@ -333,6 +333,10 @@ impl ProviderAdapter for LoomyAdapter {
         account: &Value,
         body: &Value,
         _client_headers: &HeaderMap,
+        // Loomy 的 `/images/generations` 一个入口兼做参考图编辑（参考图随 body
+        // 的 `image` 字段走），没有独立的 edits 路径 —— 所以这里不按操作分叉。
+        // 参数仍然收下：签名统一，以后上游拆成两条路由时不必再改调用方。
+        _operation: super::images::ImageOperation,
     ) -> Result<super::images::ImageRequestPlan, GatewayError> {
         let token = account
             .get("auth")
