@@ -87,22 +87,55 @@ object AgateImageLoader {
      */
     suspend fun load(url: String, widthPx: Int): Bitmap? = withContext(Dispatchers.IO) {
         cache.get(url)?.let { return@withContext it }
-        val bytes = try {
+        val bytes = fetch(url) ?: return@withContext null
+
+        val bitmap = decodeSampled(bytes, widthPx) ?: return@withContext null
+        cache.put(url, bitmap)
+        bitmap
+    }
+
+    /**
+     * 取字节：`content://` / `file://` 走本地解析，其余走网络。
+     *
+     * ── 为什么必须分开（不做就会静默失败）──────────────────────
+     * 这个组件现在有两个来源：生图结果（内核的 `http://127.0.0.1` 链接）与
+     * **相册选的参考图**（`content://`）。OkHttp 只认 http/https，把
+     * `content://` 喂给它会在 `IllegalArgumentException` 那里被吞成 `null`，
+     * 症状是缩略图永远是「加载失败」—— 而图明明是用户刚选的。
+     *
+     * `content://` 需要 `ContentResolver`，所以这里要一个 Context：用
+     * `AppGlobals` 形态（applicationContext）而不是把 Context 从 Composable
+     * 传进来 —— 加载器是 object，被缓存与并发共用，持有 Activity 会泄漏。
+     */
+    private fun fetch(url: String): ByteArray? {
+        if (url.startsWith("content://") || url.startsWith("file://")) {
+            val ctx = appContext() ?: return null
+            return runCatching {
+                val uri = android.net.Uri.parse(url)
+                ctx.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+            }.getOrNull()
+        }
+        return try {
             client.newCall(Request.Builder().url(url).build()).execute().use { response ->
-                if (!response.isSuccessful) return@withContext null
-                response.body?.bytes()
+                if (!response.isSuccessful) null else response.body?.bytes()
             }
         } catch (_: IOException) {
             null
         } catch (_: IllegalArgumentException) {
             // URL 不合法的形态（内核不会发，但客户端不该因此崩）
             null
-        } ?: return@withContext null
-
-        val bitmap = decodeSampled(bytes, widthPx) ?: return@withContext null
-        cache.put(url, bitmap)
-        bitmap
+        }
     }
+
+    /** 缓存里 Application Context（由 `install` 注入，避免持有 Activity）。 */
+    @Volatile
+    private var app: android.content.Context? = null
+
+    fun install(context: android.content.Context) {
+        app = context.applicationContext
+    }
+
+    private fun appContext(): android.content.Context? = app
 
     /**
      * 按目标宽度降采样解码。
@@ -144,6 +177,10 @@ fun AgateRemoteImage(
     cornerRadius: Int = 10,
 ) {
     val C = agateColors()
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    // 每个组件装一次是幂等的（同一个 applicationContext）；放在这里而不是
+    // 应用启动处，是因为这个组件是唯一的消费方 —— 少一处「别忘了初始化」。
+    remember(ctx) { AgateImageLoader.install(ctx) }
     var bitmap by remember(url) { mutableStateOf(AgateImageLoader.cached(url)) }
     var failed by remember(url) { mutableStateOf(false) }
     var loading by remember(url) { mutableStateOf(bitmap == null) }

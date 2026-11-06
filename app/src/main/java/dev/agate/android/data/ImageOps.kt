@@ -208,7 +208,15 @@ object ImageOps {
      */
     private const val MAX_TOTAL_BYTES = 14L * 1024 * 1024
     private const val MAX_ONE_BYTES = 9L * 1024 * 1024
-    private const val MAX_REFERENCES = 16
+    /**
+     * 参考图张数上限（公开：界面要拿它显示「最多 N 张」并裁掉多余的选取）。
+     *
+     * 统一 16 张 = 内核的全局上限。不按各家自己的上限（ModelScope 2.5 系 3 张、
+     * 其余 14 张、raccoon 16 张）在客户端分档：那张表在客户端是一份**会过期
+     * 的副本**，而超限时内核回得比我们准（「该 ModelScope 模型最多支持 3 张
+     * 参考图」）。
+     */
+    const val MAX_REFERENCES = 16
 
     /**
      * 把相册选来的图转成内核认的格式，并按需降采样。

@@ -14,9 +14,11 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -33,6 +35,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -42,6 +45,7 @@ import dev.agate.android.data.KernelOps
 import dev.agate.android.ui.components.AgateChip
 import dev.agate.android.ui.components.AgateFormInput
 import dev.agate.android.ui.components.AgatePageHeader
+import dev.agate.android.ui.components.AgateSegmented
 import dev.agate.android.ui.components.AgateRemoteImage
 import dev.agate.android.ui.components.agateCard
 import dev.agate.android.ui.theme.AgateType
@@ -86,6 +90,13 @@ fun ImagesPage(
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var notice by remember { mutableStateOf<String?>(null) }
+    /**
+     * 生成 / 编辑。两个模式的**输入形态不同**（编辑要参考图），所以没有挤进
+     * 同一个表单，而是页内切换 —— 见模块头。
+     */
+    var editing by remember { mutableStateOf(false) }
+    /** 已选参考图（编辑模式）。上限统一 16 张，见模块头。 */
+    val references = remember { mutableStateListOf<Reference>() }
 
     /** 已生成的图（最新的在最前）。 */
     val results = remember { mutableStateListOf<ImageOps.GeneratedImage>() }
@@ -102,7 +113,9 @@ fun ImagesPage(
         }
     }
 
-    // 模型清单：网关在跑才拉（免鉴权探针，但仍然要端口活着）
+    // 模型清单：网关在跑才拉（免鉴权探针，但仍然要端口活着）。
+    // 只拉一次，两个模式共用；**按模式过滤**放在下面的 `visibleModels` 里 ——
+    // 每次切换模式重拉一遍是白跑一次网络。
     LaunchedEffect(gatewayRunning) {
         if (!gatewayRunning) {
             loadingModels = false
@@ -110,22 +123,51 @@ fun ImagesPage(
         }
         loadingModels = true
         models = ImageOps.availableModels(port, apiKey)
-        modelId = modelId ?: models.firstOrNull()?.id
         loadingModels = false
     }
 
-    fun generate() {
+    // 当前模式下能用的模型。编辑模式只留 `supports_image_editing == true` 的：
+    // 六家里豆包工作明确 false，ModelScope 的「生成型号」与「编辑型号」是两组
+    // 不同 id —— 不过滤的话用户点了才发现「这个模型没有编辑通道」。
+    val visibleModels = remember(models, editing) {
+        if (editing) models.filter { it.editing } else models
+    }
+
+    // 模型选中项要跟着可见清单走：切到编辑模式时，原先选的生图模型可能不在
+    // 列表里了，那就自动落到第一条可编辑的（而不是留一个选不中的幽灵选中项）。
+    LaunchedEffect(visibleModels) {
+        if (visibleModels.none { it.id == modelId }) {
+            modelId = visibleModels.firstOrNull()?.id
+        }
+    }
+
+    fun submit() {
         val chosen = modelId
         if (chosen.isNullOrBlank() || prompt.isBlank() || busy) return
+        if (editing && references.isEmpty()) return
         busy = true
         error = null
         notice = null
+        // 参考图在这一刻拍一份快照：用户在请求飞行途中还能继续加图/删图，
+        // 而这次请求用的是**点下去那一刻**的那一组（否则结果会跟界面上的
+        // 缩略图对不上）。
+        val snapshot = references.toList()
+        val isEdit = editing
         scope.launch {
-            when (val result = ImageOps.generate(port, apiKey, chosen, prompt.trim(), size)) {
+            val result = if (isEdit) {
+                ImageOps.edit(port, apiKey, chosen, prompt.trim(), size, snapshot.map { it.prepared })
+            } else {
+                ImageOps.generate(port, apiKey, chosen, prompt.trim(), size)
+            }
+            when (result) {
                 is ImageOps.Result.Ok -> {
                     // 新的放最前：用户刚生成的那批应当立刻可见
                     results.addAll(0, result.images)
-                    notice = "已生成 ${result.images.size} 张"
+                    notice = if (isEdit) {
+                        "已编辑 ${result.images.size} 张"
+                    } else {
+                        "已生成 ${result.images.size} 张"
+                    }
                 }
 
                 is ImageOps.Result.Failed -> error = result.message
@@ -175,8 +217,35 @@ fun ImagesPage(
                 Spacer(Modifier.height(10.dp))
             }
 
+            // ── 模式切换 ──
+            // 放在最前而不是塞进表单：它决定下面**整张表单长什么样**（编辑要多
+            // 一条参考图区），先选模式再填表才顺。
+            if (gatewayRunning) {
+                AgateSegmented(
+                    options = listOf("生成", "编辑"),
+                    selected = if (editing) 1 else 0,
+                    onSelect = { index ->
+                        val next = index == 1
+                        if (next != editing) {
+                            editing = next
+                            // 切模式时清掉上一个模式的提示词：编辑的提示词
+                            // （「把背景换成蓝色」）拿去生成会得到一张意境图。
+                            // 同一段话在两个模式下含义完全不同，留着反而是坑。
+                            prompt = ""
+                            notice = null
+                            error = null
+                        }
+                    },
+                )
+                Spacer(Modifier.height(10.dp))
+            }
+
             error?.let {
-                NoticeCard(title = "生成失败", body = it, danger = true)
+                NoticeCard(
+                    title = if (editing) "编辑失败" else "生成失败",
+                    body = it,
+                    danger = true,
+                )
                 Spacer(Modifier.height(10.dp))
             }
             notice?.let {
@@ -195,16 +264,21 @@ fun ImagesPage(
             ) {
                 SectionLabel("模型")
                 Spacer(Modifier.height(6.dp))
-                if (models.isEmpty()) {
+                if (visibleModels.isEmpty()) {
                     Text(
-                        if (loadingModels) "正在读取模型清单…" else "—",
+                        when {
+                            loadingModels -> "正在读取模型清单…"
+                            editing -> "没有支持参考图编辑的模型（六家里豆包工作不支持）。请换一个能改图的模型，或回到「生成」模式。"
+                            else -> "—"
+                        },
                         fontSize = 12.sp,
                         color = C.textDim,
+                        lineHeight = 17.sp,
                     )
                 } else {
                     // 模型可能有好几条（六家各一条合成条目），横向排开、
                     // 换行由 Row 自己处理不了，这里用纵向列表 —— 手机上最多六条。
-                    models.forEach { model ->
+                    visibleModels.forEach { model ->
                         ModelRow(
                             model = model,
                             selected = model.id == modelId,
@@ -212,6 +286,46 @@ fun ImagesPage(
                         )
                         Spacer(Modifier.height(4.dp))
                     }
+                }
+
+                // ── 参考图（仅编辑模式）──
+                // 放模型之后、尺寸之前：先选模型才知道这家最多几张（内核会报），
+                // 而尺寸是次要参数。
+                if (editing && visibleModels.isNotEmpty()) {
+                    Spacer(Modifier.height(12.dp))
+                    SectionLabel("参考图（最多 ${ImageOps.MAX_REFERENCES} 张）")
+                    Spacer(Modifier.height(6.dp))
+                    ReferenceStrip(
+                        references = references,
+                        onAdd = { uris ->
+                            scope.launch {
+                                val room = ImageOps.MAX_REFERENCES - references.size
+                                if (room <= 0) {
+                                    toast("最多 ${ImageOps.MAX_REFERENCES} 张参考图")
+                                    return@launch
+                                }
+                                uris.take(room).forEach { uri ->
+                                    val prepared = withContext(Dispatchers.IO) {
+                                        ImageOps.prepareReference {
+                                            runCatching {
+                                                ctx.contentResolver.openInputStream(uri)?.use {
+                                                    it.readBytes()
+                                                }
+                                            }.getOrNull()
+                                        }
+                                    }
+                                    if (prepared == null) {
+                                        // 转码失败的常见原因是 HEIC + 低版本系统：
+                                        // 文案要说清下一步（换一张），而不是「失败」。
+                                        toast("这张图读不出来（可能是 HEIC）：请换一张 JPG 或 PNG")
+                                    } else {
+                                        references.add(Reference(prepared, uri))
+                                    }
+                                }
+                            }
+                        },
+                        onRemove = { index -> references.removeAt(index) },
+                    )
                 }
 
                 Spacer(Modifier.height(12.dp))
@@ -246,15 +360,24 @@ fun ImagesPage(
                 AgateFormInput(
                     value = prompt,
                     onValueChange = { prompt = it },
-                    hint = if (busy) "正在生成…" else "描述你想要的画面",
+                    hint = when {
+                        busy -> if (editing) "正在编辑…" else "正在生成…"
+                        editing -> "描述要改什么，例如：把背景换成蓝色"
+                        else -> "描述你想要的画面"
+                    },
                     singleLine = false,
                     minLines = 3,
                 )
 
                 Spacer(Modifier.height(12.dp))
-                val canSend = gatewayRunning && !busy && prompt.isNotBlank() && !modelId.isNullOrBlank()
+                val canSend = gatewayRunning && !busy && prompt.isNotBlank() &&
+                    !modelId.isNullOrBlank() && (!editing || references.isNotEmpty())
                 Text(
-                    if (busy) "生成中…" else "开始生成",
+                    when {
+                        busy -> if (editing) "编辑中…" else "生成中…"
+                        editing -> "开始编辑"
+                        else -> "开始生成"
+                    },
                     fontSize = 13.sp,
                     fontWeight = FontWeight.SemiBold,
                     color = if (canSend) C.accent else C.textDim,
@@ -265,14 +388,14 @@ fun ImagesPage(
                             if (canSend) C.accent.copy(alpha = 0.4f) else C.border,
                             RoundedCornerShape(9.dp),
                         )
-                        .clickable(enabled = canSend) { generate() }
+                        .clickable(enabled = canSend) { submit() }
                         .padding(horizontal = 14.dp, vertical = 10.dp),
                 )
-                if (modelId != null && models.firstOrNull { it.id == modelId }?.editing == true) {
+                if (editing && references.isEmpty()) {
                     Spacer(Modifier.height(6.dp))
-                    // 编辑入口是下一批的事：这里**明说**而不是留一个点了没反应的按钮。
+                    // 按钮灰着但不说原因是最差的状态：说清「还缺什么」。
                     Text(
-                        "参考图编辑请用 POST /v1/images/edits（客户端入口在下一版）",
+                        "先选至少一张参考图",
                         fontSize = 10.sp,
                         color = C.textDim,
                     )
@@ -282,7 +405,9 @@ fun ImagesPage(
             // ── 结果 ──
             if (results.isNotEmpty()) {
                 Spacer(Modifier.height(14.dp))
-                SectionLabel("生成结果")
+                // 标题不随模式变：结果区是**同一个累积列表**，两个模式的产物混在
+                // 一起（用户改一版图再生成一张，本来就该并排看）。
+                SectionLabel("结果")
                 Spacer(Modifier.height(8.dp))
                 // 两列网格：手写而不是引 LazyVerticalGrid —— 外层已经是
                 // verticalScroll，嵌套懒加载容器在 Compose 里是明确的错用。
@@ -364,6 +489,82 @@ private fun ResultCard(
                 }
                 .padding(vertical = 3.dp),
         )
+    }
+}
+
+/**
+ * 一张已选参考图：**已转好码的字节** + 原相册 uri（只用来显示缩略图）。
+ *
+ * 为什么两者都留：字节是发给内核的（PNG/JPEG/WebP，可能已被降采样重编码），
+ * 而 uri 是给 `AgateRemoteImage` 显示用的 —— 用字节再解一次纯属浪费，
+ * 系统本身就能缩略显示。
+ */
+private class Reference(val prepared: ImageOps.Reference, val uri: android.net.Uri)
+
+/**
+ * 参考图条：横向缩略图 + 末尾「＋」，每张右上角 ✕。
+ *
+ * 选图走**系统照片选择器**（`PickMultipleVisualMedia`）：Android 13+ 是原生
+ * Photo Picker，不需要任何存储权限 —— 仓库里其余选文件的地方也都是系统选择器
+ * （`OpenDocument` / `createDocument`），没有一处自己申请过存储权限。
+ *
+ * 一个附带好处：部分机型的选择器会把 HEIC 自动转成 JPEG 交给我们，那种情况下
+ * `prepareReference` 走「原样发」那条路，不会白重编码一次。
+ */
+@Composable
+private fun ReferenceStrip(
+    references: List<Reference>,
+    onAdd: (List<android.net.Uri>) -> Unit,
+    onRemove: (Int) -> Unit,
+) {
+    val C = agateColors()
+    val launcher = rememberLauncherForActivityResult(
+        // 一次最多选满（剩余额度由调用方裁）；`PickMultipleVisualMedia` 在
+        // Android 13+ 走 Photo Picker，13 以下回落到系统图库（仍无权限要求）。
+        ActivityResultContracts.PickMultipleVisualMedia(ImageOps.MAX_REFERENCES),
+    ) { uris -> if (uris.isNotEmpty()) onAdd(uris) }
+
+    Row(
+        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        references.forEachIndexed { index, reference ->
+            Box(Modifier.size(72.dp)) {
+                AgateRemoteImage(
+                    url = reference.uri.toString(),
+                    modifier = Modifier.fillMaxSize(),
+                    cornerRadius = 9,
+                )
+                // ✕ 贴在右上角。用带底色的小圆点而不是裸文字：缩略图底色深浅
+                // 不定，裸符号在浅色图上几乎看不见。
+                Box(
+                    Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(3.dp)
+                        .size(18.dp)
+                        .background(Color(0xCC000000), RoundedCornerShape(9.dp))
+                        .clickable { onRemove(index) },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text("✕", fontSize = 10.sp, color = Color.White)
+                }
+            }
+        }
+        // 「＋」固定在末尾。张数已满时**不显示**而不是显示成灰的：少一个
+        // 点不动的东西，比多一个需要解释的灰按钮好。
+        if (references.size < ImageOps.MAX_REFERENCES) {
+            Box(
+                Modifier
+                    .size(72.dp)
+                    .clip(RoundedCornerShape(9.dp))
+                    .background(C.insetBg)
+                    .border(1.dp, C.border, RoundedCornerShape(9.dp))
+                    .clickable { launcher.launch(androidx.activity.result.PickVisualMediaRequest()) },
+                contentAlignment = Alignment.Center,
+            ) {
+                Text("＋", fontSize = 20.sp, color = C.textDim)
+            }
+        }
     }
 }
 
