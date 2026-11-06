@@ -103,9 +103,11 @@ pub fn list_item(model: &Value, provider_id: &str) -> Value {
     // `supports_images` / `supports_video` 是**同一件事的两套说法** —— 一批
     // 客户端只认前者，另一批只认后者，所以两套都得给，且必须同源。
     //
-    // `text` 恒在（本网关只代理对话模型，`kind` 恒为 chat）；模态位为真时
-    // 追加对应的那一项。取值用生态通用的小写字符串，不是自有键名的复刻：
-    // 上游清单里没有的模态（audio / file）不猜，宁可不说。
+    // `text` 恒在（**输入**侧：图片模型收的也是文本 prompt，参考图走的是
+    // 独立字段而不是 input modality）；模态位为真时追加对应的那一项 ——
+    // 这是「这家模型能看什么图」，与产出是图还是字无关（那个在 `kind` /
+    // `output_modalities` 上）。取值用生态通用的小写字符串：上游清单里
+    // 没有的模态（audio / file）不猜，宁可不说。
     let mut modalities = vec![Value::String("text".to_string())];
     if images {
         modalities.push(Value::String("image".to_string()));
@@ -125,7 +127,58 @@ pub fn list_item(model: &Value, provider_id: &str) -> Value {
             _ => Value::String("chat".to_string()),
         },
     );
+    // ── 图片模型多给三个键（对话模型一个都不给，输出逐字不变）────────
+    // 客户端靠它们区分「这是生图模型」与「这是能看图的对话模型」：
+    //   · `output_modalities`：生态通用说法（OpenRouter / ZenMux 同款），
+    //     生图模型的产出是图片而不是文本；
+    //   · `supports_image_generation` / `supports_image_editing`：能做什么。
+    //     两个分开给 —— ModelScope 的生图与编辑是两组不同型号，合一个
+    //     `supports_image` 会让客户端在只能生图的型号上显示出「编辑」入口。
+    //
+    // 只在 `kind == image` 时插入：给对话模型补 `supports_image_generation:
+    // false` 会改变现有 `/v1/models` 的字节，而客户端没有任何一处需要它。
+    if model_is_image(model) {
+        item.insert(
+            "output_modalities".to_string(),
+            Value::Array(vec![Value::String("image".to_string())]),
+        );
+        item.insert(
+            "supports_image_generation".to_string(),
+            Value::Bool(
+                model
+                    .get("supports_image_generation")
+                    .map(js_truthy)
+                    .unwrap_or(false),
+            ),
+        );
+        item.insert(
+            "supports_image_editing".to_string(),
+            Value::Bool(
+                model
+                    .get("supports_image_editing")
+                    .map(js_truthy)
+                    .unwrap_or(false),
+            ),
+        );
+    }
     Value::Object(item)
+}
+
+/// 这条目录条目产出的是图片吗（与 `providers::images::model_is_image` 同判据）。
+///
+/// 这里自己写一份而不是调那边：`shape` 是「清单条目 → 对外 JSON」的纯函数层，
+/// 不依赖 providers 注册表（那会让一条纯映射依赖整个 provider 体系）。
+/// 判据只有两行，重复的代价远小于引入那条依赖。
+fn model_is_image(model: &Value) -> bool {
+    model
+        .get("kind")
+        .or_else(|| model.get("type"))
+        .and_then(Value::as_str)
+        .is_some_and(|kind| kind.eq_ignore_ascii_case("image"))
+        || model
+            .get("output_modalities")
+            .and_then(Value::as_array)
+            .is_some_and(|items| items.iter().any(|item| item.as_str() == Some("image")))
 }
 
 /// OpenAI 清单响应的信封：`{object:"list", data, meta:{source,lastRefreshedAt,count}}`。
@@ -226,4 +279,54 @@ pub fn suggest_from(
     scored.sort_by(|a, b| a.1.cmp(&b.1).then(b.2.cmp(&a.2)));
     scored.truncate(limit);
     scored.into_iter().map(|(id, _, _)| id).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// 对话模型一个字段都不多：`/v1/models` 的既有输出不能因为生图而变。
+    #[test]
+    fn a_chat_model_gains_nothing_from_the_image_fields() {
+        let item = list_item(&json!({ "id": "glm-5.1", "kind": "chat" }), "loomy");
+        assert_eq!(item["kind"], json!("chat"));
+        assert!(item.get("output_modalities").is_none());
+        assert!(item.get("supports_image_generation").is_none());
+        assert!(item.get("supports_image_editing").is_none());
+        // 输入模态仍是纯文本（`supportsImages` 未声明）
+        assert_eq!(item["input_modalities"], json!(["text"]));
+    }
+
+    /// 生图模型必须能被客户端一眼认出来，且「能生成」与「能编辑」分开说。
+    #[test]
+    fn an_image_model_carries_the_three_keys() {
+        let item = list_item(
+            &json!({
+                "id": "Qwen/Qwen-Image",
+                "kind": "image",
+                "output_modalities": ["image"],
+                "supports_image_generation": true,
+                "supports_image_editing": false,
+            }),
+            "modelscope",
+        );
+        assert_eq!(item["kind"], json!("image"));
+        assert_eq!(item["output_modalities"], json!(["image"]));
+        assert_eq!(item["supports_image_generation"], json!(true));
+        // 只能生图、不能改图：两个键不能合并
+        assert_eq!(item["supports_image_editing"], json!(false));
+    }
+
+    /// `output_modalities` 单独出现（没有 `kind`）也要认出来 —— 这是 OpenRouter
+    /// 系网关的表达方式，少了这条会有一批图片模型被当成对话模型。
+    #[test]
+    fn output_modalities_alone_is_enough() {
+        let item = list_item(
+            &json!({ "id": "x", "output_modalities": ["image"] }),
+            "loomy",
+        );
+        assert_eq!(item["kind"], json!("chat"), "kind 保持原出口形态");
+        assert_eq!(item["output_modalities"], json!(["image"]));
+    }
 }

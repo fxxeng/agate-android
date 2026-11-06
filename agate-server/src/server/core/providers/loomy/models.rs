@@ -172,14 +172,37 @@ fn map_entry(row: &Value) -> Option<Value> {
         .unwrap_or(id);
     let (name, rate) = split_rate_suffix(raw_name);
     let caps = row.get("capabilities").and_then(Value::as_object);
-    let tool_call = caps_bool(caps, "function_calling") || caps.is_none();
-    let reasoning = caps_bool(caps, "reasoning") || is_reasoning_model(id);
+    // ── 生图模型（`type=image`）的识别 ──────────────────────────────
+    // 判据与 `core::providers::images::model_is_image` 同源（`type`/`kind`
+    // 或 `output_modalities` 含 image），读的是上游原始条目。这里必须**先判**：
+    // 生图模型也有 `vision: true`（它要读参考图），若不先分流，下面那条
+    // `supportsImages` 会把它标成「能看图的对话模型」，客户端于是拿它去对话。
+    let image_generation = row.get("type").and_then(Value::as_str) == Some("image")
+        || row
+            .get("output_modalities")
+            .or_else(|| row.pointer("/capabilities/output_modalities"))
+            .and_then(Value::as_array)
+            .is_some_and(|items| items.iter().any(|item| item.as_str() == Some("image")));
+    // 生图模型不给工具 / 思考位：这两项在 Images 接口里没有对应概念，
+    // 标成 true 只会让客户端在生图面板里显示出无意义的开关。
+    let tool_call =
+        !image_generation && (caps_bool(caps, "function_calling") || caps.is_none());
+    let reasoning = !image_generation && (caps_bool(caps, "reasoning") || is_reasoning_model(id));
     let mut item = json!({
         "id": id,
         "name": name,
         "supportsToolCall": tool_call,
         "supportsReasoning": reasoning,
     });
+    if image_generation {
+        item["kind"] = json!("image");
+        item["output_modalities"] = json!(["image"]);
+        // 官方客户端的图生图也打 generations（见 `loomy` 模块的能力位说明）
+        item["supports_image_editing"] = json!(true);
+        // 生图模型不能当默认对话模型：`isDefault` 是账号页筛选与默认回落链的键，
+        // 让它为 true 会让「新建会话」默认选中一个不能对话的模型。
+        item["isDefault"] = json!(false);
+    }
     if caps_bool(caps, "vision") || caps_modal(caps, "image") {
         if let Some(object) = item.as_object_mut() {
             object.insert("supportsImages".to_string(), Value::Bool(true));

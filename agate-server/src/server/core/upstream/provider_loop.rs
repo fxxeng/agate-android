@@ -112,6 +112,16 @@ struct OutboundFailure {
     /// 收的就是 `error.message`（`上游返回 429: {上游原文}`），
     /// accounts.json 里落的那段文案因此逐字不变。
     error: GatewayError,
+    /// **不要换号重试**：这一轮的失败已经确定无法靠「换一个账号/再发一次」
+    /// 挽回，重发只会重复消耗。
+    ///
+    /// 目前唯一的置位者是生图的响应读取（`send_with_retry` 的
+    /// `images::collect` 失败）：那时请求**已经发出去并可能已经扣了额度**，
+    /// 上游回「没给图」不代表换个账号就能给出图。对话链路恒为 false ——
+    /// 换号重试是它最关键的一条可用性保障，不能因为加了本字段而少一次尝试。
+    ///
+    /// 与上游同名同义的 `stop` 字段一致。
+    stop: bool,
 }
 
 /// **原地重发**的退避预算（见 `send_with_retry` 的说明）。
@@ -441,6 +451,27 @@ pub(super) async fn forward_with_providers(
         } else {
             Vec::new()
         }
+    } else if let Some(operation) = ctx.image {
+        // ── 生图 / 图片编辑：候选来自「声明了这类能力的家」───────────
+        // 不能复用 `route_for_forward`：那问的是「谁的目录里有这个名字」（对话
+        // 承载家）。生图要问的是「谁能把这张图生出来」—— 两件事在目录里同源
+        // （图片模型也在各家清单里），但**能力位不同**：一家完全可能有这个模型
+        // 条目却没有生图通道（自定义家就是这样，见 `providers::images` 模块头）。
+        //
+        // 前缀锁定（`provider/model`）在这里照常成立：锁了家就只认那一家，
+        // 但它必须**同时**在这个能力链里 —— 否则就是「锁了一家不会生图的家」，
+        // 给空链走下面的明确错误，而不是发一次注定失败的请求。
+        let available =
+            crate::server::core::providers::images::operation_providers(&model, operation);
+        match &locked_provider {
+            Some(provider)
+                if available.iter().any(|id| id.eq_ignore_ascii_case(provider)) =>
+            {
+                vec![provider.clone()]
+            }
+            Some(_) => Vec::new(),
+            None => available,
+        }
     } else {
         route_for_forward(&model)
     };
@@ -454,6 +485,17 @@ pub(super) async fn forward_with_providers(
         );
     }
     if candidates.is_empty() {
+        // ── 生图：文案与错误码都点明「这个模型没有生图通道」──────────
+        // 不能落到下面那两条对话链路的错误：这里候选为空的原因不是「模型被关掉」
+        // 或「网关里一家都没有」，而是「有这家、但它没有声明这类能力」。说成
+        // 「没有可用的提供商」会让人去加账号，而真正要改的是换一个图片模型。
+        if let Some(operation) = ctx.image {
+            return Err(GatewayError::with_status(
+                400,
+                crate::server::core::providers::images::unsupported_message(&model, operation),
+            )
+            .with_code(operation.unsupported_code()));
+        }
         // 空链有两条来源（见 `route_for_forward`）：注册表里连默认 provider 都
         // 没有，或者这个名字的承载家**全被关闭**（那时不回落默认家）。后者是
         // 用户可操作的，文案要指出去哪儿改，不能只说「没有可用的提供商」。
@@ -1044,8 +1086,36 @@ async fn attempt_queue(
                     }
                 };
             let body: &serde_json::Value = prepared_body.as_ref().unwrap_or(body);
-            let plan = match adapter.build_chat_request(&session, body, ctx.client_headers) {
-                Ok(plan) => plan,
+            // ── 请求计划：对话 / 生图各走各的构造器，之后合并成同一份计划 ────
+            // 生图计划（`ImageRequestPlan`）比对话计划多一个「响应形态」，少一个
+            // 「响应协议」（生图恒为一次性 JSON，没有 SSE 可翻译）。把它折进
+            // `ChatRequestPlan` 的 url/headers/body 三个字段，响应形态单独带出
+            // （`image_kind`）—— 这样下游的发送、重试、冷却、记账**一行都不用
+            // 分叉**，只有「怎么读响应」这一个点不同。
+            //
+            // 为什么不用 `UpstreamResponse` 表达响应形态：那个枚举的语义是
+            // 「SSE 帧要按哪套协议翻译」，生图没有帧、也不翻译 —— 混进去会让
+            // 下游的翻译分派多出一条永远到不了的死分支。
+            let planned = match ctx.image {
+                Some(_) => adapter
+                    .build_image_request(&session, body, ctx.client_headers)
+                    .map(|image| {
+                        (
+                            crate::server::core::providers::adapter::ChatRequestPlan {
+                                url: image.url,
+                                headers: image.headers,
+                                body: image.body,
+                                response: crate::server::core::providers::adapter::UpstreamResponse::Chat,
+                            },
+                            Some(image.response),
+                        )
+                    }),
+                None => adapter
+                    .build_chat_request(&session, body, ctx.client_headers)
+                    .map(|plan| (plan, None)),
+            };
+            let (plan, image_kind) = match planned {
+                Ok(pair) => pair,
                 Err(error) => {
                     ctx.telemetry.finish_last_attempt(
                         Some(i64::from(error.status_code)),
@@ -1150,6 +1220,7 @@ async fn attempt_queue(
                 capture.as_deref(),
                 ctx.telemetry,
                 degraded,
+                image_kind,
             )
             .await
             {
@@ -1215,6 +1286,18 @@ async fn attempt_queue(
                             Some(cancellation::MANUAL_TERMINATED),
                         );
                         return Err(cancellation::cancelled_error());
+                    }
+                    // ── 「这次失败已经花掉钱了」：不再换号 ──────────────────
+                    // 目前只有生图的响应读取会置这一位（请求已发出、上游可能
+                    // 已扣额度）。换号的收益是「碰另一个账号能成」，代价是
+                    // **再扣一次**；生图的失败多数是内容 / 参数 / 上游任务本身
+                    // 失败，换号基本不会变好。所以直接收尾，把真实原因给客户端。
+                    if failure.stop {
+                        ctx.telemetry.finish_last_attempt(
+                            Some(i64::from(failure.error.status_code)),
+                            Some(&failure.error.message),
+                        );
+                        return Err(failure.error);
                     }
                     // ── 指定错误码直接换号 ──────────────────────────────
                     // 用户点名的状态码（默认 402）不做「同一账号再看一眼」：
@@ -1560,6 +1643,25 @@ async fn attempt_queue(
                 logging::now_ms() - started_at
             ),
         );
+
+        // ── 生图：响应已经在 `send_with_retry` 里读完，直接收尾 ──────────
+        // 生图是「一次请求 → 一包 JSON」，没有流式形态、没有 SSE 帧要翻译、
+        // 也没有续写要包。所以它在这里返回，绕开下面所有的流式 / 聚合 / 拒答
+        // 门控 —— 那些都是对话链路的形态，对生图只会是多余的分支。
+        //
+        // 位置选在 `cap_cleared` 与响应日志**之后**：生图成功同样是「这个账号
+        // 在这个模型上通了」，限额标记该清的一样要清；日志里那条 HTTP 状态码
+        // 与耗时对排障同样有用。
+        //
+        // 写法是**类型解包**而不是 `if ctx.image.is_some()`：`Complete` 只可能
+        // 由生图产生（对话那条路永远返回 `Live`），按类型收窄就不需要再读一次
+        // `ctx.image` —— 两处判定同一件事，日后改一处漏一处的风险由此消失。
+        let response = match response {
+            super::images::ImageResponse::Live(response) => response,
+            super::images::ImageResponse::Complete(body) => {
+                return Ok(super::ForwardOutcome::Completion { body });
+            }
+        };
 
         // ── 调试模式：响应头到手（必须在 consume response 之前）──────────
         // 状态码与响应头在这里定稿；响应体由后续的流 / 聚合函数逐段补进同一个
@@ -2540,6 +2642,8 @@ fn cancelled_failure() -> OutboundFailure {
             upstream_code: None,
         },
         error: cancellation::cancelled_error(),
+        // 手动终止不涉及重发决策（调用方先查令牌就返回了），恒 false。
+        stop: false,
     }
 }
 
@@ -2616,7 +2720,10 @@ async fn send_with_retry(
     capture: Option<&crate::server::core::debug_traffic::TrafficCapture>,
     telemetry: &crate::server::core::upstream::usage::RequestTelemetry,
     degraded: bool,
-) -> Result<reqwest::Response, OutboundFailure> {
+    // `Some` = 这是生图请求，2xx 之后要按这个形态把响应**读完**再返回。
+    // 读取失败可能意味着额度已经消耗，因此那条出口会置 `stop`（不再换号）。
+    image: Option<crate::server::core::providers::images::ImageResponseKind>,
+) -> Result<super::images::ImageResponse, OutboundFailure> {
     loop {
         // 手动终止：发送前先看令牌（退避睡眠 / 上一轮失败之后回到这里）。
         // 出口是 `cancelled_failure`，但调用方（attempt_queue）在分类动作之前
@@ -2658,11 +2765,84 @@ async fn send_with_retry(
                         upstream_code: None,
                     },
                     error: gateway,
+                    // 传输层失败的最终收敛（重试预算已用完）：换号还有意义，
+                    // 交给编排层按动作 1 / 3 判断。
+                    stop: false,
                 });
             }
         };
         if !adapter.is_error_response(response.status().as_u16(), response.headers()) {
-            return Ok(response);
+            // ── 生图：2xx 之后还要把响应读完 ──────────────────────────
+            // 对话链路的 2xx 只是「流可以开始给了」，所以原样返回让上层去消费；
+            // 生图的 2xx 只是一包 JSON 的开头，必须在这里读完（异步任务还要
+            // 轮询）才对调用方有意义。
+            //
+            // ── 读取失败为什么直接收敛、不换号 ────────────────────────
+            // 这一步已经发生在上游**收了请求之后**：上游回「没给图」「任务失败」
+            // 时额度通常已扣。换一个账号重发就是再扣一次，而用户的诉求是拿到
+            // 图，不是「多花一份钱碰运气」。所以这类失败带 `stop: true` 直接
+            // 上抛（见 `OutboundFailure::stop`）；真需要重试时由用户自己点。
+            if let Some(kind) = image {
+                let status = response.status().as_u16();
+                return match super::images::collect(response, kind, transport, telemetry).await {
+                    Ok(body) => Ok(super::images::ImageResponse::Complete(body)),
+                    Err(failure) => {
+                        let message = failure
+                            .body
+                            .get("message")
+                            .and_then(Value::as_str)
+                            .unwrap_or("图片生成失败")
+                            .to_string();
+                        // 内容策略拦截走 `ContentBlocked`：它不罚账号（换号也
+                        // 不过），且上层据此不给这个账号记一次失败。
+                        let class = if failure.body.get("code").and_then(Value::as_str)
+                            == Some("content_policy_violation")
+                        {
+                            UpstreamErrorClass::ContentBlocked {
+                                status: 400,
+                                message: message.clone(),
+                                upstream_code: None,
+                            }
+                        } else {
+                            adapter.classify_error(failure.status, &failure.body)
+                        };
+                        let error = match &class {
+                            UpstreamErrorClass::QuotaLimited {
+                                status,
+                                message,
+                                upstream_code,
+                                ..
+                            }
+                            | UpstreamErrorClass::ContentBlocked {
+                                status,
+                                message,
+                                upstream_code,
+                            }
+                            | UpstreamErrorClass::Fatal {
+                                status,
+                                message,
+                                upstream_code,
+                            } => GatewayError::with_status(*status as i32, message.clone())
+                                .with_optional_code(*upstream_code),
+                            UpstreamErrorClass::TokenExpired { message } => {
+                                GatewayError::with_status(failure.status as i32, message.clone())
+                            }
+                        };
+                        logging::console_line(
+                            "[Upstream]",
+                            &format!(
+                                "生图响应读取失败（HTTP {status}，可能已消耗额度）: {message}"
+                            ),
+                        );
+                        Err(OutboundFailure {
+                            class,
+                            error,
+                            stop: true,
+                        })
+                    }
+                };
+            }
+            return Ok(super::images::ImageResponse::Live(response));
         }
         let status = response.status().as_u16();
         // 错误响应体的读取同样受「非流式响应超时」管（对应 OmniProxy
@@ -2745,7 +2925,13 @@ async fn send_with_retry(
                     .with_optional_code(detail.code)
             }
         };
-        return Err(OutboundFailure { class, error });
+        return Err(OutboundFailure {
+            class,
+            error,
+            // 上游给出的终态错误（4xx/5xx）：换一个账号**可能**能过（额度、
+            // 风控、账号级封禁各不相同），照旧交给编排层判断。
+            stop: false,
+        });
     }
 }
 

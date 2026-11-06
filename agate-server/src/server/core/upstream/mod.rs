@@ -55,6 +55,10 @@ pub mod continuation;
 /// 「给定请求体 → 改写成什么样」，藏在私有模块里就没法从外部钉住那些
 /// 「坏图必须原样放行」的判据。
 pub mod image_compress;
+/// 生图响应的读取层：把一家上游返回的东西读成统一的 `{created, data:[…]}`，
+/// 以及 ModelScope 异步任务的轮询。
+mod image_tasks;
+mod images;
 pub mod refusal;
 pub mod request;
 mod payload;
@@ -254,6 +258,22 @@ pub struct ForwardRequest {
     /// - `Some(None)`：本次强制直连（忽略账号绑定的代理，且不回退系统代理）；
     /// - `Some(Some(proxy))`：本次强制走指定代理节点。
     pub proxy_override: Option<Option<ResolvedProxy>>,
+    /// 这次转发是**生图 / 图片编辑**（`None` = 普通对话请求）。
+    ///
+    /// ── 为什么用请求字段而不是新开一个入口函数 ──────────────────
+    /// 生图要走**同一条**转发链：多账号轮换、限额冷却、退避重试、401 刷新、
+    /// 手动终止、usage 与请求日志的记账，全都在这条链上。为它另写一条链意味着
+    /// 那些行为各有一份实现，两份迟早会漂（比如只有对话链记得清退避）。
+    /// 上游（插件架构）用 `forward_request(request, images, …)` 的参数表达
+    /// 同一件事；本仓的 `ForwardRequest` 本来就是「这一次请求的全部输入」，
+    /// 放在这里比多加一个形参更省调用点的改动，也不会漏传。
+    ///
+    /// 带了这个字段，转发链会做三处不同的处理（都在本文件内注明）：
+    /// ① 候选家按 [`images::operation_providers`] 取，不看对话的承载家；
+    /// ② 出站 body **不**注入 `stream:true`、不过提示词/脱敏/图片压缩层；
+    /// ③ 响应按 [`providers::images::ImageResponseKind`] 读完再一次性返回
+    ///    （不转流，生图没有 SSE 可言）。
+    pub image: Option<crate::server::core::providers::images::ImageOperation>,
 }
 
 /// 转发结果：要么是可直接下发的流，要么是聚合好的 JSON
@@ -385,6 +405,40 @@ impl UpstreamService {
         // `handoff()` 把归属移进响应流，非流式路径随本函数返回而析构释放。
         // 于是「连接数」与去重槽位共享同一条生命周期，不会有第二条释放路径。
         let mut connections = ConnectionGuard::new(self.connections.clone());
+        // 生图 / 图片编辑：**不注入 `stream:true`**（生图接口没有流式形态，
+        // 收到 stream 字段的严格上游会直接 400），也不做对话历史 sanitize
+        // （没有 `messages` 可修）。其余（去重槽位、账号轮换、冷却、退避、
+        // 记账）与对话链路完全共用 —— 见 `ForwardRequest::image` 的说明。
+        if request.image.is_some() {
+            // 配置快照照常取（不取假值）：`ProviderContext` 里的每个字段都如实
+            // 反映**当下配置**，只是生图链路不消费它们（`payload::send_body` 在
+            // 生图上显式早退，见那里的说明）。填一堆 `false` 会让接入下一个
+            // 消费者的人以为「这些开关对生图被强制关掉了」—— 那是另一回事。
+            let config = crate::server::config::current();
+            let context = payload::ProviderContext {
+                body: &request.body,
+                stream: false,
+                client_headers: &request.client_headers,
+                telemetry: &request.telemetry,
+                sanitize_fingerprints: config.sanitize_fingerprints(),
+                sanitize_zwsp_words: config.sanitize_zwsp_words(),
+                developer_role_compat: config.developer_role_compat(),
+                image_compress: config.image_compress_settings(),
+                prompt: config.prompt_plan(),
+                key_scope: request.allowed_providers.as_ref(),
+                pinned_account: request.pinned_account.as_deref(),
+                ignore_model_gate: request.ignore_model_gate,
+                proxy_override: request.proxy_override.as_ref(),
+                image: request.image,
+            };
+            return provider_loop::forward_with_providers(
+                self,
+                context,
+                &mut slot,
+                &mut connections,
+            )
+            .await;
+        }
         // 无论客户端要不要流式，上游都必须以 stream:true 请求
         let mut upstream_body = request.body.clone();
         if let Some(object) = upstream_body.as_object_mut() {
@@ -443,8 +497,38 @@ impl UpstreamService {
             // bool 是 Copy，直接读：不存在上面那两条的借用问题
             ignore_model_gate: request.ignore_model_gate,
             proxy_override: proxy_override.as_ref(),
+            image: None,
         };
         provider_loop::forward_with_providers(self, context, &mut slot, &mut connections).await
+    }
+
+    /// 生图：`POST /v1/images/generations` 的转发入口。
+    ///
+    /// 与 [`Self::forward`] 只在 `request.image` 上不同（三处差异见那个字段的
+    /// 说明），因此这里只做一件事：把操作类型填进请求再走同一条链。
+    ///
+    /// ── 为什么返回 `ForwardOutcome`（含 `Stream` 变体）而不是直接给 `Value` ──
+    /// 转发链的成功出口本来就分两种形状，生图恒为 `Completion`。所以这里**检查**
+    /// 一下再放行：万一哪天有人给生图接了流式上游，`Stream` 变体会被调用方当成
+    /// 「图片 JSON」去解析，那是一个很难查的错。改成显式报错，问题立刻暴露在
+    /// 第一次请求上。
+    pub async fn generate_images(
+        &self,
+        mut request: ForwardRequest,
+    ) -> Result<ForwardOutcome, GatewayError> {
+        request.image = Some(crate::server::core::providers::images::ImageOperation::Generate);
+        request.stream = false;
+        self.forward(request).await
+    }
+
+    /// 图片编辑：`POST /v1/images/edits` 的转发入口（带参考图）。
+    pub async fn edit_images(
+        &self,
+        mut request: ForwardRequest,
+    ) -> Result<ForwardOutcome, GatewayError> {
+        request.image = Some(crate::server::core::providers::images::ImageOperation::Edit);
+        request.stream = false;
+        self.forward(request).await
     }
 
     /// 等待同 body 的在途请求完成，然后占住槽位。

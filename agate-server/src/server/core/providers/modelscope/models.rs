@@ -112,11 +112,16 @@ fn map_entry(row: &Value) -> Option<Value> {
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())?;
-    Some(json!({
+    let mut item = json!({
         "id": id,
         "name": id,
         "supportsToolCall": true,
-    }))
+    });
+    // 生图型号（Qwen-Image / Z-Image 系）在**目录**这里一次标好：`/v1/models`、
+    // 管理页、生图入口挑默认模型都读这份清单，标一个地方三处一致。
+    // 型号表是静态的（见 `image_generation` 模块头的理由），认不出来的原样返回。
+    super::image_generation::decorate(id, &mut item);
+    Some(item)
 }
 
 /// 解析 `/models` 响应（OpenAI `{data:[...]}` 或裸数组）

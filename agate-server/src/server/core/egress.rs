@@ -312,6 +312,52 @@ pub fn client_without_redirects(proxy: Option<&ResolvedProxy>) -> Arc<reqwest::C
     }
 }
 
+/// 下载**上游生成的图片**用的 Client：把 host 钉在已校验过的地址上。
+///
+/// ── 为什么不能复用 `client_for` / `client_without_redirects` ──────
+/// 生图的上游响应里常常只给一个签名 URL（S3 / CDN）。网关要把它下载下来
+/// 再转给客户端（原因见 `api::image_output` 的模块头），而那个 URL 是**上游
+/// 给的**、不是用户给的 —— 于是它成了一条「从网关所在机器发起任意 GET」的
+/// 入口：URL 指向 `127.0.0.1` / `10.0.0.0/8` / 云元数据地址时，网关就成了
+/// SSRF 跳板。
+///
+/// 防线是两层：调用方先把域名解析出来、逐个地址判公网（不在公网就拒绝），
+/// 然后把**同一批地址**交给 `resolve_to_addrs` —— 于是真正建连时不会再解析
+/// 一次域名（DNS rebinding 拿不到第二次机会），校验过的地址就是连的地址。
+///
+/// 跳转也交给调用方逐步跟（`Policy::none()`）：每一跳都要重新做上面那件事，
+/// 自动跟转会绕过校验。
+pub fn image_download_client(
+    proxy: Option<&ResolvedProxy>,
+    system_proxy_when_unset: bool,
+    host: &str,
+    addresses: &[std::net::SocketAddr],
+) -> Result<reqwest::Client, String> {
+    let timeouts = crate::server::config::timeout_settings();
+    let mut builder = base_builder(&timeouts).redirect(reqwest::redirect::Policy::none());
+    if !addresses.is_empty() {
+        builder = builder.resolve_to_addrs(host, addresses);
+    }
+    match proxy {
+        Some(proxy) => {
+            if proxy.port.is_none_or(|port| port == 0) {
+                return Err("代理端口无效".to_string());
+            }
+            let parsed = reqwest::Proxy::all(build_proxy_url(proxy))
+                .map_err(|_| "代理地址无效".to_string())?;
+            builder = builder.no_proxy().proxy(parsed);
+        }
+        // 直连语义：与 `client_for(None)` 一致，必须显式关掉环境代理探测。
+        // `system_proxy_when_unset` 为真时保持 reqwest 的自动探测（这家上游
+        // 在账号没配代理时跟随系统代理，见 `ProviderAdapter::system_proxy_when_unset`）。
+        None if !system_proxy_when_unset => {
+            builder = builder.no_proxy();
+        }
+        None => {}
+    }
+    builder.build().map_err(|_| "无法创建出站连接".to_string())
+}
+
 /// 跟随系统代理的 Client（进程级缓存一份）。
 ///
 /// 与 `client_for` 不同**不进 LRU**：它没有「出口参数」这一维，进程内一份

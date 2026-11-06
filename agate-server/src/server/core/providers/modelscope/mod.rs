@@ -32,6 +32,8 @@ pub mod checkin;
 pub mod client;
 pub mod credentials;
 pub mod errors;
+/// ModelScope 的 Images 接口（异步任务形态）与型号能力表。
+pub mod image_generation;
 pub mod models;
 pub mod probe;
 pub mod region;

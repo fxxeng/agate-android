@@ -133,7 +133,6 @@ use crate::server::errors::GatewayError;
 use super::qoder;
 use super::raccoon;
 use super::{catalog_cache, ProviderKind};
-
 /// 转发前对「账号 + 请求体」的完整构造计划（架构文档 §4.2 的 ChatRequestPlan）。
 ///
 /// ── 与 `upstream::request::TransportRequest` 的区别（重要）───
@@ -1075,6 +1074,51 @@ pub trait ProviderAdapter: Send + Sync {
                 ),
             ))
         })
+    }
+
+    /// 本 provider 是否支持**图片生成**（`POST /v1/images/generations`）。
+    ///
+    /// 默认 false。**能力位与实现必须成对**：声明 true 却不覆写
+    /// [`Self::build_image_request`]，请求会走到默认的 400 分支，用户看到的是
+    /// 「这家不支持生图」—— 与能力位说的相反，比干脆不声明更难排。
+    ///
+    /// 判据只看「这家有没有这条上游通道」，不看模型清单里有没有图片模型：
+    /// 某个模型能不能生图由目录条目的 `kind` / `supports_image_generation` 决定，
+    /// 两者在 `catalog::operation_providers` 里取交集。
+    fn supports_image_generation(&self) -> bool {
+        false
+    }
+
+    /// 本 provider 是否支持**图片编辑**（`POST /v1/images/edits`，带参考图）。
+    ///
+    /// 与生成**分开**声明，因为「能生成」不等于「能改图」：ModelScope 的
+    /// `Qwen-Image` 与 `Qwen-Image-Edit` 是两个不同模型，同一家只能做其中一件
+    /// 的情况很常见。默认 false。
+    fn supports_image_editing(&self) -> bool {
+        false
+    }
+
+    /// 用账号凭证构造上游生图请求（URL / 头 / 体 / 响应形态）。
+    ///
+    /// ── 与 [`Self::build_chat_request`] 的差别 ────────────────────
+    /// - `body` 是客户端原始请求体**已经过入口校验与模型解析**的副本：`model`
+    ///   是客户端要的对外名（可能是别名/带前缀名），本方法的实现要自己按家
+    ///   解析发送名 —— 与对话链路一样走 `catalog::wire_target_for_provider`；
+    /// - `n` / `size` / `response_format` 这些**网关统一处理**的字段不要在实现里
+    ///   自行消化（响应格式与文件编码由 `api::image_output` 统一做，见那里模块头）。
+    ///
+    /// 默认返回 400：能力位为 false 的家本来就到不了这里（候选链会先过滤掉），
+    /// 真到了说明能力位与实现不同步，这条错误文案要能让人一眼看出是配置问题。
+    fn build_image_request(
+        &self,
+        _account: &Value,
+        _body: &Value,
+        _client_headers: &HeaderMap,
+    ) -> Result<super::images::ImageRequestPlan, GatewayError> {
+        Err(GatewayError::bad_request(format!(
+            "{} 声明了生图能力但没有实现请求构造，请升级网关",
+            super::label_of(super::kind_id(self.kind()))
+        )))
     }
 
     /// 本 provider 是否支持**余额 / 积分查询**（模块头扩展 8）。

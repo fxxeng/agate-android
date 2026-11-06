@@ -297,6 +297,89 @@ impl ProviderAdapter for LoomyAdapter {
         })
     }
 
+    /// Loomy 的生图模型走标准 Images API（`type=image` 的条目，见 `models`）。
+    fn supports_image_generation(&self) -> bool {
+        true
+    }
+
+    /// 官方客户端的 `_generateImageToImage` 也打 `/images/generations`
+    /// （参考图放在 `images` 数组里，data URL 形态），所以编辑同样算支持。
+    /// 但 `/v1/images/edits` 这条入口本版本尚未提供（见 `api::images` 模块头），
+    /// 能力位先如实声明：等入口接上时不必再改这里。
+    fn supports_image_editing(&self) -> bool {
+        true
+    }
+
+    /// 构造 `POST {模型网关}/images/generations`。
+    ///
+    /// ── 与对话链路的差异 ────────────────────────────────────────
+    /// - **不带 `Accept: text/event-stream`**：生图是非流式的一包 JSON，声明
+    ///   要事件流只会让上游按 SSE 处理（有的实现会因此不返回图片体）；
+    /// - **不转发客户端的 `response_format` / `output_format` /
+    ///   `output_compression` / `stream` / `partial_images` / `mask` /
+    ///   `input_fidelity`**：这些由网关统一处理（响应格式与文件编码见
+    ///   `api::image_output`，参考图入口本版本未开放）。原样发给上游会让
+    ///   「要 b64 却拿到 url」这类请求两边都以为自己是对的；
+    /// - `size: "auto"` 直接删掉：上游把 auto 当缺省（不传才用默认），
+    ///   传字面量 "auto" 反而可能被当成非法尺寸。
+    ///
+    /// ── 与上游实现的差异（刻意）────────────────────────────────
+    /// 上游的 `request_headers::images` 还会补一套追踪头
+    /// （`chatid` / `msgid` / `traceparent`）。那是官方客户端的可观测性约定，
+    /// 不是接口要求；本仓对话链路也没带，生图保持与之一致（同一家两种请求
+    /// 发不同的头，只会让排障时多一层「是不是头的问题」）。
+    fn build_image_request(
+        &self,
+        account: &Value,
+        body: &Value,
+        _client_headers: &HeaderMap,
+    ) -> Result<super::images::ImageRequestPlan, GatewayError> {
+        let token = account
+            .get("auth")
+            .and_then(|auth| auth.get("accessToken"))
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if token.is_empty() {
+            return Err(GatewayError::with_status(
+                401,
+                "Loomy 账号缺少 session，无法生图（请重新登录）",
+            ));
+        }
+        let mut payload = body.clone();
+        if let Some(object) = payload.as_object_mut() {
+            for key in [
+                "response_format",
+                "output_format",
+                "output_compression",
+                "stream",
+                "partial_images",
+                "mask",
+                "input_fidelity",
+            ] {
+                object.remove(key);
+            }
+            // `n` 与 `user` 留给上游：Loomy 认这两个字段（前者决定张数，
+            // 后者的请求归因由它自己算），网关没有理由替它决定。
+            if object
+                .get("size")
+                .is_some_and(|value| value.as_str() == Some("auto") || value.is_null())
+            {
+                object.remove("size");
+            }
+        }
+        Ok(super::images::ImageRequestPlan::openai(
+            format!("{}/images/generations", endpoints::model_base_url()),
+            vec![
+                ("token".to_string(), token.clone()),
+                ("Authorization".to_string(), format!("Bearer {token}")),
+                ("Content-Type".to_string(), "application/json".to_string()),
+            ],
+            payload,
+        ))
+    }
+
     /// 有积分概念（双账户：永久 + 每日赠送）
     fn supports_usage(&self) -> bool {
         true

@@ -822,6 +822,13 @@ pub fn gateway_router(state: ServerState) -> Router {
     let open = Router::new()
         .route("/health", get(api::health::handle))
         .route("/v1/models", get(api::chat::list_models))
+        // 生成图片的短期下载链接（`response_format=url` 时给客户端的地址）。
+        // **必须免鉴权**：客户端把这个 URL 直接塞进 `<img src>`/`<Image>`，
+        // 浏览器与图片组件不会带 Authorization 头 —— 要求带 Key 的话，链接
+        // 永远是破图。凭证是那串 32 字节（256 位）随机令牌，本身就是能力凭证，
+        // 猜不出来；再加一道 Key 只是把「持有令牌」换成了「同时还得记得 Key」，
+        // 安全性没有实质变化，可用性直接归零。
+        .route("/v1/images/files/:id", get(api::image_assets::download))
         .with_state(state.clone());
     // 三条协议入口 + Anthropic 的 token 计数端点：都查 API Key。
     // 与 chat/completions 完全同构：都走同一套转发链路，差异只在出入口的
@@ -835,6 +842,9 @@ pub fn gateway_router(state: ServerState) -> Router {
         .route("/v1/responses", post(api::protocol::responses_endpoint))
         .route("/v1/messages", post(api::protocol::messages_endpoint))
         .route("/v1/messages/count_tokens", post(api::chat::count_tokens))
+        // 生图：与对话入口同一条转发链（多账号轮换 / 冷却 / 退避 / 终止 / 记账），
+        // 只在「怎么构造请求」与「怎么读响应」两处不同，见 `api::images` 模块头。
+        .route("/v1/images/generations", post(api::images::generations))
         .layer(middleware::from_fn(require_api_key))
         .with_state(state);
     open.merge(guarded)

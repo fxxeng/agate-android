@@ -140,6 +140,9 @@ pub mod commandcode;
 pub mod deepseek;
 pub mod doubaowork;
 pub mod content_block;
+/// 生图 / 图片编辑的判定层（模型是不是图片模型、这次操作能派给哪几家）。
+/// 与对话链路的图片**入参**适配（如 `loomy::images`）不是一回事。
+pub mod images;
 /// 自定义提供商的**运行期接线**（目录聚合的追加段 + Chat Completions 协议
 /// 转发）。它不进本文件的身份体系（`ProviderKind` / `PROVIDERS`，见
 /// `custom_providers` 的模块头），但目录合并与转发的分派点都以 id 字符串

@@ -173,6 +173,34 @@ pub fn resolve_model(
     payload: &mut Value,
     scope: Option<&KeyScope>,
 ) -> Result<String, GatewayError> {
+    resolve_model_for(state, payload, scope, false)
+}
+
+/// 生图 / 图片编辑入口的模型解析：同一套目录语义，但**放行**图片模型。
+///
+/// ── 与 [`resolve_model`] 的两处差异（都在 `resolve_model_for` 里按标记分支）──
+///   1. **不**判「这个模型是图片模型，请走 /v1/images/generations」那条反向门禁
+///      —— 那条门禁存在的意义正是把图片模型从对话入口赶走，生图入口当然不判；
+///   2. **不**把它记进「最近请求的模型」（`config::remember_request_model`）：
+///      那个值给账号页筛默认选中用，是**对话**的语义。生图模型混进去会让账号页
+///      默认筛出一个根本不能对话的模型。
+///
+/// 其余（默认模型回落、别名 / 映射、白名单、广告视图校验）逐条相同 —— 生图模型
+/// 也是目录里的普通条目，没有任何理由给它另开一套解析。
+pub fn resolve_image_model(
+    state: &ServerState,
+    payload: &mut Value,
+    scope: Option<&KeyScope>,
+) -> Result<String, GatewayError> {
+    resolve_model_for(state, payload, scope, true)
+}
+
+fn resolve_model_for(
+    state: &ServerState,
+    payload: &mut Value,
+    scope: Option<&KeyScope>,
+    image_generation: bool,
+) -> Result<String, GatewayError> {
     let requested = model_field_text(payload);
     // 客户端是否**点名**了模型：默认值注入后这个事实就丢了，先记下来
     let client_named = !requested.is_empty();
@@ -287,8 +315,31 @@ pub fn resolve_model(
             .with_code("model_not_found"));
         }
     }
-    // 记录本次实际用的模型（默认值已填充完毕），供账号页筛选默认选中
-    if !requested_model.is_empty() {
+    // ── 反向门禁：对话入口不该接图片模型 ────────────────────────────
+    // 判据是「**所有**承载家都说这是图片模型」：只要有一家把它当对话模型
+    // （同一家既做对话又做生图的情况存在），就照常放行，由转发链去试。
+    // 这样做是为了不误伤 —— 把一条本来能用的对话请求拦下来，代价比偶尔让
+    // 上游回一句 400 大得多。
+    if !image_generation && !requested_model.is_empty() {
+        let providers =
+            crate::server::core::providers::catalog::forwarding_providers(&requested_model);
+        if !providers.is_empty()
+            && providers.iter().all(|provider| {
+                crate::server::core::providers::images::provider_model_is_image(
+                    provider,
+                    &requested_model,
+                )
+            })
+        {
+            return Err(GatewayError::bad_request(format!(
+                "模型 '{requested_model}' 是图片生成模型，请使用 POST /v1/images/generations"
+            ))
+            .with_code("image_generation_required"));
+        }
+    }
+    // 记录本次实际用的模型（默认值已填充完毕），供账号页筛选默认选中。
+    // 生图不算：那个下拉是给对话挑默认模型的（理由见 `resolve_image_model`）。
+    if !requested_model.is_empty() && !image_generation {
         config::remember_request_model(&requested_model);
     }
     Ok(requested_model)

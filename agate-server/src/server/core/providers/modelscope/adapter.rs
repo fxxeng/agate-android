@@ -28,7 +28,7 @@ use crate::server::core::providers::adapter::{
 use crate::server::core::providers::ProviderKind;
 use crate::server::errors::GatewayError;
 
-use super::{balance, credentials, errors, models, region::Region};
+use super::{balance, credentials, errors, image_generation, models, region::Region};
 
 /// 一家 ModelScope 适配器（按地区参数化）
 pub struct ModelscopeAdapter {
@@ -231,6 +231,42 @@ impl ProviderAdapter for ModelscopeAdapter {
     /// 有远程目录（`GET {推理域}/models`）
     fn supports_model_refresh(&self) -> bool {
         true
+    }
+
+    /// ModelScope 的 Images 接口（异步任务形态，见 `image_generation` 模块头）。
+    /// 注意「这家支持生图」与「这个型号能生图」是两件事：型号表是静态的，
+    /// 逐条能力位在 `image_generation::decorate` 里按型号标。
+    fn supports_image_generation(&self) -> bool {
+        true
+    }
+
+    /// 编辑走同一套接口（`image_url` 数组），但**只对 Edit 系型号**成立 ——
+    /// 是否真的能做由 `image_generation::build` 按型号再判一次。
+    fn supports_image_editing(&self) -> bool {
+        true
+    }
+
+    /// 构造异步生图请求（响应交给 `upstream::image_tasks` 轮询）。
+    ///
+    /// ── 为什么这个实现同时管生图与编辑 ──────────────────────────
+    /// 两件事在这个上游是**同一个接口**，差别只有 `image_url` 在不在体里。
+    /// 拆成两个函数只会让「编辑要带参考图」这条知识写两遍。
+    fn build_image_request(
+        &self,
+        account: &Value,
+        body: &Value,
+        _client_headers: &HeaderMap,
+    ) -> Result<crate::server::core::providers::images::ImageRequestPlan, GatewayError> {
+        let wire_model = body
+            .get("model")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        // 编辑还是生成，由**型号自己的能力**决定（两者互斥，见 capabilities）：
+        // Edit 系型号走带参考图那条，其余走纯生图。不读客户端意图 ——
+        // 这个接口没有「操作类型」字段，参考图在不在就是唯一判据。
+        let editing = image_generation::capabilities(wire_model)
+            .is_some_and(|(generation, editing)| editing && !generation);
+        super::image_generation::build(account, body, self.region, editing)
     }
 
     /// 有魔粒余额（`GET /openapi/v1/magicubes/balance`）

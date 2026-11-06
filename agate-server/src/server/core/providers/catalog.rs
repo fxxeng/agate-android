@@ -64,6 +64,31 @@ fn advertised_manifest_for(store: &AccountStore, kind: ProviderKind) -> Vec<Valu
     adapter_for(kind).advertise_models(store, manifest_for(kind))
 }
 
+/// 按**提供商 id 字符串**取清单（内置家与自定义家各走各的存储）。
+///
+/// ── 为什么要这个入口，而不是让调用方自己按 kind 分派 ────────────
+/// 转发链上一路传的都是 id 字符串（`ForwardRequest.allowed_providers`、
+/// `operation_providers` 的返回值），调用方手上没有 `ProviderKind`。让每个
+/// 调用点自己写 `kind_from_id(...).map(manifest_for)` + 自定义家分支，等于把
+/// 「自定义家的清单在哪」这条知识抄 N 份 —— 抄错的后果是自定义家的模型
+/// 在某一处「查不到」（于是被判成不支持），另一处又能查到。
+///
+/// 内置家走 [`manifest_for`]：**必须**走那里，用户的逐条能力位覆盖与
+/// models.dev 补齐都挂在那条路径上，绕过去会读到没有用户覆盖的原始值。
+/// 自定义家的清单本来就存在它自己的记录里（没有覆盖层），原样返回。
+pub fn manifest_for_provider(provider_id: &str) -> Vec<Value> {
+    if let Some(kind) = kind_from_id(provider_id) {
+        return manifest_for(kind);
+    }
+    crate::server::core::custom_providers::list()
+        .into_iter()
+        .find(|provider| {
+            provider.get("id").and_then(Value::as_str) == Some(provider_id)
+        })
+        .and_then(|provider| provider.get("models").and_then(Value::as_array).cloned())
+        .unwrap_or_default()
+}
+
 fn workbuddy_catalog(region: WorkBuddyRegion) -> ModelCatalog {
     crate::server::core::models::global_catalog(region)
 }

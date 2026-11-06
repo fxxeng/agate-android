@@ -256,6 +256,7 @@ pub async fn chat(State(state): State<ServerState>, body: Bytes) -> Response {
             // 因为助手而继续消耗额度（与生产请求同一道门禁）
             ignore_model_gate: false,
             proxy_override: None,
+            image: None,
         })
         .await;
 

@@ -146,6 +146,15 @@ pub(super) struct ProviderContext<'a> {
     /// 单次请求的出网代理临时覆盖（模型测试专用；`None` = 跟随账号配置，
     /// `Some(None)` = 强制直连，`Some(Some(proxy))` = 强制走指定节点）。
     pub proxy_override: Option<&'a Option<crate::server::core::proxies::ResolvedProxy>>,
+    /// 这次转发是生图 / 图片编辑（`None` = 普通对话请求）。语义与取舍见
+    /// [`super::ForwardRequest::image`]。
+    ///
+    /// 这个字段在**两个**地方读，两处都必须读它：
+    ///   - [`send_body`] 开头：有值时整段提前返回（生图 body 里没有对话结构，
+    ///     提示词注入 / 指纹脱敏 / 会话图片压缩 / 角色归一全都不适用）；
+    ///   - `provider_loop::forward_with_providers` 的候选链：按
+    ///     `providers::images::operation_providers` 取家，而不是对话的承载家。
+    pub image: Option<crate::server::core::providers::images::ImageOperation>,
 }
 
 /// 某一家 provider 实际要发送的请求体（**每次转发前**决定，不做跨家复用），
@@ -200,6 +209,19 @@ pub(super) fn send_body<'a>(
     account: Option<&Value>,
     degraded: bool,
 ) -> SendBody<'a> {
+    // ── 生图 / 图片编辑：只做「模型名按家改写」这一件事 ──────────────
+    // 下面五层（角色归一 / 提示词 / 指纹脱敏 / 会话图片压缩 / 原生工具闸门）
+    // 全部是**对话形态**的处理：它们的每一层都以 `messages` 为前提，而生图
+    // body 里只有 `prompt` 与几个参数。让它们跑一遍的后果不是「无操作」，而是
+    // 有机会把 `prompt` 改坏（脱敏会把 prompt 里像指纹的串改掉、提示词层会
+    // 在没有 messages 时按自己的规则插一条 system）。
+    //
+    // 所以这里**显式早退**，而不是在每一层里各加一个 `if ctx.image.is_some()`：
+    // 那种写法要求以后新增的每一层都记得加判断（漏一层的表现是生图被悄悄改写），
+    // 而「一个入口早退」在结构上保证了下游不可能有生图层不知道的改写。
+    if ctx.image.is_some() {
+        return image_send_body(ctx, provider_id, account);
+    }
     // ── ⓪ 角色归一层（开发者角色兼容开关）───────────────────────────
     // 在所有改写**之前**：先把 developer 角色归一成 system，后面各层（提示词、
     // 脱敏、各适配器）看到的就是统一形态 —— 适配器自己的 developer→system 映射
@@ -370,8 +392,51 @@ pub(super) fn send_body<'a>(
     SendBody { body, wire_model: wire.model }
 }
 
-/// 承载家的 [`ProviderAdapter::outbound_reasoning`]（读发送体里随行的等级）。
+/// 生图 / 图片编辑的出站体：**只**按家改写模型名，其余原样。
 ///
+/// ── 为什么模型名改写要留、思考等级不留（这是本函数唯一的判断）────
+/// 模型名必须改写：别名 / `provider/model` 前缀 / 映射在这里落地，生图与对话
+/// 共用同一套目录语义 —— 不改写会让映射出来的生图名直接发给上游（400）。
+/// 思考等级必须不留：那是**对话推理强度**，生图接口没有这个字段，注入了
+/// 就是给上游递一个它不认识的键（严格校验的家会整单 400）。
+///
+/// `account` 参与解析的理由与 [`send_body`] 相同（映射可以按账号区分）。
+fn image_send_body<'a>(
+    ctx: &'a ProviderContext<'_>,
+    provider_id: &str,
+    account: Option<&Value>,
+) -> SendBody<'a> {
+    let requested = ctx
+        .body
+        .get("model")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if requested.is_empty() {
+        // 没有 model：不改写，也没有冷却键（与对话路径同一口径）。
+        // 生图入口已保证 model 非空（`api::images::resolve_model` 会填默认值），
+        // 走到这里说明是内部调用方，不 panic、原样发。
+        return SendBody {
+            body: Cow::Borrowed(ctx.body),
+            wire_model: requested,
+        };
+    }
+    let wire = crate::server::core::providers::catalog::wire_target_for_provider(
+        &requested,
+        provider_id,
+        account,
+    );
+    ctx.telemetry.note_upstream_model(&wire.model);
+    let mut body = Cow::Borrowed(ctx.body);
+    rewrite_model(&mut body, &requested, &wire.model, provider_id);
+    SendBody {
+        body,
+        wire_model: wire.model,
+    }
+}
+
+/// 承载家的 [`ProviderAdapter::outbound_reasoning`]（读发送体里随行的等级）。///
 /// 未知 provider id 返回 None：与 [`apply_reasoning`] 里同一条防御 ——
 /// 选路早已校验过注册表，走到这里还查不到说明调用链坏了，什么都不做比 panic 安全。
 fn outbound_reasoning_of(provider_id: &str, body: &Value) -> Option<String> {
