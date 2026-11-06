@@ -34,14 +34,14 @@
 use std::io::Cursor;
 use std::time::Duration;
 
-use axum::body::{to_bytes, Body};
+use axum::body::{to_bytes, Body, Bytes};
 use axum::extract::{FromRequest, Multipart, Request};
+use axum::http::request::Parts;
 use base64::Engine;
 use serde_json::{json, Map, Value};
 
 use crate::server::core::providers::images::ImageOperation;
 use crate::server::errors::GatewayError;
-use crate::server::ServerState;
 
 /// 整个编辑请求（表单 + 参考图）的上限。取 16 MiB：四张 3 MiB 的手机照片
 /// 加上表单文本还留有余量，同时挡住「把整个相册发过来」这种误用。
@@ -75,18 +75,13 @@ fn image_field(name: &str) -> bool {
             })
 }
 
-/// 把请求体解成「与生图同构的 JSON」：`{prompt, size, …, images: [...]}`。
+/// 入口：读完整个请求体（有上限），落一份调试快照，再交给 [`decode`]。
 ///
-/// `state` 只为满足 `Multipart` 提取器的约束而传（它要 `S: Send + Sync`），
-/// 本函数不读任何运行时配置。
-pub(super) async fn parse(request: Request, state: &ServerState) -> Result<Value, GatewayError> {
+/// **不需要 `ServerState`**：`Multipart` 的提取器只读 body，签名里那个 `S` 一次
+/// 也不碰。所以这里传 `&()` 而不是把手上的 `ServerState` 递进来 —— 参数列表上
+/// 就没有「这里可能会查配置」的错觉。
+pub(super) async fn parse(request: Request) -> Result<Value, GatewayError> {
     let (parts, body) = request.into_parts();
-    let content_type = parts
-        .headers
-        .get("content-type")
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or("")
-        .to_ascii_lowercase();
     // 先整包读进内存再判 content-type：两条路（JSON / multipart）都要有界，
     // 分别限流会变成两份「大小上限」需要同步维护。
     let bytes = to_bytes(body, MAX_REQUEST_BYTES)
@@ -102,6 +97,19 @@ pub(super) async fn parse(request: Request, state: &ServerState) -> Result<Value
         ImageOperation::Edit.path(),
         &super::pipeline::user_agent_of(&parts.headers),
     );
+    decode(parts, bytes).await
+}
+
+/// 纯解码：已读完的字节 + 原请求头 → 同构 JSON。
+///
+/// 与 [`parse`] 的唯一差别是那句调试落盘 —— 所以单测打这里，不碰磁盘也不读配置。
+async fn decode(parts: Parts, bytes: Bytes) -> Result<Value, GatewayError> {
+    let content_type = parts
+        .headers
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("")
+        .to_ascii_lowercase();
     if content_type.starts_with("application/json") {
         return serde_json::from_slice(&bytes)
             .map_err(|_| invalid("图片编辑请求必须是有效 JSON 对象"));
@@ -114,7 +122,7 @@ pub(super) async fn parse(request: Request, state: &ServerState) -> Result<Value
     // 把已读出的字节重新包回 Body：`Multipart` 提取器要的是完整请求，而我们
     // 刚刚已经把它的 body 取空了。boundary 在 content-type 里，parts 原样带过去。
     let request = Request::from_parts(parts, Body::from(bytes));
-    let mut multipart = Multipart::from_request(request, state)
+    let mut multipart = Multipart::from_request(request, &())
         .await
         .map_err(|_| invalid("无法解析 multipart/form-data，请检查 boundary"))?;
     let mut payload = Map::new();
@@ -369,5 +377,117 @@ mod tests {
     fn inspect_decodes_and_reports_size() {
         assert_eq!(inspect_bytes(&tiny_png()).unwrap(), (2, 3));
         assert!(inspect_bytes(b"not an image at all").is_err());
+    }
+
+    fn parts_with(content_type: &str) -> Parts {
+        Request::builder()
+            .method("POST")
+            .uri("/v1/images/edits")
+            .header("content-type", content_type)
+            .body(())
+            .unwrap()
+            .into_parts()
+            .0
+    }
+
+    fn multipart_body(boundary: &str, fields: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut body = Vec::new();
+        for (name, data) in fields {
+            body.extend_from_slice(
+                format!("--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n")
+                    .as_bytes(),
+            );
+            body.extend_from_slice(data);
+            body.extend_from_slice(b"\r\n");
+        }
+        body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+        body
+    }
+
+    /// 表单收成与生图同构的 JSON：文本字段进顶层、文件字段进 `images[]`，且
+    /// **数字类字段就地转成 JSON 数字** —— 留成字符串的话，下游 `n.as_u64()`
+    /// 会拿到 `None` 而悄悄退回默认值（症状是「我明明要了 4 张，只出 1 张」）。
+    #[tokio::test]
+    async fn multipart_form_folds_into_one_shape() {
+        let png = tiny_png();
+        let body = multipart_body(
+            "----agate",
+            &[
+                ("prompt", "把背景换成蓝色".as_bytes()),
+                ("n", b"1"),
+                ("size", b"1024x1024"),
+                ("image", &png),
+            ],
+        );
+        let payload = decode(
+            parts_with("multipart/form-data; boundary=----agate"),
+            Bytes::from(body),
+        )
+        .await
+        .unwrap();
+        assert_eq!(payload["prompt"], "把背景换成蓝色");
+        assert_eq!(payload["n"], 1);
+        assert_eq!(payload["size"], "1024x1024");
+        let images = payload["images"].as_array().unwrap();
+        assert_eq!(images.len(), 1);
+        assert!(images[0]["image_url"]
+            .as_str()
+            .unwrap()
+            .starts_with("data:image/png;base64,"));
+    }
+
+    /// 参考图字节里出现 `\r\n`、甚至出现一段「长得像 boundary」的文本，都不能
+    /// 把图切断 —— 这正是「不手搓 boundary」的理由（切错的症状是「上传成功但
+    /// 图是花的」，比一个明确的 400 难查得多）。这里逐字节比对原值。
+    #[tokio::test]
+    async fn binary_field_survives_crlf_and_boundary_lookalikes() {
+        // 以 PNG 头开始（`mime_of` 只看文件头），后面接 CRLF 与一段「长得像
+        // boundary」的文本。切错的实现会在这里截断或错位。
+        let raw: &[u8] = b"\x89PNG\r\n\x1a\n\x00\x01\r\n--not-the-boundary\r\n\x02\x03";
+        let body = multipart_body(
+            "----agate",
+            &[("prompt", b"x".as_slice()), ("image", raw)],
+        );
+        let payload = decode(
+            parts_with("multipart/form-data; boundary=----agate"),
+            Bytes::from(body),
+        )
+        .await
+        .unwrap();
+        let url = payload["images"][0]["image_url"].as_str().unwrap();
+        assert!(url.starts_with("data:image/png;base64,"), "{url}");
+        let encoded = url.split_once(',').unwrap().1;
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD
+                .decode(encoded)
+                .unwrap(),
+            raw
+        );
+    }
+
+    /// JSON 形态原样进（数字就是数字、不要转字符串），否则 `n` / `size` 这类
+    /// 字段会在两个入口之间出现两套类型约定。
+    #[tokio::test]
+    async fn json_body_passes_through_untouched() {
+        let body = br#"{"prompt":"x","n":4,"images":[{"image_url":"data:image/png;base64,AA"}]}"#;
+        let payload = decode(
+            parts_with("application/json"),
+            Bytes::from_static(body),
+        )
+        .await
+        .unwrap();
+        assert_eq!(payload["n"], 4);
+        assert_eq!(payload["images"][0]["image_url"], "data:image/png;base64,AA");
+    }
+
+    /// 既不是 JSON 也不是 multipart 时，文案要指出两条正确形态，而不是一句
+    /// 「格式错误」（用户下一步不知道该改哪里）。
+    #[tokio::test]
+    async fn wrong_content_type_says_what_to_send() {
+        let error = decode(parts_with("text/plain"), Bytes::from_static(b"hi"))
+            .await
+            .unwrap_err();
+        assert!(error.message.contains("multipart/form-data"), "{}", error.message);
+        assert!(error.message.contains("image_url"), "{}", error.message);
     }
 }

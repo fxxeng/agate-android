@@ -368,7 +368,7 @@ pub async fn edits(
     let scope = key_scope.map(|Extension(scope)| scope);
     let started_at = logging::now_ms();
     let client = crate::server::core::client::classify(&pipeline::user_agent_of(&headers));
-    let payload = match super::image_input::parse(request, &state).await {
+    let payload = match super::image_input::parse(request).await {
         Ok(payload) => payload,
         Err(error) => {
             pipeline::record_early_failure(&state, started_at, "", "", &client, &error);
