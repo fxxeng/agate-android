@@ -13,6 +13,27 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        # 行尾体检要能读 `HEAD^`，默认的浅克隆只有 1 个提交。
+        with:
+          fetch-depth: 2
+
+      # 判官自己的单测：体检脚本的 `classify()` 判错两个方向都有代价
+      # （假阳性让人关掉检查，假阴性让事故溜过去）。历史上第一版就漏了
+      # 「改内容 + 换行尾」这种最常见形状，所以判据本身要有回归保护。
+      - name: 行尾判据单测
+        run: python3 tools/test_check_eol.py
+
+      # 行尾体检：拦住「只是行尾变了、内容一字未改」的整文件 churn。
+      #
+      # 本仓有 34 个历史 CRLF 文件（`.gitattributes` 已给它们标 `-text`，git 不
+      # 再碰它们的行尾）。但只要有那么一次工具用错（脚本按 LF 重写了整个文件），
+      # 提交里就会出现 1461/1461 那种 diff —— 而**本地编译与测试全绿**，
+      # 只有在 `git diff --numstat` 里才看得见。2026-11 已经踩过三次。
+      #
+      # 判据是精确的：普通 diff 非空、且 `--ignore-cr-at-eol` 之后该文件的改动
+      # 归零（或只剩不到一半）⇒ 行尾噪音占了主导。见 `tools/check_eol.py` 模块头。
+      - name: 行尾体检（整文件 churn）
+        run: python3 tools/check_eol.py --commit HEAD
 
       - name: Rust 工具链（含 aarch64-linux-android 目标）
         uses: dtolnay/rust-toolchain@stable

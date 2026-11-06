@@ -1,4 +1,68 @@
-* text=auto eol=lf
+# 默认：按文本处理，入库统一 LF（新文件都走这条）。
+*
+text=auto eol=lf
+
+# ── 历史 CRLF 文件：显式声明为 binary，让 git **永不**碰它们的行尾 ──
+#
+# 这 34 个文件在 `.gitattributes` 出现之前就入库了，blob 里是 CRLF。git 只在
+# **入库那一刻**做归一，不会回改历史 blob —— 于是它们成了一批「规则与实际
+# 不符」的文件：
+#
+#   · 工作区是 CRLF、blob 也是 CRLF，看起来一切正常；
+#   · 但只要改一次（哪怕只改一行），`add` 就会按 `eol=lf` 把它转成 LF，
+#     产生整文件 churn（1461/1461 那种），而**本地编译与测试全绿**；
+#   · 本地 `core.autocrlf`（PortableGit 系统级默认 true）会让这件事更不可预测。
+#
+# 2026-11 已经在这上面栽过三次（`http.rs`、客户端 4 个文件、`request.rs`）。
+#
+# `-text` 的作用范围要分清（实测过两次，结论不同，别混为一谈）：
+#   · **工作区保持 CRLF 时**：git 不再按 `eol=lf` 折成 LF，改一行就是 1/1。
+#     ——这是它真正的价值：挡住 `core.autocrlf` 与属性规则的擅自转换。
+#   · **工作区被工具整体改成 LF 时**：git 仍然如实记录 1461/1461。
+#     ——`-text` 拦不住工具的错误，那一层由 `tools/check_eol.py` 在 CI 上兜。
+#
+# 所以两层防线缺一不可：
+#   属性层（这里）—— 让「正常编辑」不会被悄悄改写；
+#   检查层（脚本）—— 让「工具出错」不会静悄悄溜进提交。
+#
+# ⚠️ 这份名单是**快照**，新文件不要往这里加：新文件走上面的 `eol=lf` 就是对的。
+# 想复核名单是否过期，跑 `python3 tools/check_eol.py --audit`。
+agate-server/src/jni_bridge.rs -text
+agate-server/src/server/api/model_manage.rs -text
+agate-server/src/server/api/scheduled_tasks.rs -text
+agate-server/src/server/config/mod.rs -text
+agate-server/src/server/config/types.rs -text
+agate-server/src/server/core/credential_maintenance.rs -text
+agate-server/src/server/core/model_rules/mod.rs -text
+agate-server/src/server/core/model_rules/workbuddy.rs -text
+agate-server/src/server/core/models/mod.rs -text
+agate-server/src/server/core/providers/catalog.rs -text
+agate-server/src/server/core/providers/catalog/view.rs -text
+agate-server/src/server/core/providers/mod.rs -text
+agate-server/src/server/core/providers/zcode/claim.rs -text
+agate-server/src/server/core/scheduled_tasks.rs -text
+agate-server/src/server/http.rs -text
+app/build.gradle.kts -text
+app/src/main/java/dev/agate/android/data/AccountOps.kt -text
+app/src/main/java/dev/agate/android/data/GatewayRepository.kt -text
+app/src/main/java/dev/agate/android/data/KeyOps.kt -text
+app/src/main/java/dev/agate/android/data/ModelOps.kt -text
+app/src/main/java/dev/agate/android/data/ScheduledTaskOps.kt -text
+app/src/main/java/dev/agate/android/data/dto/AccountDtos.kt -text
+app/src/main/java/dev/agate/android/navigation/AgateNavHost.kt -text
+app/src/main/java/dev/agate/android/ui/home/ConsolePage.kt -text
+app/src/main/java/dev/agate/android/ui/keys/KeysPage.kt -text
+app/src/main/java/dev/agate/android/ui/models/ModelMappingPage.kt -text
+app/src/main/java/dev/agate/android/ui/models/ModelsPage.kt -text
+app/src/main/java/dev/agate/android/ui/provider/ProviderDetailPage.kt -text
+app/src/main/java/dev/agate/android/ui/provider/ProviderPage.kt -text
+app/src/main/java/dev/agate/android/ui/quota/QuotaCenterPage.kt -text
+docs/提供商卡片-设计预览.html -text
+docs/模型设置-3.0.8对比分析.md -text
+docs/模型页-设计预览.html -text
+docs/模型页入口卡-设计预览.html -text
+
+# 二进制：与上面的 `-text` 效果相同，但语义更明确。
 *.png binary
 *.webp binary
 *.jpg binary
