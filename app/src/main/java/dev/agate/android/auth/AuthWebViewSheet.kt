@@ -41,14 +41,18 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 /**
- * Cookie 串里有没有**登录态**（`sessionid` / `sessionid_ss` / `sid_guard` 之一）。
+ * Cookie 串里有没有**登录态**（`names` 之一存在且非空）。
  *
- * 与内核 `doubaowork::credentials::SESSION_COOKIE_NAMES` 同一组名字 ——
- * 客户端先判一次只是为了「别在用户在登录页上还没登录成功时就交回空 Cookie」，
- * 真正的判定仍在内核（那边是唯一权威，见 `login::ensure_has_session`）。
+ * 名单由各家在 `ProviderPreset.sessionCookieNames` 里声明（豆包是 `sessionid` 系、
+ * KukuAI 是百度通行证的 `BDUSS`）—— 写死一份会让「换了家就永远判不成功」：
+ * 用户在登录页里明明登进去了，客户端却一直认为没登录，最后等到 5 分钟超时。
+ *
+ * 客户端先判一次只是为了「别在用户还没登录完时就交回空 Cookie」，真正的判定
+ * 仍在内核（那边是唯一权威，见 `login::ensure_has_session` 与各家的
+ * `complete_login`）。
  */
-private fun hasSessionCookie(cookie: String): Boolean {
-    val names = listOf("sessionid", "sessionid_ss", "sid_guard")
+private fun hasSessionCookie(cookie: String, names: List<String>): Boolean {
+    if (names.isEmpty()) return false
     return cookie.split(';').any { part ->
         val name = part.substringBefore('=').trim()
         val value = part.substringAfter('=', "").trim()
@@ -90,7 +94,12 @@ fun AuthWebViewSheet(
 
     val label = PresetRegistry.labelOf(session.providerId)
     // 这家是不是「靠读登录窗口的 Cookie 收尾」（见 ProviderPreset.webLoginCookies）
-    val cookieLogin = PresetRegistry.byId(session.providerId)?.webLoginCookies == true
+    val preset = PresetRegistry.byId(session.providerId)
+    val cookieLogin = preset?.webLoginCookies == true
+    // 该认哪些 Cookie 名算登录成功（各家不同，见 ProviderPreset.sessionCookieNames）
+    val cookieNames = preset?.sessionCookieNames.orEmpty()
+    // 交回去的端点：null = 通用回调；KukuAI 这类走专用收尾（{state, cookie}）
+    val cookieCompletePath = preset?.cookieCompletePath
     // Cookie 只交回一次（登录成功后页面还会继续导航，每拍都交会重复 POST；
     // 内核那边虽然幂等，但没必要反复发）
     val cookieSubmitted = remember { mutableStateOf(false) }
@@ -109,10 +118,16 @@ fun AuthWebViewSheet(
                 val cookie = runCatching {
                     CookieManager.getInstance().getCookie(session.authUrl)
                 }.getOrNull()
-                if (cookie != null && hasSessionCookie(cookie) && !cookieSubmitted.value) {
+                if (cookie != null && hasSessionCookie(cookie, cookieNames) && !cookieSubmitted.value) {
                     cookieSubmitted.value = true
                     status = "已获取登录态，正在加入账号…"
-                    LoginClient.forwardCallback(session.state, cookie)
+                    // 两种收尾形态：通用回调（把 Cookie 当 callbackUrl 交回，内核各家
+                    // 自己认）与专用端点（KukuAI：{state, cookie} → finish_kuku_login）
+                    if (cookieCompletePath != null) {
+                        LoginClient.forwardCookie(session.state, cookie, cookieCompletePath)
+                    } else {
+                        LoginClient.forwardCallback(session.state, cookie)
+                    }
                 }
             }
             when (val r = LoginClient.wait(session.state)) {

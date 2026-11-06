@@ -54,12 +54,15 @@ data class ProviderPreset(
     /** 粘贴框是否多行（整份 JSON / Cookie 串）。 */
     val pasteMultiline: Boolean = false,
     /**
-     * 网页登录的收尾方式是否为「**壳侧读登录窗口的 Cookie 再交回**」。
+     * 网页登录的收尾方式是否为「**读登录窗口的 Cookie 再交回**」。
      *
      * true 的家没有授权码可收（凭证就在 Cookie 里）：登录窗口轮询
-     * `CookieManager` 读到登录态 Cookie 后，把整串 Cookie 作为
-     * `callbackUrl` 交给内核的 `/api/session/login/callback`
-     * （契约与上游 beta 一致，见内核 `providers/doubaowork/adapter.rs`）。
+     * `CookieManager`，读到**本家声明的**登录态 Cookie（`sessionCookieNames`）
+     * 后把整串 Cookie 交回内核。
+     *
+     * 交回端点分两种（由 `cookieCompletePath` 决定）：通用
+     * `/api/session/login/callback`（豆包：Cookie 当 `callbackUrl`，
+     * 内核各家自己认）与专用端点（KukuAI：`{state, cookie}`）。
      * false 的家仍走原来的「拦自定义 scheme / 等 loopback 回调」那条路。
      */
     val webLoginCookies: Boolean = false,
@@ -77,10 +80,32 @@ data class ProviderPreset(
      */
     val needsGateway: Boolean = false,
     /**
-     * 非空 = 整家置灰不可添加（F12）。如 Kuku：换票引擎是官方 Windows
-     * 客户端的 genflowengine.dll，Android 无从加载 → 入口置灰，已有账号不动。
+     * 非空 = 整家置灰不可添加（F12）。目前没有家在用（kuku 于 2026-11-06 解除：
+     * 换发已改成纯算法签名，不再需要官方 Windows 客户端 —— 见内核
+     * `providers/kuku/engine.rs`）；字段留着是因为「这家在 Android 上根本走不通」
+     * 确实会发生，而给一个点了报错的入口比少给一条更糟。
      */
     val disabledNote: String? = null,
+    /**
+     * `webLoginCookies = true` 时，判定「已经登录成功」看哪些 Cookie 名。
+     *
+     * 各家登录态 Cookie 不同：豆包是 `sessionid` 系，KukuAI 是百度通行证的
+     * `BDUSS`。写死一份名单会让「换了家就永远判不成功」（登录页上用户明明
+     * 登进去了，客户端却一直认为没登录、最后 5 分钟超时），所以由注册表声明。
+     *
+     * 客户端这里只做**前置判断**（别在用户还没登录完就交回空 Cookie），
+     * 真正的校验仍在内核（各家的 `complete_login` / `normalize_import`）。
+     */
+    val sessionCookieNames: List<String> = emptyList(),
+    /**
+     * 读到的 Cookie 交给哪条收尾端点；`null` = 通用
+     * `/api/session/login/callback`（body 是 `{state, callbackUrl}`）。
+     *
+     * KukuAI 是例外：它的收尾是 `/api/session/login/kuku/complete`
+     * （body 是 `{state, cookie}`，内核 `finish_kuku_login`），因为百度通行证
+     * 登录**不产生授权码**，凭证只在 Cookie 里，走不了「回调 URL」那一套。
+     */
+    val cookieCompletePath: String? = null,
     /**
      * 「浏览器」通道是否需要内核换一支授权地址（只有小浣熊与 CatPaw 为 true）。
      *
@@ -270,13 +295,27 @@ object PresetRegistry {
             "loomy", "Loomy", "讯飞 · 手机验证码", LoginKind.SMS,
             listOf(AuthChannel.SMS), supportsCheckin = true,
         ),
-        // Kuku：粘贴 Cookie；文件导入需二进制 SQLite
+        // Kuku：内嵌窗口登录（读站点的百度通行证 Cookie）或粘贴 Cookie。
+        //
+        // ── 为什么现在能用（2026-11-06）──────────────────────────
+        // 以前这里挂着 `disabledNote = "引擎依赖官方 Windows 客户端…"`：会话令牌
+        // 换发要加载 `genflowengine.dll`，Android 无从加载 ⇒ 网页登录的账号一律
+        // userreport errno=-6。内核已改成纯算法签名（`providers/kuku/engine.rs`，
+        // 对齐上游 3.4.1），任何平台都能换发，置灰理由不成立。
+        //
+        // 收尾走专用端点（`cookieCompletePath`）：百度通行证登录不产生授权码，
+        // 凭证只有 Cookie（BDUSS / PTOKEN，HttpOnly，页面脚本读不到，但
+        // CookieManager 读得到），所以交回 `{state, cookie}`。
         ProviderPreset(
-            "kuku", "KukuAI", "百度文库 · 粘贴 Cookie", LoginKind.PASTE,
-            listOf(AuthChannel.PASTE, AuthChannel.IMPORT_FILE),
-            pasteHint = "Cookie 整串（含 BDUSS 与 STOKEN）", pasteMultiline = true,
+            "kuku", "KukuAI", "百度文库 · 网页登录 / 粘贴 Cookie", LoginKind.WEBVIEW,
+            listOf(AuthChannel.EMBEDDED, AuthChannel.PASTE, AuthChannel.IMPORT_FILE),
+            webLoginCookies = true,
+            sessionCookieNames = listOf("BDUSS"),
+            cookieCompletePath = "/api/session/login/kuku/complete",
+            // 换发要 PTOKEN（通行证级 STOKEN 换不成业务级）；缺了会走「账号已添加
+            // 但可能未登录」的警告，所以粘贴时点明要整串。
+            pasteHint = "Cookie 整串（含 BDUSS 与 PTOKEN）", pasteMultiline = true,
             supportsCheckin = true,
-            disabledNote = "引擎依赖官方 Windows 客户端，Android 端暂不可用",
         ),
         // MonkeyCode：内核不支持网页登录，只能粘贴 session
         ProviderPreset(
@@ -390,6 +429,8 @@ object PresetRegistry {
             LoginKind.WEBVIEW,
             listOf(AuthChannel.EMBEDDED, AuthChannel.PASTE, AuthChannel.IMPORT_FILE),
             webLoginCookies = true,
+            // 与内核 `doubaowork::credentials::SESSION_COOKIE_NAMES` 同一组名字
+            sessionCookieNames = listOf("sessionid", "sessionid_ss", "sid_guard"),
             // 粘贴框三种形态都收（与内核 `login::normalize_import` 一致）：
             // Cookie 头串 / Cookie JSON 数组 / 扁平键值对象（上游 beta 的
             // 说明里也写了「也支持 Cookie JSON 数组或对象」）

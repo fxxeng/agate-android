@@ -114,6 +114,27 @@ object LoginClient {
         resp.has("accountId") || resp.optBoolean("success") || resp.optBoolean("continue")
     }
 
+    /**
+     * 交回登录态 Cookie（**专用**收尾端点，如 KukuAI 的
+     * `POST /api/session/login/kuku/complete`）。body 是 `{state, cookie}`。
+     *
+     * ── 为什么不能复用 forwardCallback ─────────────────────────
+     * 通用端点的字段是 `callbackUrl`，内核按「自定义协议回调 URL」解析；而
+     * 百度通行证登录**不产生授权码**，凭证只有 Cookie（BDUSS / PTOKEN，且是
+     * HttpOnly），必须原样当 Cookie 头交给 `finish_kuku_login`。字段名对不上
+     * 就是 400「缺少 state 或登录态 Cookie」—— 而界面上只会看到「登录未完成」。
+     *
+     * 成功响应是 `{ok:true}`；这里只关心「内核收下了」，最终结果仍由 /wait 给出。
+     */
+    suspend fun forwardCookie(state: String, cookie: String, path: String): Boolean =
+        withContext(Dispatchers.IO) {
+            val resp = when (val r = postJson(path, JSONObject().put("state", state).put("cookie", cookie))) {
+                is HttpResult.Ok -> r.json
+                else -> return@withContext false
+            }
+            resp.optBoolean("ok") || resp.has("accountId") || resp.optBoolean("success")
+        }
+
     // P2：经 CoreTransport 内核直调（不经端口，Core 态可用）
     private suspend fun getJson(path: String): HttpResult = transact(CoreTransport.get(path))
 

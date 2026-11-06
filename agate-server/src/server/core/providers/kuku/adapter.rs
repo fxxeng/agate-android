@@ -15,8 +15,10 @@
 //! ── 凭证：三个 Cookie（BDUSS/STOKEN/gfprotpl），**无法刷新** ────
 //! BDUSS 是百度通行证登录态（不是 JWT，没有 refreshToken 概念），上游也没有
 //! 刷新接口 —— `supports_refresh` 保持默认 false，401 后用户重新登录/重新导入
-//! 即可（与 CatPaw 同一处境）。`supports_web_login` 同理保持 false：
-//! KukuAI 没有官方 OAuth 授权页可走（登录态在客户端 / 手动粘贴）。
+//! 即可（与 CatPaw 同一处境）。`supports_web_login` 是 **true**：主站
+//! `kuku.baidu.com` 的登录页就是官方入口（短信 / 扫码都由百度页面自己处理），
+//! 壳侧（桌面）或内嵌 WebView（Android）从 Cookie 存储读登录态交回
+//! `/api/session/login/kuku/complete` —— 不需要任何官方 OAuth 授权码。
 //!
 //! ── 思考等级绑定不接（诚实声明）──────────────────────────────
 //! 上游有 `think_mode` 档位，但网关的通用等级 → `think_mode` 的映射没有实测
