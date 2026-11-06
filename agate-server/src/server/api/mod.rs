@@ -87,7 +87,7 @@ pub mod health;
 /// 与 `/api/keepalive-strip` 同形（GET 读 / PUT 写、默认关），差别是「一个开关
 /// + 三个有界整数」而不是单开关 —— 所以独立成文件，不塞进 config_api。
 pub mod image_compress;
-/// 生图下载缓存（`/v1/images/files/:id`）：上游签名 URL 换成我们自己的短期
+/// 生图下载缓存（`/v1/images/files/{id}`）：上游签名 URL 换成我们自己的短期
 /// 链接，只驻留内存、随机令牌访问，见该文件模块头。
 pub mod image_assets;
 /// 生图响应归一（下载 / 转码 / 换本机链接），见该文件模块头。

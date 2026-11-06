@@ -828,7 +828,7 @@ pub fn gateway_router(state: ServerState) -> Router {
         // 永远是破图。凭证是那串 32 字节（256 位）随机令牌，本身就是能力凭证，
         // 猜不出来；再加一道 Key 只是把「持有令牌」换成了「同时还得记得 Key」，
         // 安全性没有实质变化，可用性直接归零。
-        .route("/v1/images/files/:id", get(api::image_assets::download))
+        .route("/v1/images/files/{id}", get(api::image_assets::download))
         .with_state(state.clone());
     // 三条协议入口 + Anthropic 的 token 计数端点：都查 API Key。
     // 与 chat/completions 完全同构：都走同一套转发链路，差异只在出入口的
@@ -1457,5 +1457,84 @@ mod cors_tests {
             headers.get(header::ACCESS_CONTROL_ALLOW_HEADERS).unwrap(),
             CORS_HEADERS
         );
+    }
+}
+
+#[cfg(test)]
+mod route_syntax_tests {
+    //! 路由字符串的**构造期**判据。
+    //!
+    //! ── 为什么钉这一条（回归背景）──────────────────────────────
+    //! axum 0.8 只认 `{capture}` 占位符，写成 Express/Node 风格的 `:id` 会在
+    //! `Router::route` 里直接 panic（"Path segments must not start with `:`"）。
+    //! 这个 panic 发生在**组装路由**时而不是某个请求上，而 release 构建是
+    //! `panic = "abort"` ⇒ 进程当场 abort。手机上的表现是「App 起来、刚进
+    //! 控制台就闪退」，日志只有一句 panic，看着像 JNI / 客户端问题，实际与
+    //! 客户端一行代码都无关 —— 2026-11-06 的 `/v1/images/files/:id` 正是这样
+    //! 漏到用户手上的：单测从未构造过 Router，交叉编译也不走启动路径。
+    //!
+    //! 这里**不构造 Router**（`ServerState::bootstrap` 要真开库、真读配置目录，
+    //! 单测不该付这个代价），而是扫本文件里的路由字面量 —— 判据与 axum 一致，
+    //! 覆盖两个 router 的全部声明，以后新增路由自动纳入。
+    //!
+    //! 判据：路径的每个 `:` / `*` 段都必须是 `{...}` 捕获（`:id` 是反例，
+    //! `{id}` 与 `{*rest}` 是正例）。
+
+    /// 定位路由的针。用 `concat!` 拼而非直接写字面量：本模块自己就住在同一个
+    /// 文件里，直接写会把自己这行当成一条路由扫到。
+    const NEEDLE: &str = concat!(".route(", "\"");
+
+    /// 取出源码里所有 `.route("<path>", ...)` 的 path（跨行写法也能取到）。
+    fn paths_in(source: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut rest = source;
+        while let Some(at) = rest.find(NEEDLE) {
+            let after = &rest[at + NEEDLE.len()..];
+            match after.find('"') {
+                Some(end) => out.push(after[..end].to_string()),
+                None => break,
+            }
+            rest = after;
+        }
+        out
+    }
+
+    /// 不合 axum 0.8 语法的段（`{id}` 以 `{` 开头，天然不命中）。
+    fn offending(path: &str) -> Option<&str> {
+        path.split('/')
+            .find(|seg| seg.starts_with(':') || seg.starts_with('*'))
+    }
+
+    #[test]
+    fn routes_use_axum_capture_syntax() {
+        let paths = paths_in(include_str!("http.rs"));
+        // 防「判据本身失效」：扫描器一旦取不到路径，下面的空断言会变成假绿。
+        // 当前 102 条，门槛留足余量（拆 router 才会掉到这个量级的一半）。
+        assert!(
+            paths.len() >= 80,
+            "只扫到 {} 条路由，扫描判据失效（期望 100 上下）",
+            paths.len()
+        );
+        let bad: Vec<String> = paths
+            .iter()
+            .filter_map(|path| offending(path).map(|seg| format!("{path} → 段 `{seg}`")))
+            .collect();
+        assert!(
+            bad.is_empty(),
+            "axum 0.8 不接受 `:name` / `*name`，请写成 `{{name}}` / `{{*name}}`：\n{}",
+            bad.join("\n")
+        );
+    }
+
+    /// 检测器自身的正反例：避免「正则在坏输入上也返回 None」式假绿。
+    #[test]
+    fn capture_syntax_detector_matches_axum() {
+        assert_eq!(offending("/v1/images/files/:id"), Some(":id"));
+        assert_eq!(offending("/api/accounts/:id/move"), Some(":id"));
+        assert_eq!(offending("/static/*path"), Some("*path"));
+        assert_eq!(offending("/api/keys/{id}/run"), None);
+        assert_eq!(offending("/static/{*path}"), None);
+        assert_eq!(offending("/v1/models"), None);
+        assert_eq!(offending("/health"), None);
     }
 }
