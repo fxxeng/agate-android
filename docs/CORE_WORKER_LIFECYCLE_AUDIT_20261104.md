@@ -1,9 +1,9 @@
 # Core Worker 生命周期审计与实施方案
 
 - 日期：2026-11-04
-- 当前已验证基线：R38 `f5eff2148f3e976c250c0b53fdf1794a2c257cf8`（CI Run `42133955196`）
+- 当前已验证基线：R39 `8c046f17dd`（CI Run `42164811367`）
 - 分支：`verify/arch-8faa5f5`
-- 状态：4D-3B 已完成 CI 验证；4D-3C-A + Windows Shared Core CI job 为当前 R39 候选，待 CI
+- 状态：4D-3B 已完成 CI 验证；4D-3C-A + Windows Shared Core CI job 已于 R39 完成 CI 验证
 - 关联：`ANDROID_KOTLIN_RUST_MIGRATION_HANDOFF.md` 第 30 章
 
 ## 1. 结论
@@ -273,7 +273,7 @@ Provider 自己的 credentials 模块仍直接读取环境变量，属于各 Pro
 
 ### 11.3 R39 验证状态
 
-R39 目前为候选。当前环境未运行 Cargo/rustfmt/Gradle；Windows job 也未实际触发。必须等待 GitHub Actions 结果，不得把 workflow 文件已修改等同于 Windows 编译通过。
+R39 `8c046f17dd` 已通过 CI Run `42164811367`：Linux Rust all-targets 测试、Windows Shared Core `cargo check --all-targets`、Android Gradle（JVM 99/99）+ JNI 12 符号比对 + APK 的 AArch64 ELF 校验 + x86_64 模拟器 Instrumentation（15 用例 0 失败）全部通过；三 job 均 `success`。
 
 ### 11.4 下一步
 

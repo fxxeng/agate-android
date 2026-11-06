@@ -2498,7 +2498,7 @@ Desktop Host 独立拆分作为仓库/产品结构工作单独规划，不阻塞
 
 - 基线：R38 `f5eff2148f3e976c250c0b53fdf1794a2c257cf8`，CI Run `42133955196`。
 - 分支：`verify/arch-8faa5f5`。
-- 当前候选：R39；尚未运行 CI。
+- 当前候选：R39 `8c046f17dd`，CI Run `42164811367` 全绿（rust-tests 97s / windows-core-check 140s / android-build 1998s）。
 - 本批聚焦旧账号导入路径收口，并建立 Windows Shared Core 编译门禁；不包含 Desktop Host UI/Tauri 工程。
 
 ### 30.2 Batch 4D-3C-A：旧账号导入路径收口
@@ -2521,7 +2521,7 @@ Desktop Host 独立拆分作为仓库/产品结构工作单独规划，不阻塞
 - 不构建 Tauri、桌面 UI、安装包或签名产物。
 - Android job 仍只负责 Android Rust ABI、JNI、Kotlin、APK 与 Instrumentation；不会为 Desktop Host UI 增加构建步骤。
 
-该 job 当前只是源码候选配置，必须由 GitHub Actions 实际执行后才能标记通过。
+该 job 已在 Run `42164811367` 实际执行并通过（`windows-latest`，`cargo check --all-targets` 耗时 104s）。
 
 ### 30.4 PathProvider 尚存审计项
 
@@ -2532,14 +2532,18 @@ Desktop Host 独立拆分作为仓库/产品结构工作单独规划，不阻塞
 
 ### 30.5 验证状态
 
-- 已完成源码修改与静态审查；本轮环境没有 Cargo/rustc/rustfmt/Gradle，未执行 Rust 编译、单测、Windows target check、Android ABI、Gradle、Instrumentation、模拟器或真机测试。
-- Windows workflow YAML 尚未由 GitHub Actions 解析执行。
-- R39 是候选，不是已验证提交。
-- 交付包必须包含完整源码、patch、README、更新后的 HANDOFF/AUDIT、Docs.zip、SHA256SUMS，并做 patch dry-run/apply、归档解包逐文件比对。
+R39 已通过 GitHub Actions Run `42164811367`（工作流总时长约 33m18s，`8c046f17dd`）：
+
+- `rust-tests`（Linux）：97s；`cargo fmt` 非阻塞 4s、`cargo check --all-targets` 35s、`cargo test --all-targets` 45s，全绿。
+- `windows-core-check`（`windows-latest` / MSVC）：140s；`cargo check --manifest-path agate-server/Cargo.toml --locked --all-targets` 104s，全绿，证明 Windows `cfg(windows)` 分支可编译。
+- `android-build`：1998s；Rust ABI 297s、Gradle 410s（JVM 单测 99/99 通过，12 个 suite）、JNI 导出 12 个符号与 Kotlin 声明完全一致、APK 内容与 AArch64 ELF 校验通过、Instrumentation（x86_64 模拟器）1221s 内 2 个测试类共 15 个用例 0 失败（CPU PSI settle 49 轮后放行）。
+- 三 job 结论：`success`；无失败、无取消、无超时。
+
+仍需注意：Instrumentation 只在 x86_64 模拟器上跑，未覆盖真机 arm64 运行时；Windows 门禁只覆盖 Shared Core 编译，不含 Desktop Host UI/Tauri。
 
 ### 30.6 后续批量顺序
 
-1. R39 集中 CI：Linux Rust tests + Windows Shared Core check + Android build。
+1. ~~R39 集中 CI~~：已于 Run `42164811367` 全绿。
 2. 4D-3C-B：PathProvider 环境变量路径校验契约与重复解析收口。
 3. 4D-3C-D：网络、时间等平台能力按实际差异审计，不机械抽象。
 4. 进入 4E：双实例互斥、数据库/数据目录、端口、Sidecar 与后台任务资源所有权。
