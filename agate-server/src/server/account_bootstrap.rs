@@ -214,7 +214,12 @@ pub(crate) fn run(store: &AccountStore) {
     }
 }
 
-/// 旧版单账号 `auth.json` → 一个 workbuddy 账号（仅当账号列表为空时导入一次）。
+/// 配置目录内旧版单账号 `auth.json` → 一个 workbuddy 账号（仅当账号列表为空时导入一次）。
+///
+/// 这是 config-dir 内的版本迁移输入，不是通过 HOME 搜索桌面应用目录；因此
+/// 它有意不受下面三家 Provider HOME 导入门禁约束。无 HOME 时若默认 config-dir
+/// 落到历史 `./.agate`，该文件仍可能被读取；这是 `default_config_dir()` 兼容
+/// fallback 的一部分，不能把它描述成「所有导入器都绝不触碰 CWD」。
 ///
 /// 读文件走 [`read_legacy_session`]（缺失/损坏都当没有），写入走
 /// `import_legacy_session`（它自己判「表空不空」并返回导入后的公开形态）。

@@ -3,7 +3,8 @@
 - 日期：2026-11-06
 - 基线：R39 `8c046f17dd61a942eedde01c070c0ac0dc3e29aa`
 - 分支目标：`verify/arch-8faa5f5`
-- 状态：候选源码已整理；等待 GitHub CI；不是已验证版本。
+- 原始交付状态：候选源码已整理；当时等待 GitHub CI。
+- 后续验证：R40 提交 `d3e049e89b932325e49c57b5f6a5a23c825bcca8` 已由 GitHub Actions Run `42199123476` 三 job success 验证；本报告保留原交付记录，状态回填见下方。
 
 ## 本批修改
 
@@ -34,6 +35,11 @@
 
 ## 验证状态
 
-已完成：源码差异核对、YAML 解析、LF/文件尾检查、Patch dry-run/apply、Patch 应用后 771/771 文件逐文件 SHA-256 一致。
+已完成：源码差异核对、YAML 解析、LF/文件尾检查、Patch dry-run/apply、Patch 应用后 772/772 文件逐文件 SHA-256 一致。
 
-未完成：Cargo/rustc/rustfmt/Gradle 在本执行环境不可用；未运行 Rust 编译/测试、Windows 编译、Android ABI、Gradle/JVM、APK、Instrumentation、模拟器或真机测试。R39 仍是最后已验证基线。
+原始候选打包时，Cargo/rustc/rustfmt/Gradle 在本执行环境不可用，因此当时未运行上述验证。随后 R40 CI Run `42199123476` 已完成：Linux Rust 761 passed / 11 ignored；Windows Shared Core `cargo check` 通过（但 Windows-only 单测未执行）；JVM 99/99；JNI 12 exports 一致；Android 双 ABI / APK 校验通过；Instrumentation 1 类 2 用例通过。R40 是最后已验证基线；真机运行语义仍未验证。
+
+
+## R41 后续收口记录
+
+第40轮 CI 已由 Run `42199123476` 三 job success 验证。R41 针对 Windows-only 路径测试未执行、Linux dead_code warning、`.agate` fallback 与 config-local `auth.json` 的边界口径进行后续收口；详见 `BATCH4D3E_4E_OWNERSHIP_AUDIT_R41.md`。该说明不改变 R40 的原始 CI 结果。

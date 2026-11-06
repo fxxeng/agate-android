@@ -5,11 +5,12 @@
 
 > 文档用途：供后续开发者接手、评审和持续推进 Android 架构改造。
 
-> **验证分支当前状态（R40 候选 / 2026-11-06）**：最近一次已验证提交为 R39 `8c046f17dd61a942eedde01c070c0ac0dc3e29aa`（CI Run `42164811367`；Rust 754 passed / 0 failed / 11 ignored；Kotlin/JVM 99/99；Instrumentation 1 个测试类、2 个用例通过；Android arm64-v8a / x86_64 与 Windows Shared Core 编译通过）。R39 的 4D-3C-A 与 Windows 编译门禁已关闭。
+> **验证分支当前状态（R42 候选 / 2026-11-06）**：最后一次 CI 已验证源码基线为 R40 `d3e049e89b932325e49c57b5f6a5a23c825bcca8`（Run `42199123476`；Rust 761 passed / 0 failed / 11 ignored；Kotlin/JVM 99/99；JNI 12 exports；Android arm64-v8a / x86_64 编译与 Instrumentation 2/2 通过）。R41 `530e02bb90c068d43eee8d7ce25a25b82b6864e9` 是未单独 CI 验证的候选；R42 在 R41 候选上收敛 Android-only CI 和主线范围，仍待 GitHub CI。
 >
 > 当前验证分支：`verify/arch-8faa5f5`（只允许推送该分支，不修改 `main`、不合并）
-> 当前已验证基线：R39 `8c046f17dd61a942eedde01c070c0ac0dc3e29aa`
-> 当前工作候选：R40 Batch 4D-3D（PathProvider 路径契约、WorkBuddy 平台路径、账号导入门禁测试、CI 门禁约束文档）；尚未运行 CI。Android job 不构建 Desktop Host/Tauri UI；Windows job 只编译共享 `agate-server` Core。
+> 当前最后已验证基线：R40 `d3e049e89b932325e49c57b5f6a5a23c825bcca8`
+> 当前工作候选：R42 Android-only mainline；Linux job 仅执行 portable Rust library `--lib` 检查/测试，Android job 负责 Android 双 ABI、JNI、Gradle、APK 与 Emulator Instrumentation；Windows Desktop/Core job 已从 Android 主线移除。
+> Agate 当前以 Android 为唯一产品交付目标；不再把桌面端功能完善作为 Android 前置任务。Rust Shared Core 保持单一实现，只隔离/删除经证明 Android 不需要且不破坏数据兼容的桌面代码。
 > 真机验收采用 APP 日常使用中的滚动证据，不作为独立架构批次的前置阻塞。
 
 ## 1. 项目目标与边界
@@ -2554,7 +2555,7 @@ R39 已通过 GitHub Actions Run `42164811367`（工作流总时长约 33m18s，
 ### 31.1 基线与范围
 
 - 基线：R39 `8c046f17dd61a942eedde01c070c0ac0dc3e29aa`，CI Run `42164811367`（三 job success）。
-- 当前候选：R40 Batch 4D-3D；本地静态审查完成，等待集中 CI。
+- R40 已验证基线：`d3e049e89b932325e49c57b5f6a5a23c825bcca8`；GitHub Actions Run `42199123476` 三 job success。Rust 761 passed / 11 ignored；Windows Shared Core check 通过（仅编译）；JVM 99/99；JNI 12 符号一致；Android arm64-v8a / x86_64 构建通过；Instrumentation 1 类 2 用例通过。Windows 专属路径测试当时尚未执行。
 - 本批不改变 JNI ABI、Kotlin 生命周期、Cargo 依赖或 Android Host/Desktop Host 的职责边界。
 
 ### 31.2 配置目录覆盖契约（保守兼容）
@@ -2574,7 +2575,7 @@ R39 已通过 GitHub Actions Run `42164811367`（工作流总时长约 33m18s，
 
 ### 31.4 默认配置目录 CWD fallback 的处理决定
 
-`default_config_dir()` 的 `./.agate` fallback 与「旧桌面数据导入不得扫描 CWD」不是同一行为：前者是历史默认配置存储落点，后者是迁移器定位用户旧数据的路径。R40 不擅自把默认配置目录迁到临时目录或新平台目录，以免造成现有 headless 部署数据迁移/丢失；本批将其抽成纯函数并增加回归测试，明确固定当前兼容行为。后续若要移除该 fallback，必须先定义无 HOME 时的稳定持久目录与迁移方案。
+`default_config_dir()` 的 `./.agate` fallback 与「HOME-discovered 旧桌面 Provider 数据导入不得扫描 CWD」不是同一行为：前者是历史默认配置存储落点；后者是通过 HOME 定位 Raccoon/CatPaw/AutoClaw 等桌面应用目录。R40 不擅自把默认配置目录迁到临时目录或新平台目录，以免造成现有 headless 部署数据迁移/丢失；本批将其抽成纯函数并增加回归测试，明确固定当前兼容行为。另有一类 config-dir-local 迁移：`import_legacy_auth_json()` 通过 `legacy_auth_file()` 读取配置目录内的历史 `auth.json`，并非 HOME-discovered Provider importer；无 HOME 且默认目录为 `./.agate` 时，它仍可能读取 `./.agate/auth.json`。因此准确原则是「HOME-discovered Provider importer 不回退 CWD」，不是「所有迁移代码绝不读 CWD」。后续若要移除默认 fallback，必须先定义无 HOME 时的稳定持久目录与迁移方案。
 
 ### 31.5 Windows CI 门禁
 
@@ -2588,6 +2589,55 @@ R39 已通过 GitHub Actions Run `42164811367`（工作流总时长约 33m18s，
 
 ### 31.7 验证状态与后续
 
-- 本地完成差异审查、YAML 结构解析和文档一致性检查；当前执行环境未提供 Cargo/rustc/rustfmt/Gradle，R40 尚未执行编译、Rust 单测、Windows job、Android ABI、Gradle、Instrumentation、模拟器或真机验证。
-- R39 Instrumentation 真实口径为 **1 个测试类、2 个用例**；`emulator-5554 - 15` 中的 `15` 是 shard 标签，不是用例数。
-- 下一批：集中验证 R40；之后进入 4E 双实例互斥与资源所有权（Core 实例、数据目录、数据库、端口、Sidecar、后台任务），将设备运行证据滚动收集，不作为架构批次的前置阻塞。
+- R40 CI Run `42199123476` 已通过：Linux Rust 761 passed / 11 ignored；Windows Shared Core `cargo check` 通过；JVM 99/99；JNI 12 exports；APK 双包 ZIP/ELF 校验通过；Instrumentation 1 个测试类、2 个用例通过。`emulator-5554 - 15` 中的 `15` 是 shard 标签，不是用例数。
+- R40 尚存的执行面缺口：Windows-only `absolute_path_resolver_accepts_windows_absolute_path` 当时只编译未执行；Linux 新增 1 条 `resolve_absolute_path` dead_code warning；`.agate` fallback 的文字契约未清楚区分 config-local `auth.json` 迁移与 HOME-discovered Provider 旧数据导入。详见第 40 轮 CI 反馈与 R41 §32。
+- 真机运行证据继续滚动收集，不作为架构批次前置阻塞。下一批先补齐 Windows 测试执行和文档/警告口径，再开展 4E 双实例互斥与资源所有权切片。
+
+
+## 32. R41 / Batch 4D-3E：Windows 测试执行闭环与 4E 资源所有权审计（候选）
+
+### 32.1 本批目的
+
+R41 从已验证 R40 `d3e049e89b932325e49c57b5f6a5a23c825bcca8` 出发，先补齐 R40 报告指出的测试执行缺口，再以源码审计方式建立 4E 双实例/资源所有权的实施边界。当前候选未经过 CI。
+
+### 32.2 Windows 测试闭环
+
+- `windows-core-check` 保留 `cargo check --locked --all-targets`，并新增 `cargo test --locked --lib`，使 `#[cfg(windows)]` 路径测试在 Windows runner 实际执行。
+- Windows `cargo test --lib` 与 Linux `cargo test --all-targets` 是互补证据；Windows job 不构建 Tauri/Desktop UI。
+- `resolve_absolute_path()` 的非 Windows dead_code 由精确的 `cfg_attr(not(windows), allow(dead_code))` 处理；不将兼容性宽松的 config override resolver 与严格绝对路径 resolver 合并。
+
+### 32.3 `.agate` fallback 与导入器边界澄清
+
+- HOME-discovered Provider 旧数据导入（Raccoon/CatPaw/AutoClaw）必须经 `user_home_dir()` 门禁；缺失 HOME 时跳过整组，不写一次性标记。
+- `import_legacy_auth_json()` 读取的是 `legacy_auth_file()`，即当前 config-dir 内的历史文件；它不是通过 HOME 拼接旧桌面 Provider 目录。
+- 因此无 HOME 且无显式 config override 时，默认 `./.agate/auth.json` 仍可能作为 config-local 迁移输入被读取。这是现有默认配置目录兼容语义，不应误写为「所有 importer 均不扫描 CWD」。本批选择修正文档和注释，不擅自改变用户数据迁移行为。
+
+### 32.4 4E 资源所有权审计初步结论
+
+- Core 进程级单例由 `OnceLock` / static state 承载；当前架构并未提供同一进程内可完整释放并重新 bootstrap 的通用 Core 实例容器。
+- Sidecar worker 有独立 `TaskScope::Sidecar`、sender shutdown 闩和 `runtime::CHILD` 子进程句柄；这解决的是进程内 worker/child 生命周期，不等于跨进程数据目录互斥。
+- `kernel_dir()` / `config_dir()` 是路径选择，不是目录所有权锁；`runtime::port_free()` 的 bind-probe 后立即 drop 存在 TOCTOU，不能作为端口 reservation。
+- SQLite `Db` 连接由各自存储句柄管理，SQLite 文件锁可处理数据库层并发，但不能保护同一数据目录下的 JSON/YAML/Sidecar 状态文件免受双进程覆盖。
+- 因此 4E 不应先做「全局 Mutex」或把 Android Service/Gateway stop 当 Core shutdown。第一切片应先定义**跨进程 data-dir owner lock**（锁文件位置、原子取得、进程身份、stale owner 处理、释放语义、Android/Linux/Windows 实现），并为失败时的启动行为定义稳定错误；之后再分别治理端口 reservation 与 Sidecar 状态文件。
+
+### 32.5 4E 实施顺序（审计结论，不代表已实现）
+
+1. 数据目录 owner lock：Core bootstrap 前取得；同一进程重复 bootstrap 明确幂等；第二进程使用同目录启动必须失败且不执行迁移/写配置/启动 Sidecar。
+2. 锁的崩溃恢复：进程退出/被杀后可重新取得；不能仅凭 PID 存在与否判断 owner（PID reuse）；锁协议需使用 OS 原语或带身份校验的文件锁，避免手工 stale-file 删除竞态。
+3. 端口所有权：将「探测后释放」改为真正持有 listener 或明确由子进程绑定并回传实际端口；固定端口与动态端口的责任边界分别定义。
+4. Sidecar 状态文件：确认只有持有 data-dir lock 的 Core 可读写 `kernel-state.json`、provider cache 和 `config.yaml`；重启/关闭仍由现有 worker supervisor 管理。
+5. 测试：同进程并发 bootstrap、跨进程同目录竞争、不同目录并行、持锁进程崩溃后恢复、端口竞争、Sidecar state 不被第二 owner 覆盖。
+
+### 32.6 验证状态
+
+R41 当前为源码候选；尚未执行 Linux/Windows Cargo tests、Android ABI/Gradle/JVM/Instrumentation 或真机验证。R40 仍是最后已验证基线。
+
+
+## R42 — Android-only 主线范围收敛（2026-11-06）
+
+- 决策：Agate 当前唯一产品交付目标为 Android；桌面端不再作为并行产品主线，也不作为 Android 开发/CI 的前置条件。
+- 仓库事实：当前验证源码没有完整 Tauri/Desktop UI Host；`app/` 与 `core-gateway/` 是 Android Host，`agate-server` 是 JNI 调用的 Rust 网关/Shared Core。残留桌面部分主要是条件编译的 Windows API、桌面凭证/路径发现和 Headless binary。
+- CI 收敛：移除 Windows Shared Core job；Ubuntu `rust-tests` 缩窄为 `cargo check --lib` + `cargo test --lib`，只执行可移植 Rust library 逻辑，不构建 Headless binary，也不宣称 Linux Desktop 支持。Android `android-build` 保留双 ABI、JNI parity、JVM、APK、Emulator Instrumentation，作为权威产品门禁。
+- 删除纪律：不删除 Shared Core Provider/协议/数据库；先按 Android target 依赖和运行时调用链识别桌面专属能力，再逐项隔离/删除。用户显式文件导入与凭证解析不能仅因“桌面来源”就误删。
+- 后续顺序：M1 Android build/release 闭环 → M2 Android data-dir owner lock → M3 Kotlin Service/Core/Sidecar 生命周期 → M4 JNI 并发/错误/取消契约 → M5 Android 网络/文件/权限/进程能力 → M6 功能与升级/恢复验收 → M7 主线完成后性能和代码打磨。详见 `ANDROID_ONLY_MAINLINE_PLAN_R42.md`。
+- 状态：R42 workflow 与文档候选；未运行 Cargo、Gradle、Android ABI、Emulator 或真机验证。R40 仍是最后 CI 验证基线。

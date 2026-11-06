@@ -2,7 +2,7 @@
 
 - 日期：2026-11-06（持续更新）
 - 当前已验证基线：R39 `8c046f17dd61a942eedde01c070c0ac0dc3e29aa`（CI Run `42164811367`）
-- 当前工作候选：R40 Batch 4D-3D（待 CI）
+- 已验证基线：R40 `d3e049e89b932325e49c57b5f6a5a23c825bcca8`（CI Run `42199123476` 三 job success）；当前工作候选：R41 Batch 4D-3E（待 CI）
 - 分支：`verify/arch-8faa5f5`
 - 状态：4D-3B、4D-3C-A 与 Windows Shared Core 编译门禁已完成 CI 验证
 - 关联：`ANDROID_KOTLIN_RUST_MIGRATION_HANDOFF.md` 第 30 章
@@ -278,7 +278,7 @@ R39 `8c046f17dd` 已通过 CI Run `42164811367`：Linux Rust all-targets 测试�
 
 ### 11.4 下一步
 
-R39 已通过 CI；R40 正在完成 PathProvider 环境变量路径契约与平台路径校验，待集中 CI。随后审计必要的平台网络/时间差异，再进入 4E 资源所有权治理。
+R40 已通过 CI（Run `42199123476`）：Rust 761 passed / 11 ignored、Windows Shared Core check、JVM 99/99、JNI 12 exports、Android 双 ABI 与 Instrumentation 2/2。R40 Windows-only 路径测试当时未执行，R41 增加 Windows `cargo test --lib` 补齐执行证据。
 
 
 ## 12. R40 / Batch 4D-3D PathProvider 与账号导入边界审计（2026-11-06）
@@ -307,9 +307,34 @@ R40 为 `account_bootstrap` 的有效 HOME 门禁增加纯决策测试，确保 
 
 ### 12.5 当前状态
 
-R40 是未验证候选。静态检查不代表编译通过；尚无 R40 Linux Rust test、Windows compile、Android ABI、Gradle/JVM、Instrumentation 或真机证据。R39 仍是最后一个已验证基线。
+R40 已通过 CI Run `42199123476`：Linux Rust 761 passed / 11 ignored；Windows Shared Core check；Android 双 ABI；JVM 99/99；JNI 12 exports；Instrumentation 1 类 2 用例。Windows-only 路径测试未执行（仅 cargo check），Linux 新增一条 dead_code warning；真机行为仍未验证。R40 是最后已验证基线。
 
 
 ### 12.6 4D-3C-D 网络、时间与进程平台能力初审
 
 静态审计见 `docs/PLATFORM_CAPABILITY_AUDIT_4D3C_D.md`。没有证据支持再引入通用 NetworkProvider / ClockProvider：时间使用 `SystemTime` 表示墙上时间、`Instant` 表示经过时间；网络使用 std/Tokio/Axum/reqwest 跨平台接口；OS 差异由 `cfg(unix/windows)` 与 `ProcessAdapter` 处理。Android loopback/权限/Doze、Windows 防火墙、Sidecar 进程退出与端口释放仍需运行证据，编译不替代运行验证。
+
+
+## 13. R41 / Batch 4D-3E 与 4E 资源所有权审计（候选，2026-11-06）
+
+### 13.1 R40 已验证事实与残余
+
+R40 `d3e049e89b932325e49c57b5f6a5a23c825bcca8` / CI Run `42199123476` 三 job success。Rust 761 passed / 11 ignored；Windows `cargo check` 通过；JVM 99/99；JNI 12 exports；Android arm64-v8a/x86_64；Instrumentation 1 类 2 用例。Windows-only absolute path 测试只被编译，未被执行；Linux 有一条 `resolve_absolute_path` dead_code warning。
+
+### 13.2 R41 候选修正
+
+Windows job 增加 `cargo test --lib`；非 Windows dead_code 以窄范围 `cfg_attr` 处理。`.agate` fallback 的语义修正为：HOME-discovered Provider 旧数据导入必须有有效 HOME；config-dir 内 `auth.json` 是独立迁移输入，仍可能位于历史 `./.agate`。这避免为了文字一致而改变可能含用户登录态的数据迁移行为。
+
+### 13.3 4E 资源所有权审计
+
+- `OnceLock` / static state 表明 Core 当前是进程级单例，不具备通用可销毁实例容器。
+- Sidecar supervisor 管理进程内 worker 与 Child 生命周期，但没有跨进程 data-dir mutex。
+- `kernel_dir()` 只解析路径，不提供目录互斥；Sidecar `kernel-state.json`、provider YAML 与 `config.yaml` 仍依赖单 Core owner 假设。
+- `port_free()` 通过 bind 探测后立即 drop，存在 TOCTOU；它不是端口 reservation。
+- SQLite 锁只覆盖 SQLite 文件本身，不能保护同目录其它文件。
+
+### 13.4 推荐 4E 顺序
+
+先实现跨进程 data-dir owner lock，再处理端口 reservation，最后审计 Sidecar 状态文件读写和崩溃恢复。禁止先用进程内 Mutex 伪装跨进程互斥；禁止仅凭 PID 存在与否删除 stale lock；禁止把 Gateway/Android Service 生命周期等同于 Core 生命周期。
+
+当前 4E 内容是审计结论，未声称实现或验证。R41 候选等待 CI。

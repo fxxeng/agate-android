@@ -156,6 +156,7 @@ fn resolve_config_dir_override(primary: Option<&str>, legacy: Option<&str>) -> O
 ///
 /// 与 `resolve_config_dir_override()` 不同，这类路径用于定位宿主已有数据，
 /// 不应把相对路径解释为当前工作目录下的目录。
+#[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn resolve_absolute_path(value: Option<&str>) -> Option<PathBuf> {
     value
         .map(str::trim)
@@ -168,7 +169,8 @@ pub(crate) fn resolve_absolute_path(value: Option<&str>) -> Option<PathBuf> {
 ///
 /// 无可用 HOME 时保留历史 `./.agate` fallback，避免在没有明确迁移策略前
 /// 改变 Desktop/headless 的既有数据落点。该 fallback 仅用于默认配置存储，
-/// 不得被旧桌面数据导入器复用；后者必须使用 `user_home_dir()` 并在 None 时跳过。
+/// 不得被依赖 HOME 的旧桌面 Provider 数据发现器复用；但配置目录内的历史
+/// `auth.json` 属于 config-dir 迁移输入，仍按 `legacy_auth_file()` 读取。
 fn default_config_dir() -> PathBuf {
     default_config_dir_from_home(path_provider().user_home_dir())
 }
