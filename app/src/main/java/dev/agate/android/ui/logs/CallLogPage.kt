@@ -266,6 +266,7 @@ fun CallLogPage(
                     Modifier
                         .fillMaxWidth()
                         .agateCard().background(C.cardBg, RoundedCornerShape(20.dp))
+                        .border(1.dp, C.border, RoundedCornerShape(20.dp))
                         .padding(20.dp),
                     contentAlignment = Alignment.Center,
                 ) {
@@ -276,6 +277,7 @@ fun CallLogPage(
                     Modifier
                         .fillMaxWidth()
                         .agateCard().background(C.cardBg, RoundedCornerShape(20.dp))
+                        .border(1.dp, C.border, RoundedCornerShape(20.dp))
                         .padding(vertical = 28.dp),
                     contentAlignment = Alignment.Center,
                 ) {
@@ -286,6 +288,7 @@ fun CallLogPage(
                     Modifier
                         .fillMaxWidth()
                         .agateCard().background(C.cardBg, RoundedCornerShape(20.dp))
+                        .border(1.dp, C.border, RoundedCornerShape(20.dp))
                         .padding(12.dp),
                 ) {
                     Text(

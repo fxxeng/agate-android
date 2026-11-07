@@ -33,12 +33,18 @@ fun AgateBadge(
     modifier: Modifier = Modifier,
 ) {
     val C = agateColors()
+    // 描边一律从主题语义色派生：旧值写死了 slate 基色，换成纯黑档后
+    // 徽标会带着一圈与文字不同色的旧蓝/旧灰边。
     val (fg, bg, border) = when (tone) {
-        BadgeTone.GREEN -> Triple(C.badgeGreenText, C.greenBg, Color(0x4D22C55E))
-        BadgeTone.BLUE -> Triple(C.badgeBlueText, C.blueBg, Color(0x4D3B82F6))
-        BadgeTone.RED -> Triple(C.badgeRedText, C.redBg, Color(0x4DF43F5E))
-        BadgeTone.AMBER -> Triple(C.badgeAmberText, C.amberBg, Color(0x4DF59E0B))
-        BadgeTone.GRAY -> Triple(C.badgeGrayText, Color(0x1F94A3B8), Color(0x4094A3B8))
+        BadgeTone.GREEN -> Triple(C.badgeGreenText, C.greenBg, C.green.copy(alpha = 0.30f))
+        BadgeTone.BLUE -> Triple(C.badgeBlueText, C.blueBg, C.blue.copy(alpha = 0.30f))
+        BadgeTone.RED -> Triple(C.badgeRedText, C.redBg, C.red.copy(alpha = 0.30f))
+        BadgeTone.AMBER -> Triple(C.badgeAmberText, C.amberBg, C.amber.copy(alpha = 0.30f))
+        BadgeTone.GRAY -> Triple(
+            C.badgeGrayText,
+            C.textDim.copy(alpha = 0.12f),
+            C.textDim.copy(alpha = 0.25f),
+        )
     }
     Row(
         modifier = modifier

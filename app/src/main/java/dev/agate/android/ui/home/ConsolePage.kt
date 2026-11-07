@@ -43,8 +43,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
@@ -276,16 +274,9 @@ private fun HeroCard(
     onStop: () -> Unit,
 ) {
     val C = agateColors()
-    val lightHero = C.bg.luminance() > 0.5f
-    val H = if (lightHero) HeroPalette(
-        bg1 = Color(0xFFE0F2FE), bg2 = Color(0xFFBAE6FD), border = Color(0xFF7DD3FC),
-        text = Color(0xFF0C4A6E), sub = Color(0xFF0369A1),
-        pillBg = Color(0x66FFFFFF), pillText = Color(0xFF0C4A6E),
-    ) else HeroPalette(
-        bg1 = Color(0xFF12324D), bg2 = Color(0xFF0C4A6E), border = Color(0xFF0369A1),
-        text = Color(0xFFF8FAFC), sub = Color(0xFF7DD3FC),
-        pillBg = Color(0x59020623), pillText = Color(0xFFE0F2FE),
-    )
+    // Hero 的两套配色收进主题了（Color.kt::AgateHeroPalette）：页面不再按底色
+    // 亮度自己猜，深色档换成纯黑时这里不会留下一块 slate 蓝。
+    val H = C.hero
     val ctx = LocalContext.current
 
     Column(
@@ -315,11 +306,11 @@ private fun HeroCard(
             Text(":${status?.port ?: GatewayPrefs.port(ctx)}", color = H.sub, fontSize = 13.sp, modifier = Modifier.weight(1f))
             Text(
                 "停止",
-                color = Color(0xFFF87171),
+                color = C.red,
                 fontSize = 12.sp,
                 fontWeight = FontWeight.SemiBold,
                 modifier = Modifier
-                    .border(1.dp, Color(0x59F87171), RoundedCornerShape(9.dp))
+                    .border(1.dp, C.red.copy(alpha = 0.35f), RoundedCornerShape(9.dp))
                     .clickable(onClick = onStop)
                     .padding(horizontal = 12.dp, vertical = 6.dp),
             )
@@ -738,17 +729,6 @@ private fun TokenCard(snap: GatewayRepository.ConsoleSnapshot, onNavigate: (Stri
         )
     }
 }
-
-/** Hero 卡配色（v44 .hero 深浅两套渐变，按当前主题底色亮度选择）。 */
-private data class HeroPalette(
-    val bg1: Color,
-    val bg2: Color,
-    val border: Color,
-    val text: Color,
-    val sub: Color,
-    val pillBg: Color,
-    val pillText: Color,
-)
 
 /* ── 小件 ── */
 private fun successRateOf(snap: GatewayRepository.ConsoleSnapshot): String =

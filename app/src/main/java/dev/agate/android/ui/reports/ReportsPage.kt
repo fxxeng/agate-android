@@ -246,8 +246,9 @@ fun ReportsPage(
                 Box(
                     Modifier
                         .fillMaxWidth()
-                        .agateCard().background(C.cardBg, RoundedCornerShape(16.dp))
-                        .padding(vertical = 28.dp),
+                    .agateCard().background(C.cardBg, RoundedCornerShape(16.dp))
+                    .border(1.dp, C.border, RoundedCornerShape(16.dp))
+                    .padding(vertical = 28.dp),
                     contentAlignment = Alignment.Center,
                 ) {
                     Text(if (loading) "正在统计…" else "暂无数据", fontSize = 13.sp, color = C.textDim)
@@ -483,10 +484,11 @@ private fun CacheTrendCard(s: ReportOps.Summary) {
                 val ratio = (hour.rate / maxRate).toFloat().coerceIn(0f, 1f)
                 Offset(x, size.height - size.height * ratio)
             }
+            // 折线跟主题语义绿，不写死 slate 档的 #22C55E。
             points.zipWithNext().forEach { (a, b) ->
-                drawLine(Color(0xFF22C55E), a, b, strokeWidth = 1.6f)
+                drawLine(C.green, a, b, strokeWidth = 1.6f)
             }
-            points.forEach { drawCircle(Color(0xFF22C55E), radius = 1.6f, center = it) }
+            points.forEach { drawCircle(C.green, radius = 1.6f, center = it) }
         }
         Spacer(Modifier.height(6.dp))
         Row(Modifier.fillMaxWidth()) {

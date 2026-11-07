@@ -4,9 +4,9 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
@@ -18,6 +18,7 @@ import androidx.compose.ui.unit.dp
 import dev.agate.android.R
 import dev.agate.android.data.CustomProviderOps
 import dev.agate.android.data.PresetApiRegistry
+import dev.agate.android.ui.theme.agateColors
 
 /**
  * 提供商官方 logo（取自上游 3.0.8 的 `assets/provider-icons`，16 家官方 Agent 全有）。
@@ -268,15 +269,22 @@ fun AgateProviderAvatar(
     }
 }
 
+/**
+ * 底座配色跟**用户选的主题**走，不跟系统夜间模式走 —— 手动选深色但系统是
+ * 浅色时，`isSystemInDarkTheme()` 会给出相反的答案（与 agateCard 的判据同源）。
+ */
+@Composable
+private fun isDarkPlate(): Boolean = agateColors().bg.luminance() <= 0.5f
+
 /** 底座底色：浅色模式压暗、深色模式提亮，都是极薄的一层。 */
 @Composable
 private fun plateColor(): Color =
-    if (isSystemInDarkTheme()) Color.White.copy(alpha = 0.10f) else Color.Black.copy(alpha = 0.05f)
+    if (isDarkPlate()) Color.White.copy(alpha = 0.10f) else Color.Black.copy(alpha = 0.05f)
 
 /** 底座的 1dp 亮边：让底座在卡片底色上「立」起来，而不是像一块污渍。 */
 @Composable
 private fun plateBorderColor(): Color =
-    if (isSystemInDarkTheme()) Color.White.copy(alpha = 0.14f) else Color.Black.copy(alpha = 0.06f)
+    if (isDarkPlate()) Color.White.copy(alpha = 0.14f) else Color.Black.copy(alpha = 0.06f)
 
 /** 名称 → 两字母（供无 logo 的兜底使用）。 */
 internal fun initialsOfLabel(label: String): String {

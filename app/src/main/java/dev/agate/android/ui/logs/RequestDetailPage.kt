@@ -152,6 +152,7 @@ fun RequestDetailPage(
                     Modifier
                         .fillMaxWidth()
                         .agateCard().background(C.cardBg, RoundedCornerShape(16.dp))
+                        .border(1.dp, C.border, RoundedCornerShape(16.dp))
                         .padding(20.dp),
                     contentAlignment = Alignment.Center,
                 ) {
@@ -162,6 +163,7 @@ fun RequestDetailPage(
                     Modifier
                         .fillMaxWidth()
                         .agateCard().background(C.cardBg, RoundedCornerShape(16.dp))
+                        .border(1.dp, C.border, RoundedCornerShape(16.dp))
                         .padding(vertical = 28.dp),
                     contentAlignment = Alignment.Center,
                 ) {

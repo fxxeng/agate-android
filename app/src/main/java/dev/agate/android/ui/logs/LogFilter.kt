@@ -42,10 +42,11 @@ internal data class ChipTone(val fg: Color, val bg: Color, val border: Color)
 internal fun chipToneOf(tone: dev.agate.android.ui.components.BadgeTone): ChipTone {
     val C = agateColors()
     return when (tone) {
-        dev.agate.android.ui.components.BadgeTone.GREEN -> ChipTone(C.badgeGreenText, C.greenBg, Color(0x4D22C55E))
-        dev.agate.android.ui.components.BadgeTone.BLUE -> ChipTone(C.badgeBlueText, C.blueBg, Color(0x4D3B82F6))
-        dev.agate.android.ui.components.BadgeTone.RED -> ChipTone(C.badgeRedText, C.redBg, Color(0x4DF43F5E))
-        dev.agate.android.ui.components.BadgeTone.AMBER -> ChipTone(C.badgeAmberText, C.amberBg, Color(0x4DF59E0B))
+        // 与 AgateBadge 同一判据：描边从主题语义色派生，别留 slate 档的旧色。
+        dev.agate.android.ui.components.BadgeTone.GREEN -> ChipTone(C.badgeGreenText, C.greenBg, C.green.copy(alpha = 0.30f))
+        dev.agate.android.ui.components.BadgeTone.BLUE -> ChipTone(C.badgeBlueText, C.blueBg, C.blue.copy(alpha = 0.30f))
+        dev.agate.android.ui.components.BadgeTone.RED -> ChipTone(C.badgeRedText, C.redBg, C.red.copy(alpha = 0.30f))
+        dev.agate.android.ui.components.BadgeTone.AMBER -> ChipTone(C.badgeAmberText, C.amberBg, C.amber.copy(alpha = 0.30f))
         dev.agate.android.ui.components.BadgeTone.GRAY -> ChipTone(C.badgeGrayText, C.badgeGrayText.copy(alpha = 0.10f), C.border)
     }
 }
