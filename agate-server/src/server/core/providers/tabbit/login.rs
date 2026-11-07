@@ -187,6 +187,17 @@ fn tidy_upstream(message: &str) -> String {
 
 /// 从响应里找一句能读的错误原因（候选键按上游出现频次排）。
 fn login_error_text(status: u16, value: &Value, raw: &str) -> String {
+    // 风控拦截时 `error` 是个**对象**：`{"error":{"msg":"需要进行滑块验证"}}`。
+    // 不取这一层的话会落到下面的 raw 分支，把整段 JSON 原样端给用户。
+    if let Some(text) = value
+        .get("error")
+        .and_then(|error| error.get("msg").or_else(|| error.get("message")))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+    {
+        return tidy_upstream(text);
+    }
     if let Some(text) = ["error", "message", "msg", "detail_text"]
         .iter()
         .filter_map(|key| value.get(*key).and_then(Value::as_str))
@@ -220,6 +231,59 @@ fn login_error_text(status: u16, value: &Value, raw: &str) -> String {
     } else {
         format!("登录接口返回 HTTP {status}")
     }
+}
+
+/// 同一轮登录复用同一个 uuid：官方网页版在页面加载时生成一次，之后发码、
+/// 过滑块后重发、登录都用它。重发时换 uuid，上游会当成另一次会话，拿不到
+/// 刚通过验证的风控结论。
+fn code_uuid(reuse: Option<&str>) -> String {
+    reuse
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(login_uuid)
+}
+
+/// 上游的风控拦截信息：`data.requestCode` + `data.verifyUrl`。
+///
+/// 发码接口判定人机可疑时可能回（HTTP 200 或 4xx 都出现过）：
+/// `{"code":1,"error":{"msg":"需要进行滑块验证"},
+///   "data":{"requestCode":"…","verifyUrl":"https://verify.meituan.com/v2/…"}}`
+/// 用户必须在 verifyUrl 手动过滑块，之后**重新发一次码**才会成功。所以这里
+/// 回成 `status:"captcha"`，界面据此打开验证页、保留本次 uuid 让用户重发；
+/// 猜测上游回传字段或把「点了按钮」当成验证通过，都会变成静默失败。
+fn challenge_of(value: &Value) -> Option<Value> {
+    let data = value.get("data")?;
+    let request_code = data.get("requestCode").and_then(Value::as_str)?.trim();
+    let verify_url = data.get("verifyUrl").and_then(Value::as_str)?.trim();
+    if request_code.is_empty() || !is_meituan_https(verify_url) {
+        return None;
+    }
+    let message = value
+        .get("error")
+        .and_then(|error| error.get("msg"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .unwrap_or("需要进行人机验证");
+    Some(json!({
+        "requestCode": request_code,
+        "verifyUrl": verify_url,
+        "message": message,
+    }))
+}
+
+/// 验证页地址只接受 https 的美团域（含子域）。这个地址会被界面直接拿去开
+/// 页面，不能把上游返回的任意 URL 当窗口地址用；不满足就退回可读错误。
+fn is_meituan_https(url: &str) -> bool {
+    let Some(rest) = url.strip_prefix("https://") else {
+        return false;
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    // 去掉 `user:pass@` 与 `:port`，避免 `meituan.com@evil.com` 这类伪装
+    let host = authority.rsplit('@').next().unwrap_or("");
+    let host = host.split(':').next().unwrap_or("").to_ascii_lowercase();
+    host == "meituan.com" || host.ends_with(".meituan.com")
 }
 
 /// 候选键里取第一个非空字符串（上游同一个字段有多种写法）。
@@ -264,10 +328,17 @@ fn has_cookie(cookie: &str, name: &str) -> bool {
         .any(|part| part.trim().starts_with(&prefix))
 }
 
-/// 发送短信验证码。返回 `{uuid, deviceId}`（前端随登录请求带回）。
+/// 发送短信验证码。返回 `{uuid, deviceId}`，风控拦截时返回
+/// `{status:"captcha", uuid, deviceId, captcha:{requestCode, verifyUrl, message}}`。
 ///
-/// 国内站才有这条链；国际站与上游一致地**明确拒绝**。
-pub async fn send_code(realm: Realm, phone: &str) -> Result<Value, GatewayError> {
+/// `reuse_uuid` 是同一轮登录先前发码得到的 uuid：过完滑块重发时必须原样带回，
+/// 换了 uuid 上游就找不到刚通过的风控结论。国内站才有这条链；国际站与上游
+/// 一致地**明确拒绝**。
+pub async fn send_code(
+    realm: Realm,
+    phone: &str,
+    reuse_uuid: Option<&str>,
+) -> Result<Value, GatewayError> {
     if realm != Realm::Cn {
         return Err(GatewayError::with_status(
             400,
@@ -278,7 +349,7 @@ pub async fn send_code(realm: Realm, phone: &str) -> Result<Value, GatewayError>
     if phone.is_empty() {
         return Err(GatewayError::with_status(400, "请填写手机号"));
     }
-    let uuid = login_uuid();
+    let uuid = code_uuid(reuse_uuid);
     let body = json!({
         "uuid": uuid,
         "platform": LOGIN_PLATFORM,
@@ -287,6 +358,19 @@ pub async fn send_code(realm: Realm, phone: &str) -> Result<Value, GatewayError>
         "mobile": phone,
     });
     let (status, value, raw, _) = post_login(realm, SEND_CODE_PATH, &body).await?;
+    // 风控拦截可能在 HTTP 200，也可能在 4xx：先于状态码 / 业务码判定。
+    if let Some(captcha) = challenge_of(&value) {
+        logging::log(
+            "[Login]",
+            "⚠️ Tabbit 发码需要人机验证（滑块），本次 uuid 保留供重发复用",
+        );
+        return Ok(json!({
+            "status": "captcha",
+            "uuid": uuid,
+            "deviceId": uuid,
+            "captcha": captcha,
+        }));
+    }
     if !(200..300).contains(&status) {
         // 400 而不是 502：这是「用户填的号码/频率」类问题，不是上游坏了
         return Err(GatewayError::with_status(
@@ -508,7 +592,7 @@ mod tests {
     /// 国际站必须在校验参数**之前**就被拒：否则用户填完号码才看到「不支持」
     #[tokio::test]
     async fn the_international_site_refuses_before_any_request() {
-        let sent = send_code(Realm::Intl, "").await;
+        let sent = send_code(Realm::Intl, "", None).await;
         assert_eq!(sent.as_ref().err().map(|e| e.status_code), Some(400));
         let login = login_with_code(Realm::Intl, "", "", None, None).await;
         assert_eq!(login.as_ref().err().map(|e| e.status_code), Some(400));
@@ -549,6 +633,51 @@ mod tests {
         );
         // 一个都认不出时回落原文（不足 300 字）
         assert_eq!(login_error_text(400, &json!({}), "  plain text  "), "plain text");
+        // 风控的 error 是对象，不能把整段 JSON 原样端给用户
+        assert_eq!(
+            login_error_text(
+                400,
+                &json!({"error": {"msg": "需要进行滑块验证"}, "code": 1}),
+                r#"{"error":{"msg":"需要进行滑块验证"},"code":1}"#,
+            ),
+            "需要进行滑块验证"
+        );
+    }
+
+    /// 风控拦截被识别成状态而不是错误；验证页只认 https 的美团域。
+    #[test]
+    fn a_captcha_challenge_is_a_status_not_an_error() {
+        let payload = json!({
+            "code": 1,
+            "error": {"msg": "需要进行滑块验证"},
+            "data": {
+                "requestCode": "rc-1",
+                "verifyUrl": "https://verify.meituan.com/v2/verify?id=1"
+            }
+        });
+        let captcha = challenge_of(&payload).expect("应识别为风控拦截");
+        assert_eq!(captcha["requestCode"], "rc-1");
+        assert_eq!(captcha["message"], "需要进行滑块验证");
+        assert!(challenge_of(&json!({"data": {"requestCode": "rc"}})).is_none());
+    }
+
+    #[test]
+    fn verify_urls_must_be_https_meituan_domains() {
+        assert!(is_meituan_https("https://verify.meituan.com/v2/x"));
+        assert!(is_meituan_https("https://meituan.com:443/x"));
+        assert!(!is_meituan_https("http://verify.meituan.com/x"));
+        assert!(!is_meituan_https("https://meituan.com.evil.com/x"));
+        assert!(!is_meituan_https("https://meituan.com@evil.com/x"));
+        assert!(!is_meituan_https("https://example.com/x"));
+    }
+
+    /// 重发必须复用同一轮 uuid，只有没给时才新生成。
+    #[test]
+    fn a_repeated_send_reuses_the_same_uuid() {
+        assert_eq!(code_uuid(Some(" fixed-uuid ")), "fixed-uuid");
+        assert_eq!(code_uuid(Some("  " )).len(), 64);
+        assert_eq!(code_uuid(None).len(), 64);
+        assert_ne!(code_uuid(None), code_uuid(None));
     }
 
     /// 尾号只取四位（日志里不出现完整手机号）

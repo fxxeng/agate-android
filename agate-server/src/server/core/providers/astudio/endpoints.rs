@@ -7,7 +7,7 @@
 //!               GET  /api/v1/model-manager/models  （在线目录）
 //!   账号域    agent.xfyun.cn/xingchen-studio/…
 //!               points/balance、membership/me、membership/plan-config、
-//!               points/summary
+//!               points/summary、POST tenant-app/v2/init-app（每日登录）
 //! ```
 //! 这些地址是桌面端写进它自己内核配置的 `base_url` / `wire_api`，与官方客户端
 //! 逐字一致 —— 不是我们猜的。
@@ -27,13 +27,13 @@
 //! （与本项目其它家同一处置）；而「不发」在上游自己的代码里属于没验证过的路径
 //! （它只跑过 Windows / macOS 宿主），拿它当默认值不划算。
 //!
-//! ⚠️ **余额 / 会员 / 签到那条线不发这两个头**：上游自己查余额时就不发
-//! （见 `client.rs` 的模块头）。这条界线要守住 —— 登录链与账号面是两套请求，
-//! 别因为「都是 agent.xfyun.cn」就把头混着发。
+//! ⚠️ **`studioVersion` 现在也发给账号面**（上游 3.4.2 `client.rs::decorate`）：
+//! 登录、余额、会员、每日登录共用同一份桌面端身份。旧结论「账号面不发」
+//! 已被上游推翻；`clientType` 仍只在 Windows / macOS 宿主发，Android 不发。
 //!
-//! 登录链与**将来的登录页**必须共用同一份常量（`STUDIO_VERSION`）：两处版本号
-//! 不一致会让上游按两个客户端处理，而极验那次会话只在其中一个里成立 ——
-//! 这与 qwenwork 那条「COSY 头与请求体必须同源」是同一条纪律。
+//! 登录链与账号面、以及**将来的登录页**必须共用同一份 `STUDIO_VERSION`：
+//! 两处版本号不一致会让上游按两个客户端处理，而极验那次会话只在其中一个
+//! 里成立 —— 这与 qwenwork 那条「COSY 头与请求体必须同源」是同一条纪律。
 
 /// 模型域（Responses 与目录共用同一台主机）
 pub const MODEL_HOST: &str = "astronstudio-api-volces-prod.xf-yun.com";
@@ -49,6 +49,8 @@ pub const MODEL_MANAGER_URL: &str =
 /// 账号面根（**结尾带斜杠**：相对路径直接拼在它后面）
 pub const STUDIO_API_BASE: &str = "https://agent.xfyun.cn/xingchen-studio/";
 
+/// 当日首次调用触发每日登录奖励（POST，无请求体）；登录与签到共用。
+pub const INIT_APP: &str = "tenant-app/v2/init-app";
 /// 积分余额
 pub const POINTS_BALANCE: &str = "points/balance";
 /// 会员信息
@@ -86,7 +88,7 @@ mod tests {
     #[test]
     fn the_account_paths_hang_off_one_base() {
         assert!(STUDIO_API_BASE.ends_with('/'), "账号面根必须以斜杠结尾");
-        for path in [POINTS_BALANCE, MEMBERSHIP_ME, PLAN_CONFIG, POINTS_SUMMARY] {
+        for path in [INIT_APP, POINTS_BALANCE, MEMBERSHIP_ME, PLAN_CONFIG, POINTS_SUMMARY] {
             assert!(!path.starts_with('/'), "相对路径不要带前导斜杠：{path}");
             assert!(!path.contains("://"), "这是相对路径：{path}");
         }

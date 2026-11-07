@@ -8,8 +8,9 @@
 //!   ② 模型名 → 目录条目（upstreamId / cliName）        models::resolve_task_model
 //!   ③ OpenAI messages → prompt（system 单列）          task::build_prompt
 //!   ④ POST /api/v1/users/tasks 建任务                  task::create_task
-//!   ⑤ 连 wss://…/tasks/stream?id=&mode=new             stream::connect
-//!   ⑥ 发 auto-approve + user-input                     stream::start_task
+//!   ⑤ 等任务环境就绪                                    startup::wait_ready
+//!   ⑥ 连 wss://…/tasks/stream?id=&mode=attach           stream::connect
+//!      首轮 content 已由上游自动执行，只设置 auto-approve  stream::start_task
 //!   ⑦ 消费 ACP 事件 → 本网关的 OpenAI 兼容流            stream::drive_stream
 //! ```
 //! 四 ~ 六步失败时**还没有给客户端任何字节**，因此按普通网关错误返回（带状态码，
@@ -45,7 +46,7 @@ use crate::server::errors::GatewayError;
 use crate::server::logging;
 
 use super::region::Region;
-use super::{credentials, models, stream, task};
+use super::{credentials, models, startup, stream, task};
 
 /// 转发入口（`adapter.rs::forward_conversation` 转调）。
 pub async fn run_chat(
@@ -119,9 +120,14 @@ pub async fn run_chat(
         telemetry,
     )
     .await?;
-    // ② 连任务流并发出起始交互（同上，失败在返回前）
+    // ② 等任务环境就绪：创建请求已提交首轮 content，上游会在环境就绪后
+    //    自动执行；连 attach 之前必须确认 processing / finished。
+    //    上游失败路径还会 stop_task / 注销 in-flight；本项目没有该端点，
+    //    不猜协议，错误原样透出（任务会由上游 1 小时 life 自动回收）。
+    startup::wait_ready(region, &credentials, &task_id, proxy.as_ref()).await?;
+    // ③ 连任务流并发出起始交互（同上，失败在返回前）
     let mut connection = stream::connect(region, &credentials, &task_id, proxy.as_ref()).await?;
-    stream::start_task(&mut connection, &prompt.content).await?;
+    stream::start_task(&mut connection).await?;
     let translator = stream::Translator::new(
         format!("chatcmpl-{task_id}"),
         requested,

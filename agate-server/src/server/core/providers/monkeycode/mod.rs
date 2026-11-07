@@ -40,7 +40,8 @@
 //!   models.rs      模型目录（按地区分格缓存 + 远程刷新 + 建任务字段反查）
 //!   login.rs       粘贴 session 校验 + 归一化 + image_id 自动发现
 //!   task.rs        起始 prompt 翻译 + 建任务请求体 / 错误码翻译
-//!   stream.rs      任务流 WebSocket 驱动（连接 / 起始消息 / 超时 / 帧出口）
+//!   startup.rs     等任务环境就绪（mode=attach 前置）
+//!   stream.rs      任务流 WebSocket 驱动（连接 / 自动审批 / 超时 / 帧出口）
 //!   translate.rs   ACP 事件 → OpenAI 兼容帧（纯翻译状态机）
 //!   chat.rs        会话转发装配入口（`forward_conversation`）
 //!   adapter.rs     ProviderAdapter 实现（is_stateful = true）
@@ -56,6 +57,7 @@ pub mod endpoints;
 pub mod login;
 pub mod models;
 pub mod region;
+pub mod startup;
 pub mod stream;
 pub mod task;
 pub mod translate;

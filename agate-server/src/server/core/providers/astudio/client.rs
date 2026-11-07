@@ -15,10 +15,12 @@
 //! 前两个用**模型凭据**、第三个用**网页会话** —— 这是本家最容易被混起来的地方
 //! （见 `credentials` 的模块头）。三个都收在本文件，调用方不再各自拼头。
 //!
-//! ── 为什么账号面不发 `clientType` / `studioVersion` ─────────
-//! 那两个头是**登录链**的（见 `endpoints` 的说明与上游 `auth.rs` 的
-//! `decorate`）；上游自己在查余额 / 会员时并不发。多发两个未被验证的头只会
-//! 增加「哪天上游按头判来源」的变数，对当前功能没有任何帮助。
+//! ── `studioVersion` 是账号面共用头（上游 3.4.2 修正）──────────
+//! 旧结论是「账号面不发 clientType / studioVersion」，但上游 3.4.2 的
+//! `client.rs::decorate` 给**所有账号面请求**都加了 `studioVersion: 3.5.1`：
+//! 登录、余额、会员、每日登录共用同一份桌面端身份。`clientType` 仍只在
+//! Windows / macOS 宿主发（21 / 22），Android 按上游同一分支不发。
+//! 签到要靠 `POST init-app` 触发，与余额查询同属账号面，头必须一致。
 //!
 //! ── 超时 ────────────────────────────────────────────────────
 //! 控制面（目录 / 账号面）用单请求 `.timeout(20s)`；`egress` 的客户端本身
@@ -128,9 +130,15 @@ pub fn judge(status: u16, text: &str, what: &str) -> Result<Value, StudioError> 
     }))
 }
 
-/// 调一次账号面接口（网页会话 Cookie）。
-pub async fn studio_json(
+/// 账号面请求共用的桌面端身份头（见模块头；`clientType` 在 Android 上不发）。
+fn decorate(builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+    builder.header("studioVersion", endpoints::STUDIO_VERSION)
+}
+
+/// 调一次账号面接口（网页会话 Cookie）。GET / POST 共用同一套头、超时与信封判定。
+async fn studio_request(
     credentials: &Credentials,
+    method: reqwest::Method,
     path: &str,
     what: &str,
     proxy: Option<&ResolvedProxy>,
@@ -140,11 +148,12 @@ pub async fn studio_json(
         endpoints::STUDIO_API_BASE,
         path.trim_start_matches('/')
     );
-    let response = client(proxy)
-        .get(&url)
+    let builder = client(proxy)
+        .request(method, &url)
         .header("Accept", "application/json")
         .header("Cookie", credentials.cookie_header())
-        .timeout(Duration::from_millis(CONTROL_TIMEOUT_MS))
+        .timeout(Duration::from_millis(CONTROL_TIMEOUT_MS));
+    let response = decorate(builder)
         .send()
         .await
         .map_err(|error| {
@@ -153,6 +162,40 @@ pub async fn studio_json(
     let status = response.status().as_u16();
     let text = response.text().await.unwrap_or_default();
     judge(status, &text, what)
+}
+
+/// 读一次账号面接口（GET）。
+pub async fn studio_json(
+    credentials: &Credentials,
+    path: &str,
+    what: &str,
+    proxy: Option<&ResolvedProxy>,
+) -> Result<Value, StudioError> {
+    studio_request(credentials, reqwest::Method::GET, path, what, proxy).await
+}
+
+/// 复用桌面端启动时的每日登录动作：带 Cookie 的 POST，**不附带请求体**。
+///
+/// 上游 3.4.2 实测「只读查询不发奖」，这个 POST 才触发当日登录奖励。
+/// `banned` 是账号状态：`false` 才算动作执行成功；封禁与缺字段都不能
+/// 被折叠成「余额没涨」—— 两者的处置完全不同。
+pub async fn init_app(
+    credentials: &Credentials,
+    proxy: Option<&ResolvedProxy>,
+) -> Result<(), StudioError> {
+    let value = studio_request(
+        credentials,
+        reqwest::Method::POST,
+        endpoints::INIT_APP,
+        "每日登录",
+        proxy,
+    )
+    .await?;
+    match value.get("banned").and_then(Value::as_bool) {
+        Some(false) => Ok(()),
+        Some(true) => Err(StudioError::Failed("AStudio 账号已被封禁，无法签到".into())),
+        None => Err(StudioError::Failed("每日登录返回的账号状态不完整".into())),
+    }
 }
 
 /// 拉一次模型目录（模型凭据 Bearer）。

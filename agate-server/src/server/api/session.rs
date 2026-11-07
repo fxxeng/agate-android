@@ -1211,7 +1211,8 @@ pub async fn login_loomy_sms_verify(State(state): State<ServerState>, body: Byte
 /// handler 只能靠 if 分叉 —— 那正是 issue #93 的成因（另一个家的 id 发过来时
 /// 号码被发去错的站点、账号也存成错的 provider，调用方却拿到成功响应）。
 ///
-/// body `{phone, provider?}` → `{uuid, deviceId}`。
+/// body `{phone, provider?, uuid?|deviceId?}` → `{uuid, deviceId}`；
+/// 风控拦截时返回 `status:"captcha"` 与验证信息，`uuid` 必须原样带回重发。
 ///
 /// `provider` 只用来认国际站：`tabbit-intl` 会被明确拒绝并给出替代（粘贴
 /// Cookie）。判据在核心层（`tabbit::login::send_code`），这里只做透传 ——
@@ -1223,7 +1224,12 @@ pub async fn login_tabbit_sms_send(body: Bytes) -> Response {
         Ok(realm) => realm,
         Err(response) => return response,
     };
-    match crate::server::core::providers::tabbit::login::send_code(realm, phone).await {
+    // 过完滑块重发时把上一轮的 uuid 带回来：换了 uuid 上游就丢掉风控结论。
+    let reuse_uuid = payload
+        .get("uuid")
+        .and_then(Value::as_str)
+        .or_else(|| payload.get("deviceId").and_then(Value::as_str));
+    match crate::server::core::providers::tabbit::login::send_code(realm, phone, reuse_uuid).await {
         // `ticket` 是跨三家的统一中间态名（见 [`with_ticket`]），`uuid` 保留
         Ok(result) => ok_json(with_ticket(result, "uuid")),
         Err(error) => management_error(error.status_code, error.message),

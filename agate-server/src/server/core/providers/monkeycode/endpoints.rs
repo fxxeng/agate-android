@@ -121,8 +121,8 @@ pub fn host_id(region: Region) -> String {
 /// 任务流 WebSocket 的完整 URL：`wss://<站点>/api/v1/users/tasks/stream?id=&mode=`。
 ///
 /// scheme 按参考的 `httpToWs` 转换（https → wss、http → ws，自建 / 测试站点
-/// 走后者）；`mode` 由调用方给（当前只有 `new`：本次请求新建任务轮次，
-/// 见 `stream.rs` 的模块头）。
+/// 走后者）；本项目创建请求已提交首轮输入，使用 `attach` 回放并接收结果
+/// （见 `stream.rs` / `startup.rs` 的模块头）。
 pub fn task_stream_url(region: Region, task_id: &str, mode: &str) -> String {
     let base = region.base_url();
     let ws_base = if let Some(rest) = base.strip_prefix("https://") {

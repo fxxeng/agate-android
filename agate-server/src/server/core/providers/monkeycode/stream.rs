@@ -1,13 +1,13 @@
 //! MonkeyCode 任务流（WebSocket）的连接与驱动（会话转发的第二步）。
 //!
 //! 下行消息与 ACP 事件 → OpenAI 帧的翻译在 `translate.rs`；本文件管：
-//! 握手（URL / 头 / 超时）、起始消息（auto-approve + user-input）、心跳回复的
-//! 发送时机、空闲 / 总时长超时，以及流式 / 聚合两种出口的收尾。
+//! 握手（URL / 头 / 超时）、自动审批设置、心跳回复的发送时机、空闲 /
+//! 总时长超时，以及流式 / 聚合两种出口的收尾。
 //!
 //! ── 上游长什么样（参考 `task-runner.ts` 与 `docs/04-websocket/*`）──────
 //! ```text
-//!   WS   wss://<站点>/api/v1/users/tasks/stream?id=<taskId>&mode=new
-//!   连接成功后客户端**必须先发** auto-approve + user-input，上游才开始跑；
+//!   WS   wss://<站点>/api/v1/users/tasks/stream?id=<taskId>&mode=attach
+//!   环境就绪后订阅首轮历史与实时输出，不重复提交已在创建请求中的 content；
 //!   下行是 {type, kind?, data?, timestamp?} 的 JSON 文本帧：
 //!     ping                      心跳（客户端回一条 {"type":"ping"}）
 //!     task-started              轮次开始
@@ -75,7 +75,6 @@ use super::translate::{handle_message, Handled, Terminal, DONE_FRAME};
 pub use super::translate::Translator;
 use super::endpoints;
 use super::region::Region;
-use super::task;
 
 /// 任务流连接类型（TLS 由 tokio-tungstenite 按 `wss` scheme 自动包装）
 pub type TaskSocket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
@@ -95,7 +94,7 @@ pub struct TaskStream {
     pub task_id: String,
 }
 
-/// 连接任务流（`mode=new`：本请求新建任务轮次）。
+/// 连接任务流（`mode=attach`：回放创建请求已启动的首轮）。
 ///
 /// ── 失败翻译 ────────────────────────────────────────────────
 ///   - 握手被拒：401/403 → 401（登录态失效，重新粘贴 session）；
@@ -113,7 +112,7 @@ pub async fn connect(
     task_id: &str,
     proxy: Option<&ResolvedProxy>,
 ) -> Result<TaskStream, GatewayError> {
-    let url = endpoints::task_stream_url(region, task_id, "new");
+    let url = endpoints::task_stream_url(region, task_id, "attach");
     let mut request = url.as_str().into_client_request().map_err(|error| {
         GatewayError::with_status(502, format!("MonkeyCode 任务流地址无效（{url}）：{error}"))
     })?;
@@ -143,7 +142,7 @@ pub async fn connect(
     .map_err(connect_error)?;
     logging::verbose(
         "[MonkeyCode]",
-        &format!("任务流已连接 task={task_id}（mode=new）"),
+        &format!("任务流已连接 task={task_id}（mode=attach）"),
     );
     Ok(TaskStream {
         socket,
@@ -173,29 +172,19 @@ fn connect_error(error: tokio_tungstenite::tungstenite::Error) -> GatewayError {
     }
 }
 
-/// 连接建立后的起始交互（参考 `task-runner.ts` 的 `on("open")`）：
-/// 先 `auto-approve`（工具调用自动批准），再 `user-input`（`mode=new` 下
-/// **必须**由客户端先发它，上游才开始执行）。
-pub async fn start_task(stream: &mut TaskStream, prompt: &str) -> Result<(), GatewayError> {
+/// 连接建立后的起始交互：首轮输入已由创建请求提交，这里**只**设置后续
+/// 工具审批策略。`mode=attach` 会回放连接前的输出；再发一次 `user-input`
+/// 等于追加新一轮，会重复跑或漏掉首轮结果。
+pub async fn start_task(stream: &mut TaskStream) -> Result<(), GatewayError> {
     let auto_approve = json!({ "type": "auto-approve" }).to_string();
     stream
         .socket
         .send(Message::text(auto_approve))
         .await
         .map_err(|error| send_error("auto-approve", error))?;
-    let input = json!({
-        "type": "user-input",
-        "data": task::user_input_payload(prompt),
-    })
-    .to_string();
-    stream
-        .socket
-        .send(Message::text(input))
-        .await
-        .map_err(|error| send_error("user-input", error))?;
     logging::verbose(
         "[MonkeyCode]",
-        &format!("任务 {} 已发送 auto-approve + user-input", stream.task_id),
+        &format!("任务 {} 已连接首轮结果并设置 auto-approve", stream.task_id),
     );
     Ok(())
 }
