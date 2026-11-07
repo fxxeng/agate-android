@@ -252,6 +252,7 @@ fn sha256_hex(bytes: &[u8]) -> String {
 }
 
 fn hmac_sha256_hex(key: &[u8], message: &str) -> String {
+    #[allow(clippy::expect_used)] // HMAC-SHA256 接受任意长度密钥，Err 仅泛型 API 占位（R46/T1 白名单）
     let mut mac = Hmac::<Sha256>::new_from_slice(key).expect("HMAC 接受任意长度的密钥");
     mac.update(message.as_bytes());
     format!("{:x}", mac.finalize().into_bytes())

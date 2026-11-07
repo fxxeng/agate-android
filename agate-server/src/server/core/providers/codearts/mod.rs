@@ -648,8 +648,7 @@ impl ProviderAdapter for CodeArtsAdapter {
             // 注意「无福利」（`Ok(None)`）不是失败 —— 它是账号的正常状态
             // （福利按活动下发，Free 账号常常没有），见 balance.rs 的
             // `BENEFIT_ABSENT_CODE`。
-            if statistics.is_err() && benefit.is_err() {
-                let (first, second) = (statistics.unwrap_err(), benefit.unwrap_err());
+            if let (Err(first), Err(second)) = (&statistics, &benefit) {
                 return Err(GatewayError::with_status(
                     first.status_code,
                     format!("{}（福利网关：{}）", first.message, second.message),

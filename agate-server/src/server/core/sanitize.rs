@@ -215,6 +215,7 @@ fn hdr_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
         // 剥离层：header 键名即触发（与值无关），整段删除。
+        #[allow(clippy::expect_used)] // 静态字面量正则，可编译性是构建期不变量（R46/T1 白名单）
         Regex::new(r"(?i)x-anthropic-billing-header:[^;\n]*;?[\t\n\f\r ]*")
             .expect("header 剥离正则必须可编译")
     })
@@ -231,6 +232,7 @@ fn bare_hdr_re() -> &'static Regex {
         // 注意该正则不要求冒号，是 hdr_re 的**超集**——[`has_fingerprint`] 与
         // [`sanitize_text`] 中两者并用：先删键值形态（hdr_re），再缩写残留裸键名
         // （本正则），替换语义不同（整段删除 vs 最小缩写），不可合并为一个正则。
+        #[allow(clippy::expect_used)] // 静态字面量正则，可编译性是构建期不变量（R46/T1 白名单）
         Regex::new(r"(?i)x-anthropic-billing-header").expect("裸 header 正则必须可编译")
     })
 }
@@ -239,6 +241,7 @@ fn kv_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
         // 剥离层：尾随裸键值（cc_xxx=...;）循环清理。
+        #[allow(clippy::expect_used)] // 静态字面量正则，可编译性是构建期不变量（R46/T1 白名单）
         Regex::new(r"(?i)(?-u:\b)cc_[a-z0-9_]+=[^;\n]*;?[\t\n\f\r ]*")
             .expect("cc_ 键值正则必须可编译")
     })

@@ -71,6 +71,7 @@ fn sha256_hex(value: &str) -> String {
 }
 
 fn hmac_hex(secret: &str, message: &str) -> String {
+    #[allow(clippy::expect_used)] // HMAC-SHA256 接受任意长度密钥，Err 仅泛型 API 占位（R46/T1 白名单）
     let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes())
         .expect("HMAC 接受任意长度的密钥");
     mac.update(message.as_bytes());
@@ -81,6 +82,7 @@ fn hmac_hex(secret: &str, message: &str) -> String {
 fn random_range(min: u32, max: u32) -> u32 {
     let span = max - min + 1;
     let mut buf = [0u8; 4];
+    #[allow(clippy::expect_used)] // 系统熵源失败 = OS 级灾难，无降级可言（R46/T1 白名单）
     getrandom::getrandom(&mut buf).expect("系统随机源不可用");
     min + (u32::from_le_bytes(buf) % span)
 }
@@ -93,6 +95,7 @@ fn secret() -> String {
         return value;
     }
     let mut buf = [0u8; 32];
+    #[allow(clippy::expect_used)] // 系统熵源失败 = OS 级灾难，无降级可言（R46/T1 白名单）
     getrandom::getrandom(&mut buf).expect("系统随机源不可用");
     let generated: String = buf.iter().map(|b| format!("{b:02x}")).collect();
     access::kv_put(KV_SECRET_KEY, &generated);
@@ -159,14 +162,14 @@ pub fn verify(token: &str) -> Result<(), String> {
     let salt = get("salt");
     let signature = get("signature");
     let number = parsed.get("number").and_then(Value::as_u64);
-    if algorithm != "SHA-256"
-        || challenge_field.is_empty()
-        || salt.is_empty()
-        || number.is_none()
-    {
+    // number 缺失与算法/salt 校验同一条错误路径：let-else 收窄替代 unwrap
+    // （R46/T1 panic 纪律门）
+    let Some(number) = number else {
+        return Err("机器人校验无效，请刷新页面重试".to_string());
+    };
+    if algorithm != "SHA-256" || challenge_field.is_empty() || salt.is_empty() {
         return Err("机器人校验无效，请刷新页面重试".to_string());
     }
-    let number = number.unwrap();
 
     // 签名先验（防伪造 challenge），再验答案本身
     if !constant_time_eq(

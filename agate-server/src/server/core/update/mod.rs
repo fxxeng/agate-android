@@ -579,6 +579,7 @@ impl UpdateManager {
                 "本次更新已经应用，请先重启服务（面板上的重启，或宿主机 docker compose restart）",
             ));
         }
+        #[allow(clippy::expect_used)] // supported() 已判定平台与架构，None 不可达（R46/T1 白名单）
         let bundle = selfupdate::bundle_name().expect("supported 已判定平台与架构");
         // 从**内存里那份 release JSON** 取三个值：包地址、校验文件地址、版本号。
         // 键名是 check.rs 存进去的那套（`serverBundle` / `serverChecksums` / `tag`），

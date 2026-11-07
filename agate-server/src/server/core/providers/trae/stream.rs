@@ -362,7 +362,9 @@ fn merge_tool_calls(calls: &mut Vec<Value>, incoming: Value) {
             Some(existing) => existing,
             None => {
                 calls.push(json!({"index": index}));
-                calls.last_mut().expect("刚推进去")
+                // push 刚成功 → len ≥ 1，索引不会越界（R46/T1：不依赖 panic 背板）
+                let last = calls.len() - 1;
+                &mut calls[last]
             }
         };
         let Some(target) = slot.as_object_mut() else {

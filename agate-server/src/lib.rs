@@ -80,6 +80,7 @@ where
 
 fn global_runtime() -> &'static Runtime {
     GLOBAL_RUNTIME.get_or_init(|| {
+        #[allow(clippy::expect_used)] // 运行时创建失败 = 无内核可跑，进程终止是唯一正确语义（R46/T1 白名单）
         tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()

@@ -1119,6 +1119,7 @@ pub fn start(state: &ServerState) -> Result<oneshot::Sender<()>, PortConflict> {
     // 面板 serve（分端口形态才有）：独立监听、同一份停机广播。
     // 统计收尾只归主 serve（上面那个任务），这里只管转发请求。
     if let Some(listener) = panel_listener {
+        #[allow(clippy::expect_used)] // panel_port 与 panel_router 由同一处赋值，成对不变量（R46/T1 白名单）
         let router = panel_router.expect("panel_port 与 panel_router 必须成对");
         crate::spawn_task(async move {
             let listener = match tokio::net::TcpListener::from_std(listener) {

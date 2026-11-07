@@ -327,6 +327,7 @@ fn access_tokens() -> &'static Mutex<AccessTable> {
 /// 生成随机 hex 字符串（会话令牌 / altcha 的 salt 等都用它）。
 pub fn random_hex(bytes: usize) -> String {
     let mut buf = vec![0u8; bytes];
+    #[allow(clippy::expect_used)] // 系统熵源失败 = OS 级灾难，无降级可言（R46/T1 白名单）
     getrandom::getrandom(&mut buf).expect("系统随机源不可用");
     buf.iter().map(|b| format!("{b:02x}")).collect()
 }

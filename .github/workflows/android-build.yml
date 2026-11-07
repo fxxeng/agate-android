@@ -31,6 +31,13 @@ jobs:
         run: cargo fmt --manifest-path agate-server/Cargo.toml --all -- --check
       - name: Portable Rust check (lib + bins)
         run: cargo check --manifest-path agate-server/Cargo.toml --locked --lib --bins
+      # R46/T1（A 案）：panic 纪律门——生产 lib 禁 unwrap/expect/panic 类构造。
+      # release 是 panic=abort，任何 panic = 整个 App 进程死亡（UI/FGS/调度器
+      # 全带走）；纪律 + 机械门禁是「禁止 panic 穿越 JNI」在 abort 语义下的
+      # 可执行形式。存量不变量背板已逐条白名单（各处 allow 注释 + R46 T1
+      # 裁定表）。只对 --lib 生效，测试代码豁免。
+      - name: Panic discipline gate (clippy)
+        run: cargo clippy --manifest-path agate-server/Cargo.toml --locked --lib -- -D clippy::unwrap_used -D clippy::expect_used -D clippy::panic -D clippy::unreachable -D clippy::todo -D clippy::unimplemented
       - name: Portable Rust tests (lib + bins)
         run: cargo test --manifest-path agate-server/Cargo.toml --locked --lib --bins
 
