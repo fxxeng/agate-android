@@ -331,7 +331,8 @@ const GRANT_CHECK_TIMEOUT_MS: u64 = 25_000;
 
 /// 客户端身份头：官方桌面端启动时带的三个头（源实现 grantDesktopLoginPoints）。
 /// 每日签到（setting_info）、新手任务的首次登录奖励（`onboarding.rs`）与
-/// **对话请求**（`headers::append_identity`）共用这一份，别在别处再抄一遍。
+/// **对话请求**（`headers::chat_identity`）与生图（`image_identity`）各有各的
+/// box_agent 身份层；本函数这份「大写三头」只服务浏览器域链路，别混用。
 ///
 /// 版本对齐上游 3.4.1 的 `v1.1.5`（旧值 `v1.0.0` 会被上游当成过旧客户端）。
 /// 平台值固定 `desktop-windows`：这个头表达的是**被伪装的官方桌面客户端**，

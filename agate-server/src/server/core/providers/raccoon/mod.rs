@@ -58,7 +58,7 @@
 //! `unwrap_or`，序列化失败一律转成 GatewayError。
 
 use axum::http::HeaderMap;
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use crate::server::core::account_store::AccountStore;
 use crate::server::errors::GatewayError;
@@ -69,7 +69,7 @@ use super::{kind_id, ProviderKind};
 
 pub mod balance;
 pub mod credentials;
-/// 桌面端身份头（组织身份 / X-Client-* / X-Request-Id），见模块头。
+/// box_agent 链路对话身份头（组织身份 / x-client-* 六头 / SDK 层 / 会话关联头），见模块头。
 pub mod headers;
 pub mod image_generation;
 pub mod jwt;
@@ -100,16 +100,16 @@ impl ProviderAdapter for RaccoonAdapter {
         models::list()
     }
 
-    /// 构造 `POST {llmBase}/chat/completions`（基础头照抄源实现 `upstreamHeaders`，
-    /// 再经 `headers::append_identity` 补上官方桌面端的身份头）。
+    /// 构造 `POST {llmBase}/chat/completions`（基础头 + `headers::chat_identity`
+    /// 的 box_agent 链路身份头，见 headers.rs 模块头）。
     ///
-    /// body **原样透传**：源实现除了 `model` 走一次路由解析（未知模型回退默认，
-    /// 本期由网关的模型校验/路由承担）之外不改任何字段。
+    /// body 经 `prepare_chat_body` 整理后出站：流式 usage、max_tokens 缺省、
+    /// 私有字段剥离与 GLM 思考档位归一（依据见函数注释），其余字段原样。
     fn build_chat_request(
         &self,
         account: &Value,
         body: &Value,
-        _client_headers: &HeaderMap,
+        client_headers: &HeaderMap,
     ) -> Result<ChatRequestPlan, GatewayError> {
         let token = account
             .get("auth")
@@ -123,20 +123,29 @@ impl ProviderAdapter for RaccoonAdapter {
                 "小浣熊账号缺少 accessToken，无法转发",
             ));
         }
+        let model = body.get("model").and_then(Value::as_str).unwrap_or("");
         let mut headers: Vec<(String, String)> = vec![
             ("Content-Type".to_string(), "application/json".to_string()),
-            // 源实现给的是 `Accept: */*`（LLM 网关两种响应形态都可能回）
-            ("Accept".to_string(), "*/*".to_string()),
+            // 官方 box_agent 的 Accept 形态（AgentHub 抓包基线）；源 JS 实现的
+            // `*/*` 是浏览器 fetch 的兜底写法，不是官方客户端的值。
+            (
+                "Accept".to_string(),
+                "application/json, text/event-stream".to_string(),
+            ),
             ("Authorization".to_string(), format!("Bearer {token}")),
         ];
-        // 官方桌面端身份头是上游的风控基线：缺 X-Client-* / X-Request-Id
-        // 时请求可能被静默降级，日志里只剩「上游没回内容」。三头共用的取值
-        // 在 `balance::desktop_client_headers()`，组织身份从账号记录读。
-        headers::append_identity(&mut headers, account)?;
+        // box_agent 链路身份头是上游的风控基线：六头 + 会话关联头缺失会被静默
+        // 降级，每请求随机的会话 id 配多轮历史更是直接触发静默丢弃（见 headers.rs
+        // 模块头）。会话标记优先信网关透传的 x-session-id，取不到落在对话起点。
+        let inbound_session = client_headers
+            .get("x-session-id")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("");
+        headers.extend(headers::chat_identity(account, body, model, inbound_session)?);
         Ok(ChatRequestPlan::chat(
             format!("{}/chat/completions", self.llm_base_url()),
             headers,
-            body.clone(),
+            prepare_chat_body(body),
         ))
     }
 
@@ -488,4 +497,181 @@ fn env_access_token() -> Option<String> {
 fn proxy_of(store: &AccountStore) -> Option<crate::server::core::proxies::ResolvedProxy> {
     let entry = store.current_entry_for_provider(kind_id(ProviderKind::Raccoon))?;
     crate::server::core::proxies::session_proxy(&entry.session)
+}
+
+/// 对话体出站前的整理（2026-11-08 起按「很少流控」基线启用；依据 AgentHub
+/// `rewriteBody` 的抓包结论与插件 3.4.3-beta.3 的 reasoning 处理）：
+///
+///   1. 流式请求补 `stream_options.include_usage` —— usage 在官方网关的末帧，
+///      客户端要计数就靠它；
+///   2. `max_tokens` 缺省补 80000（官方 hosted 默认值）——上游对缺该字段的复杂
+///      请求（带 tools / 长 prompt）会静默不回字节，表现为 10s 首字节超时，
+///      而极简测试连接能过；
+///   3. `max_completion_tokens` 翻译成 `max_tokens`（新版 OpenAI SDK 客户端发
+///      前者，上游只认后者）；两者都在时尊重原值；
+///   4. 剥掉上游（疑似 LiteLLM）不认的会话私有字段 —— 未知字段可能直接 400；
+///   5. GLM 5.3 系的思考档位上游只认 low/high/max：客户端的「关思考」译成
+///      `low`（仍是关，强度最低），并摘掉 GLM 不认的 `thinking` /
+///      `enable_thinking`。**非 GLM 模型一律不动**：其它家族可能就吃 off，
+///      别替它们做决定。
+///
+/// 与 `reasoning_patch`（模型映射绑定的档位翻译）是两回事：这里只处理
+/// 「客户端显式发来的字段」的协议适配，不注入任何用户没给的东西。
+fn prepare_chat_body(body: &Value) -> Value {
+    let mut out = body.clone();
+    let is_glm = out
+        .get("model")
+        .and_then(Value::as_str)
+        .map(is_glm_5_3)
+        .unwrap_or(false);
+
+    let stream = out.get("stream").and_then(Value::as_bool).unwrap_or(false);
+    if stream {
+        if let Some(options) = out.get_mut("stream_options").and_then(Value::as_object_mut) {
+            options
+                .entry("include_usage".to_string())
+                .or_insert_with(|| Value::Bool(true));
+        } else if let Some(object) = out.as_object_mut() {
+            object.insert(
+                "stream_options".to_string(),
+                json!({ "include_usage": true }),
+            );
+        }
+    }
+
+    let has_max_tokens = out
+        .get("max_tokens")
+        .map(|value| value.as_u64().unwrap_or(0) > 0)
+        .unwrap_or(false);
+    let completion = out
+        .get("max_completion_tokens")
+        .and_then(Value::as_u64)
+        .filter(|value| *value > 0);
+    if !has_max_tokens {
+        if let Some(value) = completion {
+            if let Some(object) = out.as_object_mut() {
+                object.insert("max_tokens".to_string(), json!(value));
+            }
+        } else if let Some(object) = out.as_object_mut() {
+            object.insert("max_tokens".to_string(), json!(80_000));
+        }
+    }
+    if let Some(object) = out.as_object_mut() {
+        object.remove("max_completion_tokens");
+        object.remove("conversation_id");
+        object.remove("conversationId");
+        object.remove("prompt_cache_key");
+    }
+
+    if is_glm {
+        let off = out
+            .get("reasoning_effort")
+            .and_then(Value::as_str)
+            .map(|level| matches!(level, "off" | "none" | "minimal"))
+            .unwrap_or(false);
+        if let Some(object) = out.as_object_mut() {
+            if off {
+                object.insert("reasoning_effort".to_string(), json!("low"));
+            }
+            object.remove("thinking");
+            object.remove("enable_thinking");
+        }
+    }
+    out
+}
+
+/// GLM 5.3 系模型名（`glm[-._]?5[-._]?3`，大小写不敏感；不引 regex 依赖）。
+fn is_glm_5_3(model: &str) -> bool {
+    let lower = model.to_ascii_lowercase();
+    let Some(head) = lower.find("glm") else {
+        return false;
+    };
+    let rest = &lower[head + 3..];
+    let after_sep = rest
+        .strip_prefix(['-', '_', '.'])
+        .unwrap_or(rest);
+    let Some(after_five) = after_seg_digit(after_sep, '5') else {
+        return false;
+    };
+    after_seg_digit(after_five, '3').is_some()
+}
+
+/// 吃掉一个可选分隔符后匹配数字，返回余下部分。
+fn after_seg_digit(rest: &str, expected: char) -> Option<&str> {
+    let after_sep = rest.strip_prefix(['-', '_', '.']).unwrap_or(rest);
+    let digit = after_sep.chars().next()?;
+    (digit == expected).then(|| &after_sep[1..])
+}
+
+#[cfg(test)]
+mod chat_body_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// 流式补 include_usage；非流式不动
+    #[test]
+    fn stream_options_only_for_streaming() {
+        let streaming = prepare_chat_body(&json!({ "stream": true, "model": "m" }));
+        assert_eq!(
+            streaming.pointer("/stream_options/include_usage"),
+            Some(&json!(true))
+        );
+        let plain = prepare_chat_body(&json!({ "stream": false, "model": "m" }));
+        assert!(plain.get("stream_options").is_none());
+    }
+
+    /// max_tokens 缺省补 80000；max_completion_tokens 翻译成 max_tokens；
+    /// 两者都在时尊重 max_tokens 原值
+    #[test]
+    fn max_tokens_defaults_and_translation() {
+        let defaulted = prepare_chat_body(&json!({ "model": "m" }));
+        assert_eq!(defaulted.get("max_tokens"), Some(&json!(80_000)));
+
+        let translated = prepare_chat_body(&json!({ "model": "m", "max_completion_tokens": 4096 }));
+        assert_eq!(translated.get("max_tokens"), Some(&json!(4096)));
+        assert!(translated.get("max_completion_tokens").is_none());
+
+        let explicit = prepare_chat_body(&json!({ "model": "m", "max_tokens": 1024, "max_completion_tokens": 4096 }));
+        assert_eq!(explicit.get("max_tokens"), Some(&json!(1024)));
+    }
+
+    /// 上游不认的会话私有字段剥掉
+    #[test]
+    fn private_fields_are_stripped() {
+        let out = prepare_chat_body(&json!({
+            "model": "m", "conversation_id": "c1", "conversationId": "c2", "prompt_cache_key": "k"
+        }));
+        assert!(out.get("conversation_id").is_none());
+        assert!(out.get("conversationId").is_none());
+        assert!(out.get("prompt_cache_key").is_none());
+    }
+
+    /// GLM 5.3 系：off 译成 low、摘 thinking；非 GLM 一律不动
+    #[test]
+    fn glm_reasoning_is_normalized_only_for_glm() {
+        let glm = prepare_chat_body(&json!({
+            "model": "sn-glm-5-3", "reasoning_effort": "off", "thinking": { "type": "disabled" }
+        }));
+        assert_eq!(glm.get("reasoning_effort"), Some(&json!("low")));
+        assert!(glm.get("thinking").is_none());
+
+        let glm53 = prepare_chat_body(&json!({ "model": "GLM5.3", "reasoning_effort": "high" }));
+        assert_eq!(glm53.get("reasoning_effort"), Some(&json!("high")), "合法档位原样保留");
+
+        let other = prepare_chat_body(&json!({
+            "model": "raccoon-8c4485", "reasoning_effort": "off", "thinking": { "type": "disabled" }
+        }));
+        assert_eq!(other.get("reasoning_effort"), Some(&json!("off")), "非 GLM 不动");
+        assert!(other.get("thinking").is_some());
+    }
+
+    /// GLM 家族名匹配的边界（分隔符可有可无、大小写不敏感、别家不误伤）
+    #[test]
+    fn glm_family_matcher_boundaries() {
+        assert!(is_glm_5_3("glm-5-3"));
+        assert!(is_glm_5_3("sn-glm_5.3"));
+        assert!(is_glm_5_3("GLM53"));
+        assert!(!is_glm_5_3("glm-4-3"));
+        assert!(!is_glm_5_3("raccoon-8c4485"));
+    }
 }

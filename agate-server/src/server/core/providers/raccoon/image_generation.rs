@@ -201,8 +201,9 @@ fn identity_headers(account: &Value) -> Result<Vec<(String, String)>, GatewayErr
         ("Accept".to_string(), "application/json".to_string()),
         ("Authorization".to_string(), format!("Bearer {token}")),
     ];
-    // 桌面端身份头是上游的风控基线（与对话链路同一套，见 `headers::append_identity`）。
-    super::headers::append_identity(&mut headers, account)?;
+    // box_agent 链路身份头是上游的风控基线（生图语义的会话关联头，见
+    // `headers::image_identity`）。
+    headers.extend(super::headers::image_identity(account)?);
     Ok(headers)
 }
 
