@@ -159,11 +159,13 @@ pub(crate) fn load_all(conn: &Connection) -> rusqlite::Result<Vec<StoredAccount>
 pub(crate) fn load_by_id(conn: &Connection, id: &str) -> rusqlite::Result<Option<StoredAccount>> {
     let mut stmt = conn.prepare("SELECT data FROM accounts WHERE id = ?1")?;
     let mut rows = stmt.query(params![id])?;
-    while let Some(row) = rows.next()? {
-        let text: String = row.get(0)?;
-        return Ok(decode_data(&text));
-    }
-    Ok(None)
+    // id 是主键、至多一行：取首行即可。原先的 while-首行-return 会命中
+    // never_loop（correctness 组，clippy 默认 deny——R46 纪律门首次点亮）。
+    let Some(row) = rows.next()? else {
+        return Ok(None);
+    };
+    let text: String = row.get(0)?;
+    Ok(decode_data(&text))
 }
 
 /// 某个 provider 的全部账号（按物理顺序）。
