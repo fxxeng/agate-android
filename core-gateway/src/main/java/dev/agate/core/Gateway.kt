@@ -252,7 +252,9 @@ object Gateway {
             }
         }
         return logListenerRegistry.update(candidate) { callback ->
-            parseLogCallbackUpdateResponse(nativeSetLogCallback(callback))
+            // nativeSetLogCallback 现返回 String?（R46/T3）：经 envelope 收敛成
+            // 结构化信封再解析；null/畸形 → ok=false → registry 保留旧监听。
+            parseLogCallbackUpdateResponse(envelope(nativeSetLogCallback(callback)).toString())
         }
     }
 
