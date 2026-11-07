@@ -677,23 +677,6 @@ impl LogStore {
         let entries = self.with_conn(&guard, sql::select_all_asc);
         render_jsonl(&entries.unwrap_or_default())
     }
-
-    /// 库里的条目数（Node 版 `createLogStore` 导出的 `get size()` 对等物；
-    /// 日志页统计走 stats()，这里保留供排障与后续容量判定）。
-    ///
-    /// 改造前读的是内存 `Vec` 的长度，现在是 `COUNT(*)` —— 语义（当前条数）
-    /// 不变，数据来源跟着存储走。
-    #[allow(dead_code)]
-    pub fn len(&self) -> usize {
-        let guard = self.guard();
-        self.with_conn(&guard, sql::count_all).unwrap_or(0)
-    }
-
-    /// 空判定（与 `len()` 配套；Node 的 size getter 为 0 时的等价写法）
-    #[allow(dead_code)]
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
 }
 
 /// 把条目列表渲染成 JSONL 文本。空列表返回空串

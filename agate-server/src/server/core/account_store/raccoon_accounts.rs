@@ -41,7 +41,7 @@ use crate::server::core::account_store::store::live_desktop_credentials;
 use crate::server::core::account_store::store::{AccountStore, AccountStoreError};
 use crate::server::core::account_store::store_util::{pick_token, token_tail_of, truncate_chars};
 use crate::server::core::account_store::{CredentialWrite, MAX_TOKEN_LENGTH};
-use crate::server::core::providers::raccoon::{credentials, jwt, models};
+use crate::server::core::providers::raccoon::{credentials, jwt};
 use crate::server::core::providers::kind_id;
 use crate::server::core::providers::ProviderKind;
 use crate::server::logging;
@@ -624,10 +624,4 @@ impl AccountStore {
         Value::Object(public)
     }
 
-
-    /// `GET /v1/models` 之类探针用的小浣熊模型清单条数（排障口，保留）
-    #[allow(dead_code)]
-    pub fn raccoon_model_count(&self) -> usize {
-        models::count()
-    }
 }

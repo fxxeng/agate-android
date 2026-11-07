@@ -34,21 +34,13 @@ const CLASH_CACHE_TTL_MS: i64 = 3000;
 
 /// Clash Verge 监听器快照。
 ///
-/// 字段与 Node 版 `readClashVergeConfig()` 的返回一一对应
-/// （available / dir / mixedPort / socksPort / httpPort / listeners /
-/// currentProfileUid / error）。
+/// 字段与 Node 版 `readClashVergeConfig()` 的返回对应（available / dir /
+/// mixedPort / listeners / currentProfileUid / error）。
 #[derive(Clone, Debug)]
 pub struct ClashSnapshot {
     pub available: bool,
     pub dir: Option<String>,
     pub mixed_port: Option<u16>,
-    /// Node 版 `readClashVergeConfig()` 返回的 `socksPort` 对等字段：
-    /// 代理下拉只用到 mixedPort / listeners，这两个端口保留以维持快照形态一致
-    #[allow(dead_code)]
-    pub socks_port: Option<u16>,
-    /// Node 版 `readClashVergeConfig()` 返回的 `httpPort` 对等字段（同上）
-    #[allow(dead_code)]
-    pub http_port: Option<u16>,
     pub listeners: Vec<ClashListener>,
     pub current_profile_uid: Option<String>,
     pub error: Option<String>,
@@ -61,8 +53,6 @@ impl ClashSnapshot {
             available: false,
             dir: dir.map(|path| path.to_string_lossy().to_string()),
             mixed_port: None,
-            socks_port: None,
-            http_port: None,
             listeners: Vec::new(),
             current_profile_uid: None,
             error: Some(error.to_string()),
@@ -75,10 +65,6 @@ impl ClashSnapshot {
 pub struct ClashListener {
     pub uid: String,
     pub name: String,
-    /// Node 版 `readClashVergeConfig()` 的 listeners[] 项里的 `proxy` 字段对等物
-    /// （构造时用于 name/uid 兜底，之后不再读；保留以维持监听器形态一致）
-    #[allow(dead_code)]
-    pub proxy: String,
     pub port: u16,
     pub profile_uid: Option<String>,
     pub enabled: bool,
@@ -218,7 +204,6 @@ pub fn read_clash_verge_config() -> ClashSnapshot {
             listeners.push(ClashListener {
                 uid,
                 name,
-                proxy,
                 port,
                 profile_uid,
                 // Node 是 `item.enabled !== false`：只有显式 false 才算禁用
@@ -238,8 +223,6 @@ pub fn read_clash_verge_config() -> ClashSnapshot {
         available: true,
         dir: Some(dir.to_string_lossy().to_string()),
         mixed_port: yaml_port(verge.get("verge_mixed_port")),
-        socks_port: yaml_port(verge.get("verge_socks_port")),
-        http_port: yaml_port(verge.get("verge_port")),
         listeners,
         current_profile_uid,
         error: None,

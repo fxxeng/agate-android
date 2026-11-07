@@ -211,16 +211,6 @@ pub(super) const BILLING_ENTERPRISE_USAGE: BillingSpec = BillingSpec {
     base: None,
 };
 
-/// 用量提示端点（Node 版 BILLING.dosageNotify 的对等物）。
-/// 由 `usage.rs` 的 `get_dosage_notify` 使用（该方法当前无生产调用点）。
-pub(super) const BILLING_DOSAGE_NOTIFY: BillingSpec = BillingSpec {
-    method: "POST",
-    path: "/v2/billing/meter/get-dosage-notify",
-    body: empty_body,
-    whitelist_headers: false,
-    base: None,
-};
-
 pub(super) const ACTIVITY_BANNER: BillingSpec = BillingSpec {
     method: "GET",
     path: "/v2/activity/workbuddy/banner",

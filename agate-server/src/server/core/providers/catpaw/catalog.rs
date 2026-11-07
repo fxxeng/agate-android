@@ -31,7 +31,6 @@
 //! AutoClaw / 小浣熊同一取向。
 
 use std::sync::{OnceLock, RwLock};
-use std::time::Duration;
 
 use serde_json::{json, Value};
 
@@ -506,13 +505,3 @@ fn js_truthy(value: &Value) -> bool {
         Value::Array(_) | Value::Object(_) => true,
     }
 }
-
-/// 供排障：远程目录条数
-#[allow(dead_code)]
-pub fn count() -> usize {
-    remote_models().len()
-}
-
-/// 目录请求超时的公开常量（与其它三家的 `REFRESH_TIMEOUT` 同用途）
-#[allow(dead_code)]
-pub const REFRESH_TIMEOUT: Duration = Duration::from_millis(REQUEST_TIMEOUT_MS);

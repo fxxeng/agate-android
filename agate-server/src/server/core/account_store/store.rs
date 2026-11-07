@@ -176,17 +176,6 @@ impl AccountStore {
         self.inner.db.as_ref()
     }
 
-    /// 账号数据是否已落盘（Node 版账号存储导出的
-    /// `existsSync: () => existsSync(filePath)` 的对等物）。
-    ///
-    /// 语义随存储一起变化：从「`accounts.json` 这个文件在不在」变成
-    /// 「装着账号的库文件在不在」。当前管理 API 未调用，保留作为该导出的对等物，
-    /// 便于后续「账号数据是否落盘」判定。
-    #[allow(dead_code)]
-    pub fn exists(&self) -> bool {
-        self.file().exists()
-    }
-
     /// 取锁；锁中毒（某次持锁 panic）不致命：直接接管内部数据继续用，
     /// 总好过让所有管理 API 永久 500。
     ///
@@ -633,7 +622,7 @@ impl AccountStore {
         let _guard = self.guard();
         let record = self.record_by_id(&_guard, id)?;
         let live = live_desktop_credentials(&record);
-        let (access_token, refresh_token, expires_at) = match live {
+        let (access_token, refresh_token, _) = match live {
             Some(credentials) => credentials,
             None => (
                 record.access_token(),
@@ -650,20 +639,15 @@ impl AccountStore {
         let resolution = resolve_account_proxy_rotating(Some(&record.proxy()), record.id());
         let (proxy, proxy_error) = split_resolution(resolution);
         Some(CredentialsById {
-            id: record.id().to_string(),
             name: record.name(),
             uid: record.uid(),
-            access_token,
             refresh_token,
-            expires_at: if expires_at > 0.0 { Some(expires_at) } else { None },
             endpoint: record.endpoint().unwrap_or_else(|| edition.endpoint.to_string()),
             prefix_path: record
                 .prefix_path()
                 .unwrap_or_else(|| edition.prefix_path.to_string()),
             platform: record.platform().unwrap_or_else(|| edition.platform.to_string()),
             edition: edition.id.to_string(),
-            priority: record.priority(),
-            enabled: record.enabled(),
             proxy,
             proxy_error,
         })
@@ -682,7 +666,6 @@ impl AccountStore {
         let resolution = resolve_account_proxy_rotating(Some(&record.proxy()), record.id());
         let (proxy, proxy_error) = split_resolution(resolution);
         Some(SessionById {
-            id: record.id().to_string(),
             session: self.session_from_record(&record),
             proxy,
             proxy_error,

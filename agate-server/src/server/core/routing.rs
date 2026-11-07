@@ -34,7 +34,7 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use crate::server::core::account_store::priority::{by_priority_order, normalize_priority};
 use crate::server::core::account_store::store_util::js_truthy;
@@ -328,61 +328,6 @@ pub fn provider_of(account: &Value) -> &str {
         .unwrap_or(crate::server::core::providers::DEFAULT_PROVIDER_ID)
 }
 
-/// 选路决策的完整快照（供日志展示与排障）：
-///   `{ picked, priority, candidateCount, blocked: [{ id, name, reason }], total }`
-///
-/// Node 版 workbuddy-routing.mjs 同名导出 `describeRouteDecision` 的对等物：
-/// 生产路径用不到（Node 同样只导出未使用，仅 smoke test 覆盖），
-/// 但排障时能直接拿来比对「为什么选了 B 而不是 A」，故保留 —— 字段与 Node 逐一对齐。
-#[allow(dead_code)]
-pub fn describe_route_decision(
-    accounts: &[Value],
-    model: &str,
-    exclude_ids: &[String],
-    now: i64,
-) -> Value {
-    let keys = CooldownKeys::new(model);
-    let mut blocked: Vec<Value> = Vec::new();
-    let mut candidate_count = 0usize;
-    for account in accounts {
-        let Some(id) = account_id(account) else {
-            continue;
-        };
-        if exclude_ids.iter().any(|excluded| excluded == id) {
-            blocked.push(json!({
-                "id": id,
-                "name": account_name(account, id),
-                "reason": "tried",
-            }));
-            continue;
-        }
-        let usability = account_usability(account, &keys, now);
-        if usability.usable {
-            candidate_count += 1;
-        } else {
-            blocked.push(json!({
-                "id": id,
-                "name": account_name(account, id),
-                "reason": usability.reason.unwrap_or(""),
-            }));
-        }
-    }
-    // 排障快照，拿不到运行时的在途计数（它住在 UpstreamService 里），
-    // 传空表 = 并发过滤不生效 —— 这里只回答「按启用/限流该选谁」。
-    let picked = pick_account_by_priority(accounts, &keys, &HashMap::new(), exclude_ids, now);
-    let priority = picked
-        .as_ref()
-        .map(|account| normalize_priority_value_of(account))
-        .unwrap_or(Value::Null);
-    json!({
-        "picked": picked.unwrap_or(Value::Null),
-        "priority": priority,
-        "candidateCount": candidate_count,
-        "blocked": blocked,
-        "total": accounts.len(),
-    })
-}
-
 /// 账号 id（非空字符串才算；对应 Node 的 `account?.id` 真值判定）
 pub fn account_id(account: &Value) -> Option<&str> {
     account
@@ -431,15 +376,6 @@ fn compare_by_priority(a: &Value, b: &Value) -> std::cmp::Ordering {
     let (a_priority, a_added) = key(a);
     let (b_priority, b_added) = key(b);
     by_priority_order((a_priority, a_added as i64), (b_priority, b_added as i64))
-}
-
-/// 公开形态里的 priority（归一后的数值）——对应 Node 在日志里打印的 `priority`。
-/// 这里沿用 store 归一后的值（Rust 的公开形态一定带这个字段）。
-fn normalize_priority_value_of(account: &Value) -> Value {
-    Value::from(normalize_priority(
-        account.get("priority"),
-        crate::server::core::account_store::priority::DEFAULT_PRIORITY,
-    ))
 }
 
 /// JS `Number(x)`：解析不出（NaN）时返回 None，由调用方按 `|| 0` 兜底。

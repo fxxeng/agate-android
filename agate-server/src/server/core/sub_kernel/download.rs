@@ -308,9 +308,3 @@ pub fn uninstall() -> Result<(), String> {
     std::fs::remove_dir_all(&dir)
         .map_err(|error| format!("删除内核目录失败（{}）：{error}", dir.display()))
 }
-
-/// 等待一段时间的辅助（下载重试之间用）
-#[allow(dead_code)]
-fn sleep_ms(ms: u64) {
-    std::thread::sleep(Duration::from_millis(ms));
-}

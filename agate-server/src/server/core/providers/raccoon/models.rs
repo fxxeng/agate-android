@@ -43,7 +43,6 @@
 //!      返回 false）。因此这里**不保存 defaultModel**。
 
 use std::sync::{OnceLock, RwLock};
-use std::time::Duration;
 
 use serde_json::{json, Value};
 
@@ -591,13 +590,3 @@ fn format_multiplier(value: f64) -> String {
 fn text_value(value: &Value) -> String {
     super::jwt::js_text(value)
 }
-
-/// 供排障：目录条数（`/health` 之类的探针会读；与 `list()` 的语义一致）
-#[allow(dead_code)]
-pub fn count() -> usize {
-    list().len()
-}
-
-/// 目录请求超时的公开常量（适配器构造刷新参数时可能要用）
-#[allow(dead_code)]
-pub const REFRESH_TIMEOUT: Duration = Duration::from_millis(CATALOG_TIMEOUT_MS);

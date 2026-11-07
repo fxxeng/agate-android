@@ -637,32 +637,16 @@ pub struct CurrentEntry {
 /// `getCredentialsById` 的返回形态（含 token 与端点身份）。
 ///
 /// 字段与 Node 版 `workbuddy-account-store.mjs` 的同名导出逐一对齐：这是该导出的
-/// 强类型对等物，续期（refresh_account）已用 name/uid/refresh_token/endpoint 等；
-/// 下面几个字段当前无读取点，但保留以维持与 Node 返回形态的完整对应。
+/// 强类型对等物，续期（refresh_account）已用 name/uid/refresh_token/endpoint 等。
 #[derive(Clone, Debug)]
 pub struct CredentialsById {
-    /// Node 版 `getCredentialsById().id` 的对等字段（调用方已持有 id，形态对齐保留）
-    #[allow(dead_code)]
-    pub id: String,
     pub name: String,
     pub uid: String,
-    /// Node 版 `getCredentialsById().accessToken` 的对等字段（续期改用 refreshToken）
-    #[allow(dead_code)]
-    pub access_token: String,
     pub refresh_token: String,
-    /// Node 版 `getCredentialsById().expiresAt` 的对等字段
-    #[allow(dead_code)]
-    pub expires_at: Option<f64>,
     pub endpoint: String,
     pub prefix_path: String,
     pub platform: String,
     pub edition: String,
-    /// Node 版 `getCredentialsById().priority` 的对等字段
-    #[allow(dead_code)]
-    pub priority: i64,
-    /// Node 版 `getCredentialsById().enabled` 的对等字段
-    #[allow(dead_code)]
-    pub enabled: bool,
     pub proxy: Value,
     pub proxy_error: Option<String>,
 }
@@ -670,9 +654,6 @@ pub struct CredentialsById {
 /// `getSessionById` 的返回形态（会话 + 该账号解析出的出口）
 #[derive(Clone, Debug)]
 pub struct SessionById {
-    /// Node 版 `getSessionById()` 返回对象里的 id（调用方已持有 id，形态对齐保留）
-    #[allow(dead_code)]
-    pub id: String,
     pub session: Value,
     pub proxy: Value,
     pub proxy_error: Option<String>,

@@ -10,13 +10,12 @@
 
 use serde_json::{json, Map, Value};
 
-use crate::server::core::endpoints::RESPONSE_CODE_OK;
 use crate::server::core::account_store::state::json_number;
 
 use super::commodity::{self, codes, is_bonus, is_daily_credit, is_plan_base, label_of, plan_priority};
 use super::request::{
     js_int_string, js_truthy, number_or_zero, parse_time, time_or_null, to_int,
-    timestamp_json, CallOptions, BILLING_DOSAGE_NOTIFY, BILLING_ENTERPRISE_USAGE,
+    timestamp_json, CallOptions, BILLING_ENTERPRISE_USAGE,
     BILLING_USER_RESOURCE,
 };
 use super::{BillingError, BillingService};
@@ -358,27 +357,6 @@ impl BillingService {
         }))
     }
 
-    /// 轻量余额查询：只取剩余额度，供限额判定等热路径使用。
-    ///
-    /// 不限量返回 `Some(None)`（即 Infinity 的等价物），
-    /// 解析不出剩余量时返回 Err（对应 Node 抛 WorkBuddyBillingError）。
-    // Node 版 workbuddy-billing.mjs 同名导出的对等物（Node 里只被 smoke test 覆盖）：
-    // 保留为「按账号查余额」的轻量入口，与 query_usage 的完整简报互为补充。
-    #[allow(dead_code)]
-    pub async fn fetch_available_credits(
-        &self,
-        session: Option<&Value>,
-    ) -> Result<Option<i64>, BillingError> {
-        let usage = self.query_usage(session, None).await?;
-        if usage.get("unlimited").and_then(Value::as_bool).unwrap_or(false) {
-            return Ok(None);
-        }
-        match usage.get("usageLeft").and_then(to_int) {
-            Some(left) => Ok(Some(left)),
-            None => Err(BillingError::new("积分响应缺少可解析的剩余量", 502)),
-        }
-    }
-
     // ─── 积分简报 ───────────────────────────────────────────
 
     /// 积分简报：只返回三个数 —— 总剩余积分 / 套餐基础积分 / 平台奖励积分。
@@ -398,23 +376,6 @@ impl BillingService {
         Ok(credits_summary_from(&usage))
     }
 
-    /// 用量提示（productFeatures.BillingNotice 开启时桌面端会轮询）。
-    /// Node 版 workbuddy-billing.mjs 同名导出 `getDosageNotify` 的对等物：
-    /// 桌面端前端目前未接入该轮询，保留以便按开关启用时不改后端。
-    #[allow(dead_code)]
-    pub async fn get_dosage_notify(&self, session: Option<&Value>) -> Result<Value, BillingError> {
-        let result = self
-            .call_billing(
-                BILLING_DOSAGE_NOTIFY,
-                CallOptions { session, expect_code_ok: false, ..Default::default() },
-            )
-            .await?;
-        if result.code == Some(RESPONSE_CODE_OK) {
-            Ok(result.data)
-        } else {
-            Ok(Value::Null)
-        }
-    }
 }
 
 // ─── 纯函数：`query_usage` 的成果 → 两种摊平形状 ──────────────────

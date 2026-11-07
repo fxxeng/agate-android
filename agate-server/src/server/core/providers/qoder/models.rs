@@ -413,12 +413,6 @@ pub fn last_refreshed_at(region: Region) -> i64 {
     }
 }
 
-/// 最后一次成功刷新远程目录的时间（毫秒；从未成功过为 0）——两地区的最大值。
-#[allow(dead_code)]
-pub fn last_refreshed_at_any() -> i64 {
-    read_state().global_fetched_at.max(read_state().cn_fetched_at)
-}
-
 /// 拉取并落地某地区的远程目录。
 ///
 /// 三档返回值与 `ModelRefreshOutcome` 的契约一致（成功 / 没刷 / 失败了）。
@@ -676,10 +670,4 @@ fn js_truthy(value: &Value) -> bool {
         Value::String(text) => !text.is_empty(),
         Value::Array(_) | Value::Object(_) => true,
     }
-}
-
-/// 供排障：清单条数
-#[allow(dead_code)]
-pub fn count() -> usize {
-    list().len()
 }

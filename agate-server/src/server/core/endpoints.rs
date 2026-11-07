@@ -29,37 +29,8 @@ pub const STAGING_ENDPOINT: &str = "https://staging-copilot.tencent.com";
 /// 国际版端点（CodeBuddy 海外站，prefixPath 为空）
 pub const GLOBAL_ENDPOINT: &str = "https://www.codebuddy.ai";
 
-/// 鉴权相关域名白名单（cli/product.json → authentication.attributes）。
-/// internal 走国内端点，external 走海外端点，ioa 为企业 SSO 中转域名。
-// Node 版 workbuddy-endpoints.mjs 同名导出 DOMAINS（internal/external/ioa 三段），
-// 这里拆成三个常量：端点表事实来源的完整性保留，改端点时三处域名单一并核对。
-#[allow(dead_code)]
-pub const DOMAINS_INTERNAL: &[&str] = &[
-    "copilot.tencent.com",
-    "staging-copilot.tencent.com",
-    "www.codebuddy.cn",
-    "staging.codebuddy.cn",
-    "www.workbuddy.cn",
-    "staging.workbuddy.cn",
-];
-/// 海外站域名（DOMAINS.external）
-#[allow(dead_code)]
-pub const DOMAINS_EXTERNAL: &[&str] = &["www.codebuddy.ai", "staging-codebuddy.tencent.com"];
-/// 企业 SSO 中转域名（DOMAINS.ioa）
-#[allow(dead_code)]
-pub const DOMAINS_IOA: &[&str] = &[
-    "tencent.sso.copilot.tencent.com",
-    "tencent.sso.copilot-staging.tencent.com",
-    "tencent.sso.codebuddy.cn",
-    "tencent.staging-sso.codebuddy.cn",
-];
-
 /// 桌面端版本（X-IDE-Version / User-Agent 用）
 pub const WORKBUDDY_CLIENT_VERSION: &str = "5.5.4";
-/// 产品名
-// Node 版 workbuddy-endpoints.mjs 同名导出 WORKBUDDY_PRODUCT 的对等物，保留标注
-#[allow(dead_code)]
-pub const WORKBUDDY_PRODUCT: &str = "WorkBuddy";
 /// 桌面端内置 CLI 版本（User-Agent 的 `CLI/<版本>` 段）。
 ///
 /// 服务端按该段识别桌面 CLI 通道：缺失时 `/v3/config` 只下发旧版兼容模型清单
@@ -78,22 +49,6 @@ pub const RESPONSE_CODE_OK: i64 = 0;
 pub const SERVER_CODES_RETRY_FETCH_TOKEN: i64 = 11217;
 /// 登录轮询「账号未就绪」的业务码（auth.account 的 retryCode）
 pub const SERVER_CODES_RETRY_FETCH_ACCOUNT: i64 = 12151;
-/// 上游错误码（桌面端 ServerErrorCode）。
-/// 本切片只登记登录轮询用到的两个；切片 4（转发/模型目录）会加 11101 / 11128。
-// Node 版 workbuddy-endpoints.mjs 同名导出 SERVER_CODES 的对等物：这里单独登记
-// 各个码值，整张表只在排障（/api/endpoints 之外的对照）时用，保留标注。
-#[allow(dead_code)]
-pub const SERVER_CODES: &[(&str, i64)] = &[
-    ("RetryFetchToken", SERVER_CODES_RETRY_FETCH_TOKEN),
-    ("RetryFetchAccount", SERVER_CODES_RETRY_FETCH_ACCOUNT),
-    ("LicenseSeatLimit", 12005),
-    ("LicenseExpired", 11212),
-    ("TrialExpired", 11216),
-    ("IpLimit", 10081),
-    ("NonStreamNotSupported", 11101),
-    ("RateLimited", 11128),
-];
-
 // ─── 版本（edition）配置 ────────────────────────────────────
 
 /// 一个版本（国内版 / 国际版）的完整身份。

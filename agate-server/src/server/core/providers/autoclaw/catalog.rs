@@ -345,9 +345,3 @@ pub async fn refresh(
     );
     ModelRefreshOutcome::refreshed(count)
 }
-
-/// 供排障：远程目录条数
-#[allow(dead_code)]
-pub fn count(region: Region) -> usize {
-    remote_models(region).len()
-}

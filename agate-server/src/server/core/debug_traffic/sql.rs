@@ -121,26 +121,6 @@ fn encode(entry: &TrafficEntry) -> [SqlValue; 11] {
     ]
 }
 
-/// 插入一条（**纯 INSERT**：主键冲突即报错）。
-///
-/// ⚠️ **迁移项已不再用它**（改用 [`insert_entry_ignore`]）：T11 把迁移改成
-/// 用户点「升级」触发之后，「重复点击」成了常态，而纯 INSERT 会在撞主键时
-/// 让整批回滚 —— 用户看到「迁移失败」，原因却只是「导过了」。
-/// 保留它是为了「同 id 两行 = 坏数据」这类**未来可能需要严格模式**的场合；
-/// 当前无调用方（`#[allow(dead_code)]` 与 `upsert_entry` 同理：
-/// 它是这张表写入语义的第三种形态，删掉会让「三种语义」这件事在代码里消失）。
-#[allow(dead_code)]
-pub(super) fn insert_entry(conn: &Connection, entry: &TrafficEntry) -> rusqlite::Result<()> {
-    let binds = encode(entry);
-    conn.execute(
-        "INSERT INTO debug_traffic (id, ts, url, provider, request_headers, request_body, \
-         status, response_headers, response_body, truncated, size) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-        rusqlite::params_from_iter(binds.iter()),
-    )?;
-    Ok(())
-}
-
 /// 插入一条，**主键已存在时跳过**（迁移项用）。
 ///
 /// 返回 `true` = 真的插进去了，`false` = 已存在而跳过 —— 调用方据此统计

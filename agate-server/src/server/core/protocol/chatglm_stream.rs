@@ -46,7 +46,7 @@
 
 use serde_json::{json, Value};
 
-use super::{chat_frame, content_parts, json_number_of, random_id, string_field, SseLineBuffer};
+use super::{chat_frame, content_parts, random_id, string_field, SseLineBuffer};
 
 /// 上游每帧的 `parts[*].content[*]` 里，哪些 `type` 算正文 / 思考
 const KIND_TEXT: &str = "text";
@@ -499,19 +499,6 @@ fn collect_text(event: &Value) -> (String, String) {
         }
     }
     (text, thinking)
-}
-
-/// 保留：usage 归一（本家暂不用，留给将来上游补 token 计数时接）
-#[allow(dead_code)]
-fn normalized_usage(value: &Value) -> Value {
-    let prompt = json_number_of(value, &["prompt_tokens", "input_tokens"]);
-    let completion = json_number_of(value, &["completion_tokens", "output_tokens"]);
-    let total = json_number_of(value, &["total_tokens"]).max(prompt + completion);
-    json!({
-        "prompt_tokens": prompt,
-        "completion_tokens": completion,
-        "total_tokens": total,
-    })
 }
 
 #[cfg(test)]

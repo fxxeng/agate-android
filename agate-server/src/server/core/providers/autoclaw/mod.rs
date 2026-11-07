@@ -68,7 +68,6 @@
 //! models::resolve_model_route(raw: &str) -> ModelRoute { route_model_id, body_model_id, requested_model }
 //! models::list()                       -> Vec<Value>（聚合层认的上游原始形态）
 //! models::default_route()              -> String（AUTOCLAW_DEFAULT_ROUTE 可覆盖）
-//! models::supports_image(&str)         -> bool（能力探测，非路由判定）
 //! models::strip_route_prefix(&str)     -> &str
 //! crypto::os_crypt_aes_key(&Path) -> Result<Vec<u8>, String>
 //! crypto::decrypt_enc_value(&str, Option<&[u8]>) -> Result<String, String>

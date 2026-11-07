@@ -327,11 +327,6 @@ pub(crate) mod test_temp {
                 .unwrap_or_else(|error| panic!("临时库打不开（{}）：{error}", path.display()));
             (db, TempDb { path })
         }
-
-        #[allow(dead_code)]
-        pub fn path(&self) -> &Path {
-            &self.path
-        }
     }
 
     impl Drop for TempDb {

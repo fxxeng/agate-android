@@ -45,7 +45,7 @@ use crate::server::errors::GatewayError;
 use crate::server::logging;
 
 use super::conversation::CatPawCredentials;
-use super::{DEFAULT_BASE_URL, APP_KEY};
+use super::DEFAULT_BASE_URL;
 
 /// 桌面端实时账号的固定 id（原项目 `account-store.mjs` 的 `DESKTOP_ACCOUNT_ID`）。
 ///
@@ -378,15 +378,6 @@ pub fn snapshot_for(
         })
         .unwrap_or_default();
     Ok(CatPawCredentials::new(token, uid))
-}
-
-/// 适配器请求头要用的 `M-APPKEY` 值（架构文档 §9.1）。
-///
-/// 放在本模块只是因为它与「这是哪一家」的常量挨着；真正的头集合在
-/// `upstream_http::request_headers`，本函数只供排障与将来的可覆盖点使用。
-#[allow(dead_code)]
-pub fn app_key() -> &'static str {
-    APP_KEY
 }
 
 /// 值 → 字符串（JS `String(x)`：数字/布尔按字面量、null 给空串）

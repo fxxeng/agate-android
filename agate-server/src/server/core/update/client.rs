@@ -23,7 +23,7 @@
 
 use std::time::Duration;
 
-use serde_json::{json, Value};
+use serde_json::json;
 
 use crate::server::config;
 use crate::server::core::egress;
@@ -186,21 +186,4 @@ async fn fetch_via_candidates(
         Some(error) => egress::describe_error_detail(error),
         None => "未知错误".to_string(),
     })
-}
-
-/// 出网候选的展示形态（供日志/排障；不含凭证）。
-/// 对应 Node 版 workbuddy-update.mjs 内部的 `resolveEgressCandidates()` 结果形态
-/// （Node 侧为内部细节，这里作为排障口暴露，保留）。
-#[allow(dead_code)]
-pub fn describe_candidates() -> Value {
-    let list: Vec<Value> = resolve_egress_candidates()
-        .into_iter()
-        .map(|(label, proxy)| {
-            json!({
-                "label": label,
-                "proxy": egress::describe_public(proxy.as_ref()),
-            })
-        })
-        .collect();
-    Value::Array(list)
 }

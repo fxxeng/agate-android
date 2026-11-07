@@ -380,25 +380,6 @@ impl ProxyResolution {
             ProxyResolution::Failed(_) => None,
         }
     }
-
-    /// 转成 Node 版 resolveAccountProxy 的返回形态（JSON，含 error 分支）。
-    /// 账号公开形态走 `describe_account_proxy`（它另带 config/label 兜底），
-    /// 这条与它逐字段对应，保留供排障时直接比对解析结果。
-    #[allow(dead_code)]
-    pub fn to_json(&self) -> Value {
-        match self {
-            ProxyResolution::Resolved(proxy) => json!({
-                "source": proxy.source,
-                "protocol": proxy.protocol,
-                "host": proxy.host,
-                "port": proxy.port_json(),
-                "username": proxy.username,
-                "password": proxy.password,
-                "label": proxy.label,
-            }),
-            ProxyResolution::Failed(message) => json!({ "error": message }),
-        }
-    }
 }
 
 /// 把账号里存的代理配置解析成可用的连接信息。

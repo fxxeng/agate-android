@@ -193,11 +193,6 @@ pub fn default_route(region: Region) -> String {
         .unwrap_or_else(|| DEFAULT_ROUTE.to_string())
 }
 
-/// 目录里按 id 查条目（源实现 `MODEL_BY_ID` 的 Map）
-fn entry_by_id(id: &str) -> Option<&'static ModelEntry> {
-    MODELS.iter().find(|entry| entry.id == id)
-}
-
 /// 按**聚合目录的口径**认一个目录条目：先 `id`、再展示名 `name`、最后完整
 /// `routeId`，三轮都是 `trim`（由调用方完成）+ 忽略 ASCII 大小写。
 ///
@@ -375,41 +370,4 @@ pub fn list(region: Region) -> Vec<Value> {
             })
         })
         .collect()
-}
-
-/// AutoClaw 的**能力探测**：该模型是否支持图片输入
-/// （目录里 `glm-5.3-flash` / `glm-4.6v` 两个是 `input: ['text','image']`）。
-///
-/// 入参既可以是目录 id（`glm-5.3-flash`），也可以是带前缀的路由 ID
-/// （`zai_glm-5.3-flash`）—— 适配器拿到的是客户端给的名字，而它可能两种形态
-/// 都有；这里按前缀剥一层再查。目录外的名字返回 **false**（保守：不让未知模型
-/// 走多模态路径）。注意这只是给适配器做图片相关处理用的**能力探测**，
-/// 与聚合目录的「这家能不能提供这个模型」是两件事（后者只认目录 id，
-/// 见 `list()` 的说明），不要用它替代路由判定。
-///
-/// ── 为什么当前没有调用点（接线后的核对结论，T-c2）─────────────
-/// AutoClaw 的上游是 OpenAI 兼容代理，图片随 `messages[].content` 原样透传
-/// （源实现的 `autoclaw-upstream-client.mjs` 从不做图片压缩/改写，与 CatPaw 的
-/// `image_compress` 完全不同），因此适配器不需要在构造请求时判断能力位。
-/// 目录条目里的 `supportsImages` 已经由 `list()` 直接给出（聚合层读它），
-/// 本函数是**能力探测口**：保留它是为了让「某个模型到底支不支持图片」有唯一
-/// 的纯函数答案（排障 / 将来的多模态处理都会问它），源侧同一个能力位（`supportImage`）
-/// 也是独立字段。`#[allow(dead_code)]`：当前无生产调用点，编译器据实报「没人用」。
-///
-/// 只看**静态兜底表**（不带 region）：远程目录的能力位由 `list()` 直出给聚合层，
-/// 这个探测口服务的是「按名字问一个纯函数答案」，而静态表的两个条目两地同形。
-#[allow(dead_code)]
-pub fn supports_image(name: &str) -> bool {
-    let trimmed = name.trim();
-    if let Some(entry) = entry_by_id(trimmed) {
-        return entry.support_image;
-    }
-    for prefix in KNOWN_ROUTE_PREFIXES {
-        if let Some(rest) = trimmed.strip_prefix(prefix) {
-            if let Some(entry) = entry_by_id(rest) {
-                return entry.support_image;
-            }
-        }
-    }
-    false
 }
