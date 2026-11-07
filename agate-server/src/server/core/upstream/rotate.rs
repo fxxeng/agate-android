@@ -585,6 +585,61 @@ pub(super) fn pick_next_account(
     plan.ordered.into_iter().next().map(|entry| entry.account)
 }
 
+/// 429 之后队列里没有下一个账号时，给错误文案的一句**真算过的范围说明**。
+///
+/// ── 为什么要算，而不是复述「所有候选都已限额或禁用」────────────
+/// 那句话在只有 1 个账号和 20 个账号时一模一样，用户分不清「确实没别人」
+/// 和「本来有很多家、只是这个模型只被一家认」。而候选链正是被
+/// `router::route_for_forward` 按模型收窄的（见 `accounts_in_providers`）。
+/// 数字一律出自与队列端点、顺延判定**同一个** `plan_route`，不另起一套判据。
+///
+/// 只读：不推进轮转、不查粘性（与 `pick_next_account` 同一份快照口径）。
+pub(super) fn no_fallback_summary(
+    service: &UpstreamService,
+    providers: &[&str],
+    keys: &routing::CooldownKeys<'_>,
+) -> String {
+    let accounts = accounts_in_providers(service, providers, None);
+    let (candidates, balance_blocked_ids) = filter_limiter_blocked(&accounts, None);
+    let counts = connection_counts(service);
+    let now = logging::now_ms();
+    let settings = config::routing_settings();
+    let snap = service.route.snapshot("", now, 0);
+    let meta = routing::PlanMeta {
+        strategy: settings.strategy,
+        sunk: &snap.sunk,
+        resting: &snap.resting,
+        open: &snap.open,
+        limiter_blocked: &balance_blocked_ids,
+        cursor: None,
+        provider_cursors: None,
+        sticky_account: None,
+    };
+    // 传空 excluded：这里要回答的是「这个模型此刻总共还有谁能用」，
+    // 不是「本轮还剩谁没试过」。刚被 429 记账的账号已经在冷却里了。
+    let plan = routing::plan_route(&candidates, keys, &counts, &[], now, &meta);
+    let cooling = plan
+        .blocked
+        .iter()
+        .filter(|entry| entry.state == "cooldown")
+        .count();
+    let earliest = plan
+        .blocked
+        .iter()
+        .filter_map(|entry| (entry.reset_at > 0).then_some(entry.reset_at))
+        .min();
+    let mut text = format!(
+        "本模型 {} 个候选账号中 {} 个可用、{} 个限流冷却中，429 后已无可用备选",
+        candidates.len(),
+        plan.ordered.len(),
+        cooling,
+    );
+    if let Some(at) = earliest {
+        text.push_str(&format!("，最早 {} 恢复", super::format_reset_text(at as f64)));
+    }
+    text
+}
+
 /// 选路决策快照（请求日志「路由回放」的数据源）。
 ///
 /// 有界：排序清单与被跳过者各最多带 12 条 —— 账号几十个时全部带上只会

@@ -66,13 +66,17 @@ import kotlinx.coroutines.launch
  * 缺的只是这个入口。现在页头「⇅ 排序」进入编辑态，复用同一套
  * [ReorderableColumn] 手势与动画，松手一次落盘。
  *
- * ── 排序态为什么要切换数据源 ─────────────────────────────────
- * 普通态的 `ordered + blocked` 是**按模型收窄、按当前策略排过**的瞬时快照，
- * 既不是全部账号，也不等于 priority 顺序（负载均衡 / 同家轮询还会叠轮转
- * 游标）。拿它去拖会有两个错：提交的队列不完整被内核 400 拒；用户以为
- * 「拖到第 1 位就排第 1」，实际瞬时名次未必跟着变。
- * 所以排序态换成 `/api/session` 的**全量账号按 priority 升序**——写的和
- * 看到的是同一条队列，并在横幅里把「实际名次还受轮转影响」说清楚。
+ * ── 排序态只有一份数据源（2026-11-07 修正）────────────────────
+ * 这里曾把排序态切成 `/api/session` 的全量账号按 priority 升序，理由是
+ * `/api/accounts/reorder` 要求全量排列。结果是「拖完看到的」和「实际出战
+ * 的」成了两套队列，而且全量清单把**不承载该模型的账号**也列了进来 ——
+ * 用户看到 429 不换号，以为是路由坏了。
+ *
+ * 现在排序态直接拖 `/api/routing/queue` 的 `ordered`（就是内核 `plan_route`
+ * 算出的真实出战顺序），正常态画的是同一批行。提交时把拖出的顺序置前、
+ * `blocked` 跟上、其余账号按原 priority 补齐成全量排列（见
+ * [buildReorderIds]），既满足内核校验，也不制造第二份事实。
+ * `blocked` 被硬门禁挡着，拖它的名次不会改变出战顺序，所以不参与拖拽。
  *
  * ── 预演的诚实边界 ──────────────────────────────────────────
  * 内核 `/api/routing/queue` 的 PlanFacts 明确传 `cursor: None`（看一眼不该
@@ -103,8 +107,8 @@ fun RoutingPage(
     var previewOpen by remember { mutableStateOf<Int?>(null) }
     var commonModels by remember { mutableStateOf<List<String>>(emptyList()) }
     var nowMs by remember { mutableStateOf(System.currentTimeMillis()) }
-    // 排序态的顺序：全部账号按 priority 升序（唯一事实源）
-    val orderState = remember { mutableStateListOf<AccountDto>() }
+    // 排序态的顺序：内核计划里的 ordered —— 与正常态同一批行、同一顺序。
+    val orderState = remember { mutableStateListOf<RoutingOps.QueueRow>() }
 
     fun toast(text: String) = Toast.makeText(ctx, text, Toast.LENGTH_SHORT).show()
 
@@ -138,12 +142,13 @@ fun RoutingPage(
             nowMs = System.currentTimeMillis()
         }
     }
-    // 非排序态才跟着快照同步；排序态保留用户刚拖出来的顺序，
+    // 非排序态才跟着内核计划同步；排序态保留用户刚拖出来的顺序，
     // 否则保存后一次刷新会把本地顺序冲掉，看起来像「拖了没生效」。
-    LaunchedEffect(snap.accountList, reorderState.isSortingMode, reorderState.draggingKey) {
+    // key 必须是 plan 而不是 snap.accountList：顺序来自选路计划，不来自账号表。
+    LaunchedEffect(plan, reorderState.isSortingMode, reorderState.draggingKey) {
         if (!reorderState.isSortingMode && reorderState.draggingKey == null) {
             orderState.clear()
-            orderState.addAll(snap.accountList.sortedBy { it.priority })
+            orderState.addAll(plan?.ordered.orEmpty())
         }
     }
 
@@ -165,7 +170,7 @@ fun RoutingPage(
         }
     }
 
-    /** 拖拽落点 → 本地重排 → 一次提交全量队列（内核按 0..n-1 重编 priority）。 */
+    /** 拖拽落点 → 本地重排 → 提交全量队列（内核按 0..n-1 重编 priority）。 */
     fun commitOrder(key: String, to: Int) {
         val from = orderState.indexOfFirst { it.id == key }
         if (from < 0 || to !in orderState.indices || from == to) return
@@ -182,7 +187,21 @@ fun RoutingPage(
             do {
                 orderDirty = false
                 val submitted = orderState.map { it.id }
-                val r = AccountOps.reorder(submitted)
+                val full = buildReorderIds(
+                    ordered = submitted,
+                    blocked = plan?.blocked.orEmpty().map { it.id },
+                    allAccounts = snap.accountList,
+                )
+                if (full == null) {
+                    // 账号清单还没到，或计划与清单对不上：宁可不提交，
+                    // 也不能把一个不完整的排列交给内核（会被 400 拒）。
+                    failed = "账号清单还没到，顺序未保存"
+                    orderState.clear()
+                    orderState.addAll(plan?.ordered.orEmpty())
+                    orderDirty = false
+                    break
+                }
+                val r = AccountOps.reorder(full)
                 if (r.ok) {
                     GatewayRepository.refreshOnce()
                     val q = RoutingOps.queue(plan?.model)
@@ -204,15 +223,21 @@ fun RoutingPage(
     fun toggleSorting() {
         if (reorderState.isSortingMode) {
             reorderState.exitSortingMode()
+            // 退出时对齐回内核最新计划，别停在拖拽中的临时顺序上。
+            orderState.clear()
+            orderState.addAll(plan?.ordered.orEmpty())
             return
         }
-        val all = snap.accountList.sortedBy { it.priority }
-        if (all.isEmpty()) {
-            toast("账号清单还没到，稍后再试")
+        val rows = plan?.ordered.orEmpty()
+        if (rows.isEmpty()) {
+            toast(
+                if (plan == null) "队列还没到，稍后再试"
+                else "当前模型没有可用候选，没有可排序的顺序",
+            )
             return
         }
         orderState.clear()
-        orderState.addAll(all)
+        orderState.addAll(rows)
         reorderState.enterSortingMode()
         expandedId = null
         previewOpen = null
@@ -352,7 +377,7 @@ fun RoutingPage(
 
             Spacer(Modifier.height(10.dp))
 
-            // ③ 候选队列 / 全局出战优先级（排序态）
+            // ③ 候选队列：排序态与正常态画的是同一批行（内核 plan_route 的结果）
             val sorting = reorderState.isSortingMode
             Column(
                 Modifier
@@ -363,27 +388,25 @@ fun RoutingPage(
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        if (sorting) "全局出战优先级" else "候选队列",
+                        if (sorting) "候选队列 · 排序中" else "候选队列",
                         fontSize = 13.5.sp,
                         fontWeight = FontWeight.SemiBold,
                         color = C.textMain,
                     )
                     Spacer(Modifier.weight(1f))
                     Text(
-                        when {
-                            sorting -> "全部账号"
-                            plan?.model.isNullOrBlank() -> "不限模型 ▾"
-                            else -> "模型 ${plan?.model} ▾"
-                        },
+                        if (plan?.model.isNullOrBlank()) "不限模型 ▾" else "模型 ${plan?.model} ▾",
                         fontSize = 10.5.sp,
                         color = if (sorting) C.textDim else C.accent,
                         modifier = Modifier.clickable(enabled = !sorting) { showModel = true },
                     )
                 }
                 Spacer(Modifier.height(6.dp))
+                ScopeBanner(plan = plan, nowMs = nowMs)
+                Spacer(Modifier.height(6.dp))
                 if (sorting) {
                     Text(
-                        if (savingOrder) "保存中…" else "排序中 · 拖动行改全局优先级 · 松手即保存 · 5 秒无操作自动退出",
+                        if (savingOrder) "保存中…" else "排序中 · 拖动可用候选改出战顺序 · 松手即保存 · 5 秒无操作自动退出",
                         fontSize = 11.sp,
                         color = C.amber,
                         lineHeight = 15.sp,
@@ -394,7 +417,7 @@ fun RoutingPage(
                     )
                     Spacer(Modifier.height(6.dp))
                     Text(
-                        "全部 ${orderState.size} 个账号 · 按 priority 基线排列（不按模型收窄）",
+                        "可拖 ${orderState.size} 位（本模型此刻的可用候选），顺序与上方队列一致",
                         fontSize = 11.sp,
                         color = C.textSub,
                     )
@@ -405,17 +428,34 @@ fun RoutingPage(
                         state = reorderState,
                         onCommit = { key, to -> commitOrder(key, to) },
                         verticalArrangement = Arrangement.spacedBy(2.dp),
-                    ) { acc, index, isTarget ->
+                    ) { row, index, isTarget ->
                         SortableRow(
-                            acc = acc,
+                            row = row,
                             rank = index + 1,
                             isTarget = isTarget,
                             state = reorderState,
                         )
                     }
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "被硬门禁跳过（不参与排序）：",
+                        fontSize = 11.sp,
+                        color = C.textDim,
+                    )
+                    (plan?.blocked ?: emptyList()).forEach { row ->
+                        CandidateRow(
+                            row = row,
+                            rank = null,
+                            isHead = false,
+                            dim = true,
+                            expanded = expandedId == row.id,
+                            onToggle = { expandedId = if (expandedId == row.id) null else row.id },
+                            nowMs = nowMs,
+                        )
+                    }
                     Spacer(Modifier.height(6.dp))
                     Text(
-                        "改的是全局 priority：负载均衡 / 同家轮询下，实际出战名次还受轮转影响。",
+                        "改的是全局 priority：本模型候选按拖出的顺序置前，被跳过者与不承载该模型的账号按原优先级补在队尾。负载均衡 / 同家轮询下，瞬时出战名次还会轮转。",
                         fontSize = 11.sp,
                         color = C.textDim,
                         lineHeight = 15.sp,
@@ -529,13 +569,13 @@ private fun circleOf(value: Int): String = when (value) {
 }
 
 /**
- * 排序态的一行：全量账号按 priority 排列，长按整行起拖。
- * 与提供商页的账号卡用同一套 [ReorderState] / [dragHandle] / `startColumn(…, 0f)`
- * 配置（那套在真机上验过；本页同样不接页面级自动滚动）。
+ * 排序态的一行：**就是正常态的同一条候选**（`plan_route` 的 ordered），
+ * 长按整行起拖。与提供商页的账号卡用同一套 [ReorderState] / [dragHandle] /
+ * `startColumn(…, 0f)` 配置（那套在真机上验过；本页同样不接页面级自动滚动）。
  */
 @Composable
 private fun SortableRow(
-    acc: AccountDto,
+    row: RoutingOps.QueueRow,
     rank: Int,
     isTarget: Boolean,
     state: ReorderState,
@@ -549,9 +589,9 @@ private fun SortableRow(
                 if (isTarget) Modifier.border(1.5.dp, C.accent, RoundedCornerShape(12.dp)) else Modifier,
             )
             .dragHandle(
-                key = acc.id,
+                key = row.id,
                 state = state,
-                onStart = { state.startColumn(acc.id, 0f) },
+                onStart = { state.startColumn(row.id, 0f) },
             )
             .padding(horizontal = 12.dp, vertical = 9.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -567,7 +607,7 @@ private fun SortableRow(
         Spacer(Modifier.width(9.dp))
         Column(Modifier.weight(1f)) {
             Text(
-                acc.displayName.ifBlank { acc.id },
+                row.name,
                 fontSize = 12.5.sp,
                 color = C.textMain,
                 maxLines = 1,
@@ -576,14 +616,96 @@ private fun SortableRow(
             // 不写旧 priority：提交后内核按新队列重编 0..n-1，屏幕上那个
             // 「第 1 位 · priority 4」会变成一句自相矛盾的读数。
             Text(
-                acc.provider + if (acc.enabled) "" else " · 已禁用",
+                "${row.providerLabel.ifBlank { row.provider }} · ${row.reason}",
                 fontSize = 10.5.sp,
                 color = C.textDim,
                 maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
         }
         Text("⠿", fontSize = 15.sp, color = C.textDim)
     }
+}
+
+/**
+ * 候选范围横幅：回答「429 之后有没有下一家」。数字全部来自内核这次
+ * `plan_route` 的结果，客户端不拿全量账号自己减 —— 那正是两套队列的成因。
+ */
+@Composable
+private fun ScopeBanner(plan: RoutingOps.Plan?, nowMs: Long) {
+    val C = agateColors()
+    val (text, warn) = when {
+        plan == null -> Pair("候选范围读取中…", false)
+        !plan.scopeKnown -> Pair("候选范围暂不可用（内核未提供范围字段）", false)
+        !plan.modelScoped -> Pair(
+            "不限模型：全部 ${plan.totalAccounts} 个账号都在本队列里 · 队首 1 位 + 候补 ${plan.fallbackCount} 位",
+            false,
+        )
+        plan.usableCount == 0 -> Pair(
+            buildString {
+                append("本模型 ${plan.scopedAccounts} 个候选此刻 0 个可用 → 429 后无备选")
+                if (plan.cooldownCount > 0) append("，${plan.cooldownCount} 个限流冷却中")
+                if (plan.earliestResetAt > nowMs) {
+                    append("，最早 ${rateRecoverAt(plan.earliestResetAt, nowMs)} 恢复")
+                }
+            },
+            true,
+        )
+        plan.fallbackCount == 0 -> Pair(
+            "本模型只有 1 个可用候选 → 429 后无备选；另有 ${plan.outsideAccounts} 个账号不承载此模型",
+            true,
+        )
+        else -> Pair(
+            "本模型 ${plan.scopedAccounts} 个候选 · 可用 ${plan.usableCount} 个（队首 1 位 + 候补 ${plan.fallbackCount} 位）· 另有 ${plan.outsideAccounts} 个账号不承载此模型",
+            false,
+        )
+    }
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .background(
+                if (warn) C.amber.copy(alpha = 0.10f) else C.insetBg,
+                RoundedCornerShape(9.dp),
+            )
+            .padding(horizontal = 9.dp, vertical = 7.dp),
+    ) {
+        Text(
+            text,
+            fontSize = 11.sp,
+            color = if (warn) C.amber else C.textSub,
+            lineHeight = 15.sp,
+        )
+    }
+}
+
+/**
+ * 拖完的 `ordered` → 提交给 `/api/accounts/reorder` 的**全量排列**。
+ *
+ * 内核要求「全部账号的一个排列」（少一个会 400）。三段的顺序固定为：
+ * 拖出的可用候选 → 被硬门禁跳过的候选 → 不承载该模型的其余账号（按原 priority）。
+ * 前两段合起来正是这份计划的全部账号（`plan_route` 保证 ordered + blocked
+ * 不丢不重，见它的单测），第三段保证提交完整。顺序优先策略下刷新后，
+ * 该模型的 ordered 顺序 == 拖出的顺序。
+ *
+ * 返回 null = 账号清单未到 / 计划与清单对不上：调用方必须放弃本次提交，
+ * 不许拿一个不完整的排列去试。
+ */
+internal fun buildReorderIds(
+    ordered: List<String>,
+    blocked: List<String>,
+    allAccounts: List<AccountDto>,
+): List<String>? {
+    if (allAccounts.isEmpty()) return null
+    val planned = (ordered + blocked).toSet()
+    val known = allAccounts.map { it.id }.toSet()
+    if (!known.containsAll(planned)) return null
+    val rest = allAccounts
+        .filter { it.id !in planned }
+        .sortedBy { it.priority }
+        .map { it.id }
+    val full = ordered + blocked + rest
+    if (full.size != allAccounts.size || full.toSet().size != full.size) return null
+    return full
 }
 
 /**

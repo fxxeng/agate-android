@@ -1537,15 +1537,28 @@ async fn attempt_queue(
                                     continue 'accounts;
                                 }
                                 None => {
+                                    // 「没有下一家」有两种长相：本来只有 1 个账号，
+                                    // 或 20 个账号全部冷却。旧文案两句都写成「所有
+                                    // 候选均已限额或禁用」，用户只能去猜是哪一种 ——
+                                    // 路由页却把全量账号都列出来了（2026-11-07 真机
+                                    // 反馈）。这里把候选数与最早恢复时间如实带进
+                                    // 错误与事件，转发语义一个字不动。
+                                    let scope = rotate::no_fallback_summary(
+                                        service,
+                                        provider_ids,
+                                        &cooldown_keys,
+                                    );
                                     let message = format!(
-                                        "{}（所有候选账号对模型 {model} 均已限额或禁用）",
-                                        failure.error.message
+                                        "{}（{}；本轮已试过 {} 个账号）",
+                                        failure.error.message,
+                                        scope,
+                                        tried_ids.len(),
                                     );
                                     rotate::report_limit_event(
                                         "error",
                                         &format!(
-                                            "模型 {limit_label} 在所有候选账号均已限额或禁用，\
-                                             无法继续转发（尝试过 {} 个账号）",
+                                            "模型 {limit_label} 429 降级失败：{scope}\
+                                             （本轮已试过 {} 个账号）",
                                             tried_ids.len(),
                                         ),
                                         Some(&from_label),

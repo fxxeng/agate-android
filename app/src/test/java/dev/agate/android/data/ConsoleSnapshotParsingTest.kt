@@ -1,5 +1,7 @@
 package dev.agate.android.data
 
+import dev.agate.android.data.dto.AccountDto
+import dev.agate.android.ui.routing.buildReorderIds
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -171,5 +173,71 @@ class ConsoleSnapshotParsingTest {
         assertNotNull(top)
         assertEquals("zcode", top!!.first)
         assertEquals(7L, top.second)
+    }
+
+    // ── 候选范围与排序提交（2026-11-07「两套队列 / 429 不换号」）──────
+
+    private fun account(id: String, priority: Int) = AccountDto(
+        id = id,
+        provider = "zcode",
+        displayName = id,
+        enabled = true,
+        hasCredentials = true,
+        chatSupported = true,
+        priority = priority,
+        edition = null,
+        lowBalance = false,
+        raw = JSONObject(),
+    )
+
+    @Test
+    fun `范围字段按内核真值解析 客户端不拿全量账号自己减`() {
+        // 真机形状：模型只被一家认，7 个账号里只有 2 个进计划、1 个可用，
+        // 429 后候补 0 位。这五个数字必须来自 plan_route，不能由界面猜。
+        val body = """{"strategy":"order","sticky":"auto","model":"deepseek-v4.1-flash",
+            |"pickedId":"a1","ordered":[{"id":"a1","name":"主号","state":"usable"}],
+            |"blocked":[{"id":"a2","name":"备用","state":"cooldown","resetAt":1893456000000}],
+            |"modelScoped":true,"scopedAccounts":2,"totalAccounts":7,"outsideAccounts":5,
+            |"usableCount":1,"fallbackCount":0,"blockedCount":1,"cooldownCount":1,
+            |"earliestResetAt":1893456000000}""".trimMargin()
+        val p = RoutingOps.parsePlan(JSONObject(body))
+        assertTrue(p.scopeKnown)
+        assertTrue(p.modelScoped)
+        assertEquals(2, p.scopedAccounts)
+        assertEquals(7, p.totalAccounts)
+        assertEquals(5, p.outsideAccounts)
+        assertEquals(1, p.usableCount)
+        assertEquals("429 后没有候补", 0, p.fallbackCount)
+        assertEquals(1, p.cooldownCount)
+        assertEquals(1893456000000L, p.earliestResetAt)
+    }
+
+    @Test
+    fun `旧内核没给范围字段时标成未知 不把 0 当算过的数`() {
+        val p = RoutingOps.parsePlan(JSONObject("""{"ordered":[],"blocked":[]}"""))
+        assertFalse("界面看到这个必须写「暂不可用」，不能写「0 个账号」", p.scopeKnown)
+        assertFalse(p.modelScoped)
+        assertEquals(0, p.usableCount)
+    }
+
+    @Test
+    fun `拖出的可用候选置前 其余账号按原优先级补齐成全量排列`() {
+        // ordered 拖成 a3 → a1；blocked 是 a2；b1 不承载该模型、在计划外。
+        // 提交必须是「全部 4 个账号的一个排列」，否则内核 400 拒。
+        val all = listOf(account("a1", 0), account("a2", 1), account("a3", 2), account("b1", 3))
+        val full = buildReorderIds(
+            ordered = listOf("a3", "a1"),
+            blocked = listOf("a2"),
+            allAccounts = all,
+        )
+        assertEquals(listOf("a3", "a1", "a2", "b1"), full)
+    }
+
+    @Test
+    fun `清单未到或计划与清单对不上时拒绝提交`() {
+        val all = listOf(account("a1", 0), account("a2", 1))
+        assertNull(buildReorderIds(listOf("a1"), emptyList(), emptyList()))
+        assertNull("计划里出现清单没有的账号，不能硬凑", buildReorderIds(listOf("a1", "ghost"), emptyList(), all))
+        assertNull("重复 id 不是排列", buildReorderIds(listOf("a1", "a1"), emptyList(), all))
     }
 }

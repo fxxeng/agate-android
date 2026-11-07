@@ -223,20 +223,31 @@ impl PlanFacts {
     ///
     /// 候选收窄与转发用同一个函数（`router::route_for_forward`）：界面看到的
     /// 「谁能接这个模型」必须就是转发时真的会去试的那些家。
-    fn plan_for(&self, model: Option<&str>) -> routing::RoutePlan {
+    ///
+    /// ── 为什么把「覆盖了多少账号」一起返回（2026-11-07）──────────
+    /// 客户端曾把 `/api/session` 的**全量账号按 priority** 当作排序基线，
+    /// 与本端点按模型收窄后的计划并列显示 —— 用户拖完看到一套顺序、实际
+    /// 出战是另一套，且误以为列出来的账号在 429 后都能顺延过去。范围计数
+    /// 必须由算这份计划的人给，客户端拿全量账号自己减会再分叉一次。
+    fn plan_for(&self, model: Option<&str>) -> ScopedPlan {
         let providers: Vec<String> = model.map(router::route_for_forward).unwrap_or_default();
-        let scoped: Vec<Value> = match model {
+        let (scoped, model_scoped) = match model {
             // 点名了模型但没有任何家认它 → 不收窄（与队列面板的既有口径一致：
-            // 那种情况下「空列表」没有信息量，不如把全部账号按禁用/冷却讲一遍）
-            Some(_) if providers.is_empty() => self.accounts.clone(),
-            Some(_) => self
-                .accounts
-                .iter()
-                .filter(|account| providers.contains(&routing::provider_of(account).to_string()))
-                .cloned()
-                .collect(),
-            None => self.accounts.clone(),
+            // 那种情况下「空列表」没有信息量，不如把全部账号按禁用/冷却讲一遍）。
+            // `model_scoped=false` 是给界面的一句实话：此刻展示的**不是**该模型
+            // 的候选，不能拿它回答「429 后有没有下一家」。
+            Some(_) if providers.is_empty() => (self.accounts.clone(), false),
+            Some(_) => (
+                self.accounts
+                    .iter()
+                    .filter(|account| providers.contains(&routing::provider_of(account).to_string()))
+                    .cloned()
+                    .collect(),
+                true,
+            ),
+            None => (self.accounts.clone(), false),
         };
+        let scoped_accounts = scoped.len();
         let keys = routing::CooldownKeys::new(model.unwrap_or(""));
         // 预演不读也不写任何会推进状态的东西：粘性命中、轮转游标都传 None
         // （理由同队列面板：看一眼不该消耗一次轮转）。
@@ -250,8 +261,21 @@ impl PlanFacts {
             provider_cursors: None,
             sticky_account: None,
         };
-        routing::plan_route(&scoped, &keys, &self.counts, &[], self.now, &meta)
+        ScopedPlan {
+            plan: routing::plan_route(&scoped, &keys, &self.counts, &[], self.now, &meta),
+            scoped_accounts,
+            model_scoped,
+        }
     }
+}
+
+/// 一份计划 + **这份计划到底覆盖了哪些账号**（范围事实，不是估算）。
+struct ScopedPlan {
+    plan: routing::RoutePlan,
+    /// 收窄后纳入计划的账号数；`model_scoped=false` 时等于全部账号数。
+    scoped_accounts: usize,
+    /// 是否真的按模型收窄过（不限模型 / 该模型无承载家时为 false）。
+    model_scoped: bool,
 }
 
 /// POST /api/routing/availability —— body `{models: ["a", "b", …]}`
@@ -304,7 +328,7 @@ pub async fn post_routing_availability(
     let items: Vec<Value> = models
         .iter()
         .map(|model| {
-            let plan = facts.plan_for(Some(model));
+            let plan = facts.plan_for(Some(model)).plan;
             json!({
                 "model": model,
                 // `ordered` 就是「会依次尝试的候选」。第一条是此刻真会被用的那个。
@@ -336,8 +360,22 @@ pub async fn get_routing_queue(
         .map(str::to_string);
     let snapshot = config::current();
     let facts = PlanFacts::collect(&state);
-    let plan = facts.plan_for(model.as_deref());
+    let scoped = facts.plan_for(model.as_deref());
+    let plan = &scoped.plan;
     let settings = config::routing_settings();
+    // ── 范围事实：全部由这次 plan_route 的结果算，不另起一套判定 ──────
+    // `fallbackCount` 回答的是「429 之后还有没有下一家」：ordered 的第 1 位
+    // 是本次出战者，其余才是顺延能落到的人。`outsideAccounts` 是没被收进
+    // 这份计划的账号（不承载该模型），界面必须把它们与「被跳过的候选」分开
+    // 讲 —— 它们根本不在 429 的顺延链里。
+    let total_accounts = facts.accounts.len();
+    let usable_count = plan.ordered.len();
+    let cooldown_count = plan.blocked.iter().filter(|entry| entry.state == "cooldown").count();
+    let earliest_reset_at = plan
+        .blocked
+        .iter()
+        .filter_map(|entry| (entry.reset_at > 0).then_some(entry.reset_at))
+        .min();
     let entry_json = |entry: &routing::PlanEntry| {
         json!({
             "id": entry.id,
@@ -360,6 +398,15 @@ pub async fn get_routing_queue(
         "pickedId": plan.ordered.first().map(|entry| entry.id.clone()).unwrap_or_default(),
         "ordered": plan.ordered.iter().map(entry_json).collect::<Vec<_>>(),
         "blocked": plan.blocked.iter().map(entry_json).collect::<Vec<_>>(),
+        "modelScoped": scoped.model_scoped,
+        "scopedAccounts": scoped.scoped_accounts,
+        "totalAccounts": total_accounts,
+        "outsideAccounts": total_accounts.saturating_sub(scoped.scoped_accounts),
+        "usableCount": usable_count,
+        "fallbackCount": usable_count.saturating_sub(1),
+        "blockedCount": plan.blocked.len(),
+        "cooldownCount": cooldown_count,
+        "earliestResetAt": earliest_reset_at.map(|at| Value::from(at)).unwrap_or(Value::Null),
     }))
 }
 

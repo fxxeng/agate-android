@@ -941,6 +941,50 @@ mod tests {
         assert_eq!(RouteStrategy::Provider.as_str(), "provider");
     }
 
+    /// 客户端排序态直接拖 `ordered + blocked` 的**前提**（2026-11-07）：
+    /// 两者合起来必须恰好是传进来的全部候选，一条不丢、一条不重。少一条，
+    /// 提交给 `/api/accounts/reorder` 的全量排列就不完整、直接 400；多一条，
+    /// 界面上拖的顺序又和真实计划分叉。这个不变量由 plan_route 保证，
+    /// 钉在这里，改六道门禁时不允许顺手把某个账号整条丢掉。
+    #[test]
+    fn plan_route_partitions_every_candidate_into_ordered_or_blocked() {
+        let empty_numbers: HashMap<String, i64> = HashMap::new();
+        let empty_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let meta = PlanMeta {
+            strategy: RouteStrategy::Order,
+            sunk: &empty_numbers,
+            resting: &empty_numbers,
+            open: &empty_ids,
+            limiter_blocked: &empty_ids,
+            cursor: None,
+            provider_cursors: None,
+            sticky_account: None,
+        };
+        let accounts = vec![
+            account("a1", "A", 100),
+            json!({ "id": "a2", "provider": "A", "priority": 110, "enabled": false }),
+            json!({ "id": "a3", "provider": "A", "priority": 120, "hasCredentials": false }),
+        ];
+        let plan = plan_route(
+            &accounts,
+            &CooldownKeys::new("m"),
+            &HashMap::new(),
+            &[],
+            0,
+            &meta,
+        );
+        assert_eq!(plan.ordered.len() + plan.blocked.len(), accounts.len());
+        let mut ids: Vec<String> = plan
+            .ordered
+            .iter()
+            .map(|entry| entry.id.clone())
+            .chain(plan.blocked.iter().map(|entry| entry.id.clone()))
+            .collect();
+        ids.sort();
+        assert_eq!(ids, vec!["a1", "a2", "a3"]);
+        assert_eq!(plan.ordered.len(), 1, "只有 a1 通过全部门禁");
+    }
+
     /// `Provider` 策略的原因句：**同家的下一位**不许说成「等优先级更高的家」。
     ///
     /// 家 A = a1/a2、家 B = b1 —— 第 2 位是 a2，它前面只有同家的 a1，前面

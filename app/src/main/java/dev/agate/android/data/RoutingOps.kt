@@ -74,7 +74,18 @@ object RoutingOps {
         val usable: Boolean get() = state == "usable"
     }
 
-    /** 队列快照。 */
+    /**
+     * 队列快照 + 内核真算过的**候选范围**。
+     *
+     * 范围字段（2026-11-07）是为了回答「429 之后有没有下一家」：
+     * `ordered` 的第 1 位是本轮出战者，其余才是顺延能落到的人；不承载该
+     * 模型的账号（`outsideAccounts`）根本不在这条链里。旧版客户端把
+     * `/api/session` 的全量账号当排序基线，界面列出一堆账号、真机上却
+     * 只有一个能接这个模型 —— 用户看到 429 不换号，以为是路由坏了。
+     *
+     * `scopeKnown=false` 表示内核没给范围字段（旧内核）：界面一律显示
+     * 「范围暂不可用」，不许拿 0 冒充算过的数。
+     */
     class Plan(
         val strategy: String,
         val sticky: String,
@@ -83,6 +94,15 @@ object RoutingOps {
         val pickedId: String,
         val ordered: List<QueueRow>,
         val blocked: List<QueueRow>,
+        val scopeKnown: Boolean = false,
+        val modelScoped: Boolean = false,
+        val scopedAccounts: Int = 0,
+        val totalAccounts: Int = 0,
+        val outsideAccounts: Int = 0,
+        val usableCount: Int = 0,
+        val fallbackCount: Int = 0,
+        val cooldownCount: Int = 0,
+        val earliestResetAt: Long = 0L,
     )
 
     suspend fun settings(): OpResult<Settings> {
@@ -150,14 +170,25 @@ object RoutingOps {
             data.optJSONArray(key)?.let { arr ->
                 (0 until arr.length()).mapNotNull { arr.optJSONObject(it)?.let(::QueueRow) }
             } ?: emptyList()
+        val ordered = rows("ordered")
+        val blocked = rows("blocked")
         return Plan(
             strategy = jsonTextOrNull(data, "strategy").orEmpty(),
             sticky = jsonTextOrNull(data, "sticky").orEmpty(),
             model = jsonTextOrNull(data, "model"),
             lastRequestModel = jsonTextOrNull(data, "lastRequestModel"),
             pickedId = jsonTextOrNull(data, "pickedId").orEmpty(),
-            ordered = rows("ordered"),
-            blocked = rows("blocked"),
+            ordered = ordered,
+            blocked = blocked,
+            scopeKnown = data.has("totalAccounts") && !data.isNull("totalAccounts"),
+            modelScoped = data.optBoolean("modelScoped", false),
+            scopedAccounts = data.optInt("scopedAccounts", ordered.size + blocked.size),
+            totalAccounts = data.optInt("totalAccounts", 0),
+            outsideAccounts = data.optInt("outsideAccounts", 0),
+            usableCount = data.optInt("usableCount", ordered.size),
+            fallbackCount = data.optInt("fallbackCount", (ordered.size - 1).coerceAtLeast(0)),
+            cooldownCount = data.optInt("cooldownCount", 0),
+            earliestResetAt = data.optLong("earliestResetAt", 0L),
         )
     }
 
