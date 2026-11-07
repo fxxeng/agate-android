@@ -32,29 +32,33 @@ object Gateway {
     }
 
     // ── JNI 导出（与 agate-server/src/jni_bridge.rs 一一对应，勿直接调用）──
-    private external fun nativeStart(configJson: String): String
-    private external fun nativeStop(): String
-    private external fun nativeStatus(): String
-    private external fun nativeTriggerTask(task: String): String
-    private external fun nativeCoreInit(dataDir: String, port: Int, schedulerOn: Boolean): String
-    private external fun nativeSchedulerSet(on: Boolean): String
-    private external fun nativeCheckinRunNow(timeoutMs: Long): String
-    private external fun nativeCheckinRunAndWait(): String
-    private external fun nativeRequestCheckinStop(): String
-    private external fun nativeVersion(): String
-    private external fun nativeSetLogCallback(callback: Any?): String
+    // 返回类型 String?：JNI 层面分配失败确实可能拿到 null（见 json_reply 的
+    // 两层兜底链），如实声明，统一由 envelope() 收敛成结构化失败信封。
+    private external fun nativeStart(configJson: String): String?
+    private external fun nativeStop(): String?
+    private external fun nativeStatus(): String?
+    private external fun nativeTriggerTask(task: String): String?
+    private external fun nativeCoreInit(dataDir: String, port: Int, schedulerOn: Boolean): String?
+    private external fun nativeSchedulerSet(on: Boolean): String?
+    private external fun nativeCheckinRunNow(timeoutMs: Long): String?
+    private external fun nativeCheckinRunAndWait(): String?
+    private external fun nativeRequestCheckinStop(): String?
+    private external fun nativeVersion(): String?
+    private external fun nativeSetLogCallback(callback: Any?): String?
 
-    private external fun nativeApiCall(method: String, path: String, body: String?, apiKey: String): String
+    private external fun nativeApiCall(method: String, path: String, body: String?, apiKey: String): String?
 
     /**
      * 管理面内核直调（P2 通道层）：method+path+body 经 JNI 走内核内存 Router，
      * 不经 127.0.0.1 端口 —— Core 态（网关未运行）下管理操作照常可用。
      * 返回 {ok, status, body} JSON 文本。Native 加载/调用异常向上传递，
-     * 由 CoreTransport 转换为明确的链路错误；这里不能把错误吞成 null。
+     * 由 CoreTransport 转换为明确的链路错误；null 回复（两层兜底都失败的
+     * 极端情况）在此收敛为结构化失败信封，CoreTransport 按 ok=false 处理，
+     * 不会把错误吞成 null。
      */
     fun apiCall(method: String, path: String, body: String?, apiKey: String): String {
         ensureLoaded()
-        return nativeApiCall(method, path, body, apiKey)
+        return envelope(nativeApiCall(method, path, body, apiKey)).toString()
     }
 
     data class StartResult(
@@ -68,8 +72,8 @@ object Gateway {
         val kind: String?,
     ) {
         companion object {
-            fun parse(raw: String): StartResult {
-                val j = JSONObject(raw)
+            fun parse(raw: String?): StartResult {
+                val j = envelope(raw)
                 return StartResult(
                     j.optBoolean("ok"),
                     j.optInt("port", 0),
@@ -95,8 +99,8 @@ object Gateway {
         val scheduler: Boolean,
     ) {
         companion object {
-            fun parse(raw: String): Status {
-                val j = JSONObject(raw)
+            fun parse(raw: String?): Status {
+                val j = envelope(raw)
                 // status_json() wraps lock/Native failures as {ok:false,error:...}.
                 // Never turn that error envelope into a plausible all-false runtime
                 // snapshot through optBoolean defaults.
@@ -142,7 +146,7 @@ object Gateway {
     /** 优雅停机（在途请求有 graceful shutdown 收尾）。 */
     fun stop(): JSONObject {
         ensureLoaded()
-        return JSONObject(nativeStop())
+        return envelope(nativeStop())
     }
 
     fun status(): Status {
@@ -153,13 +157,14 @@ object Gateway {
     /** 内核版本号（与上游 agate-server 同源，如 3.0.8）。 */
     fun version(): String {
         ensureLoaded()
-        return nativeVersion()
+        // 裸字符串契约（唯一非信封入口）；分配失败按空串收敛，UI 层自行判空。
+        return nativeVersion() ?: ""
     }
 
     /** 闹钟唤醒入口：scheduled_tick（签到轮）/ claim_checkin（补领）。 */
     fun triggerTask(task: String): JSONObject {
         ensureLoaded()
-        return JSONObject(nativeTriggerTask(task))
+        return envelope(nativeTriggerTask(task))
     }
 
     /**
@@ -168,13 +173,13 @@ object Gateway {
      */
     fun coreInit(dataDir: String, port: Int, schedulerOn: Boolean): JSONObject {
         ensureLoaded()
-        return JSONObject(nativeCoreInit(dataDir, port, schedulerOn))
+        return envelope(nativeCoreInit(dataDir, port, schedulerOn))
     }
 
     /** 调度器独立开关（不随网关启停；Core 未就绪时返回 core_not_ready）。 */
     fun schedulerSet(on: Boolean): JSONObject {
         ensureLoaded()
-        return JSONObject(nativeSchedulerSet(on))
+        return envelope(nativeSchedulerSet(on))
     }
 
     /**
@@ -183,7 +188,7 @@ object Gateway {
      */
     fun checkinRunNow(timeoutMs: Long = 120_000L): JSONObject {
         ensureLoaded()
-        return JSONObject(nativeCheckinRunNow(timeoutMs))
+        return envelope(nativeCheckinRunNow(timeoutMs))
     }
 
     /**
@@ -193,13 +198,13 @@ object Gateway {
      */
     fun checkinRunAndWait(): JSONObject {
         ensureLoaded()
-        return JSONObject(nativeCheckinRunAndWait())
+        return envelope(nativeCheckinRunAndWait())
     }
 
     /** 请求当前签到轮次在当前账号自然收尾后停止；不会中断在途 Provider 请求。 */
     fun requestCheckinStop(): JSONObject {
         ensureLoaded()
-        return JSONObject(nativeRequestCheckinStop())
+        return envelope(nativeRequestCheckinStop())
     }
 
     // ── 日志回调 ──────────────────────────────────────────────────
@@ -239,6 +244,21 @@ object Gateway {
             parseLogCallbackUpdateResponse(nativeSetLogCallback(callback))
         }
     }
+
+    /**
+     * Native 回复统一解析入口：null / 空串 / 非法 JSON 一律收敛成结构化失败
+     * 信封（{ok:false, stage:"jni", error:"malformed native reply"}），绝不向上
+     * 抛 NPE/JSONException —— 与 jni_bridge.rs::json_reply 的最小兽底配套，
+     * 覆盖两层各自的分配/传输异常（R46/T3，M4「不把 null 当通用错误吞掍」
+     * 的 Kotlin 侧）。internal 供 JVM 测试直接断言。
+     */
+    internal fun envelope(raw: String?): JSONObject =
+        runCatching { JSONObject(raw ?: "") }
+            .getOrDefault(
+                JSONObject(
+                    "{\"ok\":false,\"stage\":\"jni\",\"error\":\"malformed native reply\"}",
+                ),
+            )
 
     private fun String.nullIfEmpty(): String? = if (isEmpty()) null else this
 }

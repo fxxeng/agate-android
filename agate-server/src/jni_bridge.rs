@@ -713,8 +713,13 @@ fn jni_argument_error(env: &mut JNIEnv<'_>, argument: &str, error: String) -> js
 fn json_reply(env: &mut JNIEnv<'_>, value: Value) -> jstring {
     match env.new_string(value.to_string()) {
         Ok(s) => s.into_raw(),
-        // 基本不可能走到（OOM 级）；返回空串避免崩溃
-        Err(_) => std::ptr::null_mut(),
+        // OOM 级才走到：先试最小兜底信封（Kotlin 侧按结构化失败解析，不再让
+        // 裸 JSONObject 解析点拿 null 抛 NPE）；连它都分配不出来才返回 null，
+        // 由 Kotlin envelope() 收敛成 malformed native reply（两层兜底链）。
+        Err(_) => env
+            .new_string(r#"{"ok":false,"stage":"jni","error":"reply alloc failed"}"#)
+            .map(|s| s.into_raw())
+            .unwrap_or(std::ptr::null_mut()),
     }
 }
 
