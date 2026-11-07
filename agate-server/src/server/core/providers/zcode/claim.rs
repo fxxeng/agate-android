@@ -72,30 +72,6 @@ use super::region::Region;
 /// 不设的话一个挂住的领取请求能让定时任务转圈十分钟。
 const REQUEST_TIMEOUT_MS: u64 = 15_000;
 
-/// 客户端版本号。
-///
-/// 上游拿它判「这个客户端够不够新」（`1004 ineligible` 就包含版本不达标），
-/// 活动也可能要求最低版本。参考实现把它做成配置项（`identity.appVersion`，
-/// 环境变量 `ZCODE_APP_VERSION` 可覆盖），默认值是 **ZCode 客户端当前版本**
-/// `3.14.0`。
-///
-/// ★ 别拿参考项目自己的版本号（它 `package.json` 里那个 `4.6.9`）—— 那个数字
-/// 冒充不了客户端，`app_version` 与 `X-ZCode-App-Version` 都会对不上，症状是
-/// 领取被判 `1004 ineligible`（而这看起来像「账号没资格」，极易误判）。
-/// 上游抬门槛时用户可以用环境变量覆盖，不必等发版。
-/// 默认客户端版本号。
-///
-/// ── 为什么是 3.16.2 而不是 3.14.0（本次修复的核心）────────────
-/// 这个值不只是「领取 / 余额」的查询参数：它同时进**推理请求**的
-/// `User-Agent: ZCode/{version}` 与 `X-ZCode-App-Version` 头 —— 上游按「客户端
-/// 形态」识别请求，**版本过旧会被拒**。旧值 `3.14.0` 是从 3.0.8 抄来的，
-/// 那个版本现在调不通（上游已抬高门槛），而实测可用的参考实现用的是 `3.16.2`。
-///
-/// 这不是「顺手升级数字」：值与上游的客户端白名单直接相关，写小了就是
-/// 「账号明明有额度、请求却被拒」这类最难查的失败。仍允许
-/// `ZCODE_APP_VERSION` 覆盖（上游再抬高时不必发版）。
-const DEFAULT_APP_VERSION: &str = "3.16.2";
-
 /// 探测与领取的路径（参考实现 `client.ts` 的常量）
 const PREVIEW_PATH: &str = "/api/v1/zcode-plan/billing/preview";
 const CLAIM_PATH: &str = "/api/v1/zcode-plan/billing/claim";
@@ -228,10 +204,16 @@ pub fn captcha_hint(config: &CaptchaConfig) -> String {
     }
 }
 
-/// 客户端版本号（`ZCODE_APP_VERSION` 可覆盖）
 /// 内置默认版本号（界面展示「留空 = 用这个」）。
+///
+/// **唯一来源**是模板 `zcode_system.json` 的 `clientVersion`（见
+/// `plan::template_client_version`）—— 这个值同时进领取/余额查询的
+/// `app_version` 与推理请求的 `User-Agent: ZCode/{version}` /
+/// `X-ZCode-App-Version`，写小了就是「账号有额度却每条请求都被拒」。
+/// 别在这里再存一份字面量（会与模板各自漂移），也别抄参考实现自己
+/// `package.json` 的版本号（那个数字冒充不了客户端）。
 pub fn default_app_version() -> &'static str {
-    DEFAULT_APP_VERSION
+    super::plan::template_client_version()
 }
 
 pub fn app_version() -> String {
@@ -245,7 +227,7 @@ pub fn app_version() -> String {
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| DEFAULT_APP_VERSION.to_string())
+        .unwrap_or_else(|| super::plan::template_client_version().to_string())
 }
 
 /// 平台标识（参考实现的 `${process.platform}-${process.arch}`）。

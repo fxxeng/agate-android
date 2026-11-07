@@ -443,11 +443,13 @@ pub async fn checkin_for(
             claim_result(id, name, &display, true, claim)
         }
         "doubaowork" => {
-            // 豆包工作：先读当日签到态，再按活动条目领取奖励（见
-            // `providers::doubaowork::rewards` 的模块头）。「今天已签到」由
-            // 实现给 `alreadyCompleted:true` + 中性文案（措辞里**不含**
-            // 「已签到」三个字，否则会被 `checkin_completed_today` 当成当日已办
-            // —— 那是 LobsterAI 踩过的坑，同一个判据在这里复用）。
+            // 豆包工作：先读当日签到态，再按活动条目领取奖励（解析在
+            // `providers::doubaowork::rewards`，编排与幂等台账在
+            // `providers::doubaowork::checkin`）。「今天已签到」由实现给
+            // `alreadyCompleted:true` + 中性文案（措辞里**不含**「已签到」三个字，
+            // 否则会被 `checkin_completed_today` 当成当日已办 —— 那是 LobsterAI
+            // 踩过的坑，同一个判据在这里复用）；「提交了但没确认到账」则相反，
+            // 必须不带 `alreadyCompleted`，否则从此不再回查。
             let claim = crate::server::core::providers::doubaowork::adapter::claim_for_account(
                 store, &id,
             )

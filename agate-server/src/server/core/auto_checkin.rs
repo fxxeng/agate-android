@@ -153,8 +153,9 @@ pub const CHECKIN_PROVIDERS: [&str; 20] = [
     // 签到链本来就有「每天逐账号跑一次、结果进台账」的调度。
     // 追加在末尾（与上面同一理由）。
     "atomcode",
-    // 豆包工作（豆包）：签到 = 「读当日签到态 + 领取活动奖励」（见
-    // `providers::doubaowork::rewards`）。追加在末尾（与上面同一理由）。
+    // 豆包工作（豆包）：签到 = 「读当日签到态 + 领取活动奖励」（解析见
+    // `providers::doubaowork::rewards`，幂等台账与回查见 `…::checkin`）。
+    // 追加在末尾（与上面同一理由）。
     //
     // ⚠️ 本数组里**没有** `deepseek-web`：官方文档能力表里它的 checkin 是
     // `undeclared`，本家没有可自动领的奖励 —— 不登记才是诚实的（登记会让

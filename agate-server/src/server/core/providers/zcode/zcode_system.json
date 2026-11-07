@@ -28,5 +28,6 @@
   "systemReminder": {
     "open": "<system-reminder>",
     "close": "</system-reminder>"
-  }
+  },
+  "clientVersion": "3.17.2"
 }

@@ -134,6 +134,10 @@ impl ProviderAdapter for DeepSeekWebAdapter {
     /// 上游错误分类。
     ///
     /// 判据（形态来自二进制与公开逆向）：
+    ///   - **人机验证 / WAF 拦截 → `Fatal(403)`，且必须先判**：业务码 `40303`、
+    ///     原文带 `CHALLENGE_REQUIRED`，或返回的是 HTML 验证页。按 401/403 去
+    ///     重登是错处置 —— 换一个 token 一样被挡，用户会陷进「重登→仍失败」
+    ///     的循环，而真正要做的是去官网手动过一次验证。
     ///   - 401 / 403 → `TokenExpired`（登录态失效；编排层原地试一次后换账号）；
     ///   - 429 → `QuotaLimited`（上游限流）；
     ///   - 400 / 422 → 内容拦截判定优先，否则 `Fatal(400)`；
@@ -147,6 +151,22 @@ impl ProviderAdapter for DeepSeekWebAdapter {
             .unwrap_or("上游错误");
         let message = format!("上游返回 {status}: {raw}");
         let code = error_body.get("code").and_then(Value::as_i64);
+        if challenge_page(status, code, raw) {
+            // 验证页的正文是整段 HTML，原样回给用户只会刷屏；换成一句它看得懂的话。
+            let head = if raw.trim_start().starts_with('<') {
+                format!("上游返回 {status}: 返回的是验证/拦截页面（非 JSON）")
+            } else {
+                message
+            };
+            return UpstreamErrorClass::Fatal {
+                status: 403,
+                message: format!(
+                    "{head}（DeepSeek 网页要求人机验证：请在官方网页手动完成验证后重试；\
+                     这不是登录态失效，重新登录不会解除）"
+                ),
+                upstream_code: code,
+            };
+        }
         match status {
             400 | 422 => {
                 crate::server::core::providers::content_block::classify_or_fatal(
@@ -223,5 +243,76 @@ impl ProviderAdapter for DeepSeekWebAdapter {
             );
             ModelRefreshOutcome::unchanged()
         })
+    }
+}
+
+/// 是否人机验证 / WAF 拦截（**纯函数**）。
+///
+/// 本家没有独立的控制面接口，而分类函数的入参只有 `{status, code, message}`
+/// （见 `core::upstream::request::read_upstream_error`）：**响应头不进来**，
+/// 非 JSON 的验证页会整段落在 `message` 里。因此这里靠三样东西判 ——
+/// 业务码 `40303`、原文里的 `CHALLENGE_REQUIRED`、以及正文是不是 HTML。
+fn challenge_page(status: u16, code: Option<i64>, raw: &str) -> bool {
+    if code == Some(40303) {
+        return true;
+    }
+    let lowered = raw.to_ascii_lowercase();
+    if lowered.contains("challenge_required") {
+        return true;
+    }
+    // 只有「本该是 JSON 的接口返回了 HTML 页面」才算：200 的 HTML 首页
+    // （比如基址配错）不是验证页，别把配置错误说成人机验证。
+    matches!(status, 202 | 403) && lowered.trim_start().starts_with('<')
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::server::core::providers::adapter::ProviderAdapter;
+    use serde_json::json;
+
+    fn class(status: u16, body: Value) -> UpstreamErrorClass {
+        DEEPSEEK_WEB_ADAPTER.classify_error(status, &body)
+    }
+
+    /// 人机验证优先于凭证判定：403 + 40303 不能回「登录态失效」，否则用户
+    /// 会陷进「重新粘 token → 还是 403」的循环。
+    #[test]
+    fn challenge_wins_over_credential_failure() {
+        match class(403, json!({"code": 40303, "message": "challenge"})) {
+            UpstreamErrorClass::Fatal { status, message, .. } => {
+                assert_eq!(status, 403);
+                assert!(message.contains("人机验证"), "{message}");
+                assert!(message.contains("不是登录态失效"), "{message}");
+            }
+            other => panic!("40303 应判人机验证：{other:?}"),
+        }
+        assert!(matches!(
+            class(403, json!({"message": "CHALLENGE_REQUIRED"})),
+            UpstreamErrorClass::Fatal { status: 403, .. }
+        ));
+        // 验证页正文是 HTML：别把整段标记回给用户
+        match class(403, json!({"message": "<!DOCTYPE html><html><body>verify</body></html>"})) {
+            UpstreamErrorClass::Fatal { message, .. } => {
+                assert!(message.contains("验证/拦截页面"), "{message}");
+                assert!(!message.contains("<html"), "{message}");
+            }
+            other => panic!("HTML 验证页应判人机验证：{other:?}"),
+        }
+    }
+
+    /// 普通 403（没有验证特征）保持原口径：仍按登录态失效处理。
+    #[test]
+    fn plain_403_stays_credential_failure() {
+        assert!(matches!(
+            class(403, json!({"message": "Forbidden"})),
+            UpstreamErrorClass::TokenExpired { .. }
+        ));
+        assert!(matches!(
+            class(429, json!({"message": "rate limited"})),
+            UpstreamErrorClass::QuotaLimited { .. }
+        ));
+        // 200 的 HTML 首页是基址配错，不是验证页
+        assert!(!challenge_page(200, None, "<!DOCTYPE html>"));
     }
 }

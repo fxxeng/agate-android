@@ -267,6 +267,10 @@ impl ProviderAdapter for ZcodeAdapter {
 
     /// 上游错误分类。
     ///
+    ///   - **风控拒绝 → Fatal，且先于 401 / 429 判定**：业务码 3012，或
+    ///     403/405 且原文是 `request has been blocked due to unusual activity`。
+    ///     这类拒绝按凭证失效去刷新、按限额去冷却都是错处置 —— 上游认的是
+    ///     身份块而不是账号，换号也一样被拒，只会白烧行为分。
     ///   - `401` → TokenExpired（编排层会刷新后同账号重试一次；本家当前的
     ///     `refresh_access_token` 会如实报错，见模块头）
     ///   - `429` → QuotaLimited（编码套餐是「5 小时 + 每周」双窗口限额，
@@ -309,7 +313,8 @@ impl ProviderAdapter for ZcodeAdapter {
                     "上游错误"
                 }
             });
-        let code = error_body.get("code").and_then(Value::as_i64);
+        let code = upstream_code(error_body);
+        let risk_rejected = risk_rejection(status, code, raw);
         // 3007 是「验证码令牌被拒」的信号：既回给用户（见 `plan::code_hint`），
         // 也记进令牌池 —— 界面据此把库存立刻补齐（见 `captcha` 的模块头）。
         //
@@ -323,15 +328,27 @@ impl ProviderAdapter for ZcodeAdapter {
         // 提示的两条来路：业务码表（`code_hint`）优先；限额档再按**错误原文**
         // 补池子错位的引导（429「余额不足/无可用资源包」通常不是账号没钱，
         // 而是额度记在另一个池子里，见 `plan::quota_hint` 与 issue #232）。
-        let hint = match code.and_then(super::plan::code_hint) {
-            Some(hint) => Some(hint),
-            None if status == 429 || code == Some(1005) => super::plan::quota_hint(&raw),
-            None => None,
+        let hint = if risk_rejected {
+            super::plan::code_hint(3012)
+        } else {
+            match code.and_then(super::plan::code_hint) {
+                Some(hint) => Some(hint),
+                None if status == 429 || code == Some(1005) => super::plan::quota_hint(&raw),
+                None => None,
+            }
         };
         let message = match hint {
             Some(hint) => format!("上游返回 {status}: {raw}（{hint}）"),
             None => format!("上游返回 {status}: {raw}"),
         };
+        if risk_rejected {
+            // 2xx 却带风控码的情形同样要给出失败状态（与下面的兜底口径一致）
+            return UpstreamErrorClass::Fatal {
+                status: if (200..300).contains(&status) { 502 } else { status },
+                message,
+                upstream_code: code,
+            };
+        }
         if status == 401 {
             return UpstreamErrorClass::TokenExpired { message };
         }
@@ -524,5 +541,92 @@ fn ensure_include_usage(body: &mut Value) {
         options
             .entry("include_usage".to_string())
             .or_insert_with(|| json!(true));
+    }
+}
+
+/// 上游业务码：顶层 `code` 或 Anthropic 形态的 `error.code`，字符串数字也认。
+///
+/// 只认顶层 i64 会在两种真实形态上丢码：活动套餐通道把码放在
+/// `error.code` 里；少数错误把码序列化成字符串。丢码的后果是 3012 落进
+/// 「未知业务码 ⇒ 透传」，用户看不到「身份块被拒」这句可执行的话。
+fn upstream_code(body: &Value) -> Option<i64> {
+    [body.get("code"), body.pointer("/error/code")]
+        .into_iter()
+        .flatten()
+        .find_map(|value| {
+            value
+                .as_i64()
+                .or_else(|| value.as_str()?.trim().parse::<i64>().ok())
+        })
+}
+
+/// 是否风控拒绝（**纯函数**）。
+///
+/// 两条判据分开用，不许合并成「405 就是风控」：上游的普通 405 只是方法不允许，
+/// 把它当风控会停掉一次本来能换号重试的请求；反过来漏判会把「账号被风控」
+/// 当成限额去冷却 10 分钟，期间每次请求都白撞。
+fn risk_rejection(status: u16, code: Option<i64>, raw: &str) -> bool {
+    match code {
+        Some(code) => code == 3012,
+        None => {
+            matches!(status, 403 | 405)
+                && raw
+                    .to_ascii_lowercase()
+                    .contains("request has been blocked due to unusual activity")
+        }
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::server::core::providers::adapter::ProviderAdapter;
+    use serde_json::json;
+
+    fn class(status: u16, body: Value) -> UpstreamErrorClass {
+        ZCODE_ADAPTER.classify_error(status, &body)
+    }
+
+    /// 3012 若以 429 到达，按限额处置会冷却账号 10 分钟；而风控实际认的是
+    /// 身份块，换号也一样被拒 —— 必须判 Fatal 而不是 QuotaLimited。
+    #[test]
+    fn risk_code_wins_over_quota_and_credential() {
+        match class(429, json!({"code": 3012, "message": "request has been blocked"})) {
+            UpstreamErrorClass::Fatal {
+                status,
+                message,
+                upstream_code,
+            } => {
+                assert_eq!(status, 429);
+                assert_eq!(upstream_code, Some(3012));
+                assert!(message.contains("3012"), "{message}");
+            }
+            other => panic!("3012 应判风控：{other:?}"),
+        }
+        assert!(matches!(
+            class(401, json!({"code": 3012})),
+            UpstreamErrorClass::Fatal { .. }
+        ));
+    }
+
+    /// 没给业务码时只认上游那句风控原文；普通 405 不能当风控（否则本来能
+    /// 换号重试的请求会被白白停掉）。
+    #[test]
+    fn blocked_text_without_code_is_risk_but_plain_405_is_not() {
+        assert!(matches!(
+            class(405, json!({"message": "Request has been blocked due to unusual activity"})),
+            UpstreamErrorClass::Fatal { status: 405, .. }
+        ));
+        assert!(!risk_rejection(405, None, "method not allowed"));
+        assert!(risk_rejection(403, None, "REQUEST HAS BEEN BLOCKED DUE TO UNUSUAL ACTIVITY"));
+        assert!(!risk_rejection(403, Some(3001), "blocked due to unusual activity"));
+    }
+
+    /// 业务码在活动套餐通道里是 `error.code`，也可能被序列化成字符串。
+    #[test]
+    fn business_code_is_read_from_string_and_nested_error() {
+        assert_eq!(upstream_code(&json!({"code": "3012"})), Some(3012));
+        assert_eq!(upstream_code(&json!({"error": {"code": 3007}})), Some(3007));
+        assert_eq!(upstream_code(&json!({"code": null})), None);
+        assert_eq!(upstream_code(&json!({})), None);
     }
 }

@@ -22,17 +22,12 @@
 //!   - `unclaimed` 是**可领取的条目**、`campaign_item_code` 是领取时要带的 id。
 //!     本实现按「`unclaimed` 数组 → 逐条取 `campaign_item_code`」领。
 //!
-//! ── 签到与「领取」在本家是两件事，本模块**合成一次动作** ──────────
+//! ── 签到与「领取」在本家是两件事，本模块只提供解析与单次领取 ──────
 //! 上游没有「签到」这个动作 —— 签到表现为「活动里有一条 daily_checkin 任务，
-//! 领它就是签到」。因此 [`claim_for_account`] 做的是：
-//! ```text
-//!   1. 读活动详情 → 今天签过没有？
-//!        签过 → 回 success:false + alreadyCompleted:true + 中性文案（无事可做）
-//!   2. 没签过 → 找出 unclaimed 里那条 daily_checkin / 签到类条目
-//!        → POST reward/claim/<campaign_item_code>
-//!        → 成功后再读一次活动详情核对「今天签过了」
-//!   3. 没有可领的条目 → 如实回「本次活动期没有可领的奖励」
-//! ```
+//! 领它就是签到」。**编排在 [`super::checkin`]**（幂等台账、提交前落盘、回查
+//! 确认），本模块只给三样原料：读签到态（[`fetch_checkin_state`]）、找签到条目
+//! （[`daily_checkin_item`]）、发一次领取并判回执（[`claim_item`] +
+//! [`classify_claim`]）。
 //!
 //! ⚠️ **`alreadyCompleted: true` 是本仓签到台账的完成判据**（见
 //! `billing::checkin::checkin_completed_today`：它认 `success` /
@@ -51,6 +46,8 @@
 //! ── 硬约束 ──────────────────────────────────────────────────
 //! release 是 `panic=abort`：本文件零 unwrap/expect/panic。
 
+use std::sync::OnceLock;
+
 use serde_json::{json, Value};
 
 use crate::server::core::account_store::AccountStore;
@@ -61,7 +58,17 @@ use super::credentials::{self, Credentials};
 use super::endpoints;
 
 /// 签到 / 活动类请求的超时（毫秒）
-const REWARD_TIMEOUT_MS: u64 = 20_000;
+pub(super) const REWARD_TIMEOUT_MS: u64 = 20_000;
+
+/// 领取动作的进程级串行锁。
+///
+/// 调度器与「手动签到」可能同时进来：两个请求都会在**落盘之前**读到
+/// 「没有待确认任务」，于是各提交一次领取。台账只能挡住「先落盘再发请求」
+/// 之后的那一段，这一段靠锁关上（见 `checkin.rs` 的模块头）。
+pub(super) fn claim_lock() -> &'static tokio::sync::Mutex<()> {
+    static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
 
 /// 签到类条目的识别关键词（`campaign_item_code` / `campaign_code` / 标题里出现即认）
 ///
@@ -455,139 +462,7 @@ async fn fetch_json(
     }
 }
 
-/// 签到（= 领当天那条签到任务）。
-///
-/// 返回的形状与别家的签到实现一致（`{success, msg, alreadyCompleted?, …}`），
-/// 交给 `billing::checkin::claim_result` 翻成签到结果行 —— 其中
-/// `alreadyCompleted` 是内核台账「今天已完成」的键（见模块头）。
-///
-/// ── 三种结局对应用户看到的三种话 ─────────────────────────────
-///   · **今天已签**：`success:false` + `alreadyCompleted:true` + 中性文案；
-///   · **真领到**：`success:true` + 文案（带上奖励金额，读得到才带）；
-///   · **本活动期没有可签到的任务**：`success:false` + `needsAction:false`
-///     + 中性文案（**不谎报成功**，也不冒充失败）。
-pub async fn claim_for_account(
-    store: &AccountStore,
-    account_id: &str,
-) -> Result<Value, GatewayError> {
-    let record = store.doubaowork_account_record(account_id);
-    if !account_id.is_empty() && record.is_none() {
-        return Err(GatewayError::with_status(
-            401,
-            format!("豆包工作账号 {account_id} 不存在（请重新添加）"),
-        ));
-    }
-    let credentials = credentials::from_record(record.as_ref())?;
-
-    // ── 第一步：读签到态 ──
-    let state = fetch_checkin_state(&credentials, REWARD_TIMEOUT_MS).await?;
-    if state.checked_in_today == Some(true) {
-        let mut msg = String::from("今天已签到，无需重复领取");
-        if let Some(days) = state.continuous_days {
-            msg.push_str(&format!("（连续 {days} 天）"));
-        }
-        crate::server::logging::verbose(
-            "[Checkin]",
-            &format!("豆包工作 {account_id}: {msg}"),
-        );
-        return Ok(json!({
-            "success": false,
-            "alreadyCompleted": true,
-            "msg": msg,
-            "needsAction": false,
-        }));
-    }
-
-    // ── 第二步：找签到条目 ──
-    let Some((code, name)) = daily_checkin_item(&state) else {
-        // 读不出签到态 + 没有可领条目 ⇒ 上游这条链路的口径变了或不在活动期。
-        // 如实汇报（中性、needsAction:false），**不冒充成功也不冒充失败**。
-        let msg = if state.checked_in_today.is_none() {
-            "读不出签到状态（上游活动接口的响应里没有 checked_in_today / \
-             daily_checkin / task_status，口径可能已变），本次活动期也无签到类奖励可领"
-                .to_string()
-        } else {
-            "本次活动期没有签到类奖励可领".to_string()
-        };
-        crate::server::logging::verbose(
-            "[Checkin]",
-            &format!("豆包工作 {account_id}: {msg}"),
-        );
-        return Ok(json!({
-            "success": false,
-            "alreadyCompleted": true,
-            "msg": msg,
-            "needsAction": false,
-        }));
-    };
-
-    // ── 第三步：领取 ──
-    let payload = claim_item(&credentials, &code, REWARD_TIMEOUT_MS).await?;
-    match classify_claim(&payload) {
-        ClaimVerdict::AlreadyHeld { message } => {
-            let msg = if message.is_empty() {
-                "今天已签到（上游回执说已领取）".to_string()
-            } else {
-                message
-            };
-            crate::server::logging::log(
-                "[Checkin]",
-                &format!("豆包工作 {account_id}: {msg}"),
-            );
-            Ok(json!({
-                "success": false,
-                "alreadyCompleted": true,
-                "msg": msg,
-                "itemCode": code,
-                "needsAction": false,
-            }))
-        }
-        ClaimVerdict::Granted { message, amount } => {
-            let mut msg = if message.is_empty() {
-                if name.is_empty() {
-                    "签到成功".to_string()
-                } else {
-                    format!("签到成功：{name}")
-                }
-            } else {
-                message
-            };
-            if let Some(amount) = amount.as_deref() {
-                msg.push_str(&format!("（+{amount}）"));
-            }
-            crate::server::logging::log(
-                "[Checkin]",
-                &format!("豆包工作 {account_id}: {msg}"),
-            );
-            Ok(json!({
-                "success": true,
-                "msg": msg,
-                "itemCode": code,
-                "amount": amount,
-                "needsAction": true,
-            }))
-        }
-        ClaimVerdict::Refused { message } => {
-            let msg = if message.is_empty() {
-                "签到被上游拒绝（未说明原因）".to_string()
-            } else {
-                message
-            };
-            crate::server::logging::log(
-                "[Checkin]",
-                &format!("豆包工作 {account_id}: 签到失败 —— {msg}"),
-            );
-            Ok(json!({
-                "success": false,
-                "msg": msg,
-                "itemCode": code,
-                "needsAction": true,
-            }))
-        }
-    }
-}
-
-/// 领取全部可领奖励（**可选**：签到链只调 [`claim_for_account`]）。
+/// 领取全部可领奖励（**可选**：签到链走 [`super::checkin`]，不调这里）。
 ///
 /// 留在本模块是为了让「签到」与「领奖」共用一个解析器（[`read_checkin_state`]
 /// 与 [`classify_claim`]）：活动规则会变，但「哪些条目可领」这件事只有一处

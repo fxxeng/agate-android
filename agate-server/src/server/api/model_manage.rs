@@ -65,8 +65,9 @@ pub async fn get_manage(State(state): State<ServerState>) -> Response {
 
 /// GET /api/zcode/identity —— ZCode 客户端版本号（界面「本家专有设置」读它）。
 ///
-/// 同时给出 `default`：界面据此显示「留空 = 用默认 3.16.2」，而不是让用户
-/// 猜内置值是多少。
+/// 同时给出 `default`：界面据此显示「留空 = 用内置默认」，而不是让用户
+/// 猜内置值是多少（内置值来自 `zcode_system.json` 的 `clientVersion`，
+/// 会随模板更新，界面不该写死它）。
 pub async fn get_zcode_identity() -> Response {
     ok_json(json!({
         "appVersion": config::zcode_app_version().unwrap_or_default(),

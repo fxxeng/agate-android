@@ -162,6 +162,25 @@ pub fn official_prompt_approx_chars() -> usize {
     text("cliPrefix") + stable + dynamic
 }
 
+/// 模板里的官方客户端版本号（**唯一来源**）。
+///
+/// 上游拿它判「客户端够不够新」：`1004 ineligible` 里就含版本不达标，而这个值
+/// 同时进推理请求的 `User-Agent: ZCode/{version}` 与 `X-ZCode-App-Version` ——
+/// 写小了就是「账号有额度却每条请求都被拒」这类最难查的失败。
+///
+/// 所以它只写在这份模板里（与上游同一个位置），`claim::default_app_version()`
+/// 从这里取：上游发版抬高门槛时，改 `zcode_system.json` 一行即可，不会再出现
+/// 「常量在这、模板在那」两处漂移。模板损坏（只可能是打包事故）时回落到
+/// 下面这个字面量，保证头部仍然可发。
+pub fn template_client_version() -> &'static str {
+    system_data()
+        .and_then(|data| data.get("clientVersion"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .unwrap_or("3.17.2")
+}
+
 /// 业务码 → 可执行的提示（`None` = 没见过的码，按上游原文透传）。
 ///
 /// 由 `ZcodeAdapter::classify_error` 读 —— 分类动作（换账号 / 冷却 / 透传）

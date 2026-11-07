@@ -191,6 +191,49 @@ impl AccountStore {
         candidates.into_iter().next().map(|item| item.to_value())
     }
 
+    /// 签到台账（`doubaoworkCheckin`）：读-改-写的写侧。
+    ///
+    /// ── 为什么存在账号记录里，而不是另一个文件 ────────────────
+    /// 与 CodeArts 的福利台账同一取向：per-account 可变状态跟着账号一起备份、
+    /// 一起导出、删账号时一起消失。另开状态文件会多出一套「文件在而账号没了」
+    /// 的对账问题。只写自己这一个命名空间，且记录在锁内现读 —— 既洗不掉别人
+    /// 的凭据，也不存在「快照过期」。
+    ///
+    /// ── 为什么必须在发领取请求**之前**落盘 ────────────────────
+    /// 领取是「上游可能已经受理、回执却丢了」的动作（断网 / 超时 / 进程重启）。
+    /// 没有台账时用户再点一次签到就会**再提交一次领取**；有台账时下一次只回查
+    /// 结果。所以落盘失败必须让调用方**不发**那个写请求（见
+    /// `providers::doubaowork::checkin` 的模块头）。
+    pub fn put_doubaowork_checkin_ledger(
+        &self,
+        account_id: &str,
+        ledger: &Value,
+    ) -> Result<(), AccountStoreError> {
+        let guard = self.guard();
+        let Some(mut record) = self
+            .record_by_id(&guard, account_id)
+            .filter(|record| record.provider() == DOUBAOWORK_PROVIDER_ID)
+        else {
+            return Err(AccountStoreError::new(
+                "豆包工作账号已不存在，签到台账无处落盘",
+                404,
+            ));
+        };
+        record
+            .fields_mut()
+            .insert("doubaoworkCheckin".to_string(), ledger.clone());
+        record.set_updated_at(logging::now_ms());
+        self.with_conn(&guard, |conn| sql::update_in_place(conn, &record))?;
+        Ok(())
+    }
+
+    /// 台账的读侧（`doubaowork_account_record` 已经把整条记录交回来了，
+    /// 这里只是给「没有台账」一个统一取法，省得每处都去翻字段名）。
+    pub fn doubaowork_checkin_ledger(&self, account_id: &str) -> Option<Value> {
+        self.doubaowork_account_record(account_id)
+            .and_then(|record| record.get("doubaoworkCheckin").cloned())
+    }
+
     /// 添加 / 更新一条豆包工作账号（**内嵌窗口登录与粘贴 Cookie 共用这一个入口**）。
     ///
     /// `secret` 是已经归一好的凭证：

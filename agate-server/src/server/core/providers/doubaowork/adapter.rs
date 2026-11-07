@@ -58,7 +58,7 @@ use crate::server::core::providers::{content_block, ProviderKind};
 use crate::server::errors::GatewayError;
 use crate::server::logging;
 
-use super::{chat, credentials, login, models, plan, quota, rewards};
+use super::{chat, credentials, login, models, plan, quota};
 
 /// 一家豆包工作适配器（**单一站点**，没有地区之分）
 pub struct DoubaoWorkAdapter;
@@ -424,17 +424,16 @@ impl ProviderAdapter for DoubaoWorkAdapter {
 /// 签到不属于 [`ProviderAdapter`] 的契约（见 trait 的文档：签到是
 /// `billing::checkin` 按 provider 分派的一条链路，各家的实现散在自家目录里）。
 /// 本家与 AtomCode 同一形态：模块级函数 + 在 `billing/checkin.rs` 的
-/// `match provider` 里加一条 arm。
+/// `match provider` 里一条 arm（**已接线**：`core/auto_checkin.rs` 的
+/// `CHECKIN_PROVIDERS` 与本表的 `"doubaowork"` 都在）。
 ///
-/// ⚠️ **需要接线方补**：`core/auto_checkin.rs` 的 `CHECKIN_PROVIDERS`
-/// （当前 16 家，`PROVIDERS_VERSION = 5`）与 `billing/checkin.rs` 的分派表
-/// 都要加上 `"doubaowork"` —— 否则本家的签到永远不会被调度
-/// （症状：账号页有「签到」按钮但签到中心里没有这一家）。
+/// 真正的编排在 [`super::checkin`]：幂等台账、提交前落盘、以官方
+/// `checked_in_today` 回查确认；本函数只是转发，别再往下写第二份流程。
 pub async fn claim_for_account(
     store: &AccountStore,
     account_id: &str,
 ) -> Result<Value, GatewayError> {
-    rewards::claim_for_account(store, account_id).await
+    super::checkin::claim_for_account(store, account_id).await
 }
 
 #[cfg(test)]
