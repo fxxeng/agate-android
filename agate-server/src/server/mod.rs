@@ -1036,14 +1036,13 @@ pub fn start(state: &ServerState) -> Result<oneshot::Sender<()>, PortConflict> {
 
     let addr = SocketAddr::new(state.host, state.port);
     let listener = std::net::TcpListener::bind(addr)
-        .map_err(|error| PortConflict::from_bind_error(state.port, &error, None))?;
+        .map_err(|error| PortConflict::from_bind_error(state.port, &error))?;
     // 立刻转成非阻塞：从这一刻起到 serve 接手之间，若有连接进来，
     // 阻塞式 accept 会把工作线程卡住。转非阻塞放在同步段更安全。
     listener.set_nonblocking(true).map_err(|error| {
         PortConflict::new(
             ConflictKind::Other,
             state.port,
-            None,
             &format!("设置监听为非阻塞失败: {error}"),
         )
     })?;
@@ -1054,12 +1053,11 @@ pub fn start(state: &ServerState) -> Result<oneshot::Sender<()>, PortConflict> {
         Some(port) => {
             let addr = SocketAddr::new(state.host, port);
             let listener = std::net::TcpListener::bind(addr)
-                .map_err(|error| PortConflict::from_bind_error(port, &error, None))?;
+                .map_err(|error| PortConflict::from_bind_error(port, &error))?;
             listener.set_nonblocking(true).map_err(|error| {
                 PortConflict::new(
                     ConflictKind::Other,
                     port,
-                    None,
                     &format!("设置监听为非阻塞失败: {error}"),
                 )
             })?;
@@ -1161,7 +1159,7 @@ pub fn probe_port(port: u16) -> Result<(), PortConflict> {
             drop(listener);
             Ok(())
         }
-        Err(error) => Err(PortConflict::from_bind_error(port, &error, None)),
+        Err(error) => Err(PortConflict::from_bind_error(port, &error)),
     }
 }
 
