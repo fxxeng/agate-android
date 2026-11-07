@@ -1160,7 +1160,11 @@ private fun ZcodeVersionCard() {
                 onValueChange = { editing = it },
                 singleLine = true,
                 textStyle = androidx.compose.ui.text.TextStyle(fontSize = 13.sp),
-                placeholder = { Text(identity?.default ?: "3.16.2", fontSize = 12.sp) },
+                // 兜底不写具体版本号：内置默认值由内核从 `zcode_system.json` 的
+                // `clientVersion` 取（会随模板更新），客户端写死一个就会在升级后
+                // 指向一个早已作废的版本 —— 与下面那行「留空 = 回到内置默认（—）」
+                // 同一口径：读不到就说不知道，不编一个数字。
+                placeholder = { Text(identity?.default ?: "—", fontSize = 12.sp) },
                 modifier = Modifier.fillMaxWidth(),
             )
             Spacer(Modifier.height(6.dp))
