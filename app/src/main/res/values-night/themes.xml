@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      系统夜间 + 「跟随系统」档的启动外壳：窗口底色取纯黑、系统栏图标用亮色。
+      与 values/themes.xml 的 Theme.Agate 同名，按 -night 配置整体替换（不是合并），
+      所以 6 项必须写全。手动档另有固定色 style，见 values/themes.xml。
+    -->
+    <style name="Theme.Agate" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/agate_bg</item>
+        <item name="android:statusBarColor">@color/agate_chrome</item>
+        <item name="android:navigationBarColor">@color/agate_chrome</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+    </style>
+</resources>

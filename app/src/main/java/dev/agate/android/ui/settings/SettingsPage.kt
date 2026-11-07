@@ -2181,7 +2181,8 @@ private fun MiniButton(
     }
     val fg = when {
         !enabled -> C.textDim
-        danger -> Color.White
+        // 深色档 onAccent 是近黑、浅色档是白：两档在亮红底上都比写死白字清楚。
+        danger -> C.onAccent
         filled -> C.onAccent
         else -> C.textSub
     }

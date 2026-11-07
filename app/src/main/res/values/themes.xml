@@ -1,14 +1,31 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <!--
-      纯黑 OLED 外壳：窗口背景 #000000、系统栏 #0A0A0C，
-      避免默认 Theme.Material 的白色/灰色窗口背景与状态栏割裂。
-      Compose 侧 AgateTheme 会按主题态覆盖系统栏图标明暗（见 Theme.kt）。
+      启动外壳三档：Theme.Agate 跟随系统（窗口色由 values-night 覆盖），
+      .Light / .Dark 是手动档的固定色，不随系统夜间模式变化。
+      系统栏图标明暗跟着底色走，否则浅色底配白色图标会看不见。
+      Compose 侧 AgateTheme 启动后接管系统栏与窗口底色（见 Theme.kt）。
     -->
     <style name="Theme.Agate" parent="@android:style/Theme.Material.NoActionBar">
         <item name="android:windowBackground">@color/agate_bg</item>
         <item name="android:statusBarColor">@color/agate_chrome</item>
         <item name="android:navigationBarColor">@color/agate_chrome</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar">true</item>
+    </style>
+
+    <style name="Theme.Agate.Light" parent="Theme.Agate">
+        <item name="android:windowBackground">@color/agate_bg_light</item>
+        <item name="android:statusBarColor">@color/agate_chrome_light</item>
+        <item name="android:navigationBarColor">@color/agate_chrome_light</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar">true</item>
+    </style>
+
+    <style name="Theme.Agate.Dark" parent="Theme.Agate">
+        <item name="android:windowBackground">@color/agate_bg_dark</item>
+        <item name="android:statusBarColor">@color/agate_chrome_dark</item>
+        <item name="android:navigationBarColor">@color/agate_chrome_dark</item>
         <item name="android:windowLightStatusBar">false</item>
         <item name="android:windowLightNavigationBar">false</item>
     </style>

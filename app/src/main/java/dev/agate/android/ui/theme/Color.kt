@@ -16,7 +16,7 @@ import androidx.compose.ui.graphics.Color
 val DarkBg = Color(0xFF000000)          // 页面底：真·纯黑
 val DarkInset = Color(0xFF0A0A0C)       // 内嵌底 / 外壳
 val DarkCard = Color(0xFF101014)        // 卡片：微亮中性灰，靠它和描边分层
-val DarkBorder = Color(0xFF26262E)      // 细描边
+val DarkBorder = Color(0xFF30303A)      // 细描边（纯黑底上提亮一档，卡片/弹层边界更清楚）
 val DarkAccent = Color(0xFF4CC9F0)      // 冷蓝强调（比原 sky 稍柔，纯黑上不刺眼）
 val DarkTextMain = Color(0xFFF4F6FA)
 val DarkTextSub = Color(0xFF9CA3AF)
@@ -126,6 +126,8 @@ data class AgateColors(
     val badgeRedText: Color = BadgeRedText,
     val badgeAmberText: Color = BadgeAmberText,
     val badgeGrayText: Color = BadgeGrayText,
+    /** 弹层遮罩：纯黑档压得更重，浅色档沿用旧值 */
+    val scrim: Color,
     /** 控制台 Hero 卡配色（深浅各一份，页面不再写死） */
     val hero: AgateHeroPalette,
     /** 热力图四级强度（0 空 → 3 满） */
@@ -142,6 +144,7 @@ data class AgateColors(
             green = GreenDark, red = RedDark, amber = AmberDark, blue = BlueDark,
             greenBg = Color(0x2E3DDC84), redBg = Color(0x2EFF5C7C),
             amberBg = Color(0x2EFFB84D), blueBg = Color(0x2E5B9CFF),
+            scrim = Color(0xB3000000),
             badgeGreenText = BadgeGreenTextDark,
             badgeBlueText = BadgeBlueTextDark,
             badgeRedText = BadgeRedTextDark,
@@ -171,6 +174,7 @@ data class AgateColors(
             green = GreenLight, red = RedLight, amber = AmberLight, blue = BlueLight,
             greenBg = Color(0x2616A34A), redBg = Color(0x26E11D48),
             amberBg = Color(0x26D97706), blueBg = Color(0x262563EB),
+            scrim = Color(0x99000000),
             // 浅色档 Hero 逐值保持 v44 原样（本次只重设计深色）。
             hero = AgateHeroPalette(
                 bg1 = Color(0xFFE0F2FE), bg2 = Color(0xFFBAE6FD),

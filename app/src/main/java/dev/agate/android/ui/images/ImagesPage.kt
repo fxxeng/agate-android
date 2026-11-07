@@ -542,7 +542,7 @@ private fun ReferenceStrip(
                         .align(Alignment.TopEnd)
                         .padding(3.dp)
                         .size(18.dp)
-                        .background(Color(0xCC000000), RoundedCornerShape(9.dp))
+                        .background(C.scrim, RoundedCornerShape(9.dp))
                         .clickable { onRemove(index) },
                     contentAlignment = Alignment.Center,
                 ) {

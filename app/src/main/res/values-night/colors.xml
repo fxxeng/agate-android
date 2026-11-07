@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 系统夜间 + 「跟随系统」档：启动窗口取纯黑 OLED，与 Color.kt DarkBg 一致 -->
+    <color name="agate_bg">#000000</color>
+    <color name="agate_chrome">#0A0A0C</color>
+</resources>

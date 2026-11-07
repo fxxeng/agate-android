@@ -53,6 +53,18 @@ fun AgateTheme(
             secondary = C.accent,
             onSecondary = C.onAccent,
             tertiary = C.green,
+            // M3 的弹层 / BottomSheet / 高亮容器默认用 surface* 派生色，
+            // 不显式钉住会在纯黑底上落回 M3 默认的深灰，和页面底色分叉。
+            // surfaceTint 关掉 elevation 染色，否则纯黑会被 accent 染出蓝晕。
+            scrim = androidx.compose.ui.graphics.Color.Black,
+            surfaceTint = androidx.compose.ui.graphics.Color.Transparent,
+            surfaceContainerLowest = C.bg,
+            surfaceContainerLow = C.cardBg,
+            surfaceContainer = C.cardBg,
+            surfaceContainerHigh = C.cardBg,
+            surfaceContainerHighest = C.cardBg,
+            surfaceBright = C.cardBg,
+            surfaceDim = C.insetBg,
         )
     } else {
         lightColorScheme(
@@ -81,6 +93,10 @@ fun AgateTheme(
             val window = (view.context as? Activity)?.window ?: return@SideEffect
             @Suppress("DEPRECATION")
             window.statusBarColor = C.chromeBg.toArgb()
+            // 窗口底色也按**当前主题态**同步：静态 windowBackground 只负责
+            // preview 那一帧，用户在 App 内切主题（Activity 不重建）后，
+            // 旋转 / 回前台 / 弹层背后的窗口底色仍是启动那一刻的值。
+            window.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(C.bg.toArgb()))
             // 导航栏颜色交由 AgateNavHost 按「一级页/二级页」动态设置（二级页无底栏，
             // 需与页面底色一致）；这里只关掉系统对比度蒙层，否则手势条区域会多一条色带。
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {

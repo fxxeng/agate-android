@@ -1,9 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- 纯黑 OLED 深色基调：启动图标背景 -->
+    <!-- 启动图标背景是独立品牌资产，不随主题切换 -->
     <color name="ic_launcher_background">#000000</color>
-    <!-- 窗口初始背景，与 Color.kt DarkBg 逐字一致，避免启动瞬间露出 slate 蓝灰 -->
-    <color name="agate_bg">#000000</color>
-    <!-- 外壳色（页头/底栏/系统栏统一，与 Color.kt DarkChrome 一致） -->
-    <color name="agate_chrome">#0A0A0C</color>
+
+    <!-- 「跟随系统」档：这两项由 values-night 覆盖，preview 窗口按系统夜间模式取色 -->
+    <color name="agate_bg">#F1F5F9</color>
+    <color name="agate_chrome">#FEFEFE</color>
+
+    <!-- 手动档必须引用固定色：否则「用户选浅色、系统却处于夜间」时
+         preview 会从 values-night 取到纯黑，开机闪一下黑底。 -->
+    <color name="agate_bg_light">#F1F5F9</color>
+    <color name="agate_chrome_light">#FEFEFE</color>
+    <color name="agate_bg_dark">#000000</color>
+    <color name="agate_chrome_dark">#0A0A0C</color>
 </resources>

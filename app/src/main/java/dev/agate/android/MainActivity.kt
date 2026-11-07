@@ -21,6 +21,16 @@ import dev.agate.core.GatewayPrefs
 class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        // 系统的 preview 窗口按 manifest theme + **系统**夜间模式绘制，读不到
+        // 用户手动选的档位。跟随系统档由 values-night 自动分流；手动档在这里
+        // 于窗口绘制前切到固定色 style，把 Activity 自己的第一帧纠正过来。
+        // 之后由 AgateTheme 的 SideEffect 按主题态实时接管（见 Theme.kt）。
+        when (runCatching { AgateThemeMode.valueOf(GatewayPrefs.themeMode(this)) }
+            .getOrDefault(AgateThemeMode.FOLLOW_SYSTEM)) {
+            AgateThemeMode.LIGHT -> setTheme(R.style.Theme_Agate_Light)
+            AgateThemeMode.DARK -> setTheme(R.style.Theme_Agate_Dark)
+            AgateThemeMode.FOLLOW_SYSTEM -> Unit
+        }
         super.onCreate(savedInstanceState)
         // 显式开启边到边，让各版本表现一致。
         //

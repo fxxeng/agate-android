@@ -20,6 +20,8 @@ class ThemePaletteTest {
         assertEquals(Color(0xFF101014), dark.cardBg)
         assertNotEquals("纯黑底上卡片必须能分层", dark.bg, dark.cardBg)
         assertEquals(Color(0xFF4CC9F0), dark.accent)
+        assertEquals("纯黑底上描边要可辨", Color(0xFF30303A), dark.border)
+        assertEquals("纯黑档遮罩要压得住内容", Color(0xB3000000), dark.scrim)
     }
 
     @Test

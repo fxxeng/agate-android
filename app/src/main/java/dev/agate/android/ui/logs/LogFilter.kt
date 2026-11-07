@@ -95,7 +95,7 @@ internal fun FilterSheet(
     Box(
         Modifier
             .fillMaxSize()
-            .background(Color(0x99000000))
+            .background(C.scrim)
             .clickable(onClick = onDismiss),
         contentAlignment = Alignment.BottomCenter,
     ) {
@@ -104,6 +104,7 @@ internal fun FilterSheet(
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp))
                 .background(C.cardBg)
+                .border(1.dp, C.border, RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp))
                 .clickable(enabled = false, onClick = {})
                 .padding(16.dp),
         ) {
@@ -281,7 +282,7 @@ internal fun ClearDialog(
     Box(
         Modifier
             .fillMaxSize()
-            .background(Color(0x99000000))
+            .background(C.scrim)
             .clickable(onClick = onDismiss),
         contentAlignment = Alignment.Center,
     ) {
