@@ -525,7 +525,6 @@ pub fn shim_js() -> &'static str {
     backend_status: function () {
       return Promise.resolve({ ready: true, port: null, portFromEnv: false, failure: null });
     },
-    port_occupant: function () { return Promise.resolve(null); },
     get_app_settings: function () {
       // 桌面设置（关窗到托盘 / 开机自启 / 轻量模式）在网页端没有宿主，固定默认值
       return Promise.resolve({ closeToTray: false, autostart: false, proxyPort: 0, lightweightMode: false });
@@ -1312,8 +1311,6 @@ pub fn shim_js() -> &'static str {
 
     // ── 壳特有：后端就绪与端口处置 ──
     getBackendStatus: function () { return invokeShell('backend_status'); },
-    getPortOccupant: function () { return invokeShell('port_occupant'); },
-    endPortOccupant: function () { return Promise.reject(new Error(SHELL_UNAVAILABLE)); },
     checkPort: function () {
       return Promise.reject(new Error('网页端不探测端口：端口由 AGATE_PROXY_PORT 环境变量决定'));
     },
