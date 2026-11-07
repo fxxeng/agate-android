@@ -48,6 +48,7 @@ import dev.agate.core.GatewayStartFailure
 import dev.agate.core.RuntimeController
 import dev.agate.android.ui.components.AgateBadge
 import dev.agate.android.ui.components.BadgeTone
+import dev.agate.android.ui.theme.AgateShape
 import dev.agate.android.ui.theme.AgateType
 import dev.agate.android.ui.theme.agateColors
 import kotlinx.coroutines.CoroutineScope
