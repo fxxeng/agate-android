@@ -49,6 +49,7 @@ use chrono::{DateTime, FixedOffset, TimeZone};
 use serde_json::{json, Map, Value};
 
 use crate::server::config;
+use crate::task_supervisor::{core_task_supervisor, TaskScope};
 use crate::server::core::account_store::AccountStore;
 use crate::server::core::beijing;
 use crate::server::core::billing::checkin;
@@ -853,21 +854,52 @@ impl AutoCheckin {
             }
             let reason =
                 format!("到点触发（{}）", checkin_schedules::display_label(&schedule));
-            match self.fire_for(&reason, Some(&schedule.id), "schedule").await {
-                Some(result) => {
-                    // 领取轮次完成，但里面有「Qoder 国际版无活动」的行 → 这一条
-                    // 不落账，今天窗口开了之后由后续 tick 重试
-                    if result.get("qoderIntlPending").and_then(Value::as_bool) == Some(true) {
-                        checkin_schedules::mark_fired(&schedule.id, None);
-                        logging::log(
-                            "[Checkin]",
-                            "⏳ Qoder 国际版的活动窗口未开（官方每日 10:00 UTC+8），今天会自动重试到领到为止",
-                        );
+            // fire 移出循环任务（R44b）：调度循环体内只剩 sleep/扫描，stop() 的
+            // abort 因此不可能再掐掉进行中的签到。fire 落 CoreTaskSupervisor
+            // （"checkin-fire" 同名活任务忽略 = 到点窗口重入天然防重，fire 内
+            // 的全局防重守卫是第二层）；进程停机由 shutdown_core_tasks 对该
+            // scope 有界 abort+join 收尾。ScopeStopped 只在停机后出现，丢触发
+            // 属正常。
+            let service = self.clone();
+            let schedule_id = schedule.id.clone();
+            if let Err(_) = core_task_supervisor().spawn(
+                TaskScope::Core,
+                "checkin-fire",
+                move |_| {
+                    let service = service.clone();
+                    async move {
+                        service.fire_and_settle(schedule_id, reason, "schedule").await
                     }
-                }
-                // None = 已有轮次在跑或执行出错：照旧落账（fire 内部已写），行为不变
-                None => {}
+                },
+            ) {
+                logging::verbose("[Checkin]", "停机中，放弃本次到点触发");
             }
+        }
+    }
+
+    /// 执行一次签到并完成该条目的落账（[`Self::fire_for`] + 原 tick 的返回值
+    /// 记账，两处必须同体：记账读的是 fire 的返回值）。由 supervisor 的
+    /// `checkin-fire` 任务调用，见 [`Self::tick`] 注释。
+    async fn fire_and_settle(
+        &self,
+        schedule_id: String,
+        reason: String,
+        source: &'static str,
+    ) {
+        match self.fire_for(&reason, Some(&schedule_id.as_str()), source).await {
+            Some(result) => {
+                // 领取轮次完成，但里面有「Qoder 国际版无活动」的行 → 这一条
+                // 不落账，今天窗口开了之后由后续 tick 重试
+                if result.get("qoderIntlPending").and_then(Value::as_bool) == Some(true) {
+                    checkin_schedules::mark_fired(&schedule_id, None);
+                    logging::log(
+                        "[Checkin]",
+                        "⏳ Qoder 国际版的活动窗口未开（官方每日 10:00 UTC+8），今天会自动重试到领到为止",
+                    );
+                }
+            }
+            // None = 已有轮次在跑或执行出错：照旧落账（fire 内部已写），行为不变
+            None => {}
         }
     }
 
@@ -924,23 +956,44 @@ impl AutoCheckin {
             logging::verbose("[Checkin]", "定时签到条目均已执行，无需补签");
             return;
         }
+        // 补签整段注册进 supervisor（"checkin-backfill"，串行跑全部 pending）：
+        // 此前是裸 spawn_task，stop() 既管不到、停机也无人收尾，还漏了 tick 路径
+        // 有的条目记账（qoderIntlPending 重试落账）——统一走 fire_and_settle。
+        // 与轮询 fire 共用同一全局防重守卫。
         let service = self.clone();
-        crate::spawn_task(async move {
-            for schedule in pending {
-                let reason = format!(
-                    "启动补签（{}）",
-                    checkin_schedules::display_label(&schedule)
-                );
-                service.fire_for(&reason, Some(&schedule.id), "startup").await;
-            }
-        });
+        if let Err(_) = core_task_supervisor().spawn(
+            TaskScope::Core,
+            "checkin-backfill",
+            move |_| {
+                let service = service.clone();
+                async move {
+                    for schedule in pending {
+                        let reason = format!(
+                            "启动补签（{}）",
+                            checkin_schedules::display_label(&schedule)
+                        );
+                        service
+                            .fire_and_settle(schedule.id.clone(), reason, "startup")
+                            .await;
+                    }
+                }
+            },
+        ) {
+            logging::verbose("[Checkin]", "停机中，放弃启动补签");
+        }
     }
 
-    /// 停调度（进程退出时用）。幂等：重复调用不会报错。
+    /// 停调度循环。幂等：重复调用不会报错。
     ///
-    /// 与 Node 的 `clearInterval` 语义对齐：只结束**循环**，不打断正在跑的
-    /// 那一次签到（abort 只会让任务在下一个 await 点结束，config.json 的写入是
-    /// 同步的，已落盘的 lastFiredDate 不会被回滚）。
+    /// ⚠️ 调用方不止进程停机：JNI `schedulerSet(off)`（用户在设置页关调度器）
+    /// 也走这里 —— 旧注释「进程退出时用」不成立。
+    ///
+    /// abort 的是**调度循环任务**：R44b 起循环体内只剩 sleep/扫描（fire 已移出，
+    /// 见 [`Self::tick`]），abort 立即生效且无副作用。进行中的签到 fire 任务在
+    /// supervisor 的 `checkin-fire` 名下，**不受本调用影响**，跑完自灭 ——
+    /// 「关掉调度器不掐进行中的签到」自此语义与实现一致（旧实现把 fire await
+    /// 在循环任务里，abort 会把签到掐在 HTTP await 点、lastFiredDate 未写）。
+    /// 进程停机的最终收尾（有界 abort+join）在 `shutdown_core_tasks`。
     pub fn stop(&self) {
         let task = {
             let mut inner = self.lock();

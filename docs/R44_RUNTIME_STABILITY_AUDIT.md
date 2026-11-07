@@ -8,8 +8,8 @@
 |---|---|---|---|
 | 1 | `stop_kernel()` 的 `child.wait()` 无超时 | `runtime.rs:832` 已有 `timeout(3s, wait)` + `kill_on_drop` 兜底 + 注释 | **台账过时，已修，风险关闭** |
 | 2 | 注释漂移指向 `backend::shutdown` | `auto_checkin.rs` 停机入口注释确实还写着 `backend::shutdown(&AppState)` 与「Tauri 的应用状态」 | **属实，本轮修正** |
-| 3 | `auto_checkin` 任务不 join | `stop()` 注释明确「与 Node clearInterval 对齐，不打断进行中的签到（abort 在下一个 await 点结束，config.json 写入同步安全）」；调用场景是进程退出，join 无意义 | **设计有意，裁定关闭** |
-| 4 | `GLOBAL_RUNTIME` 跨 runtime arm | `lib.rs:63` 是有意的兜底运行时（注释：「只承接非 Tokio 上下文发起的后台任务」），主路径不经过它 | **设计有意，裁定关闭** |
+| 3 | `auto_checkin` 任务不 join | ~~设计有意~~ **注释不可靠**：`stop()` 有运行时调用方（JNI `schedulerSet(off)`），「进程退出时用」不成立；循环任务与 `fire_for` 同体，abort 把进行中的签到掐在 HTTP await 点（lastFiredDate 未写）——与「不打断」注释相反 | **R44b 真修复**（见 §6） |
+| 4 | `GLOBAL_RUNTIME` 跨 runtime arm | ~~设计有意~~ **注释不可靠**：`try_current()` 分支让任务落点取决于调用线程（桌面 tauri 遗留假兼容）；bin 文档头声称 `#[tokio::main]`（实为手动 builder）。核验后 Android/headless 事实上单落 GLOBAL_RUNTIME，但这是巧合不是设计 | **R44b 真修复**（见 §6） |
 
 ## 2. 新发现并收口：`port_conflict.rs` 桌面版残留
 
@@ -69,3 +69,49 @@ Hyper-V/winnat/WSL2 出现即失败）；Kotlin JVM `GatewayStartFailureTest` 4 
 - CI：推送后 Run 结果见台账 §10 回填。
 - 设备侧（C 类，并入待验清单）：R43 锁真机语义 4 项 + headless 信号退出 +
   mihomo 子进程回收 + 端口冲突卡片/通知的真机观感。
+
+## 6. R44b — 注释不可靠，按代码事实重构（同日追加）
+
+> R44 首版曾把表 3/4 以「注释背书的设计有意」裁定关闭。复核结论：**注释不是证据**。
+> 两处的注释均与代码行为不符（或被后续改动漂移），本轮按代码事实真修复。
+
+### 6.1 `auto_checkin` stop 语义（真缺陷）
+
+核验事实：
+- `stop()` 两个调用方：`shutdown_core()`（进程停机）与 `jni_bridge::schedulerSet(off)`
+  （**运行时开关**，用户在设置页关调度器）——「进程退出时用」不成立。
+- 调度循环任务体内 `tick().await` → `fire_for().await`：**fire 与循环同体**。
+  `stop()` abort 循环任务 = 把进行中的签到掐在 HTTP await 点，lastFiredDate 未写，
+  与注释「不打断正在跑的那一次签到」**相反**。
+- `start()` 的启动补签是裸 `spawn_task`：stop() 管不到、停机无人收尾，还漏了
+  tick 路径的条目记账（qoderIntlPending 重试落账）。
+
+修复（复用 R35 的 CoreTaskSupervisor 范式，不发明新机制）：
+1. `tick()` 只扫描到点条目，fire 移入 supervisor（`TaskScope::Core` +
+   `"checkin-fire"` 固定名，同名活任务忽略 = 到点窗口重入天然防重）；
+   循环任务体内从此只剩 sleep/扫描，`stop()` 的 abort 立即生效且无副作用。
+2. `stop()` 语义自此与实现一致：abort 循环、fire 跑完自灭（关调度器不掐签到）；
+   进程停机的有界 abort+join 由 `shutdown_core_tasks` 承担（顺序：stop_global
+   先 abort 循环 → shutdown_core_tasks 收 fire/scheduled_tasks，见 lib.rs:46-48）。
+3. `fire_and_settle()`（fire_for + 记账同体）抽出，补签路径统一走它（补齐记账），
+   注册为 `"checkin-backfill"`。
+4. `stop()` 注释重写为真实语义（含旧实现的缺陷记录）。
+
+测试边界（诚实记录）：`AutoCheckin::new` 依赖 AccountStore/BillingService 真实例
+（AuthService 构造链深），本轮不造假实例测试；行为等价性由结构保证 ——
+循环体内不再存在 fire await（编译期可见），fire 的防重与收尾由 supervisor
+既有测试（duplicate_live_registration_is_ignored / shutdown_cancels_and_joins…）背书。
+另加 `lib.rs::runtime_tests::spawn_task_works_from_plain_thread` 回归锚点。
+
+### 6.2 runtime 收敛：单一权威运行时
+
+核验事实：Android（JNI 链路无 Tokio 上下文 + serve 本身由 spawn_task 拉起）与
+headless（bootstrap/start 全在 main 同步段）的**业务任务事实上只有
+GLOBAL_RUNTIME 一个落点**；`try_current()` 的 Ok 分支命中的 Handle 就是它自己。
+但这是巧合而非设计 —— 落点随调用线程变化的不确定性真实存在（bin 文档头还
+声称 `#[tokio::main]`，实为手动 builder，注释漂移又一例）。
+
+修复（`lib.rs::spawn_task`）：删除 `try_current()` 分支，恒走 `global_runtime()`。
+行为等价性：两条宿主链路的旧落点本来就是 GLOBAL_RUNTIME（见上），删除分支
+只消灭不确定性，零行为变化；`bin` 自建 runtime 保留（专职信号监听与 shutdown
+block_on 驱动，跨 runtime await/abort 合法），文档头注释重写为核实过的拓扑。
