@@ -529,7 +529,11 @@ impl AccountStore {
     ///
     /// `proxy` 是该账号解析出的出口（null = 直连），计费/签到等「拿着 session
     /// 直接发请求」的调用方无需再单独传代理参数；`proxyError` 非空表示配置的
-    /// 代理解析失败，调用方应回退直连并提示。
+    /// 代理解析失败，这类**辅助**链路回退直连即可（低频、报错只会更难排查）。
+    ///
+    /// 转发链路不读这两个字段的「回退直连」语义：它走 `get_session_by_id`，
+    /// 那里另带 `proxy_broken` —— 配置本身坏了必须停下（见
+    /// `proxies::ProxyResolution::Broken`）。
     ///
     /// ── 小浣熊桌面端账号的凭证（W3-T4）─────────────────────────
     /// 这类记录**故意不落 token**（凭证在 `~/.box-agent/config/auth.json`，
@@ -542,7 +546,9 @@ impl AccountStore {
     fn session_from_record(&self, record: &StoredAccount) -> Value {
         let edition = resolve_edition(record.edition().as_deref());
         let resolution = resolve_account_proxy(Some(&record.proxy()));
-        let (proxy, proxy_error) = split_resolution(resolution);
+        // 会话形态只带 (proxy, proxyError)：这两个字段是「拿着就能发请求」的
+        // 调用方的全部输入，转发层另走 `get_session_by_id` 拿 broken 标记
+        let (proxy, proxy_error, _broken) = split_resolution(resolution);
         let proxy_error_value = proxy_error
             .clone()
             .map(Value::String)
@@ -712,7 +718,7 @@ impl AccountStore {
         // 轮询档取**下一个**出口（游标属于「这条账号的出网进度」）：凭证读数是
         // 一次真实的出网准备，与展示口径分开，见 `resolve_account_proxy_rotating`。
         let resolution = resolve_account_proxy_rotating(Some(&record.proxy()), record.id());
-        let (proxy, proxy_error) = split_resolution(resolution);
+        let (proxy, proxy_error, _broken) = split_resolution(resolution);
         Some(CredentialsById {
             id: record.id().to_string(),
             name: record.name(),
@@ -744,12 +750,13 @@ impl AccountStore {
             return None;
         }
         let resolution = resolve_account_proxy_rotating(Some(&record.proxy()), record.id());
-        let (proxy, proxy_error) = split_resolution(resolution);
+        let (proxy, proxy_error, proxy_broken) = split_resolution(resolution);
         Some(SessionById {
             id: record.id().to_string(),
             session: self.session_from_record(&record),
             proxy,
             proxy_error,
+            proxy_broken,
         })
     }
 
@@ -863,18 +870,23 @@ pub(crate) fn forwards_requests(record: &StoredAccount) -> bool {
         .unwrap_or(true)
 }
 
-/// 把解析结果拆成 `(proxy, proxyError)`：失败时 proxy 为 null、
-/// error 说明原因（调用方据此回退直连并提示）。
+/// 把解析结果拆成 `(proxy, proxyError, broken)`：失败时 proxy 为 null、
+/// error 说明原因，`broken` 说明这是「配置本身坏了」而不是环境瞬时不可用。
 ///
 /// `proxy` 是 JSON（直接进会话对象）；`proxy_error` 是 `Option<String>`，
 /// 会话形态里的 `proxyError` 由调用方组装成 null/字符串。
-fn split_resolution(resolution: Option<ProxyResolution>) -> (Value, Option<String>) {
+///
+/// 第三个分量只有**转发选路**要（`Broken` 必须停下而不是回退直连，判据见
+/// `ProxyResolution` 的说明）。会话读数的其它调用方拿 `_` 忽略即可 —— 它们
+/// 是低频的辅助动作，回退直连比直接失败更有用。
+fn split_resolution(resolution: Option<ProxyResolution>) -> (Value, Option<String>, bool) {
     match resolution {
-        None => (Value::Null, None),
+        None => (Value::Null, None, false),
         Some(ProxyResolution::Resolved(ref proxy)) => {
-            (json!(proxy_json(proxy)), None)
+            (json!(proxy_json(proxy)), None, false)
         }
-        Some(ProxyResolution::Failed(message)) => (Value::Null, Some(message)),
+        Some(ProxyResolution::Failed(message)) => (Value::Null, Some(message), false),
+        Some(ProxyResolution::Broken(message)) => (Value::Null, Some(message), true),
     }
 }
 

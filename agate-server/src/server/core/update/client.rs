@@ -69,7 +69,7 @@ fn resolve_egress_candidates() -> Vec<(String, Option<ResolvedProxy>)> {
                 };
                 return vec![(label, Some(proxy))];
             }
-            Some(ProxyResolution::Failed(reason)) => {
+            Some(ProxyResolution::Failed(reason) | ProxyResolution::Broken(reason)) => {
                 logging::verbose(
                     "[Update]",
                     &format!("指定的更新出口不可用（{reason}），回退默认出口"),

@@ -676,6 +676,13 @@ pub struct SessionById {
     pub session: Value,
     pub proxy: Value,
     pub proxy_error: Option<String>,
+    /// 代理**配置本身**坏了（不是环境瞬时不可用），见
+    /// `proxies::ProxyResolution::Broken`。
+    ///
+    /// 转发层据此拒绝发出请求：这类坏法不改配置就一直坏，回退直连等于把
+    /// 用户「以为走了代理」的流量拿本机 IP 发出去。与 `proxy_error` 的区别是
+    /// 处置方式，不是有没有原因文案 —— 两者都带原因。
+    pub proxy_broken: bool,
 }
 
 #[cfg(test)]

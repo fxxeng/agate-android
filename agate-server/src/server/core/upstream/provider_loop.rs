@@ -618,6 +618,9 @@ async fn attempt_queue(
     // 同样顺延（粘性不等于无条件）。
     let conv_key = super::route_state::RouteState::conversation_key(ctx.client_headers, &ctx.body);
     let mut tried_ids: Vec<String> = Vec::new();
+    // 因「代理配置本身坏了」被跳过的最后一条原因。全队列都坏时把它报出去；
+    // 有一条能用就正常转发（见下面 'accounts 里的判定）。
+    let mut proxy_broken_reason: Option<String> = None;
     // ── 两份独立的预算（见 config::RetrySettings）─────────────────────
     //   - `budget`：同一个账号上还能**原地重发**几次。整份请求共用一份，
     //     由 `send_with_retry` 逐次扣减 —— 于是它天然花在「第一个真正发出去的
@@ -674,7 +677,7 @@ async fn attempt_queue(
         if ctx.telemetry.is_cancelled() {
             return Err(cancellation::cancelled_error());
         }
-        let mut target = rotate::select_target_account(
+        let mut target = match rotate::select_target_account(
             service,
             provider_ids,
             &cooldown_keys,
@@ -682,16 +685,62 @@ async fn attempt_queue(
             ctx.pinned_account,
             &conv_key,
         )
-        .await?;
+        .await
+        {
+            Ok(target) => target,
+            // 已经一条可选账号都没有了。如果之所以走到这一步，是因为把「代理
+            // 配置坏」的账号逐条跳过了，就把那条原因报出去 —— 「无可用账号」
+            // 会把用户引向完全错误的方向（账号明明在，坏的是那行代理配置）。
+            Err(error) => {
+                return Err(match proxy_broken_reason.take() {
+                    Some(reason) => GatewayError::with_status(502, proxy_broken_message(&reason)),
+                    None => error,
+                });
+            }
+        };
         if let Some(override_proxy) = ctx.proxy_override {
             target.proxy = override_proxy.clone();
             target.proxy_notice = None;
+            // 出口被**显式**换掉了：原账号代理配置坏不坏与本轮无关，
+            // 不清会把一次能出去的请求误判成 502
+            target.proxy_broken = false;
         }
         // 决策快照挂进 telemetry（最后一次为准：请求日志的「路由回放」显示
         // 的是最终承载那次选路的完整排序 —— 与 attempts 明细的换号链互补，
         // 那边回答「试了谁」，这边回答「当时为什么这么排」）。
         if let Some(decision) = target.decision.clone() {
             ctx.telemetry.set_route_decision(decision);
+        }
+        // ── 代理配置本身坏了：**不发请求**，明确失败 ────────────────
+        // 判据见 `ProxyResolution::Broken`：来源不认识 / 引用的池条目被删 /
+        // Clash 监听器没了或被禁用 / 协议不在白名单。这些不改配置就一直坏，
+        // 而回退直连会让「以为走了代理」的流量带着本机真实 IP 出去 —— 比直接
+        // 失败危险得多。位置在 rebind 与尝试起头**之前**：没有真的发出去，
+        // 就不该占一个账号的并发名额，也不该在明细里多一条尝试。
+        //
+        // 处置：记进「已试过」并换队列里的下一个，而不是立刻把整个请求判死
+        // —— 队列里只要有一条坏配置排在前面，立刻 502 会让「明明还有好账号」
+        // 的请求全部失败。全队列都坏时才回 502（原因用 `proxy_broken_reason`
+        // 带出去，见选路失败与循环耗尽两个出口）。
+        if target.proxy_broken {
+            let reason = target
+                .proxy_notice
+                .clone()
+                .unwrap_or_else(|| "账号的代理配置不可用".to_string());
+            match target.account_id.clone() {
+                Some(id) => {
+                    // 记进「已试过」再换下一个：否则队列里只要有一条坏代理账号
+                    // 排在前面，每条请求都会被它挡住 —— 而用户往往只想修一条
+                    // 配置、或者根本不知道它有配置。
+                    tried_ids.push(id);
+                    proxy_broken_reason = Some(reason);
+                    continue 'accounts;
+                }
+                // 没有账号 id（走默认登录态直发）不该带这个标记，兜一层
+                None => {
+                    return Err(GatewayError::with_status(502, proxy_broken_message(&reason)))
+                }
+            }
         }
         // 连接计数改绑到这一轮选中的账号：失败重试换账号时计数跟着走，
         // 于是「一个请求任意时刻只占一个账号」这条口径不需要每个分支各维护一次
@@ -2089,7 +2138,23 @@ async fn attempt_queue(
             }
         }
     }
-    Err(GatewayError::with_status(500, "上游转发重试次数超限"))
+    Err(match proxy_broken_reason.take() {
+        Some(reason) => GatewayError::with_status(502, proxy_broken_message(&reason)),
+        None => GatewayError::with_status(500, "上游转发重试次数超限"),
+    })
+}
+
+/// 「账号代理配置本身坏了」的统一文案：原因 + 为什么停下 + 怎么修。
+///
+/// 为什么要单抽一个函数：这条文案在三个出口都要用（选中坏账号时、
+/// 选路已无账号时、循环耗尽时），而它必须同时说清「不是网络抖了」和
+/// 「改哪里」—— 只写「代理不可用」会让人去测网络，去重启 Clash，
+/// 就是不会去看那行配置。
+fn proxy_broken_message(reason: &str) -> String {
+    format!(
+        "{reason}。为避免绕过代理直连上游（会暴露本机真实 IP），本次请求已停止；\
+         请修正该账号的代理配置，或把它改成直连后重试。"
+    )
 }
 
 /// 门控后的 Chat 响应形态：`Live` = 未消费的 `Response`（原样直通）；

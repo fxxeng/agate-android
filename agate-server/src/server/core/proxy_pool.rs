@@ -414,7 +414,7 @@ fn resolve_entry(
             proxy.label = name;
             Ok(proxy)
         }
-        Some(ProxyResolution::Failed(reason)) => Err(format!("代理「{name}」不可用: {reason}")),
+        Some(ProxyResolution::Failed(reason) | ProxyResolution::Broken(reason)) => Err(format!("代理「{name}」不可用: {reason}")),
         None => Err(format!("代理「{name}」配置不完整")),
     }
 }
@@ -433,7 +433,7 @@ fn describe_item(item: &Value) -> Value {
             }),
             Value::Null,
         ),
-        Some(ProxyResolution::Failed(reason)) => (Value::Null, Value::String(reason)),
+        Some(ProxyResolution::Failed(reason) | ProxyResolution::Broken(reason)) => (Value::Null, Value::String(reason)),
         None => (Value::Null, Value::String("配置不完整".to_string())),
     };
     json!({

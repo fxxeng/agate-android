@@ -167,7 +167,7 @@ fn egress_candidates() -> Result<Vec<Option<crate::server::core::proxies::Resolv
             Some(ProxyResolution::Resolved(_)) => Err(
                 "选定的下载出口没有可用的监听端口（内核还没为它分配端口），换一条线路再试".to_string(),
             ),
-            Some(ProxyResolution::Failed(reason)) => Err(format!(
+            Some(ProxyResolution::Failed(reason) | ProxyResolution::Broken(reason)) => Err(format!(
                 "选定的下载出口不可用（{reason}），重新选一条线路再试"
             )),
             None => Err("选定的下载出口已不存在，重新选一条线路再试".to_string()),

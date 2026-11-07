@@ -191,7 +191,7 @@ pub struct TokenResponse {
 pub fn account_proxy(record: &Value) -> Result<Option<ResolvedProxy>, GatewayError> {
     match crate::server::core::proxies::resolve_account_proxy(record.get("proxy")) {
         Some(ProxyResolution::Resolved(proxy)) => Ok(Some(proxy)),
-        Some(ProxyResolution::Failed(reason)) => Err(GatewayError::with_status(400, reason)),
+        Some(ProxyResolution::Failed(reason) | ProxyResolution::Broken(reason)) => Err(GatewayError::with_status(400, reason)),
         None => Ok(None),
     }
 }

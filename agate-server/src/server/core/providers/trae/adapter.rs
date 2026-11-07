@@ -344,7 +344,8 @@ async fn renew(
 pub(crate) fn account_proxy(record: &Value) -> Result<Option<ResolvedProxy>, GatewayError> {
     match crate::server::core::proxies::resolve_account_proxy(record.get("proxy")) {
         Some(crate::server::core::proxies::ProxyResolution::Resolved(proxy)) => Ok(Some(proxy)),
-        Some(crate::server::core::proxies::ProxyResolution::Failed(reason)) => {
+        Some(crate::server::core::proxies::ProxyResolution::Failed(reason)
+            | crate::server::core::proxies::ProxyResolution::Broken(reason)) => {
             Err(GatewayError::with_status(400, reason))
         }
         None => Ok(None),

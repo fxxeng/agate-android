@@ -317,6 +317,12 @@ pub(super) struct RouteTarget {
     /// 又看不到「这条请求其实是直连出去的」。带到这里之后，转发层把它记进
     /// **本轮尝试明细**的 `notice`，请求日志一次悬停就能看到，运行日志不再写。
     pub proxy_notice: Option<String>,
+    /// 该账号的代理**配置本身坏了**（`ProxyResolution::Broken`）。
+    ///
+    /// 转发层见到它就是「停止本次请求」而不是「回退直连」—— 理由见
+    /// `proxies::ProxyResolution` 的判别说明。挑在选路结果里传而不是让每处
+    /// 发请求的地方自己判：出口是选路这一步定的，判据也只能有一处。
+    pub proxy_broken: bool,
     /// 本次选路的**决策快照**（候选怎么排的、谁被跳过、为什么选中它 ——
     /// `routing::plan_route` 的输出；请求详情页的「路由回放」读它）。
     ///
