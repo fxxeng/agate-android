@@ -172,13 +172,20 @@ pub fn official_prompt_approx_chars() -> usize {
 /// 从这里取：上游发版抬高门槛时，改 `zcode_system.json` 一行即可，不会再出现
 /// 「常量在这、模板在那」两处漂移。模板损坏（只可能是打包事故）时回落到
 /// 下面这个字面量，保证头部仍然可发。
+///
+/// ── ⚠ 别急着跟官方版本号走（2026-11-08 实测）────────────────
+/// 版本从 3.16.2 抬到 3.17.2 的当版，每条推理请求都被上游以
+/// `405 request has been blocked due to unusual activity`（业务码 3012）拒收，
+/// 改回 3.16.2 立即恢复 —— 门槛并没有抬高，「越新越像官方」在这条链路
+/// 不成立，声称一个设备指纹没登记过的版本号反而触发风控。再动这个值前
+/// 先用真实账号实测，别只看官方客户端的当前版本。
 pub fn template_client_version() -> &'static str {
     system_data()
         .and_then(|data| data.get("clientVersion"))
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|text| !text.is_empty())
-        .unwrap_or("3.17.2")
+        .unwrap_or("3.16.2")
 }
 
 /// 业务码 → 可执行的提示（`None` = 没见过的码，按上游原文透传）。
