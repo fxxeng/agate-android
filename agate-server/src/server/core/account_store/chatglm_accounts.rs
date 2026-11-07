@@ -252,6 +252,37 @@ impl AccountStore {
         self.with_conn(&_guard, |conn| sql::put(conn, &record))?;
         Ok(())
     }
+
+    /// chatglm 存量嵌套令牌的一次性修复入口（R46/T4 补接线）：迁移本体与
+    /// 字段口径见下方自由函数 `migrate_nested_tokens`。此前该函数只有测试
+    /// 调用、生产零调用，存量账号永远救不回来——这里补上 bootstrap 的真实
+    /// 路径（`account_bootstrap::run`，与 `migrate_rate_limit_keys` 同一条
+    /// 位置纪律：早于任何转发）。
+    ///
+    /// 与 `store_admin::migrate_rate_limit_keys` 的差别：它必须两段式（判定要调
+    /// `wire_target_for_provider` 扫模型清单，持锁调外部依赖有隐式死锁面）；
+    /// 本迁移只做记录内键搬运、零外部调用，直接单段式 guard+load+迁移，
+    /// 无候选时迁移返回 0、不落盘（`save_state` 根本不会被调）。判据用
+    /// `load` 的**原始记录**而不是 `list_accounts` 的公开视图 —— 视图是展示
+    /// 形态，迁移的口径在库这一侧。
+    ///
+    /// 失败只记日志、返回 0（下次启动重试，迁移幂等）。
+    pub fn migrate_nested_tokens(&self) -> usize {
+        let guard = self.guard();
+        let mut state = self.load(&guard);
+        let healed = migrate_nested_tokens(&mut state.accounts);
+        if healed == 0 {
+            return 0;
+        }
+        if let Err(error) = self.save(&state, &guard) {
+            logging::log(
+                "[Accounts]",
+                &format!("❌ chatglm 嵌套令牌迁移落库失败（下次启动会重试）: {error}"),
+            );
+            return 0;
+        }
+        healed
+    }
 }
 
 /// 启动迁移：把历史记录里嵌套的 `auth.accessToken` 提升到**顶层**
@@ -471,6 +502,61 @@ mod tests {
         );
         // 幂等：再跑一遍无事发生、不写库
         assert_eq!(migrate_nested_tokens(&mut accounts), 0);
+    }
+
+    /// **接线锁**（R46/T4）：迁移必须从 store 入口可达——此前只有本文件的
+    /// Vec 级测试调用、生产路径零调用，存量账号在真机上永远救不回来（lib
+    /// 的 dead_code 警告也正来自这份「只有测试用」）。本测试走 `AccountStore`
+    /// 真实例（TempDb），锁的是 bootstrap 的真实路径：落库、判据恢复、幂等。
+    #[test]
+    fn nested_token_migration_is_reachable_through_the_store() {
+        let (db, _keep) =
+            crate::server::db::test_temp::TempDb::open("chatglm-nested-token-wiring");
+        let store = AccountStore::with_db(Some(db));
+        // 造一条「首版形态」存量记录：令牌在嵌套 auth 里（绕过写入侧的新口径，
+        // 直接按 save_state 差异落库，等价于老版本写下的数据）
+        let legacy = StoredAccount::from_map(
+            json!({
+                "id": "6ad26bd46976b1c1ab1c2cb2",
+                "provider": "chatglm",
+                "auth": {
+                    "accessToken": "nested-access-token",
+                    "refreshToken": "nested-refresh-token",
+                },
+                "deviceId": "c9074ab1-208b-4255-8f71-09cc2ce32278",
+            })
+            .as_object()
+            .cloned()
+            .unwrap_or_default(),
+        );
+        store.with_lock(|guard| {
+            let mut state = store.load_locked(guard);
+            state.accounts.push(legacy);
+            store
+                .save_locked(&state, guard)
+                .expect("存量种子记录应当能落库");
+        });
+
+        // 迁移前：判据不认（整家静默消失的那个状态）
+        let before = store.with_lock(|guard| store.load_locked(guard));
+        assert_eq!(before.accounts.len(), 1);
+        assert!(!before.accounts[0].has_credentials());
+
+        let healed = store.migrate_nested_tokens();
+        assert_eq!(healed, 1, "应当修复 1 条");
+
+        // 落库后（load_locked 每轮都从库里重读）：顶层有值、判据认了、空壳清掉
+        let after = store.with_lock(|guard| store.load_locked(guard));
+        assert!(
+            after.accounts[0].has_credentials(),
+            "迁移后整家应当回到选路与界面"
+        );
+        assert_eq!(after.accounts[0].access_token(), "nested-access-token");
+        assert_eq!(after.accounts[0].refresh_token(), "nested-refresh-token");
+        assert!(after.accounts[0].get("auth").is_none(), "空壳应当清掉");
+
+        // 幂等：再跑一遍返回 0、不重复写
+        assert_eq!(store.migrate_nested_tokens(), 0);
     }
 
     /// 迁移**不碰别的家**：判据是本家 provider，别家的 `auth` 原样留着

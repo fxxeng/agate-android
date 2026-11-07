@@ -177,6 +177,22 @@ pub(crate) fn run(store: &AccountStore) {
             ),
         );
     }
+    // chatglm 存量嵌套令牌的一次性修复（R46/T4 补接线）：首版把令牌写进嵌套
+    // `auth`，而 `has_credentials()`（转发选路 / 余额查询 / 界面三处共用判据）
+    // 只读顶层 —— 那几条存量账号会「整家静默消失」。写入侧已改顶层键，但已
+    // 落库的记录不会自己变好，必须在这里补一次幂等迁移（本体与口径见
+    // `chatglm_accounts::migrate_nested_tokens` 的文档注释）。与上面的限流键
+    // 清理同一条位置纪律：早于任何转发。
+    let healed = store.migrate_nested_tokens();
+    if healed > 0 {
+        logging::log(
+            "[Accounts]",
+            &format!(
+                "🧹 已修复 {} 条 chatglm 存量账号的嵌套令牌（提升到顶层，重新可被选路）",
+                healed
+            ),
+        );
+    }
     // 三家旧项目导入都依赖桌面用户主目录（HOME / USERPROFILE）。
     // Android 的进程工作目录不是用户主目录；若 HOME 缺失，旧实现会回退到
     // `.`，随后把「没找到旧文件」写成一次性完成标记。用户之后补齐环境或迁入

@@ -315,10 +315,17 @@ mod local_gates {
     fn a_gate_expires_rather_than_waiting_for_a_release() {
         let _slot = lock_for_tests();
         clear_for_tests();
-        assert!(hold("zcode", "令牌池为空"));
+        // 注入时钟基准先取、闸门创建也走注入时钟（盖戳 = base 精确对齐）。
+        // 原写法 hold() 真实时钟盖戳、base 取在其后：盖戳与取基准之间只要隔
+        // ≥1ms，「寿命内仍挡着」的断言就随机翻车（编译高负载下实测抖过一次）；
+        // 只把 base 提前到 hold() 之前，抖动会挪到「到点放行」那一头——两个
+        // 方向都有 1ms 竞态，唯一稳的修法是盖戳与基准同源。改用 hold_at(base)
+        // 后两头断言变成纯数学；hold() 的真实时钟盖戳只是一行委托
+        // （hold_at(now_ms())），没有需要单独覆盖的分支。
+        let base = logging::now_ms();
+        assert!(hold_at("zcode", "令牌池为空", base));
         // 全程用注入时钟做 TTL 判定：真实时钟下这条只能靠睡眠验证，而睡眠要么
         // 睡满两分钟、要么睡不到 TTL（后者等于什么都没测）。
-        let base = logging::now_ms();
         assert!(
             gated_at("zcode", base + GATE_TTL_MS - 1),
             "寿命内仍然挡着 —— 比令牌 TTL 还短就放行是白挡"

@@ -259,10 +259,12 @@ impl AccountStore {
 
     /// 写回全部账号（**按差异写**，见 `sql::save_state`）。
     ///
-    /// 这个入口只服务「本来就是整份集合的操作」，眼下三处调用：
+    /// 这个入口只服务「本来就是整份集合的操作」，眼下四处调用：
     ///   - `account_transfer::import_accounts`（导入合并，经 `save_locked`）；
     ///   - `promote_to_front`（置顶要整队重新编号，见 `store_crud.rs`）；
-    ///   - `migrate_startup`（启动迁移的整队与拆池改名，见 `store_admin.rs`）。
+    ///   - `migrate_startup`（启动迁移的整队与拆池改名，见 `store_admin.rs`）；
+    ///   - `chatglm_accounts::migrate_nested_tokens`（存量嵌套令牌修复，
+    ///     R46/T4 补接线，与 migrate_startup 同属启动迁移整队形态）。
     /// **不属于它的**：单条增删改（各自只碰一行，走 `sql::put` /
     /// `sql::update_in_place` / `sql::delete`）；批量操作与三家旧数据导入
     /// （都只需要「逐条写自己那几行」，各自在 `with_conn_mut` 里开事务、
