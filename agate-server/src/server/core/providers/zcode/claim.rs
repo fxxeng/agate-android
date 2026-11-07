@@ -250,13 +250,11 @@ pub fn app_version() -> String {
 
 /// 平台标识（参考实现的 `${process.platform}-${process.arch}`）。
 ///
-/// 上游把它当「客户端形态」的一部分。本网关只跑在这三端上，映射写死即可；
-/// 未知平台回落到 `win32-x64`（上游对未知值不报错，只是可能不满足活动的
+/// 上游把它当「客户端形态」的一部分。macOS / Linux 构建各取所得；其余目标
+/// （Android）回落到 `win32-x64`（上游对未知值不报错，只是可能不满足活动的
 /// 客户端白名单，那时会如实回 `1004`）。
 pub fn platform() -> &'static str {
-    if cfg!(target_os = "windows") {
-        "win32-x64"
-    } else if cfg!(target_os = "macos") {
+    if cfg!(target_os = "macos") {
         if cfg!(target_arch = "aarch64") {
             "darwin-arm64"
         } else {
@@ -279,11 +277,9 @@ pub fn platform() -> &'static str {
 /// 这一处（两处各写一份 cfg 链，迟早有一处漏改）。与 [`platform`] 的区别：
 /// 那个是「平台-架构」（`win32-x64`），这个是纯类别名 —— 上游按它分流、
 /// 不看架构。认不出的平台落 `linux`（参考实现 `normalizeOsCategory` 的
-/// 默认分支同义）。
+/// 默认分支同义；Windows 分支已随桌面版删除）。
 pub fn os_category() -> &'static str {
-    if cfg!(target_os = "windows") {
-        "windows"
-    } else if cfg!(target_os = "macos") {
+    if cfg!(target_os = "macos") {
         "macos"
     } else {
         "linux"

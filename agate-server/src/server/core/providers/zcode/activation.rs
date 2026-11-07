@@ -38,9 +38,8 @@
 //! 放进响应，但**不**把领取本身判失败。
 //!
 //! ── 硬约束 ──────────────────────────────────────────────────
-//! release 是 `panic=abort`：本文件零 unwrap/expect/panic；探测本机环境要起
-//! 子进程（`tzutil` / `reg`），因此走 `tokio::process` —— 不在异步线程上做
-//! 阻塞调用（见 `probe_timezone` / `probe_os_version`）。
+//! release 是 `panic=abort`：本文件零 unwrap/expect/panic；本机环境探测
+//! （`probe_timezone` / `probe_os_version`）只在异步上下文里做非阻塞调用。
 
 use std::sync::OnceLock;
 
@@ -213,65 +212,17 @@ async fn probe_os_version() -> String {
     CACHE.get_or_init(|| probed).clone()
 }
 
-/// Windows：`tzutil /g` → IANA 名；其它平台与认不出的名字给 `unknown`。
+/// 时区归属（IANA 名）。
 ///
-/// 映射表只收参考实现列出的那几个（中国 / 新加坡 / 东京 / UTC）：其余时区在
-/// 上游那边只影响统计归属，给 `unknown` 是参考实现自己的兜底，不算丢信息。
-/// `fork` 出来取值的写法与参考实现一致：`tzutil` 只在 Windows 存在，
-/// 非 Windows 直接短路（连子进程都不起）。
+/// 参考实现 fork `tzutil`（Windows 专属）取值，映射表只收它列出的那几个
+/// （中国 / 新加坡 / 东京 / UTC）；该支撑已随桌面版删除，与「认不出的时区」
+/// 同一兜底：给 `unknown` —— 上游只拿它做统计归属，不算丢信息。
 async fn timezone_now() -> String {
-    #[cfg(not(windows))]
-    {
-        "unknown".to_string()
-    }
-    #[cfg(windows)]
-    {
-        // tzutil / reg 都是控制台程序：桌面端（GUI 进程）直接起会闪一个黑框，
-        // 与内核进程同一成因，见 `sub_kernel::runtime::start_kernel` 的说明
-        let mut command = tokio::process::Command::new("tzutil");
-        command.arg("/g");
-        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-        let output = command.output().await.ok();
-        let name = output
-            .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
-            .unwrap_or_default();
-        match name.as_str() {
-            "China Standard Time" | "China Daylight Time" => "Asia/Shanghai",
-            "Singapore Standard Time" => "Asia/Singapore",
-            "Tokyo Standard Time" => "Asia/Tokyo",
-            "UTC" => "UTC",
-            _ => "unknown",
-        }
-        .to_string()
-    }
+    "unknown".to_string()
 }
 
-/// Windows：注册表 `CurrentBuildNumber` → `10.0.{build}`；其它平台给空串。
+/// 客户端 OS 版本串（参考实现读注册表 `CurrentBuildNumber`，Windows 专属；
+/// 该支撑已随桌面版删除，给空串由上游按缺省处理）。
 async fn os_version_now() -> String {
-    #[cfg(not(windows))]
-    {
-        String::new()
-    }
-    #[cfg(windows)]
-    {
-        let mut command = tokio::process::Command::new("reg");
-        command.args([
-            "query",
-            r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion",
-            "/v",
-            "CurrentBuildNumber",
-        ]);
-        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW（同上）
-        let output = command.output().await.ok();
-        let text = output
-            .map(|out| String::from_utf8_lossy(&out.stdout).to_string())
-            .unwrap_or_default();
-        // `reg query` 的输出形如 `    CurrentBuildNumber    REG_SZ    26200`
-        // 取含键名那一行里最后一个非空字段
-        text.lines()
-            .find(|line| line.contains("CurrentBuildNumber"))
-            .and_then(|line| line.split_whitespace().last())
-            .map(|build| format!("10.0.{build}"))
-            .unwrap_or_default()
-    }
+    String::new()
 }

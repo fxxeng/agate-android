@@ -49,12 +49,11 @@
 //! AutoClaw 桌面端历史版本/手工改过的 auth.json 可能是明文，照抄这个宽容行为，
 //! 免得「明明是明文却报解密失败」。
 //!
-//! ── 平台约束与桩实现 ────────────────────────────────────────
-//! DPAPI（`CryptUnprotectData`）只有 Windows 有：本项目只发 Windows 包，但代码
-//! 必须能在非 Windows 上**编译通过**（CI / 交叉编译安全）。因此 win32 调用收在
-//! `#[cfg(windows)]` 的 `dpapi` 子模块里，非 Windows 是一份返回中文错误的桩
-//! （对齐源实现 `process.platform !== 'win32'` 时抛
-//! 「DPAPI 解密仅支持 Windows 平台」的行为）。
+//! ── 平台约束 ────────────────────────────────────────────────
+//! DPAPI（`CryptUnprotectData`）只有 Windows 有：win32 调用已随 Android-only
+//! 主线删除，非 Windows 上直接报「DPAPI 解密仅支持 Windows 平台」（对齐源实现
+//! `process.platform !== 'win32'` 的行为）。`enc:` 明文字段与 openclaw.json
+//! 来源不受影响。
 //!
 //! ── panic=abort：全程 Result ────────────────────────────────
 //! release 是 panic=abort（见 Cargo.toml 的 profile），一条被截断的 base64 /
@@ -329,79 +328,9 @@ pub fn strip_bearer(value: &str) -> String {
     trimmed.to_string()
 }
 
-// ─── Windows DPAPI ──────────────────────────────────────────
-
-/// DPAPI 的 `CryptUnprotectData` 包装（仅 Windows 编译）。
-///
-/// 用 `windows` crate（架构文档 §10.1 指定的依赖）：`windows-sys` 是扁平句柄 +
-/// 手写 `GetLastError`，而这里要的是「一次调用 + 结构化错误 + 释放 DPAPI
-/// 分配的内存」。`windows` 的绑定把 `BOOL` 返回值直接包成
-/// `windows_core::Result<()>`（失败时自动 `Error::from_win32()`），
-/// 输出的 `CRYPT_INTEGER_BLOB.pbData` 又是带 Drop 语义的 `HLOCAL`
-/// （底层 `LocalFree`），不必手写释放，也**不会漏**。
-/// 两者都是 Windows 专属依赖，只开 `Win32_Security_Cryptography` 一个叶子
-/// feature（见 Cargo.toml）。
-///
-/// `dwFlags` 传 0，与源实现
-/// `[ProtectedData]::Unprotect(blob, $null, 'CurrentUser')` 的语义一致
-/// （.NET 内部同样是 flags=0；作用域由 `CurrentUser` 决定 = 不传
-/// CRYPTPROTECT_LOCAL_MACHINE）。
-#[cfg(windows)]
-mod dpapi {
-    use windows::core::Owned;
-    use windows::Win32::Foundation::HLOCAL;
-    use windows::Win32::Security::Cryptography::{CryptUnprotectData, CRYPT_INTEGER_BLOB};
-
-    /// 解开一段 DPAPI blob（当前用户作用域）并返回明文字节
-    pub fn unprotect(blob: &[u8]) -> Result<Vec<u8>, String> {
-        if blob.is_empty() {
-            return Err("DPAPI blob 为空".to_string());
-        }
-        let input = CRYPT_INTEGER_BLOB {
-            cbData: blob.len() as u32,
-            pbData: blob.as_ptr() as *mut u8,
-        };
-        let mut output = CRYPT_INTEGER_BLOB::default();
-        // SAFETY：input 指向的切片在本次调用期间存活；output 是出参，由 DPAPI
-        // 填充；其余四个可选参数按 API 约定传空。返回的 `Result` 由 windows crate
-        // 从 `GetLastError()` 构造（错误码进 message），失败时 output 不被填充。
-        unsafe { CryptUnprotectData(&input, None, None, None, None, 0, &mut output) }.map_err(
-            |error| {
-                format!(
-                    "DPAPI 解密 os_crypt 密钥失败: {error}（Local State 属于另一个 Windows 用户时不通用）"
-                )
-            },
-        )?;
-        if output.pbData.is_null() || output.cbData == 0 {
-            return Err("DPAPI 解密结果为空".to_string());
-        }
-        // 用 `Owned<HLOCAL>` 接管这块 DPAPI 分配的内存：它的 Drop 会调
-        // `HLOCAL` 的 `Free::free()`（底层 LocalFree）。**不能**直接对 HLOCAL
-        // 调 `drop()` —— 它是 Copy 类型，drop 一个副本什么也不会释放（内存泄漏）。
-        // SAFETY：成功返回的 pbData 是调用方拥有的 LocalAlloc 内存，且这里是它
-        // 唯一的接管点（下面按引用读，不复制句柄）。
-        let owned = unsafe { Owned::new(HLOCAL(output.pbData as *mut _)) };
-        // SAFETY：pbData 指向 cbData 个有效字节（DPAPI 成功返回的约定）；
-        // `owned` 在本函数结束前存活，所以这块内存在拷贝期间一直有效。
-        let plaintext =
-            unsafe { std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec() };
-        drop(owned);
-        if plaintext.is_empty() {
-            return Err("DPAPI 解密结果为空".to_string());
-        }
-        Ok(plaintext)
-    }
-}
-
-/// 非 Windows 桩：DPAPI 是 Windows 独有的（`CryptUnprotectData` 只在 crypt32.dll）。
-///
-/// 文案对齐源实现：`process.platform !== 'win32'` 时
-/// `CryptoHelperError('DPAPI 解密仅支持 Windows 平台')`。
-/// 这里保留同一句话，让「换了平台跑」与「解密失败」在日志里能区分开。
-/// 本模块的其余部分（base64 / AES-GCM / JWT）在非 Windows 上照常可用，
-/// 所以只有这一个函数需要分平台 —— `enc:` 明文字段与 openclaw.json 那两条
-/// 来源在非 Windows 上仍能工作。
-#[cfg(not(windows))]
+/// DPAPI 是 Windows 独有的（`CryptUnprotectData` 只在 crypt32.dll）；win32
+/// 调用已随 Android-only 主线删除，这里保留同一句报错，让「换了平台跑」与
+/// 「解密失败」在日志里能区分开。
 mod dpapi {
     pub fn unprotect(_blob: &[u8]) -> Result<Vec<u8>, String> {
         Err("DPAPI 解密仅支持 Windows 平台".to_string())

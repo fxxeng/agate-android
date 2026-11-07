@@ -263,10 +263,7 @@ pub(super) fn signed_auth_headers(token: &str) -> Vec<(String, String)> {
         // 「官方客户端指纹」—— 在这条链路上做未经实测的删减，风险方向是签名失败
         // （code 400002），收益是零。
         ("X-Harness-Type".to_string(), "zcode".to_string()),
-        (
-            "X-Tm".to_string(),
-            if cfg!(windows) { "win" } else { "linux" }.to_string(),
-        ),
+        ("X-Tm".to_string(), "linux".to_string()),
         ("X-Lang".to_string(), "zh-CN".to_string()),
         ("X-Channel".to_string(), "official".to_string()),
         ("X-Auth-Appid".to_string(), AUTH_APP_ID.to_string()),

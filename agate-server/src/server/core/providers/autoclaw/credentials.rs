@@ -237,11 +237,11 @@ fn home_dir() -> PathBuf {
 }
 
 /// AutoClaw 用户数据目录（源实现 `defaultUserDataDir`）：
-/// `AUTOCLAW_USER_DATA_DIR` > `%APPDATA%/AutoClaw`。
+/// `AUTOCLAW_USER_DATA_DIR` 显式指定；桌面默认目录发现（`%APPDATA%/AutoClaw`）
+/// 已随 Windows 支撑删除。
 ///
-/// 源实现在非 Windows 上返回 null（整条 auth.json 来源不可用）——
-/// 这里保持同一语义：**返回 None 而不是猜一个路径**。下游会给出
-/// 「仅支持 Windows」的中文错误，随后回落到 openclaw.json 来源。
+/// 保持源实现的语义：找不到就**返回 None 而不是猜一个路径**，下游给出可读
+/// 错误并回落到 openclaw.json 来源。
 fn default_user_data_dir() -> Option<PathBuf> {
     if let Ok(value) = std::env::var("AUTOCLAW_USER_DATA_DIR") {
         let trimmed = value.trim();
@@ -249,19 +249,10 @@ fn default_user_data_dir() -> Option<PathBuf> {
             return Some(PathBuf::from(trimmed));
         }
     }
-    if !cfg!(windows) {
-        return None;
-    }
-    std::env::var("APPDATA")
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .map(|appdata| appdata.join("AutoClaw"))
-        .or_else(|| Some(home_dir().join("AppData").join("Roaming").join("AutoClaw")))
+    None
 }
 
-/// `auth.json` 路径（导入与状态查询用；非 Windows 上为 None）
+/// `auth.json` 路径（导入与状态查询用；桌面目录不可发现时为 None）
 pub fn desktop_auth_file() -> Option<PathBuf> {
     default_user_data_dir().map(|dir| dir.join("auth.json"))
 }

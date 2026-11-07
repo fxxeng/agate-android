@@ -25,17 +25,16 @@
 //! 缺失时才现生成并**写回**（见 `credentials::resolve_device_id`）。
 //!
 //! ── 本机登录态（`importDesktop`）──────────────────────────────
-//! 客户端 `%APPDATA%\chatglm\Network\Cookies` 是 Chromium 的 SQLite。
-//! 与 KukuAI 不同，**本家这份是 DPAPI 加密的**（`Local State` 里有
-//! `os_crypt.encrypted_key`，cookie 值 `v10` 前缀）—— 因此只有 Windows
-//! 且能解 DPAPI 时才可读；解不出就如实告知用户改用粘贴凭证
-//! （与 AutoClaw 的处置一致：macOS / 环境不支持时整段收起）。
+//! 客户端 `%APPDATA%\chatglm\Network\Cookies` 是 Chromium 的 SQLite，
+//! **本家这份是 DPAPI 加密的**（`Local State` 里有 `os_crypt.encrypted_key`，
+//! cookie 值 `v10` 前缀）。DPAPI 解密支撑已随 Windows 桌面版删除 —— 本机
+//! 导入入口在 Android / headless 上整体收起，引导用户改用粘贴凭证
+//! （与 AutoClaw 的处置一致）。
 //!
 //! ── 硬约束 ──────────────────────────────────────────────────
 //! release 是 `panic=abort`：本文件零 unwrap/expect/panic。
 
 use serde_json::Value;
-use std::path::PathBuf;
 
 use crate::server::errors::GatewayError;
 
@@ -297,155 +296,22 @@ pub fn from_record(record: Option<&Value>) -> Result<ChatglmCredentials, Gateway
     })
 }
 
-/// 本机客户端 userData 目录候选（找不到返回空列表）。
-///
-/// 固定形态（Electron 默认）：`%APPDATA%\chatglm`；另有厂商目录名不同的
-/// 通配兜底（与 KukuAI 同一处置：靠名字猜不到就别只认一个名字）。
-pub fn user_data_dirs() -> Vec<PathBuf> {
-    let mut dirs: Vec<PathBuf> = Vec::new();
-    for base in ["APPDATA", "HOME"] {
-        let Some(value) = std::env::var_os(base) else {
-            continue;
-        };
-        let base = PathBuf::from(value);
-        for name in ["chatglm", "智谱清言", "ZPHZ"] {
-            let direct = base.join(name);
-            if direct.is_dir() && !dirs.contains(&direct) {
-                dirs.push(direct);
-            }
-        }
-    }
-    dirs
-}
-
-/// 定位本机客户端的 Cookies 文件（找不到返回 None）
-pub fn cookies_path() -> Option<PathBuf> {
-    for dir in user_data_dirs() {
-        let path = dir.join("Network").join("Cookies");
-        if path.is_file() {
-            return Some(path);
-        }
-    }
-    None
-}
-
 /// 本机登录态是否**可能**可读（决定「导入本机登录态」入口是否展示）。
 ///
-/// 与 KukuAI 的差别：本家 Cookies 是 DPAPI 加密的，只有 Windows 能解；
-/// 非 Windows 一律返回 false（界面层据此刻意收起入口，而不是让人点了才失败）。
+/// 本家 Cookies 是 Chromium os_crypt 密文（密钥由 DPAPI 保护），解密支撑
+/// 已随 Windows 桌面版删除 —— 一律返回 false（界面层据此刻意收起入口，
+/// 而不是让人点了才失败）。
 pub fn desktop_import_supported() -> bool {
-    cfg!(windows) && cookies_path().is_some()
+    false
 }
 
-/// 从 Cookies SQLite 里读登录态，返回 `(access_token, refresh_token)`。
+/// 从 Cookies SQLite 里读登录态（桌面端读取支撑已随 Windows 删除）。
 ///
-/// ── 与本机其他家的两处关键差别 ──────────────────────────────────
-///   1. **值是 DPAPI 加密的**：与 KukuAI（明文 `value` 列）不同，本家
-///      `encrypted_value` 是 Chromium os_crypt 密文（`v10` 前缀 + AES-256-GCM），
-///      密钥在 `Local State` 的 `os_crypt.encrypted_key` 里、由 DPAPI 保护。
-///      解密链**不重写**：直接复用 AutoClaw 已实现并经实测的那一份
-///      （`autoclaw::crypto`，见那边的模块头）—— 两家的加密方案是同一个
-///      Chromium os_crypt，抄第二份只会多一处会漂移的知识；
-///   2. **客户端运行时会独占 Cookies 文件**：读不到时给出「请先关闭客户端」
-///      这类可执行文案（与 KukuAI 同一处置）。
-///
-/// 返回值三态：
-///   - `Ok(Some((access, refresh)))` 读到了；
-///   - `Ok(None)` 文件在但**没有本家的登录 cookie**（未登录 / 只剩访客）；
-///   - `Err(文案)` 读取或解密失败（客户端占用 / 非 Windows / 密钥不匹配）。
-#[cfg(windows)]
-pub fn read_desktop_credentials() -> Result<Option<(String, String)>, String> {
-    let Some(cookies) = cookies_path() else {
-        return Ok(None);
-    };
-    let Some(user_data) = cookies.parent().and_then(|path| path.parent()) else {
-        return Err("客户端数据目录结构不认识（找不到 Network 的上级目录）".to_string());
-    };
-    // ① os_crypt 密钥（DPAPI 解 `Local State`；AutoClaw 那份带进程级缓存）
-    let local_state = user_data.join("Local State");
-    let aes_key = crate::server::core::providers::autoclaw::crypto::os_crypt_aes_key(&local_state)
-        .map_err(|reason| format!("读取客户端加密密钥失败：{reason}"))?;
-    // ② 读 Cookies 表（客户端在跑时 SQLite 可能被独占 —— 如实说明）
-    let mut rows: Vec<(String, String, Vec<u8>)> = Vec::new();
-    {
-        let connection = rusqlite::Connection::open_with_flags(
-            &cookies,
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
-                | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
-        )
-        .map_err(|error| {
-            format!(
-                "打不开客户端 Cookies（{error}）。若智谱清言客户端正在运行，\
-                 请先退出它再试"
-            )
-        })?;
-        let mut statement = connection
-            .prepare("SELECT name, value, encrypted_value FROM cookies WHERE name LIKE 'chatglm%'")
-            .map_err(|error| format!("读取客户端 Cookies 失败：{error}"))?;
-        let mapped = statement
-            .query_map([], |row| {
-                let name: String = row.get(0)?;
-                let value: String = row.get(1).unwrap_or_default();
-                let encrypted: Vec<u8> = row.get(2).unwrap_or_default();
-                Ok((name, value, encrypted))
-            })
-            .map_err(|error| format!("读取客户端 Cookies 失败：{error}"))?;
-        for item in mapped.flatten() {
-            rows.push(item);
-        }
-    }
-    // ③ 逐条解出明文值（明文列优先；空则解 os_crypt 密文）
-    let mut values: Vec<(String, String)> = Vec::new();
-    for (name, plain, encrypted) in rows {
-        if !plain.trim().is_empty() {
-            values.push((name, plain));
-            continue;
-        }
-        if encrypted.is_empty() {
-            continue;
-        }
-        // Chromium 密文形态：`v10` + nonce + ciphertext + tag，
-        // 与 AutoClaw 的 `enc:` 字段同一拼法 —— 加前缀走它那条解密链
-        let encoded = base64_encode(&encrypted);
-        match crate::server::core::providers::autoclaw::crypto::decrypt_enc_value(
-            &format!("enc:{encoded}"),
-            Some(&aes_key),
-        ) {
-            Ok(text) => values.push((name, text)),
-            Err(reason) => {
-                return Err(format!("解密客户端登录态失败：{reason}"));
-            }
-        }
-    }
-    let pick = |target: &str| {
-        values
-            .iter()
-            .find(|(name, _)| name == target)
-            .map(|(_, value)| value.clone())
-            .filter(|value| !value.trim().is_empty())
-    };
-    let access = pick(COOKIE_ACCESS_TOKEN);
-    let refresh = pick(COOKIE_REFRESH_TOKEN);
-    match (access, refresh) {
-        (Some(access), refresh) => Ok(Some((access, refresh.unwrap_or_default()))),
-        // 只有 refresh 也能用（`user/refresh` 能换出 access）
-        (None, Some(refresh)) => Ok(Some((String::new(), refresh))),
-        (None, None) => Ok(None),
-    }
-}
-
-/// 非 Windows：DPAPI 不可用 —— 如实报不可导入（界面层已收起入口）
-#[cfg(not(windows))]
+/// 参考链路：读 `Local State` 的 DPAPI 加密密钥解 Cookies 的
+/// `encrypted_value`（复用 `autoclaw::crypto` 那份实现）；Android / headless
+/// 上如实报不可导入（入口已被 [`desktop_import_supported`] 收起）。
 pub fn read_desktop_credentials() -> Result<Option<(String, String)>, String> {
     Err("导入本机登录态仅在 Windows 可用（客户端登录态是 DPAPI 加密的）".to_string())
-}
-
-/// 标准 base64 编码（Chromium 的 `encrypted_value` 是无前缀二进制，
-/// 拼回 `enc:` 形态时需要它；与 AutoClaw 的解码引擎互为逆操作）
-#[cfg(windows)]
-fn base64_encode(bytes: &[u8]) -> String {
-    use base64::Engine as _;
-    base64::engine::general_purpose::STANDARD.encode(bytes)
 }
 
 #[cfg(test)]

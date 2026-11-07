@@ -152,19 +152,6 @@ fn resolve_config_dir_override(primary: Option<&str>, legacy: Option<&str>) -> O
         .next()
 }
 
-/// 解析必须是绝对路径的宿主目录环境变量（例如 Windows LOCALAPPDATA）。
-///
-/// 与 `resolve_config_dir_override()` 不同，这类路径用于定位宿主已有数据，
-/// 不应把相对路径解释为当前工作目录下的目录。
-#[cfg_attr(not(windows), allow(dead_code))]
-pub(crate) fn resolve_absolute_path(value: Option<&str>) -> Option<PathBuf> {
-    value
-        .map(str::trim)
-        .filter(|value| !value.is_empty() && !value.contains('\0'))
-        .map(PathBuf::from)
-        .filter(|path| path.is_absolute())
-}
-
 /// 默认配置目录：`{用户主目录}/.agate`。
 ///
 /// 无可用 HOME 时保留历史 `./.agate` fallback，避免在没有明确迁移策略前
@@ -195,7 +182,7 @@ pub fn legacy_desktop_settings_file() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::{
-        default_config_dir_from_home, legacy_config_dir_from_home, resolve_absolute_path,
+        default_config_dir_from_home, legacy_config_dir_from_home,
         resolve_config_dir_override, resolve_user_home, validate_config_dir_path,
     };
     use std::path::{Path, PathBuf};
@@ -288,32 +275,6 @@ mod tests {
             Some(PathBuf::from("/legacy/agate")),
         );
         assert_eq!(resolve_config_dir_override(Some("/bad\0path"), None), None);
-    }
-
-    #[test]
-    fn absolute_path_resolver_rejects_empty_relative_and_nul_values() {
-        assert_eq!(resolve_absolute_path(None), None);
-        assert_eq!(resolve_absolute_path(Some("  ")), None);
-        assert_eq!(resolve_absolute_path(Some("relative/data")), None);
-        assert_eq!(resolve_absolute_path(Some("/bad\0path")), None);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn absolute_path_resolver_accepts_unix_absolute_path() {
-        assert_eq!(
-            resolve_absolute_path(Some(" /var/lib/agate ")),
-            Some(PathBuf::from("/var/lib/agate")),
-        );
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn absolute_path_resolver_accepts_windows_absolute_path() {
-        assert_eq!(
-            resolve_absolute_path(Some(r" C:\Users\agate\AppData\Local ")),
-            Some(PathBuf::from(r"C:\Users\agate\AppData\Local")),
-        );
     }
 
     #[test]

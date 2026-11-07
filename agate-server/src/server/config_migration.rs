@@ -371,27 +371,12 @@ fn copy_dir_all(from: &Path, to: &Path, skip: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// 是否是链接类目录项：符号链接，或 Windows 重解析点（junction / mount point）。
+/// 是否是链接类目录项：符号链接。
 ///
-/// `file_type().is_symlink()` 只覆盖真正的符号链接；Windows 的 junction 在
-/// `file_attributes` 上带 `FILE_ATTRIBUTE_REPARSE_POINT` 位，两者都要判，
-/// 否则「跟随 junction 越界遍历」的洞还在。
+/// Windows 重解析点（junction）判断已随 Windows 支撑删除；Android/Linux 的
+/// 越界遍历防护由符号链接判断覆盖。
 fn is_link_like(metadata: &std::fs::Metadata) -> bool {
-    if metadata.file_type().is_symlink() {
-        return true;
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt;
-
-        /// `FILE_ATTRIBUTE_REPARSE_POINT`。不引 windows-sys 常量：那个依赖
-        /// 只在 Windows 目标下存在，写死位值可以让本文件跨平台编译。
-        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
-        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-            return true;
-        }
-    }
-    false
+    metadata.file_type().is_symlink()
 }
 
 /// 是否设置了配置目录的环境变量覆盖（`AGATE_PROXY_HOME` 或旧名）。

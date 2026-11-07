@@ -267,67 +267,23 @@ fn file_sha256(path: &std::path::Path) -> Result<String, String> {
         .collect())
 }
 
-/// 解压安装：Windows zip 走 PowerShell Expand-Archive，unix .gz 走 flate2；
+/// 解压安装：.gz 走 flate2（Windows zip 的 PowerShell 通道已随桌面版删除）；
 /// 解出的二进制统一改名到 `kernel_binary_name()`。
 fn install_binary(archive_path: &std::path::Path, dir: &std::path::Path) -> Result<(), String> {
     let binary_path = dir.join(kernel_binary_name());
     // 旧二进制先删（Windows 上 rename 到已存在的目标会失败）
     let _ = std::fs::remove_file(&binary_path);
-    #[cfg(windows)]
-    {
-        let extract_dir = dir.join("extract");
-        let _ = std::fs::remove_dir_all(&extract_dir);
-        std::fs::create_dir_all(&extract_dir)
-            .map_err(|error| format!("创建解压目录失败: {error}"))?;
-        let archive = archive_path.to_string_lossy().to_string();
-        let destination = extract_dir.to_string_lossy().to_string();
-        // PowerShell 的无控制台窗口标志由宿主进程 adapter 提供。
-        let mut command = std::process::Command::new("powershell");
-        command.args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            &format!("Expand-Archive -LiteralPath '{archive}' -DestinationPath '{destination}' -Force"),
-        ]);
-        crate::server::core::sub_kernel::process::process_adapter()
-            .configure_std_command(&mut command);
-        let output = command
-            .output()
-            .map_err(|error| format!("调用 PowerShell 解压失败: {error}"))?;
-        if !output.status.success() {
-            let _ = std::fs::remove_dir_all(&extract_dir);
-            return Err(format!(
-                "解压内核失败（{}）",
-                String::from_utf8_lossy(&output.stderr).trim().chars().take(200).collect::<String>()
-            ));
-        }
-        // 解出的 exe 名是 `mihomo-windows-amd64-<版本>.exe`，改名到固定名
-        let extracted = std::fs::read_dir(&extract_dir)
-            .map_err(|error| format!("读取解压目录失败: {error}"))?
-            .filter_map(|entry| entry.ok())
-            .find(|entry| {
-                let name = entry.file_name().to_string_lossy().to_lowercase();
-                name.starts_with("mihomo-") && name.ends_with(".exe")
-            })
-            .ok_or_else(|| "解压结果里没有内核二进制".to_string())?;
-        std::fs::rename(extracted.path(), &binary_path)
-            .map_err(|error| format!("安装内核失败: {error}"))?;
-        let _ = std::fs::remove_dir_all(&extract_dir);
-    }
-    #[cfg(not(windows))]
-    {
-        let archive = std::fs::File::open(archive_path)
-            .map_err(|error| format!("打开下载文件失败: {error}"))?;
-        let mut decoder = flate2::read::GzDecoder::new(archive);
-        let mut binary = std::fs::File::create(&binary_path)
-            .map_err(|error| format!("安装内核失败: {error}"))?;
-        std::io::copy(&mut decoder, &mut binary)
-            .map_err(|error| format!("解压内核失败: {error}"))?;
-        // 可执行位与平台文件权限由宿主 adapter 处理。
-        crate::server::core::sub_kernel::process::process_adapter()
-            .set_executable(&binary_path)
-            .map_err(|error| format!("设置内核可执行权限失败: {error}"))?;
-    }
+    let archive = std::fs::File::open(archive_path)
+        .map_err(|error| format!("打开下载文件失败: {error}"))?;
+    let mut decoder = flate2::read::GzDecoder::new(archive);
+    let mut binary = std::fs::File::create(&binary_path)
+        .map_err(|error| format!("安装内核失败: {error}"))?;
+    std::io::copy(&mut decoder, &mut binary)
+        .map_err(|error| format!("解压内核失败: {error}"))?;
+    // 可执行位与平台文件权限由宿主 adapter 处理。
+    crate::server::core::sub_kernel::process::process_adapter()
+        .set_executable(&binary_path)
+        .map_err(|error| format!("设置内核可执行权限失败: {error}"))?;
     Ok(())
 }
 

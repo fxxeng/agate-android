@@ -34,27 +34,13 @@ use crate::server::core::account_store::store::{AccountStore, AccountStoreError}
 use crate::server::core::providers::{kind_from_id, kind_id, ProviderKind};
 use crate::server::logging;
 
-/// 官方客户端目录里 `CodeBuddyExtension/Data/Public/auth` 的固定段（三平台一致，
-/// 见模块头）。M1 遗留的路径拼接抽纯函数收口：段序只有这一份权威定义，
-/// Windows/macOS 两个 cfg 分支复用，段序测试全平台可跑（R39 坑：cfg 分支本身
-/// 在 Linux CI 编不到，共享常量 + 全平台测试是唯一能锁住它的手段）。
-/// Linux 非 test 编译下它只被 cfg(windows/macOS) 函数调用 → dead_code 警告；
-/// 测试（全平台编译）是 Linux 上的真实调用点，与 R40 `resolve_absolute_path` 同款处理。
+/// 官方客户端目录里 `CodeBuddyExtension/Data/Public/auth` 的固定段（与模块头
+/// 一致）。M1 遗留的路径拼接抽纯函数收口：段序只有这一份权威定义，段序测试
+/// 全平台可跑。Linux 非 test 编译下它只被 cfg(macos) 函数调用 → dead_code
+/// 警告；测试（全平台编译）是 Linux 上的真实调用点。
     #[cfg_attr(not(test), allow(dead_code))]
 fn auth_relative_segments() -> [&'static str; 4] {
     ["CodeBuddyExtension", "Data", "Public", "auth"]
-}
-
-/// 官方客户端凭证目录（Windows）：`%LOCALAPPDATA%\CodeBuddyExtension\…`。
-#[cfg(windows)]
-fn auth_directory_windows() -> Option<PathBuf> {
-    crate::paths::resolve_absolute_path(std::env::var("LOCALAPPDATA").ok().as_deref()).map(
-        |base| {
-            auth_relative_segments()
-                .into_iter()
-                .fold(base, |acc, seg| acc.join(seg))
-        },
-    )
 }
 
 /// 官方客户端凭证目录（macOS）：`~/Library/Application Support/CodeBuddyExtension/…`。
@@ -69,15 +55,11 @@ fn auth_directory_macos() -> Option<PathBuf> {
 
 /// 只在已知桌面平台定位官方客户端目录；Android/Linux 不伪造桌面目录。
 fn auth_directory() -> Option<PathBuf> {
-    #[cfg(windows)]
-    {
-        auth_directory_windows()
-    }
     #[cfg(target_os = "macos")]
     {
         auth_directory_macos()
     }
-    #[cfg(not(any(windows, target_os = "macos")))]
+    #[cfg(not(target_os = "macos"))]
     {
         None
     }

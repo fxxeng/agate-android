@@ -256,16 +256,10 @@ pub fn signature_path(request_url: &str) -> Result<String, GatewayError> {
     Ok(path.strip_prefix("/algo").map(str::to_string).unwrap_or_else(|| path.to_string()))
 }
 
-/// 机器操作系统标识（源实现 `machineOs`）：`{arch}_windows` 这类形态。
+/// 机器操作系统标识（源实现 `machineOs` 的 `{arch}_{platform}` 形态）。
 fn machine_os() -> String {
     let arch = if cfg!(target_arch = "aarch64") { "aarch64" } else { "x86_64" };
-    let platform = if cfg!(target_os = "windows") {
-        "windows"
-    } else if cfg!(target_os = "macos") {
-        "darwin"
-    } else {
-        "linux"
-    };
+    let platform = if cfg!(target_os = "macos") { "darwin" } else { "linux" };
     format!("{arch}_{platform}")
 }
 

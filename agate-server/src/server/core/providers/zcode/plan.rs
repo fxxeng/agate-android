@@ -733,9 +733,7 @@ fn provider_model_id(region: Region) -> &'static str {
 /// 与 `claim::platform()`（`win32-x64` 那种「平台-架构」，给头用）区分：
 /// 提示词里官方发的是**裸平台名**，架构在 osVersion 那一行。
 fn os_platform() -> &'static str {
-    if cfg!(target_os = "windows") {
-        "win32"
-    } else if cfg!(target_os = "macos") {
+    if cfg!(target_os = "macos") {
         "darwin"
     } else {
         "linux"

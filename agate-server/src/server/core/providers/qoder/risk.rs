@@ -84,50 +84,9 @@ fn exists(path: &Path) -> bool {
     path.is_file()
 }
 
-/// 安装目录下的 resources 候选（Windows）：0.3+ 启动器把实际版本放在
-/// `.qoder-versions\<版本>\resources`（新版本在前），顶层 resources 可能
-/// 只是首装残留（CreditDaddy `resourceDirsIn` 同款）。
-fn windows_resource_dirs(install: &Path) -> Vec<PathBuf> {
-    let mut out = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(install.join(".qoder-versions")) {
-        let mut versions: Vec<(String, PathBuf)> = entries
-            .flatten()
-            .map(|entry| entry.path())
-            .filter(|path| {
-                path.file_name()
-                    .and_then(|name| name.to_str())
-                    .is_some_and(|name| name.split('.').all(|part| !part.is_empty() && part.chars().all(|ch| ch.is_ascii_digit())))
-            })
-            .map(|path| {
-                let name = path.file_name().and_then(|name| name.to_str()).unwrap_or("").to_string();
-                (name, path)
-            })
-            .collect();
-        versions.sort_by(|a, b| b.0.cmp(&a.0));
-        out.extend(versions.into_iter().map(|(_, path)| path.join("resources")));
-    }
-    out.push(install.join("resources"));
-    out
-}
-
-/// Windows 的 Qoder 客户端安装目录候选（CreditDaddy `candidateResourceDirs`）
-fn windows_install_dirs(install_name: &str) -> Vec<PathBuf> {
-    let mut out = Vec::new();
-    if let Some(local) = std::env::var_os("LOCALAPPDATA") {
-        out.push(PathBuf::from(&local).join("Programs").join(install_name));
-    }
-    if let Some(program_files) = std::env::var_os("ProgramFiles") {
-        out.push(PathBuf::from(&program_files).join(install_name));
-    }
-    if let Some(program_files_x86) = std::env::var_os("ProgramFiles(x86)") {
-        out.push(PathBuf::from(&program_files_x86).join(install_name));
-    }
-    out
-}
-
 /// 在一个 resources 目录里找 UMID 组件
 fn runtime_info_in(resources: &Path) -> Option<PathBuf> {
-    let exe = if cfg!(windows) { "runtime-info.exe" } else { "runtime-info" };
+    let exe = "runtime-info";
     let path = resources.join("umid").join(exe);
     exists(&path).then_some(path)
 }
@@ -144,11 +103,7 @@ fn app_component(region: Region) -> Option<Component> {
     };
     for (install_name, mac_name) in variants {
         let mut candidates: Vec<PathBuf> = Vec::new();
-        if cfg!(windows) {
-            for install in windows_install_dirs(install_name) {
-                candidates.extend(windows_resource_dirs(&install));
-            }
-        } else if cfg!(target_os = "macos") {
+        if cfg!(target_os = "macos") {
             let home = home_dir();
             candidates.push(PathBuf::from("/Applications").join(format!("{mac_name}.app")).join("Contents/Resources"));
             candidates.push(home.join("Applications").join(format!("{mac_name}.app")).join("Contents/Resources"));
@@ -180,7 +135,7 @@ fn cli_component(region: Region) -> Option<Component> {
     } else {
         &[".qoder-cn", ".qoder"]
     };
-    let exe_name = if cfg!(windows) { "runtime-info.exe" } else { "runtime-info" };
+    let exe_name = "runtime-info";
     let home = home_dir();
     for dir in homes {
         let bin = home.join(dir).join(".bin");
@@ -223,7 +178,7 @@ pub fn available(region: Region) -> bool {
 
 // ─── 身份的辅助字段（请求头用）──────────────────────────────
 
-/// `Cosy-MachineOS`：与客户端一致的 `{架构}_{平台}` 形态（x86_64_win32 等）
+/// `Cosy-MachineOS`：与客户端一致的 `{架构}_{平台}` 形态（x86_64_linux 等）
 pub fn machine_os() -> String {
     let arch = if cfg!(target_arch = "x86_64") {
         "x86_64"
@@ -232,13 +187,7 @@ pub fn machine_os() -> String {
     } else {
         "unknown"
     };
-    let platform = if cfg!(windows) {
-        "win32"
-    } else if cfg!(target_os = "macos") {
-        "darwin"
-    } else {
-        "linux"
-    };
+    let platform = if cfg!(target_os = "macos") { "darwin" } else { "linux" };
     format!("{arch}_{platform}")
 }
 
@@ -294,9 +243,7 @@ fn client_version(region: Region) -> String {
     };
     for name in versions {
         let mut candidates: Vec<PathBuf> = Vec::new();
-        if cfg!(windows) {
-            candidates.extend(windows_install_dirs(name).iter().flat_map(|install| windows_resource_dirs(install)));
-        } else if cfg!(target_os = "macos") {
+        if cfg!(target_os = "macos") {
             candidates.push(PathBuf::from("/Applications").join(format!("{name}.app")).join("Contents/Resources"));
         } else {
             candidates.push(PathBuf::from("/opt").join(name).join("resources"));
@@ -326,7 +273,7 @@ async fn run_component(component: &Component, uid: &str) -> Result<RiskIdentity,
     use tokio::io::AsyncWriteExt;
 
     let mut command = tokio::process::Command::new(&component.exe);
-    let with_stdin = cfg!(windows) || cfg!(target_os = "macos");
+    let with_stdin = cfg!(target_os = "macos");
     if with_stdin {
         command.args([component.env.to_string(), "--account-stdin".to_string()]);
     } else {
@@ -335,12 +282,6 @@ async fn run_component(component: &Component, uid: &str) -> Result<RiskIdentity,
     command.stdin(if with_stdin { std::process::Stdio::piped() } else { std::process::Stdio::null() });
     command.stdout(std::process::Stdio::piped());
     command.stderr(std::process::Stdio::null());
-    // Windows 上隐藏控制台窗口（桌面端用户不该看到一个闪过的黑框）
-    #[cfg(windows)]
-    {
-        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW — tokio Command 同名扩展方法
-    }
-
     let mut child = command.spawn().map_err(|error| format!("UMID 组件启动失败：{error}"))?;
     if with_stdin {
         if let Some(mut stdin) = child.stdin.take() {
