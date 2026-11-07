@@ -24,7 +24,9 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.foundation.border
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -41,6 +43,8 @@ import dev.agate.core.AlarmScheduler
 import dev.agate.core.BatteryWhitelist
 import dev.agate.core.Gateway
 import dev.agate.core.GatewayPrefs
+import dev.agate.core.GatewayRuntimeState
+import dev.agate.core.GatewayStartFailure
 import dev.agate.core.RuntimeController
 import dev.agate.android.ui.components.AgateBadge
 import dev.agate.android.ui.components.BadgeTone
@@ -48,6 +52,7 @@ import dev.agate.android.ui.theme.AgateType
 import dev.agate.android.ui.theme.agateColors
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
@@ -123,7 +128,50 @@ fun GatewayControlPage(modifier: Modifier = Modifier, onOpenDrawer: () -> Unit =
         }
         Spacer(Modifier.height(4.dp))
         AgateBadge("M0/M1 验收 · 常驻保留", BadgeTone.AMBER)
-        Spacer(Modifier.height(14.dp))
+
+        // R44 T1：网关启动失败卡片。此前 RuntimeController 快照里的
+        // GatewayRuntimeState.Failed 没有任何 UI 消费点，启动失败只在通知栏出现，
+        // 用户在页面里看不到「为什么没起来」。5s 轮询快照（读内存 reducer 状态，
+        // 不涉 JNI），Failed 时按 kind 出标签、文案走 GatewayStartFailure 单一出口。
+        var startFailure by remember { mutableStateOf<GatewayRuntimeState.Failed?>(null) }
+        LaunchedEffect(Unit) {
+            while (true) {
+                startFailure = RuntimeController.snapshot().gateway as? GatewayRuntimeState.Failed
+                delay(5_000L)
+            }
+        }
+        startFailure?.let { failure ->
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 8.dp)
+                    .background(C.cardBg, AgateShape.card)
+                    .border(1.dp, C.border, AgateShape.card)
+                    .padding(14.dp),
+            ) {
+                AgateBadge(
+                    when (failure.kind) {
+                        GatewayStartFailure.KIND_OCCUPIED -> "端口被占用"
+                        GatewayStartFailure.KIND_RESERVED -> "端口被系统拒绝"
+                        else -> "上次启动失败"
+                    },
+                    BadgeTone.RED,
+                )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    GatewayStartFailure.guidance(failure.stage, failure.kind, 0, failure.message),
+                    style = AgateType.Body,
+                    color = C.textMain,
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "更换内核端口后重新点「启动网关（前台服务）」即可。",
+                    style = AgateType.BodyS,
+                    color = C.textSub,
+                )
+            }
+            Spacer(Modifier.height(14.dp))
+        }
 
         SectionLabel("内核探测")
         RowButton("启动网关（前台服务）") {

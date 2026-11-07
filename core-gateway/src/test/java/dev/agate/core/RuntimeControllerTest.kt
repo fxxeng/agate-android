@@ -389,6 +389,7 @@ class RuntimeControllerTest {
             version = "start-test",
             stage = null,
             error = null,
+            kind = null,
         )
 
         val result = RuntimeController.startWith(
@@ -414,6 +415,7 @@ class RuntimeControllerTest {
             version = "already-running-test",
             stage = null,
             error = "already_running",
+            kind = null,
         )
 
         val result = RuntimeController.startWith(
@@ -438,6 +440,7 @@ class RuntimeControllerTest {
             version = "",
             stage = "bind",
             error = "address_in_use",
+            kind = "occupied",
         )
 
         val result = RuntimeController.startWith(
@@ -474,6 +477,7 @@ class RuntimeControllerTest {
             version = "",
             stage = "bind",
             error = "address_in_use",
+            kind = "occupied",
         )
 
         RuntimeController.startWith(

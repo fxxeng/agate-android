@@ -172,6 +172,7 @@ object RuntimeController {
                     stage = result.stage,
                     code = null,
                     message = result.error ?: "Native Gateway start failed",
+                    kind = result.kind,
                 ),
                 nowMillis(),
             )

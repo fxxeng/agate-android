@@ -90,6 +90,8 @@ Android 侧（`agate-server/src/jni_bridge.rs`）：
 
 **决定 A（本次采纳，按计划 §4.2 第二分支）**：不改 workflow。bin 不属于 Android 诊断 / Phase 2 所需，也不是本仓的交付产物，按计划要求「先交证据、由委托方确认后再动 workflow」。
 
+> 【R44 补记】本判断随后被推翻：R43 实施时已把 `--bins` 收进 CI（`rust-tests` 与 check 两处，见 R43 报告偏差 D1），本节「决定 A」仅存档不再生效。
+
 **决定 B（备选，未执行，需要你一句话）**：把 check 步骤放宽一位，只为防腐化：
 
 ```diff
@@ -108,6 +110,8 @@ Android 侧（`agate-server/src/jni_bridge.rs`）：
 - **已实现**：无（本文件为只读审计，代码零改动）。
 - **已验证**：§1–§6 全部结论均由 R42 树上的 grep / 读码得出，复现命令见附录。
 - **待验证**：若采纳决定 B，`cargo check --locked --lib --bins` 必须由 GitHub CI 实跑才算通过；本机无 Rust 工具链，未执行。
+
+> 【R44 补记】「本机无 Rust 工具链」已过时：R43 T2 后本机（Termux）已装 Rust 并实际跑过 `cargo check --lib --bins`（2026-11-07，本节撰写时点的事实已不成立）。
 
 ## 附录：复现命令
 

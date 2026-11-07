@@ -525,7 +525,12 @@ fn start_gateway(data_dir: &str, port: u16, bind_lan: bool, api_key: Option<&str
             Err(conflict) => {
                 crate::server::config::parse::clear_android_api_key_override();
                 logcat_write(LOG_ERROR, LOGCAT_TAG, &format!("网关启动失败: {}", conflict.message));
-                return json!({ "ok": false, "stage": "bind", "error": conflict.message });
+                return json!({
+                    "ok": false,
+                    "stage": "bind",
+                    "kind": conflict.kind.as_str(),
+                    "error": conflict.message
+                });
             }
         }
     };

@@ -64,6 +64,8 @@ object Gateway {
         val version: String,
         val stage: String?,
         val error: String?,
+        /** bind 失败的机器可读分类（Rust `ConflictKind::as_str`：occupied/reserved/other）；旧内核或非 bind 失败为 null。 */
+        val kind: String?,
     ) {
         companion object {
             fun parse(raw: String): StartResult {
@@ -75,6 +77,7 @@ object Gateway {
                     j.optString("version"),
                     j.optString("stage").nullIfEmpty(),
                     j.optString("error").nullIfEmpty(),
+                    j.optString("kind").nullIfEmpty(),
                 )
             }
         }

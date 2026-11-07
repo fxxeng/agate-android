@@ -34,15 +34,25 @@ use crate::server::core::account_store::store::{AccountStore, AccountStoreError}
 use crate::server::core::providers::{kind_from_id, kind_id, ProviderKind};
 use crate::server::logging;
 
+/// 官方客户端目录里 `CodeBuddyExtension/Data/Public/auth` 的固定段（三平台一致，
+/// 见模块头）。M1 遗留的路径拼接抽纯函数收口：段序只有这一份权威定义，
+/// Windows/macOS 两个 cfg 分支复用，段序测试全平台可跑（R39 坑：cfg 分支本身
+/// 在 Linux CI 编不到，共享常量 + 全平台测试是唯一能锁住它的手段）。
+/// Linux 非 test 编译下它只被 cfg(windows/macOS) 函数调用 → dead_code 警告；
+/// 测试（全平台编译）是 Linux 上的真实调用点，与 R40 `resolve_absolute_path` 同款处理。
+    #[cfg_attr(not(test), allow(dead_code))]
+fn auth_relative_segments() -> [&'static str; 4] {
+    ["CodeBuddyExtension", "Data", "Public", "auth"]
+}
+
 /// 官方客户端凭证目录（Windows）：`%LOCALAPPDATA%\CodeBuddyExtension\…`。
 #[cfg(windows)]
 fn auth_directory_windows() -> Option<PathBuf> {
     crate::paths::resolve_absolute_path(std::env::var("LOCALAPPDATA").ok().as_deref()).map(
         |base| {
-            base.join("CodeBuddyExtension")
-                .join("Data")
-                .join("Public")
-                .join("auth")
+            auth_relative_segments()
+                .into_iter()
+                .fold(base, |acc, seg| acc.join(seg))
         },
     )
 }
@@ -51,13 +61,9 @@ fn auth_directory_windows() -> Option<PathBuf> {
 #[cfg(target_os = "macos")]
 fn auth_directory_macos() -> Option<PathBuf> {
     Some(
-        crate::paths::user_home_dir()?
-            .join("Library")
-            .join("Application Support")
-            .join("CodeBuddyExtension")
-            .join("Data")
-            .join("Public")
-            .join("auth"),
+        auth_relative_segments()
+            .into_iter()
+            .fold(crate::paths::user_home_dir()?, |acc, seg| acc.join(seg))
     )
 }
 
@@ -178,5 +184,36 @@ impl AccountStore {
             );
         }
         account
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 段序与模块头文档一致；这是三平台目录定位的唯一权威，改段序必须同步模块头。
+    #[test]
+    fn auth_relative_segments_match_module_doc() {
+        assert_eq!(
+            auth_relative_segments(),
+            ["CodeBuddyExtension", "Data", "Public", "auth"]
+        );
+    }
+
+    /// fold(base, PathBuf::join) 与旧手写 join 链逐字节等价（抽函数时的等价性锚点）。
+    #[test]
+    fn fold_join_equals_manual_chain() {
+        let base = PathBuf::from("/base");
+        let manual = base
+            .join("CodeBuddyExtension")
+            .join("Data")
+            .join("Public")
+            .join("auth");
+        assert_eq!(
+            auth_relative_segments()
+                .into_iter()
+                .fold(base.clone(), |acc, seg| acc.join(seg)),
+            manual
+        );
     }
 }

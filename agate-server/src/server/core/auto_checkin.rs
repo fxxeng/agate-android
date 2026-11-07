@@ -1062,8 +1062,8 @@ impl AutoCheckin {
 
 /// 进程级定时签到句柄。
 ///
-/// 为什么不用 ServerState 就够了：停机入口是 `backend::shutdown(&AppState)`，
-/// 那里只有 Tauri 的应用状态，拿不到 ServerState；而 Node 版退出时明确会
+/// 为什么不用 ServerState 就够了：停机入口是 `sub_kernel::shutdown(timeout)`，
+/// 那里拿不到 ServerState（它是 sub_kernel 自己的停机编排）；而 Node 版退出时明确会
 /// `autoCheckin.stop()`（server.mjs 1047-1049 的 closeAll）。用进程级句柄
 /// （与 config / logging 同一个模式）让停机路径能直接拿到它。
 /// ServerState 里那份与全局这份是**同一实例**（bootstrap 时装入）。

@@ -298,7 +298,11 @@ class AgateForegroundService : Service() {
             }
 
             else -> {
-                val reason = result?.let { "${it.stage ?: ""}: ${it.error}" } ?: "异常"
+                // R44 T1：文案走 GatewayStartFailure 单一出口（Rust 文案原样透传，
+                // 不再裸拼 "stage: error" —— stage/kind 的结构化信息留给界面卡片）。
+                val reason = result
+                    ?.let { GatewayStartFailure.guidance(it.stage, it.kind, it.port, it.error) }
+                    ?: "内核启动异常（.so 加载失败？）"
                 updateNotification("启动失败：$reason")
                 // 告警只在「用户以为网关起来了、其实没起」时发。这里是启动
                 // 路径的失败分支，正是那种情况：常驻通知会一直挂着「启动失败」，

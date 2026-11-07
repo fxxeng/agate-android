@@ -41,6 +41,8 @@ sealed interface GatewayRuntimeState {
         val stage: String?,
         val code: String?,
         val message: String,
+        /** bind 失败分类（Rust ConflictKind；occupied/reserved/other）。旧事件无此字段时为 null。 */
+        val kind: String? = null,
     ) : GatewayRuntimeState
 }
 
@@ -66,6 +68,8 @@ sealed interface RuntimeStateEvent {
         val stage: String?,
         val code: String?,
         val message: String,
+        /** bind 失败分类；仅 startWith 从 StartResult 带入，其他路径默认 null。 */
+        val kind: String? = null,
     ) : RuntimeStateEvent
 
     data class SchedulerObserved(val enabled: Boolean) : RuntimeStateEvent
@@ -146,7 +150,7 @@ object RuntimeSnapshotReducer {
             }
             is RuntimeStateEvent.GatewayFailed -> {
                 if (current.gateway is GatewayRuntimeState.Starting || current.gateway is GatewayRuntimeState.Stopping) {
-                    current.copy(gateway = GatewayRuntimeState.Failed(event.stage, event.code, event.message))
+                    current.copy(gateway = GatewayRuntimeState.Failed(event.stage, event.code, event.message, event.kind))
                 } else current
             }
             is RuntimeStateEvent.SchedulerObserved -> current.copy(schedulerEnabled = event.enabled)

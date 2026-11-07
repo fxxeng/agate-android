@@ -1,30 +1,28 @@
 //! 网关启动失败的分类与描述（尤其是端口冲突）。
 //!
 //! ── 为什么需要它 ────────────────────────────────────────────
-//! 网关默认监听 127.0.0.1:3065，启动时 bind 失败是用户最容易撞上的故障。
-//! 但「失败」有两种性质完全不同的原因，处置方式正好相反：
-//!   · 端口被**另一个进程**占着（`WSAEADDRINUSE` / 10048）——结束那个进程即可；
-//!   · 端口落在**系统保留段**里（`WSAEACCES` / 10013）——本机没有任何进程在
-//!     监听它（`netstat` 查不到东西），杀进程无从谈起，只能换端口。
+//! 网关默认监听 127.0.0.1:8787（可在设置页改），启动时 bind 失败是用户最容易
+//! 撞上的故障。但「失败」有两种性质完全不同的原因，处置方式正好相反：
+//!   · 端口被**另一个进程**占着（Linux `EADDRINUSE` → `ErrorKind::AddrInUse`）
+//!     —— 换端口，或结束占用该端口的程序；
+//!   · 端口被**系统拒绝**（`EACCES` → `ErrorKind::PermissionDenied`）：监听
+//!     特权端口（<1024）或被 SELinux 策略拦下——本机有没有进程监听都一样，
+//!     结束进程无从谈起，只能换端口。
 //! 界面若只给一句「端口被占用」，第二种情况的用户会去找一个并不存在的进程；
 //! 反过来把第一种说成「系统保留」，又会让人白白放弃一条有效的出路。
 //!
-//! ── 判据为什么是错误码，而不是 netsh ────────────────────────
-//! `netsh int ipv4 show excludedportrange protocol=tcp` 能列出保留段，但它
-//! **不能当判据**：实测同一台机器上，列在保留段里的端口有的照样能 bind 成功
-//! （7901-8000、50000-50059 这两段里的端口实测可绑），只有其中一部分会被拒。
-//! 也就是说「出现在 netsh 列表里」既不充分也不必要，真正的判据只有 bind 失败
-//! 的错误码本身 —— 而 `std::io::ErrorKind` 已经把两者映射成了不同的值
-//! （10048 → `AddrInUse`，10013 → `PermissionDenied`）。
-//!
-//! 不 spawn 外部命令还有另一层考虑：见 backend.rs 里关于杀软启发式的说明 ——
-//! 「监听本地端口」叠加「创建进程执行 netstat/netsh」正是流量拦截类木马的特征。
+//! ── 判据为什么是错误码 ──────────────────────────────────────
+//! `ErrorKind` 已把两类失败映射成不同的值，bind 出错的那一刻就能拿到；
+//! 扫描 /proc/net/tcp 反推监听进程既不可靠（多网络命名空间、受限读法随时
+//! 会变），也没有必要——Android 壳侧的处置只有「换端口」，占用者是谁不影响
+//! 用户该做的事。
 //!
 //! ── 本模块只描述，不动作 ────────────────────────────────────
-//! 查监听进程、结束进程树这类动作都在 backend.rs（那边才有 Win32 调用），
-//! 本模块只负责把事实翻译成「性质 + 处置建议」，好让壳侧与界面共用同一套说法
-//! （界面不能自己拼文案：同一件事在侧栏、弹窗、日志里说法不一致时，
-//! 用户无从判断哪个是真的）。
+//! 桌面版的「查监听进程 / 结束进程树」（Win32）已随 Android-only 主线移除，
+//! `Occupant` / `with_occupant` / `can_end_occupant` / `StartupFailure` 作为
+//! 结构保留（壳侧当前不填 occupant，文案按「查不到占用者」生成）；
+//! 把事实翻译成「性质 + 处置建议」的职责不变：界面不能自己拼文案，
+//! 同一件事在通知、卡片、日志里说法不一致时，用户无从判断哪个是真的。
 
 use serde::Serialize;
 
@@ -38,6 +36,17 @@ pub enum ConflictKind {
     Reserved,
     /// 其它 bind 失败原因（地址不可用、权限不足等）：没有确定的处置手段。
     Other,
+}
+
+impl ConflictKind {
+    /// 机器可读标签（JNI → Kotlin `StartResult.kind` 用；与 serde kebab-case 一致）。
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ConflictKind::Occupied => "occupied",
+            ConflictKind::Reserved => "reserved",
+            ConflictKind::Other => "other",
+        }
+    }
 }
 
 /// 占用端口的进程。
@@ -142,14 +151,14 @@ fn describe(kind: ConflictKind, port: u16, occupant: Option<&Occupant>, detail: 
                 who.name, who.pid
             ),
             None => {
-                format!("端口 {port} 已被占用，但查不到是哪个进程在监听（可能是权限不足）。")
+                format!(
+                    "端口 {port} 已被其他应用占用。可结束占用该端口的程序，或改用其它端口（设置页）。"
+                )
             }
         },
         ConflictKind::Reserved => format!(
-            "端口 {port} 被系统保留，本机没有任何进程在监听它，因此结束进程无法解决。\
-             这类保留段通常由 Hyper-V / WSL2 / Docker 的虚拟网卡服务（winnat、hns）在\
-             开机时划分，重启电脑只是碰运气（可能换一段保留，也可能照样撞上）。\
-             请改用其它端口。"
+            "端口 {port} 被系统拒绝（保留段或权限不足，例如 1024 以下特权端口），\
+             结束进程也无法解决。请改用其它端口（设置页）。"
         ),
         ConflictKind::Other => format!("端口 {port} 无法监听：{detail}"),
     }
@@ -191,5 +200,36 @@ impl StartupFailure {
             conflict: None,
             can_end_occupant: false,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn kind_as_str_matches_serde_kebab_case() {
+        assert_eq!(ConflictKind::Occupied.as_str(), "occupied");
+        assert_eq!(ConflictKind::Reserved.as_str(), "reserved");
+        assert_eq!(ConflictKind::Other.as_str(), "other");
+    }
+
+    #[test]
+    fn android_copy_for_occupied_without_occupant_names_the_two_way_out() {
+        let conflict = PortConflict::new(ConflictKind::Occupied, 8787, None, "os error");
+        assert!(conflict.message.contains("8787"));
+        assert!(conflict.message.contains("端口"));
+        assert!(conflict.message.contains("其它端口") || conflict.message.contains("其他端口"));
+        // 桌面版「查不到进程（可能是权限不足）」的误导文案不再出现
+        assert!(!conflict.message.contains("权限不足"));
+    }
+
+    #[test]
+    fn android_copy_for_reserved_never_mentions_windows_reservation() {
+        let conflict = PortConflict::new(ConflictKind::Reserved, 80, None, "os error 13");
+        assert!(conflict.message.contains("其它端口"));
+        assert!(!conflict.message.contains("Hyper-V"));
+        assert!(!conflict.message.contains("winnat"));
+        assert!(!conflict.message.contains("WSL2"));
     }
 }
