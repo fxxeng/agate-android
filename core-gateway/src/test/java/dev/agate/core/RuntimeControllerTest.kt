@@ -450,7 +450,7 @@ class RuntimeControllerTest {
 
         assertSame(nativeResult, result)
         assertEquals(
-            GatewayRuntimeState.Failed("bind", null, "address_in_use"),
+            GatewayRuntimeState.Failed("bind", null, "address_in_use", "occupied"),
             RuntimeController.snapshot().gateway,
         )
     }
@@ -486,7 +486,7 @@ class RuntimeControllerTest {
         )
 
         assertEquals(
-            GatewayRuntimeState.Failed("bind", null, "address_in_use"),
+            GatewayRuntimeState.Failed("bind", null, "address_in_use", "occupied"),
             RuntimeController.snapshot().gateway,
         )
     }
