@@ -41,6 +41,12 @@ use crate::server::{self, ServerState};
 /// 内核版本（来自本 crate 的 Cargo.toml，与 APK 版本对齐溯源）
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// JNI 控制面契约版本：桥的返回结构/字段语义变更时 +1（R46/T2 首版 = 1）。
+/// 随 `status_json()` 信封下发（`bridge` 字段）；Kotlin 读到 0 = 旧内核（未
+/// 携带该字段的历史版本），按 R44 `kind` 的 null 兼容先例降级。字段变更必须
+/// 同步 bump、改 Gateway.kt 两侧并更新 docs/JNI控制面契约.md。
+pub const BRIDGE_CONTRACT_VERSION: u32 = 1;
+
 /// logcat 优先级（android/log.h 的数值）
 const LOG_INFO: i32 = 4;
 const LOG_WARN: i32 = 5;
@@ -627,6 +633,7 @@ fn status_json() -> Value {
             "running": true,
             "core": true,
             "scheduler": scheduler,
+            "bridge": BRIDGE_CONTRACT_VERSION,
             "port": port,
             "bind_lan": bind_lan,
             "uptime_sec": uptime,
@@ -637,6 +644,7 @@ fn status_json() -> Value {
             "running": false,
             "core": core.is_some(),
             "scheduler": scheduler,
+            "bridge": BRIDGE_CONTRACT_VERSION,
             "core_uptime_sec": core.as_ref().map(|c| c.1).unwrap_or(0),
             "version": VERSION,
         }),
@@ -884,6 +892,21 @@ pub extern "system" fn Java_dev_agate_core_Gateway_nativeVersion<'local>(
 
 /// 回调对象契约：`void onLog(String level, String tag, String message)`。
 /// 传 null 撤销。约定：网关运行期间不要换回调（见 forward_log 的线程安全说明）。
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// R46/T2：status 信封必须携带契约版本号（Kotlin 据此区分新旧内核）。
+    /// 测试进程内 CORE/RUNNING 均为空 → 稳定走 not-running 分支。
+    #[test]
+    fn status_envelope_carries_bridge_contract_version() {
+        let status = status_json();
+        assert_eq!(status["ok"], json!(true));
+        assert_eq!(status["running"], json!(false));
+        assert_eq!(status["bridge"], json!(BRIDGE_CONTRACT_VERSION));
+    }
+}
+
 #[no_mangle]
 pub extern "system" fn Java_dev_agate_core_Gateway_nativeSetLogCallback<'local>(
     mut env: JNIEnv<'local>,

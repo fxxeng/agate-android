@@ -68,4 +68,19 @@ class GatewayEnvelopeTest {
         }
         assertEquals("malformed native reply", malformed.message)
     }
+
+    @Test
+    fun status_parse_carries_bridge_contract_version() {
+        // 新内核：bridge=1 显式携带（R46/T2 起契约握手）
+        val modern = Gateway.Status.parse(
+            """{"ok":true,"running":false,"core":true,"scheduler":true,"bridge":1,"version":"3.0.8"}""",
+        )
+        assertEquals(1, modern.bridge)
+
+        // 旧内核：无 bridge 字段 → 0（R44 kind 字段的 null 兼容同款先例）
+        val legacy = Gateway.Status.parse(
+            """{"ok":true,"running":false,"core":true,"scheduler":true,"version":"3.0.7"}""",
+        )
+        assertEquals(0, legacy.bridge)
+    }
 }

@@ -97,6 +97,12 @@ object Gateway {
         val core: Boolean,
         /** 签到调度器开关状态（独立于网关）。 */
         val scheduler: Boolean,
+        /**
+         * JNI 控制面契约版本（status_json "bridge" = jni_bridge::BRIDGE_CONTRACT_VERSION）。
+         * 0 = 旧内核（未携带该字段的历史版本，按 R44 `kind` 的 null 兼容先例降级）；
+         * >1 = 未知新内核，只允许取已知字段。默认 0 仅供手工构造（测试桩）。
+         */
+        val bridge: Int = 0,
     ) {
         companion object {
             fun parse(raw: String?): Status {
@@ -116,6 +122,7 @@ object Gateway {
                     j.optString("version"),
                     j.optBoolean("core"),
                     j.optBoolean("scheduler"),
+                    j.optInt("bridge", 0),
                 )
             }
         }
