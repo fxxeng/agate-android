@@ -61,12 +61,12 @@ object RoutingOps {
 
     /** 队列里的一位（可用或被跳过，都带原因）。 */
     class QueueRow(o: JSONObject) {
-        val id: String = o.optString("id")
-        val name: String = o.optString("name").ifBlank { id }
-        val provider: String = o.optString("provider")
-        val providerLabel: String = o.optString("providerLabel").ifBlank { provider }
-        val state: String = o.optString("state")
-        val reason: String = o.optString("reason")
+        val id: String = jsonTextOrNull(o, "id").orEmpty()
+        val name: String = jsonTextOrNull(o, "name").takeUnless { it.isNullOrBlank() } ?: id
+        val provider: String = jsonTextOrNull(o, "provider").orEmpty()
+        val providerLabel: String = jsonTextOrNull(o, "providerLabel").takeUnless { it.isNullOrBlank() } ?: provider
+        val state: String = jsonTextOrNull(o, "state").orEmpty()
+        val reason: String = jsonTextOrNull(o, "reason").orEmpty()
         val resetAt: Long = o.optLong("resetAt", 0L)
         val priority: Long = o.optLong("priority", -1L)
 
@@ -124,28 +124,50 @@ object RoutingOps {
         return OpResult(true, data?.let { Settings(it) }, null)
     }
 
-    /** `model` 为空 = 不限模型的全局队列。 */
+    /**
+     * `model` 为空 = 不限模型的全局队列。
+     *
+     * 字面量 `"null"` 一律当空：真机曾经把 JSON null 读成这个字符串，再把它
+     * 回传给 `?model=null`；端点于是回显**字符串** `"null"`，刷新又带着它 ——
+     * 页面永远显示「模型 null」。这里把环从客户端这一端切断。
+     */
     suspend fun queue(model: String? = null): OpResult<Plan> {
-        val path = if (model.isNullOrBlank()) "/api/routing/queue" else "/api/routing/queue?model=${model.urlEnc()}"
+        val effective = model
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() && !it.equals("null", ignoreCase = true) }
+        val path = if (effective == null) {
+            "/api/routing/queue"
+        } else {
+            "/api/routing/queue?model=${effective.urlEnc()}"
+        }
         val data = get(path) ?: return OpResult(false, null, "无法连接内核")
+        return OpResult(true, parsePlan(data), null)
+    }
+
+    /** 端点响应 → Plan。抽出来是为了单测能直接喂内核的真实 JSON 形状。 */
+    internal fun parsePlan(data: JSONObject): Plan {
         fun rows(key: String): List<QueueRow> =
             data.optJSONArray(key)?.let { arr ->
                 (0 until arr.length()).mapNotNull { arr.optJSONObject(it)?.let(::QueueRow) }
             } ?: emptyList()
-        return OpResult(
-            true,
-            Plan(
-                strategy = data.optString("strategy"),
-                sticky = data.optString("sticky"),
-                model = data.optString("model").ifBlank { null },
-                lastRequestModel = data.optString("lastRequestModel").ifBlank { null },
-                pickedId = data.optString("pickedId"),
-                ordered = rows("ordered"),
-                blocked = rows("blocked"),
-            ),
-            null,
+        return Plan(
+            strategy = jsonTextOrNull(data, "strategy").orEmpty(),
+            sticky = jsonTextOrNull(data, "sticky").orEmpty(),
+            model = jsonTextOrNull(data, "model"),
+            lastRequestModel = jsonTextOrNull(data, "lastRequestModel"),
+            pickedId = jsonTextOrNull(data, "pickedId").orEmpty(),
+            ordered = rows("ordered"),
+            blocked = rows("blocked"),
         )
     }
+
+    /**
+     * 预演模型候选：`/api/models/list-view` 的**对外名**（与 `/v1/models` 同源，
+     * 客户端真正请求得到的那批名字），不读内部管理视图。取前若干个即可 ——
+     * 全量清单可能上百条，弹层里铺不下也没必要。
+     */
+    suspend fun commonModels(limit: Int = 12): List<String> =
+        runCatching { AssistantOps.availableModels() }.getOrDefault(emptyList()).take(limit)
 
     private suspend fun get(path: String): JSONObject? {
         val reply = withContext(Dispatchers.IO) { CoreTransport.get(path) }
@@ -158,4 +180,24 @@ object RoutingOps {
     private fun String.urlEnc(): String = java.net.URLEncoder.encode(this, "UTF-8")
 
     class OpResult<T>(val ok: Boolean, val data: T?, val error: String?)
+}
+
+/**
+ * 从 JSONObject 里只取**真正的字符串**，JSON null 与字面量 `"null"` 都当空。
+ *
+ * ── 为什么不能直接 optString（2026-11-07 真机截图）───────────────
+ * `org.json` 有两套实现：单测用的 `org.json:json` 在 `optString(key, default)`
+ * 遇到 JSONObject.NULL 时返回 default；**真机 AOSP libcore 的实现**会把
+ * `JSONObject.NULL.toString()` 交出来，也就是字符串 `"null"`。于是同一段
+ * 解析在单测里全绿、真机上「不限模型」显示成「模型 null」，刷新还把
+ * `"null"` 当模型名回传给端点，端点回显字符串 `"null"` —— 自锁。
+ * （本仓 `ProviderPage.loadBalances` 早为同一个坑改过 `error` 的读法。）
+ *
+ * 只认 `as? String` 可以把两套实现拉回同一语义；字面量 `"null"` 一并挡掉，
+ * 是为了把已经自锁的那次请求也救回来。路由队列与控制台快照共用这一份。
+ */
+internal fun jsonTextOrNull(o: JSONObject, key: String): String? {
+    val raw = o.opt(key) as? String ?: return null
+    val value = raw.trim()
+    return value.takeIf { it.isNotEmpty() && !it.equals("null", ignoreCase = true) }
 }

@@ -515,23 +515,25 @@ object GatewayRepository {
         if (ordered == null && blocked == null) return null
         // 端点只在传了 ?model= 时回显 model；没传就退回最近一次请求的模型，
         // 再没有就 null（界面不显示模型名，不编一个出来）。
-        val model = obj.optString("model", "").ifBlank {
-            obj.optString("lastRequestModel", "")
-        }.ifBlank { null }
+        // ⚠️ 走 jsonTextOrNull，不用 optString：真机 libcore 会把 JSON null
+        // 读成字符串 "null"，控制台就会显示「模型 null」（2026-11-07 真机）。
+        val model = jsonTextOrNull(obj, "model") ?: jsonTextOrNull(obj, "lastRequestModel")
         val rows = ArrayList<QueueRow>((ordered?.length() ?: 0) + (blocked?.length() ?: 0))
         fun take(arr: JSONArray?, isBlocked: Boolean) {
             if (arr == null) return
             for (i in 0 until arr.length()) {
                 val r = arr.optJSONObject(i) ?: continue
-                val state = r.optString("state", "")
+                val state = jsonTextOrNull(r, "state").orEmpty()
                 rows += QueueRow(
-                    provider = r.optString("providerLabel").ifBlank {
-                        r.optString("provider", "?")
-                    },
-                    account = r.optString("name").ifBlank { r.optString("id", "?") },
+                    provider = jsonTextOrNull(r, "providerLabel")
+                        ?: jsonTextOrNull(r, "provider")
+                        ?: "?",
+                    account = jsonTextOrNull(r, "name")
+                        ?: jsonTextOrNull(r, "id")
+                        ?: "?",
                     model = model,
                     note = stateLabel(state, isBlocked),
-                    detail = r.optString("reason", "").ifBlank { null },
+                    detail = jsonTextOrNull(r, "reason"),
                     blocked = isBlocked,
                 )
             }
@@ -541,8 +543,11 @@ object GatewayRepository {
         return RoutingQueue(rows, model)
     }
 
-    /** `core::routing::PlanEntry.state` 的短标签（与内核状态码表一一对应）。 */
-    private fun stateLabel(state: String, blocked: Boolean): String = when (state) {
+    /**
+     * `core::routing::PlanEntry.state` 的短标签（与内核状态码表一一对应）。
+     * 路由预演页也用这一份 —— 同一个状态码在两页不该有两种叫法。
+     */
+    internal fun stateLabel(state: String, blocked: Boolean): String = when (state) {
         "usable" -> "可出战"
         "tried" -> "已尝试"
         "disabled" -> "已禁用"

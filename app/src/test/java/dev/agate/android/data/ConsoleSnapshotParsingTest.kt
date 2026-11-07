@@ -102,6 +102,35 @@ class ConsoleSnapshotParsingTest {
     }
 
     @Test
+    fun `字面量 null 不得当成模型名 防住真机自锁`() {
+        // 真机 AOSP libcore 的 optString 会把 JSON null 读成字符串 "null"，
+        // 客户端又把它回传给 ?model=null，端点于是**回显字符串** "null" ——
+        // 页面永远显示「模型 null」。单测用的是 org.json:json（返回 default），
+        // 所以只有拿这个「已经被污染」的形状做输入才能钉住修复。
+        val e = entry("a1", "主号", "zcode", "ZCode", "usable", "队首")
+        val body = """{"model":"null","lastRequestModel":"null",
+                      |"pickedId":"a1","ordered":[$e],"blocked":[]}""".trimMargin()
+        val parsed = queue(body)
+        assertNull("字面量 null 不能被显示成模型名", parsed!!.model)
+        assertNull(parsed.rows[0].model)
+        val plan = RoutingOps.parsePlan(JSONObject(body))
+        assertNull(plan.model)
+        assertNull(plan.lastRequestModel)
+        assertEquals(1, plan.ordered.size)
+    }
+
+    @Test
+    fun `JSON null 与最近模型同时为空时 两边都给 null`() {
+        val e = entry("a1", "主号", "zcode", "ZCode", "usable", "队首")
+        val body = """{"model":null,"lastRequestModel":null,"ordered":[$e],"blocked":[]}"""
+        assertNull(queue(body)!!.model)
+        val plan = RoutingOps.parsePlan(JSONObject(body))
+        assertNull(plan.model)
+        assertNull(plan.lastRequestModel)
+        assertNull("非字符串类型也不该被拼进界面", jsonTextOrNull(JSONObject("""{"model":42}"""), "model"))
+    }
+
+    @Test
     fun `各家占比冠军按 totalTokens 挑，不按请求数挑`() {
         val summary = JSONObject(
             """{"providers":[
