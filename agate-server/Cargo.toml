@@ -90,6 +90,11 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 base64 = "0.22"
 # Qoder 网页登录的 PKCE verifier / nonce
 getrandom = "0.2"
+# 数据目录 Owner Lock 的 flock/fcntl（src/data_dir_lock.rs，R43 T3）。
+# 本来就躺在依赖树里（rusqlite / reqwest / tokio 各自拉它），这里只是提升为
+# 直接依赖：不新增任何包、不改 Cargo.lock 的版本集合。刻意不用 fs2 之类的
+# 锁 crate，也不用 File::try_lock（1.89 才稳定，会把 MSRV 抬过 1.88 声明）。
+libc = "0.2"
 # P-256 密钥（两家共用一份依赖）：
 # * CodeArts 的 DPoP proof（providers/codearts/dpop.rs）—— ES256 的 JWS，每次令牌
 #   请求现签一份。ECDSA 要点乘 + RFC6979 确定性 k + DER，私钥运算手写出错的代价

@@ -230,7 +230,15 @@ fn ensure_core(data_dir: &str, port: u16) -> Result<bool, String> {
     server::access::attach_db(state.db().cloned());
     let Ok(mut guard) = CORE.lock() else { return Err("state poisoned".into()); };
     if guard.is_some() {
-        // 引导锁窗口内被并发抢先：丢弃本次 bootstrap 产物
+        // 引导锁窗口内被并发抢先：丢弃本次 bootstrap 产物。
+        //
+        // 丢弃的 `ServerState` 里含 `Arc<DataDirLock>`。这里**不会**把数据目录锁
+        // 弄丢：`data_dir_lock::acquire_shared` 的 Weak 登记表让同进程对同一目录
+        // 的重复取锁返回**同一把** `Arc`，所以被抢先的那个 state 只是少了一份
+        // strong 引用，锁仍由已装进 `CORE` 的那份持有。反过来，若这里是全进程
+        // 最后一份引用（即 `CORE` 之后又被清空），drop 也会正常释放 flock，
+        // 下一次 `ensure_core` 能重新取到 —— 两个方向都有测试钉住
+        // （`same_process_reentry_returns_same_lock` 与并发重入验证）。
         return Ok(false);
     }
     *guard = Some(Core {

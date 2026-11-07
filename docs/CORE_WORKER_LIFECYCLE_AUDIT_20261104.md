@@ -2,7 +2,7 @@
 
 - 日期：2026-11-06（持续更新）
 - 当前已验证基线：R39 `8c046f17dd61a942eedde01c070c0ac0dc3e29aa`（CI Run `42164811367`）
-- 已验证基线：R40 `d3e049e89b932325e49c57b5f6a5a23c825bcca8`（CI Run `42199123476` 三 job success）；当前工作候选：R41 Batch 4D-3E（待 CI）
+- 已验证基线：R42 `ad1bc9cef3a257d9776e1bcf89fac3da5528f649`（CI Run `42235540958` 双 job success）；上一已验证基线：R40 `d3e049e89b932325e49c57b5f6a5a23c825bcca8`（Run `42199123476` 三 job success）；R41 本地候选（未推送远端；代码改动已合入 R42 ad1bc9cef3）
 - 分支：`verify/arch-8faa5f5`
 - 状态：4D-3B、4D-3C-A 与 Windows Shared Core 编译门禁已完成 CI 验证
 - 关联：`ANDROID_KOTLIN_RUST_MIGRATION_HANDOFF.md` 第 30 章
@@ -323,7 +323,7 @@ R40 `d3e049e89b932325e49c57b5f6a5a23c825bcca8` / CI Run `42199123476` 三 job su
 
 ### 13.2 R41 候选修正
 
-Windows job 增加 `cargo test --lib`；非 Windows dead_code 以窄范围 `cfg_attr` 处理。`.agate` fallback 的语义修正为：HOME-discovered Provider 旧数据导入必须有有效 HOME；config-dir 内 `auth.json` 是独立迁移输入，仍可能位于历史 `./.agate`。这避免为了文字一致而改变可能含用户登录态的数据迁移行为。
+R41 候选曾写入该升级但未进入远端 CI；R42 已按 Android-only 主线移除 windows-core-check job，Windows 条件编译面不再参与主线 CI。`.agate` fallback 的语义修正为：HOME-discovered Provider 旧数据导入必须有有效 HOME；config-dir 内 `auth.json` 是独立迁移输入，仍可能位于历史 `./.agate`。这避免为了文字一致而改变可能含用户登录态的数据迁移行为。
 
 ### 13.3 4E 资源所有权审计
 

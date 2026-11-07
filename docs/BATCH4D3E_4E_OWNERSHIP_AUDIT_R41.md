@@ -3,6 +3,7 @@
 - 基线：R40 `d3e049e89b932325e49c57b5f6a5a23c825bcca8`
 - 分支：`verify/arch-8faa5f5`
 - 状态：源码审计与候选修正；**未经过 CI**
+- 候选归属：R41 本地候选（未推送远端；代码改动已合入 R42 ad1bc9cef3）
 
 ## 1. 本批 R40 收口
 
@@ -84,7 +85,7 @@
 
 ## 6. R41 验证状态
 
-R41 当前为候选。未执行 Cargo、Windows test、Android ABI、Gradle/JVM、Instrumentation、模拟器或真机验证。R40 Run `42199123476` 是最后已验证基线。
+R41 本地候选（未推送远端；代码改动已合入 R42 ad1bc9cef3）。未执行 Cargo、Windows test、Android ABI、Gradle/JVM、Instrumentation、模拟器或真机验证。R40 Run `42199123476` 是最后已验证基线。
 
 
 ## 7. R42 主线范围调整

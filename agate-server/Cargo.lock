@@ -60,6 +60,7 @@ dependencies = [
  "hmac",
  "image",
  "jni",
+ "libc",
  "md-5",
  "num-bigint",
  "p256",

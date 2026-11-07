@@ -5,11 +5,13 @@
 
 > 文档用途：供后续开发者接手、评审和持续推进 Android 架构改造。
 
-> **验证分支当前状态（R42 候选 / 2026-11-06）**：最后一次 CI 已验证源码基线为 R40 `d3e049e89b932325e49c57b5f6a5a23c825bcca8`（Run `42199123476`；Rust 761 passed / 0 failed / 11 ignored；Kotlin/JVM 99/99；JNI 12 exports；Android arm64-v8a / x86_64 编译与 Instrumentation 2/2 通过）。R41 `530e02bb90c068d43eee8d7ce25a25b82b6864e9` 是未单独 CI 验证的候选；R42 在 R41 候选上收敛 Android-only CI 和主线范围，仍待 GitHub CI。
+> **验证分支当前状态（R43 开工前 / 2026-11-07）**：R42 ad1bc9cef3 已通过 GitHub Actions Run 42235540958：rust-tests 761 passed / 11 ignored，lib warning 9 条；android-build JVM 99/99、JNI 12 符号、双 APK 校验、Instrumentation 2/2。
+>
+> 历史：R40 `d3e049e89b932325e49c57b5f6a5a23c825bcca8` 为 R42 之前的已验证基线（Run `42199123476`）；R41 本地候选（未推送远端；代码改动已合入 R42 ad1bc9cef3）。
 >
 > 当前验证分支：`verify/arch-8faa5f5`（只允许推送该分支，不修改 `main`、不合并）
-> 当前最后已验证基线：R40 `d3e049e89b932325e49c57b5f6a5a23c825bcca8`
-> 当前工作候选：R42 Android-only mainline；Linux job 仅执行 portable Rust library `--lib` 检查/测试，Android job 负责 Android 双 ABI、JNI、Gradle、APK 与 Emulator Instrumentation；Windows Desktop/Core job 已从 Android 主线移除。
+> 当前最后已验证基线：R42 `ad1bc9cef3a257d9776e1bcf89fac3da5528f649`（= `ad1bc9cef3`）
+> 当前工作候选：R43 Android Rust Core 数据目录 Owner Lock；R42 已移除 Windows Desktop/Core job，Linux job 仅执行 portable Rust library `--lib` 检查/测试（bin 编译范围待 R43 T2 审计结论），Android job 负责 Android 双 ABI、JNI、Gradle、APK 与 Emulator Instrumentation。
 > Agate 当前以 Android 为唯一产品交付目标；不再把桌面端功能完善作为 Android 前置任务。Rust Shared Core 保持单一实现，只隔离/删除经证明 Android 不需要且不破坏数据兼容的桌面代码。
 > 真机验收采用 APP 日常使用中的滚动证据，不作为独立架构批次的前置阻塞。
 
@@ -2593,6 +2595,8 @@ R39 已通过 GitHub Actions Run `42164811367`（工作流总时长约 33m18s，
 - R40 尚存的执行面缺口：Windows-only `absolute_path_resolver_accepts_windows_absolute_path` 当时只编译未执行；Linux 新增 1 条 `resolve_absolute_path` dead_code warning；`.agate` fallback 的文字契约未清楚区分 config-local `auth.json` 迁移与 HOME-discovered Provider 旧数据导入。详见第 40 轮 CI 反馈与 R41 §32。
 - 真机运行证据继续滚动收集，不作为架构批次前置阻塞。下一批先补齐 Windows 测试执行和文档/警告口径，再开展 4E 双实例互斥与资源所有权切片。
 
+> （注：Windows 测试门禁计划已被 R42 Android-only 主线收敛取代）
+
 
 ## 32. R41 / Batch 4D-3E：Windows 测试执行闭环与 4E 资源所有权审计（候选）
 
@@ -2602,7 +2606,7 @@ R41 从已验证 R40 `d3e049e89b932325e49c57b5f6a5a23c825bcca8` 出发，先补�
 
 ### 32.2 Windows 测试闭环
 
-- `windows-core-check` 保留 `cargo check --locked --all-targets`，并新增 `cargo test --locked --lib`，使 `#[cfg(windows)]` 路径测试在 Windows runner 实际执行。
+- R41 候选曾写入该升级但未进入远端 CI；R42 已按 Android-only 主线移除 windows-core-check job，Windows 条件编译面不再参与主线 CI。
 - Windows `cargo test --lib` 与 Linux `cargo test --all-targets` 是互补证据；Windows job 不构建 Tauri/Desktop UI。
 - `resolve_absolute_path()` 的非 Windows dead_code 由精确的 `cfg_attr(not(windows), allow(dead_code))` 处理；不将兼容性宽松的 config override resolver 与严格绝对路径 resolver 合并。
 

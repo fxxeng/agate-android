@@ -29,10 +29,10 @@ jobs:
       - name: Rust formatting (legacy debt; non-blocking)
         continue-on-error: true
         run: cargo fmt --manifest-path agate-server/Cargo.toml --all -- --check
-      - name: Portable Rust library check
-        run: cargo check --manifest-path agate-server/Cargo.toml --locked --lib
-      - name: Portable Rust library tests
-        run: cargo test --manifest-path agate-server/Cargo.toml --locked --lib
+      - name: Portable Rust check (lib + bins)
+        run: cargo check --manifest-path agate-server/Cargo.toml --locked --lib --bins
+      - name: Portable Rust tests (lib + bins)
+        run: cargo test --manifest-path agate-server/Cargo.toml --locked --lib --bins
 
   android-build:
     runs-on: ubuntu-latest

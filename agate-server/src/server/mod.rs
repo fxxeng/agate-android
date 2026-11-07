@@ -157,6 +157,7 @@ use std::sync::Arc;
 
 use tokio::sync::oneshot;
 
+use crate::data_dir_lock::{self, DataDirLock};
 use crate::port_conflict::{ConflictKind, PortConflict};
 use crate::server::core::account_store::AccountStore;
 use crate::server::core::auth::AuthService;
@@ -249,6 +250,29 @@ pub struct ServerState {
     /// 不会被感知**（要下次启动才发现）—— 这是可接受的：手工放回文件的人
     /// 本来就知道自己在做什么。
     upgrade_pending: Arc<AtomicBool>,
+    /// 数据目录 Owner Lock（`agate-server/src/data_dir_lock.rs`）。
+    ///
+    /// ── 为什么声明在**最后** ─────────────────────────────────
+    /// Rust 按声明顺序析构字段却不保证「析构顺序即资源依赖顺序」：`Arc<...>`
+    /// 字段若先落地、其内部任务仍持有 `Arc` 克隆，那它压根不会在这里被释放。
+    /// 因此字段顺序只是**必要条件、不是充分条件**；真正的保证来自两件事：
+    ///   · 本锁持在 `Arc<DataDirLock>` 里（同进程重入共享，见该模块）；
+    ///   · 宿主退出前显式走 `shutdown_core()` 等后台任务退出
+    ///     （headless：`bin/agate-server.rs` 的 SIGTERM 路径；Android：
+    ///     `jni_bridge` 的 `nativeStop`）。
+    /// 放在最后是为了让「先停任务、后放锁」在阅读顺序上也成立。
+    ///
+    /// ── 为什么是 `Arc` ──────────────────────────────────────
+    /// Android 的 `core_init` 是幂等入口（Application 启动与 FGS 兜底都会调），
+    /// 同一进程对同一目录重复 bootstrap 必须拿到**同一把**锁而不是报 Occupied。
+    /// `data_dir_lock::acquire_shared` 用 Weak 登记表实现这一点。
+    ///
+    /// 该字段**从不被读取**，这正是它的用途：它存在的唯一意义是「活到
+    /// `ServerState` 最后一份引用落地」（RAII）。因此按本仓既有惯例
+    /// （`jni_bridge.rs` 的 `_class: JClass`）加下划线前缀表达「刻意不读」，
+    /// 而不是用 `#[allow(dead_code)]` 压警告 —— 让「没人读它」这件事在类型
+    /// 签名上就可见。也**不对外暴露 getter**：外部拿到锁做任何事都是错的。
+    _data_dir_lock: Arc<DataDirLock>,
 }
 
 impl ServerState {
@@ -306,6 +330,42 @@ impl ServerState {
         // 登录时本地拼），端口必须在第一次发起之前就位（见该模块 `set_loopback_port`）。
         crate::server::core::providers::antigravity::oauth::set_loopback_port(port);
         let config_dir = config::config_dir();
+        // ── 数据目录 Owner Lock（R43 T3）──────────────────────────
+        // 插点位置**即正确性**：必须在 `Db::open`、`config::init`、
+        // `logging::init_store`、`account_bootstrap`、Sidecar 启动**全部之前**。
+        // 那些步骤每一个都会写数据目录（建库、建配置、建日志目录），
+        // 放到后面就等于「先污染再互斥」。
+        //
+        // 上面的 `pending_reason()` 已经先做过一次**纯只读**的迁移校验并直接
+        // return，所以「有迁移待处理时不得提前建出空目录」这条仍然成立：
+        // 走到这里说明迁移状态干净，此时才 `create_dir_all` 是安全的。
+        //
+        // 失败一律往上透（`Result<Self, String>`）：占用冲突要让用户看到「另一
+        // 实例在跑」，IO 错误（含共享存储的 ENOSYS）要让用户看到路径与原因 ——
+        // 两者都不降级、不带错继续。
+        if let Err(error) = std::fs::create_dir_all(&config_dir) {
+            return Err(format!(
+                "创建数据目录失败（{}）：{error}",
+                config_dir.display()
+            ));
+        }
+        let data_dir_lock = data_dir_lock::acquire_shared(&config_dir).map_err(|error| {
+            logging::console_line("[Storage]", &format!("❌ {error}"));
+            error.to_string()
+        })?;
+        // 用 `console_line` 而不是 `log`：此处 `logging::init_store` 还没跑，
+        // `log()` 的落库通道会静默跳过（见 logging::log 的 `store()` 分支），
+        // 而这行诊断恰恰是排查「谁占着数据目录」时最需要的。`console_line`
+        // 走 eprintln + Android logcat，在这个阶段是唯一真的能看到的通道。
+        logging::console_line(
+            "[Storage]",
+            &format!(
+                "数据目录锁已获取（{}，pid={}）",
+                data_dir_lock.path().display(),
+                std::process::id()
+            ),
+        );
+
         // 与 Node 版一致：verbose 由环境变量 AGATE_VERBOSE=1 打开
         // （旧名 WORKBUDDY_VERBOSE 仍可读，新名优先），
         // 决定 debug 级别日志要不要入库（默认只有 info 以上入库，避免刷屏）
@@ -616,6 +676,7 @@ impl ServerState {
             request_stats,
             db,
             upgrade_pending: Arc::new(AtomicBool::new(upgrade_pending)),
+            _data_dir_lock: data_dir_lock,
         };
         logging::log("[Server]", "Agate 多提供商本地网关（Rust 进程内服务）启动中…");
         logging::log("[Config]", &format!("API 端口: {}", port));

@@ -24,6 +24,7 @@
 //!     一次误用就会带走整个进程，这正是拆分前统一走
 //!     `tauri::async_runtime::spawn` 的原因，本入口继承同一保证。
 
+pub mod data_dir_lock;
 pub mod paths;
 pub mod port_conflict;
 pub mod server;

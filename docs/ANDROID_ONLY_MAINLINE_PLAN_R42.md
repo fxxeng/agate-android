@@ -1,9 +1,9 @@
 # Agate Android-only 主线推进方案 — R42
 
-- 基线候选：R41 `530e02bb90c068d43eee8d7ce25a25b82b6864e9`
+- 基线候选：R41 `530e02bb90c068d43eee8d7ce25a25b82b6864e9`；R41 本地候选（未推送远端；代码改动已合入 R42 ad1bc9cef3）
 - 工作分支：`verify/arch-8faa5f5`
 - 本轮定位：收敛 Android-only 构建与开发范围
-- 状态：方案与 CI 配置候选；等待 GitHub Actions 验证
+- 状态：R42 ad1bc9cef3 已通过 GitHub Actions Run 42235540958：rust-tests 761 passed / 11 ignored，lib warning 9 条；android-build JVM 99/99、JNI 12 符号、双 APK 校验、Instrumentation 2/2。
 
 ## 1. 总决策
 
