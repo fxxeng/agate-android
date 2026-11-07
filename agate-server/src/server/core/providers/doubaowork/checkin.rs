@@ -80,6 +80,7 @@ const RECONCILE_DELAYS: [u64; 3] = [0, 2, 4];
 const CONFIRM_BUDGET_SECS: u64 = 18;
 
 /// 待确认的一次领取（**先落盘、再发请求**）
+#[derive(Clone)]
 struct Attempt {
     /// 领取的条目 id（`campaign_item_code`）—— 只用于回查时认出「领的是哪一条」，
     /// 以及给用户看的 `itemCode`
