@@ -81,8 +81,8 @@ jobs:
       # exit 101——run #277 首跑实证；check 不链接，但 build script 照跑）。
       - name: Android target clippy (panic discipline gate)
         run: |
-          cargo ndk -t arm64-v8a clippy --manifest-path agate-server/Cargo.toml \
-            --locked --lib --target aarch64-linux-android -- \
+          cd agate-server
+          cargo ndk -t arm64-v8a clippy --locked --lib --target aarch64-linux-android -- \
             -D clippy::unwrap_used -D clippy::expect_used -D clippy::panic \
             -D clippy::unreachable -D clippy::todo -D clippy::unimplemented
       # CI-Fix9: build both ABIs in ONE cargo invocation (shared dependency
