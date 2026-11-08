@@ -44,6 +44,14 @@ class AgateForegroundService : Service() {
         private const val CHANNEL_BLOCKED_ID = "agate_blocked"
         private const val NOTIFICATION_ID_BLOCKED = 1002
 
+        // R47/T3.4：停止已发出但端口释放未确认（released=false）时的常驻通知
+        // 文案。停止是 Kotlin 侧自有状态（非 Rust 文案透传），单点常量即可；
+        // 权威 status 探测确认后服务退出、通知随之移除。
+        private const val STOP_UNCONFIRMED_TEXT = "网关停止指令已发出（端口释放未确认，稍后自动校准）"
+        /** 未确认态的复核节奏：10s × 3 轮，超限后按现状退出前台（不无限滞留）。 */
+        private const val STOP_CONFIRM_RETRY_MS = 10_000L
+        private const val STOP_CONFIRM_MAX_ATTEMPTS = 3
+
         // 跨 Service 实例保存带代次的最新网关意图。布尔值只能表达当前状态，
         // 不能识别「旧销毁清理捕获后又发生新 STOP/START」这样的过期快照。
         private val gatewayIntent = GatewayIntentTracker()
@@ -207,7 +215,18 @@ class AgateForegroundService : Service() {
                         android.util.Log.e("Agate", "内核停止异常", t)
                     }
                     // 跳过 stop 时网关仍在运行，锁由接管网关的 runStart 对齐。
-                    if (!skipStop) releaseKeepAwakeLocks()
+                    if (!skipStop) {
+                        releaseKeepAwakeLocks()
+                        // R47/T3.4：released=false（端口释放未确认）时不立刻
+                        // 退出前台 —— 那会让「未确认」对用户完全不可见。保留
+                        // 常驻通知并按 bounded 节奏复核；stopSelfResult 的
+                        // startId 校验天然防住复核期间到来的新 START。
+                        if (RuntimeController.snapshot().gateway is GatewayRuntimeState.StopTimeout) {
+                            updateNotification(STOP_UNCONFIRMED_TEXT)
+                            scheduleStopConfirmation(startId, attempt = 1)
+                            return@enqueueCommand
+                        }
+                    }
                     // 只允许停止当前这次 start 请求；若后面已有 START/TICK，
                     // 保留 Service 与前台通知，避免旧 STOP 杀掉新启动意图。
                     stopIfCurrentStart(startId)
@@ -488,6 +507,35 @@ class AgateForegroundService : Service() {
             partialLock = null
             wifiLock = null
         }
+    }
+
+    /**
+     * 未确认停止（StopTimeout）的 bounded 复核：JNI 探测必须在后台线程
+     * （RuntimeController 约定「调用方不得在主线程直接执行 JNI」），判定回主
+     * 线程处理服务退出。复核期间若快照回到 Running（新 START 已接管）则放弃
+     * 本次复核；探测失败不等于已停止，继续等；超限后按现状退出前台，未确认
+     * 状态留待后续权威探测归位。
+     */
+    private fun scheduleStopConfirmation(startId: Int, attempt: Int) {
+        mainHandler.postDelayed({
+            if (RuntimeController.snapshot().gateway is GatewayRuntimeState.Running) return@postDelayed
+            Thread {
+                val stopped = try {
+                    !RuntimeController.readStatus().running
+                } catch (t: Throwable) {
+                    android.util.Log.w("Agate", "停止确认探测失败（第 $attempt 轮）", t)
+                    false
+                }
+                mainHandler.post {
+                    if (RuntimeController.snapshot().gateway is GatewayRuntimeState.Running) return@post
+                    if (stopped || attempt >= STOP_CONFIRM_MAX_ATTEMPTS) {
+                        stopIfCurrentStart(startId)
+                    } else {
+                        scheduleStopConfirmation(startId, attempt + 1)
+                    }
+                }
+            }.start()
+        }, STOP_CONFIRM_RETRY_MS)
     }
 
     /**

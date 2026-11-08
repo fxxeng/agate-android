@@ -852,4 +852,76 @@ class RuntimeControllerTest {
         event as RuntimeStateEvent.CoreInitializationFailed
         assertEquals("Native Core initialization failed", event.message)
     }
+
+    @Test
+    fun gatewayStopTimeoutPublishesStopTimeoutWhenReleaseUnconfirmed() {
+        prepareRunningGatewaySnapshot()
+
+        val allowed = RuntimeController.stopWith(
+            mayStopNow = { true },
+            stop = { RuntimeController.StopOutcome(ok = true, released = false) },
+            nowMillis = { 5450L },
+        )
+
+        assertTrue(allowed)
+        assertEquals(GatewayRuntimeState.StopTimeout, RuntimeController.snapshot().gateway)
+    }
+
+    @Test
+    fun gatewayStartCanFollowStopTimeout() {
+        prepareRunningGatewaySnapshot()
+        RuntimeController.stopWith(
+            mayStopNow = { true },
+            stop = { RuntimeController.StopOutcome(ok = true, released = false) },
+            nowMillis = { 5455L },
+        )
+        assertEquals(GatewayRuntimeState.StopTimeout, RuntimeController.snapshot().gateway)
+
+        // 快速 STOP（未确认）→ START：校准链必须畅通（R47/T3.4）
+        val result = RuntimeController.startWith(
+            start = {
+                Gateway.StartResult(
+                    ok = true,
+                    port = 8787,
+                    bindLan = false,
+                    version = "after-stop-timeout",
+                    stage = null,
+                    error = null,
+                    kind = null,
+                )
+            },
+            nowMillis = { 5460L },
+        )
+        assertTrue(result.ok)
+        assertEquals(
+            GatewayRuntimeState.Running(8787, false, "after-stop-timeout"),
+            RuntimeController.snapshot().gateway,
+        )
+    }
+
+    @Test
+    fun nativeStatusReconcilesStopTimeoutBackToAuthoritativeState() {
+        prepareRunningGatewaySnapshot()
+        RuntimeController.stopWith(
+            mayStopNow = { true },
+            stop = { RuntimeController.StopOutcome(ok = true, released = false) },
+            nowMillis = { 5470L },
+        )
+        assertEquals(GatewayRuntimeState.StopTimeout, RuntimeController.snapshot().gateway)
+
+        RuntimeController.runSerialized {
+            RuntimeController.recordStateEvent(
+                RuntimeStateEvent.NativeStatusObserved(
+                    coreReady = true,
+                    gatewayRunning = false,
+                    port = 0,
+                    bindLan = false,
+                    version = "stop-timeout-test",
+                    schedulerEnabled = true,
+                ),
+                nowMillis = 5480L,
+            )
+        }
+        assertEquals(GatewayRuntimeState.Stopped, RuntimeController.snapshot().gateway)
+    }
 }

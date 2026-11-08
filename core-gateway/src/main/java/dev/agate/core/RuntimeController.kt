@@ -195,13 +195,21 @@ object RuntimeController {
      * same serialized lifecycle task. The guard and Native stop must never be split:
      * a newer START intent arriving while this task is queued must prevent stale STOP.
      *
-     * `not_running` is an idempotent stopped outcome. Other Native failures are
-     * published to the snapshot but returned unchanged to the existing caller path.
+     * `not_running` is an idempotent stopped outcome. `released=false` (stop issued
+     * but port release unconfirmed within 5s) publishes GatewayStopTimedOut instead
+     * of pretending Stopped (R47/T3.4). Other Native failures are published to the
+     * snapshot but returned unchanged to the existing caller path.
      */
     internal data class StopOutcome(
         val ok: Boolean,
         val error: String? = null,
         val code: String? = null,
+        /**
+         * Rust stop_gateway 的 released：false = 停止已发出但 5s 内端口释放
+         * 未确认（R47/T3.4 三态）。错误信封 / 旧内核无此字段时缺省 true，
+         * 不为「无法证明」发明新的失败语义。
+         */
+        val released: Boolean = true,
     )
 
     internal fun stopWith(
@@ -227,7 +235,15 @@ object RuntimeController {
         }
 
         if (result.ok || result.error == "not_running") {
-            recordStateEvent(RuntimeStateEvent.GatewayStopSucceeded, nowMillis())
+            // not_running 是幂等停止（本来就没跑）；released=false 才是真正的
+            // 三态：停止已发出但端口释放未确认，发布 StopTimeout 而不是假
+            // Stopped —— 随后的权威 status 探测（NativeStatusObserved）会把
+            // 它归位（R47/T3.4）。
+            if (result.ok && !result.released) {
+                recordStateEvent(RuntimeStateEvent.GatewayStopTimedOut, nowMillis())
+            } else {
+                recordStateEvent(RuntimeStateEvent.GatewayStopSucceeded, nowMillis())
+            }
         } else {
             recordStateEvent(
                 RuntimeStateEvent.GatewayFailed(
@@ -250,6 +266,7 @@ object RuntimeController {
                 ok = result.optBoolean("ok", false),
                 error = result.optString("error").takeIf { it.isNotEmpty() },
                 code = result.optString("code").takeIf { it.isNotEmpty() },
+                released = result.optBoolean("released", true),
             )
         },
     )

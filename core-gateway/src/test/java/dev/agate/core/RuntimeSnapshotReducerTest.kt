@@ -232,4 +232,47 @@ class RuntimeSnapshotReducerTest {
         assertEquals(CoreRuntimeState.Failed("bootstrap", null, "denied"), failed.core)
         assertEquals(false, failed.schedulerEnabled)
     }
+
+    @Test
+    fun stopTimeoutReplacesStoppedWhenReleaseUnconfirmed() {
+        // R47/T3.4：released=false 的停止结果走 GatewayStopTimedOut → StopTimeout，
+        // 不再假装 Stopped。
+        val running = reduce(RuntimeSnapshot(), RuntimeStateEvent.GatewayStartStarted, 1)
+            .let { reduce(it, RuntimeStateEvent.GatewayStartSucceeded(8787, false, "3.0.8"), 2) }
+        val stopping = reduce(running, RuntimeStateEvent.GatewayStopStarted, 3)
+        val timedOut = reduce(stopping, RuntimeStateEvent.GatewayStopTimedOut, 4)
+        assertEquals(GatewayRuntimeState.StopTimeout, timedOut.gateway)
+
+        // 乱序/重复保护与 Stopped 同口径：非 Stopping 下的 TimedOut 被忽略
+        assertSame(timedOut, reduce(timedOut, RuntimeStateEvent.GatewayStopTimedOut, 5))
+    }
+
+    @Test
+    fun freshStartCanFollowStopTimeoutAndNativeStatusReconcilesIt() {
+        val timedOut = reduce(RuntimeSnapshot(), RuntimeStateEvent.GatewayStartStarted, 1)
+            .let { reduce(it, RuntimeStateEvent.GatewayStartSucceeded(8787, false, "x"), 2) }
+            .let { reduce(it, RuntimeStateEvent.GatewayStopStarted, 3) }
+            .let { reduce(it, RuntimeStateEvent.GatewayStopTimedOut, 4) }
+        assertEquals(GatewayRuntimeState.StopTimeout, timedOut.gateway)
+
+        // 快速 STOP→START：新 START 是权威命令，必须能从 StopTimeout 迁移，
+        // 否则修掉状态假象会换来卡死在未确认态。
+        val starting = reduce(timedOut, RuntimeStateEvent.GatewayStartStarted, 5)
+        assertEquals(GatewayRuntimeState.Starting, starting.gateway)
+
+        // 权威探测归位：NativeStatusObserved 把 StopTimeout 收敛为权威态
+        val reconciled = reduce(
+            timedOut,
+            RuntimeStateEvent.NativeStatusObserved(
+                coreReady = true,
+                gatewayRunning = false,
+                port = 0,
+                bindLan = false,
+                version = "x",
+                schedulerEnabled = true,
+            ),
+            6,
+        )
+        assertEquals(GatewayRuntimeState.Stopped, reconciled.gateway)
+    }
 }

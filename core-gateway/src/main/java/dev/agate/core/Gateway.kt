@@ -2,6 +2,7 @@ package dev.agate.core
 
 import android.os.Handler
 import android.os.HandlerThread
+import org.json.JSONException
 import org.json.JSONObject
 
 /**
@@ -259,19 +260,37 @@ object Gateway {
     }
 
     /**
-     * Native 回复统一解析入口：null / 空串 / 非法 JSON 一律收敛成结构化失败
-     * 信封（{ok:false, stage:"jni", error:"malformed native reply"}），绝不向上
-     * 抛 NPE/JSONException —— 与 jni_bridge.rs::json_reply 的最小兽底配套，
-     * 覆盖两层各自的分配/传输异常（R46/T3，M4「不把 null 当通用错误吞掍」
-     * 的 Kotlin 侧）。internal 供 JVM 测试直接断言。
+     * Native 回复统一解析入口：null / 空串 / 非法 JSON / 非信封结构一律收敛成
+     * 结构化失败信封（{ok:false, stage:"jni", error:"malformed native reply"}），
+     * 绝不向上抛 NPE/JSONException —— 与 jni_bridge.rs::json_reply 的最小兜底
+     * 配套，覆盖两层各自的分配/传输异常（R46/T3，M4「不把 null 当通用错误
+     * 吞掉」的 Kotlin 侧）。internal 供 JVM 测试直接断言。
+     *
+     * 信封结构契约（R47/T3.3 从严）：
+     *   · ok 必须存在且为布尔 —— optBoolean 会把缺字段吞成 false，无法区分
+     *     「没有 ok」与「ok=false」，必须显式判型；
+     *   · ok=false 时 error 必须非空 ——「失败信封必带可诊断 error」是 Rust/
+     *     Kotlin 两侧共同契约（全库 ok=false 回复点已逐一审计），违者视为
+     *     契约破坏，与畸形回复同路收敛且不保留原内容，避免漂移静默存活。
+     * 只捕 JSONException：OOM 等 Error 不伪装成 malformed，向上传播由调用方
+     * 的 Throwable 兜底处理（诚实失败优于假成功）。
      */
-    internal fun envelope(raw: String?): JSONObject =
-        runCatching { JSONObject(raw ?: "") }
-            .getOrDefault(
-                JSONObject(
-                    "{\"ok\":false,\"stage\":\"jni\",\"error\":\"malformed native reply\"}",
-                ),
-            )
+    internal fun envelope(raw: String?): JSONObject {
+        val parsed = try {
+            JSONObject(raw ?: "")
+        } catch (_: JSONException) {
+            return malformedEnvelope()
+        }
+        val ok = parsed.opt("ok") as? Boolean
+        return if (ok != null && (ok || parsed.optString("error").isNotEmpty())) {
+            parsed
+        } else {
+            malformedEnvelope()
+        }
+    }
+
+    private fun malformedEnvelope(): JSONObject =
+        JSONObject("{\"ok\":false,\"stage\":\"jni\",\"error\":\"malformed native reply\"}")
 
     private fun String.nullIfEmpty(): String? = if (isEmpty()) null else this
 }

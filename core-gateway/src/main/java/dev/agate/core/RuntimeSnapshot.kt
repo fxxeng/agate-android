@@ -37,6 +37,13 @@ sealed interface GatewayRuntimeState {
         val version: String,
     ) : GatewayRuntimeState
     data object Stopping : GatewayRuntimeState
+    /**
+     * 停止已发出但端口释放未确认（Rust stop_gateway released=false：shutdown
+     * 已发、5s 释放探测超时）。与 Stopped 的区分是 R47/T3.4 的三态收口：
+     * 此态下 UI/通知不得假装「已停止」，权威 NativeStatusObserved 探测会把
+     * 它归位；新的 START 意图允许从本态直接迁移（快速 STOP→START 校准链）。
+     */
+    data object StopTimeout : GatewayRuntimeState
     data class Failed(
         val stage: String?,
         val code: String?,
@@ -64,6 +71,8 @@ sealed interface RuntimeStateEvent {
     ) : RuntimeStateEvent
     data object GatewayStopStarted : RuntimeStateEvent
     data object GatewayStopSucceeded : RuntimeStateEvent
+    /** released=false 的停止结果：停止已发出，端口释放未在 5s 内确认（R47/T3.4）。 */
+    data object GatewayStopTimedOut : RuntimeStateEvent
     data class GatewayFailed(
         val stage: String?,
         val code: String?,
@@ -124,9 +133,13 @@ object RuntimeSnapshotReducer {
                 // A prior STOP may not yet have been migrated to RuntimeController.
                 // A fresh START must therefore be able to replace a stale Running
                 // snapshot with Starting before its Native result is applied.
+                // StopTimeout 同理（R47/T3.4）：停止已发出但释放未确认，新的
+                // START 是权威命令，必须能取代它 —— 否则快速 STOP→START 会
+                // 卡死在未确认态，比状态假象更糟。
                 if (current.gateway is GatewayRuntimeState.Stopped ||
                     current.gateway is GatewayRuntimeState.Running ||
-                    current.gateway is GatewayRuntimeState.Failed
+                    current.gateway is GatewayRuntimeState.Failed ||
+                    current.gateway is GatewayRuntimeState.StopTimeout
                 ) {
                     current.copy(gateway = GatewayRuntimeState.Starting)
                 } else current
@@ -146,6 +159,11 @@ object RuntimeSnapshotReducer {
             RuntimeStateEvent.GatewayStopSucceeded -> {
                 if (current.gateway is GatewayRuntimeState.Stopping) {
                     current.copy(gateway = GatewayRuntimeState.Stopped)
+                } else current
+            }
+            RuntimeStateEvent.GatewayStopTimedOut -> {
+                if (current.gateway is GatewayRuntimeState.Stopping) {
+                    current.copy(gateway = GatewayRuntimeState.StopTimeout)
                 } else current
             }
             is RuntimeStateEvent.GatewayFailed -> {

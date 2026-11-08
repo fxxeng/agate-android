@@ -83,4 +83,29 @@ class GatewayEnvelopeTest {
         )
         assertEquals(0, legacy.bridge)
     }
+
+    @Test
+    fun envelope_rejects_replies_without_boolean_ok() {
+        // R47/T3.3：ok 必须存在且为布尔 —— optBoolean 会把缺字段吞成 false，
+        // 无法区分「没有 ok」与「ok=false」，这里必须显式判型拒绝。
+        assertMalformed(Gateway.envelope("{}"))
+        assertMalformed(Gateway.envelope("\"ok\":\"true\",\"port\":8787}".let { "{$it}" }))
+    }
+
+    @Test
+    fun envelope_rejects_failure_envelope_without_error() {
+        // R47/T3.3：ok=false 必带非空 error（两侧共同契约，全库回复点已审计），
+        // 违者视为内核契约破坏，与畸形回复同路收敛且不保留原内容。
+        assertMalformed(Gateway.envelope("{\"ok\":false}"))
+        assertMalformed(Gateway.envelope("{\"ok\":false,\"error\":\"\"}"))
+    }
+
+    @Test
+    fun envelope_allows_success_envelope_without_error() {
+        // ok=true 不要求 error：apiCall 的 {ok,status,body}、setLogCallback 的
+        // {ok:true,cleared:true} 等成功回复本来就没有 error 字段。
+        val envelope = Gateway.envelope("{\"ok\":true,\"status\":200,\"body\":\"x\"}")
+        assertTrue(envelope.optBoolean("ok"))
+        assertEquals(200, envelope.optInt("status"))
+    }
 }

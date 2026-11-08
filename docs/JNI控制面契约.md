@@ -68,6 +68,20 @@
    exception；增补平面字符转 U+FFFD（NewStringUTF 是 modified UTF-8）。
 6. **锁纪律**：Rust 侧 Mutex 全部带 poisoned 分支（abort 语义下不可达，纯
    防御；若未来翻 unwind 则变活代码）。
+7. **回复兜底链异常清理（R47/T3.2）**：`json_reply` 入口与第二层兜底分配
+   失败处一律 `clear_pending_exception` —— JNI 规范下未清 pending 再调 JNI
+   属未定义行为，且带 pending 返回时 JVM 会在调用点抛异常，破坏「失败以
+   结构化信封 / null 交付、异常绝不逃逸到 Kotlin」契约。
+8. **信封结构契约（R47/T3.3，Kotlin `envelope()` 从严）**：ok 必须存在且为
+   布尔（optBoolean 无法区分缺字段与 false）；ok=false 必带非空 error；
+   违者与畸形回复同路收敛（{ok:false,stage:"jni",error:"malformed native
+   reply"}）且不保留原内容。只捕 JSONException，Error 诚实上抛。
+9. **stop 三态消费（R47/T3.4，Kotlin 侧）**：wire 不变（released 自 F6 起
+   存在）；Kotlin 对 `released=false` 发布 `GatewayStopTimedOut` →
+   `GatewayRuntimeState.StopTimeout`，不再假装 Stopped；新 START 可从
+   StopTimeout 直接迁移（快速 STOP→START 校准链），权威
+   NativeStatusObserved 探测归位；Service 在 StopTimeout 下保留前台通知
+   并 bounded 复核（10s × 3 轮后台探测，startId 校验防误杀新 START）。
 
 ## 4. 版本沿革
 
@@ -75,6 +89,9 @@
   panic 纪律门上线。
 - **pre-v1**：无 bridge 字段（Kotlin 读 0）；R44 增 `kind`（null 兼容）；
   R45-T3 剪 web_shim 桌面桥残留。
+- **v1 增补（R47/T3，bridge 仍 =1）**：wire 零变更；补 json_reply 兜底链
+  异常清理、Kotlin envelope 结构契约、released 三态消费语义；android
+  target clippy 门与 verify-jni-exports 签名级互检上线（§3.5 流程外注）。
 
 ## 5. 变更流程
 
