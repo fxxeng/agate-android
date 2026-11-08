@@ -113,19 +113,29 @@ object RuntimeController {
         status
     }
 
+    /**
+     * Map a native coreInit failure reply onto the runtime state event.
+     *
+     * Extracted so the JVM test suite can pin the envelope contract (stage /
+     * code / error passthrough) without loading the Android JNI library.
+     * `code` carries machine-readable classifications from the Rust side
+     * (e.g. `DATA_DIR_MISMATCH`, R47 T2.3); legacy replies without a code
+     * map to null. The human-readable reason stays the Rust-side message.
+     */
+    internal fun coreInitFailureEvent(result: org.json.JSONObject): RuntimeStateEvent =
+        RuntimeStateEvent.CoreInitializationFailed(
+            stage = result.optString("stage").takeIf { it.isNotEmpty() },
+            code = result.optString("code").takeIf { it.isNotEmpty() },
+            message = result.optString("error").takeIf { it.isNotEmpty() }
+                ?: "Native Core initialization failed",
+        )
+
     /** Public Core initialization entry point; no Android Context is retained here. */
     fun coreInit(dataDir: String, port: Int, schedulerOn: Boolean): org.json.JSONObject =
         coreInitWith(
             initialize = { Gateway.coreInit(dataDir, port, schedulerOn) },
             isSuccessful = { it.optBoolean("ok", false) },
-            failureEvent = { result ->
-                RuntimeStateEvent.CoreInitializationFailed(
-                    stage = result.optString("stage").takeIf { it.isNotEmpty() },
-                    code = result.optString("code").takeIf { it.isNotEmpty() },
-                    message = result.optString("error").takeIf { it.isNotEmpty() }
-                        ?: "Native Core initialization failed",
-                )
-            },
+            failureEvent = { result -> coreInitFailureEvent(result) },
             readStatus = { Gateway.status() },
         )
 

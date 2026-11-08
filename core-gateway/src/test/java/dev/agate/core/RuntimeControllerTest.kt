@@ -809,4 +809,47 @@ class RuntimeControllerTest {
         assertEquals(4000L, snapshot.updatedAtMillis)
     }
 
+    @Test
+    fun coreInitFailureEventCarriesMachineReadableCodeAndMessage() {
+        val event = RuntimeController.coreInitFailureEvent(
+            org.json.JSONObject()
+                .put("ok", false)
+                .put("stage", "bootstrap")
+                .put("code", "DATA_DIR_MISMATCH")
+                .put("error", "数据目录不一致：本进程 Core 已绑定（/a），本次请求（/b）。"),
+        )
+        assertTrue(event is RuntimeStateEvent.CoreInitializationFailed)
+        event as RuntimeStateEvent.CoreInitializationFailed
+        assertEquals("bootstrap", event.stage)
+        assertEquals("DATA_DIR_MISMATCH", event.code)
+        assertEquals(
+            "数据目录不一致：本进程 Core 已绑定（/a），本次请求（/b）。",
+            event.message,
+        )
+    }
+
+    @Test
+    fun coreInitFailureEventWithoutCodeMapsCodeToNull() {
+        val event = RuntimeController.coreInitFailureEvent(
+            org.json.JSONObject()
+                .put("ok", false)
+                .put("stage", "bootstrap")
+                .put("error", "bootstrap failed"),
+        )
+        assertTrue(event is RuntimeStateEvent.CoreInitializationFailed)
+        event as RuntimeStateEvent.CoreInitializationFailed
+        assertEquals("bootstrap", event.stage)
+        assertEquals(null, event.code)
+        assertEquals("bootstrap failed", event.message)
+    }
+
+    @Test
+    fun coreInitFailureEventWithoutErrorFallsBackToGenericMessage() {
+        val event = RuntimeController.coreInitFailureEvent(
+            org.json.JSONObject().put("ok", false),
+        )
+        assertTrue(event is RuntimeStateEvent.CoreInitializationFailed)
+        event as RuntimeStateEvent.CoreInitializationFailed
+        assertEquals("Native Core initialization failed", event.message)
+    }
 }

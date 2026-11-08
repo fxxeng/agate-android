@@ -204,48 +204,103 @@ static CORE: Mutex<Option<Core>> = Mutex::new(None);
 /// 引导锁：防两条线程同时 ensure_core 双跑 bootstrap。
 static CORE_BOOT: Mutex<()> = Mutex::new(());
 
-/// 初始化 Core（幂等）。Ok(true) = 本次新建，Ok(false) = 已在跑。
+/// ensure_core 的失败。绝大多数是纯文案（`Plain`）；数据目录失配是可编程
+/// 判别（`DataDirMismatch`）——core_init / start 兜底据此在错误信封里填机器
+/// 可读的 `code`，Kotlin 侧 `CoreInitializationFailed` / `GatewayFailed` 按
+/// 既有契约读取该字段；文案本身仍走 Rust 中文 reason（R47 T2.3）。
+#[derive(Debug, PartialEq, Eq)]
+enum EnsureError {
+    Plain(String),
+    DataDirMismatch(String),
+}
+
+/// Core 已在跑时，校验请求的数据目录与其绑定目录一致。
+///
+/// * 相同（规范化后）→ 幂等 `Ok(false)`，沿用「已在跑」语义；
+/// * 不同 → `Err(DataDirMismatch)`，reason 同时带两个目录的绝对路径。
+///
+/// 规范化策略与 `data_dir_lock::canonical_dir` 同口径：canonicalize 失败
+/// 退回原路径比对（跨进程正确性由 flock 保证，这里只影响失配判定）。
+/// `existing` 来自 `DataDirLock::config_dir()`，已经是规范化路径。
+///
+/// 调用纪律：ensure_core 的两处「Core 已在跑」分支（首查 + CORE_BOOT
+/// 双检）必须成对调用本函数——只改一处会给并发留窗口。两处都在
+/// `paths::set_config_dir_override` 之前，失配请求不会污染进程全局
+/// paths 状态。
+fn check_data_dir_match(
+    existing: &std::path::Path,
+    requested: &str,
+) -> Result<bool, EnsureError> {
+    let requested = std::path::Path::new(requested);
+    let requested = std::fs::canonicalize(requested)
+        .unwrap_or_else(|_| requested.to_path_buf());
+    if requested.as_path() == existing {
+        return Ok(false);
+    }
+    Err(EnsureError::DataDirMismatch(format!(
+        "数据目录不一致：本进程 Core 已绑定（{}），本次请求（{}）。\
+         请使用相同数据目录，或先停止当前 Core",
+        existing.display(),
+        requested.display(),
+    )))
+}
+
+/// 初始化 Core（幂等）。Ok(true) = 本次新建，Ok(false) = 已在跑；请求的
+/// 数据目录与已绑定目录不同时报 `DataDirMismatch`（错误信封带
+/// `code: "DATA_DIR_MISMATCH"`，R47 T2.3）。
 /// 端口只影响 OAuth 回调登记与 state.port 初值；网关启动时会按需重设。
-fn ensure_core(data_dir: &str, port: u16) -> Result<bool, String> {
+fn ensure_core(data_dir: &str, port: u16) -> Result<bool, EnsureError> {
     {
-        let Ok(guard) = CORE.lock() else { return Err("state poisoned".into()); };
-        if guard.is_some() {
-            return Ok(false);
+        let Ok(guard) = CORE.lock() else {
+            return Err(EnsureError::Plain("state poisoned".into()));
+        };
+        if let Some(core) = guard.as_ref() {
+            return check_data_dir_match(core.state.data_dir(), data_dir);
         }
     }
-    let Ok(_boot) = CORE_BOOT.lock() else { return Err("state poisoned".into()); };
+    let Ok(_boot) = CORE_BOOT.lock() else {
+        return Err(EnsureError::Plain("state poisoned".into()));
+    };
     {
-        let Ok(guard) = CORE.lock() else { return Err("state poisoned".into()); };
-        if guard.is_some() {
-            return Ok(false);
+        let Ok(guard) = CORE.lock() else {
+            return Err(EnsureError::Plain("state poisoned".into()));
+        };
+        if let Some(core) = guard.as_ref() {
+            return check_data_dir_match(core.state.data_dir(), data_dir);
         }
     }
     // 数据目录注入：显式覆盖 paths::config_dir()，不修改进程全局环境变量。
     // Android 的数据目录属于宿主生命周期配置；桌面/headless 仍读取 env。
     crate::paths::set_config_dir_override(data_dir)
-        .map_err(|reason| format!("配置目录初始化失败: {reason}"))?;
+        .map_err(|reason| EnsureError::Plain(format!("配置目录初始化失败: {reason}")))?;
     let state = match ServerState::bootstrap(port, IpAddr::V4(Ipv4Addr::LOCALHOST)) {
         Ok(state) => state,
         Err(reason) => {
             logcat_write(LOG_ERROR, LOGCAT_TAG, &format!("bootstrap 失败: {reason}"));
-            return Err(reason);
+            return Err(EnsureError::Plain(reason));
         }
     };
     // 面板访问控制的库句柄注入（Android 未注册管理员 → 该体系不启用）。
     // Core 态就装：access 状态不依赖端口，网关后启动也读得到同一份。
     server::access::attach_db(state.db().cloned());
-    let Ok(mut guard) = CORE.lock() else { return Err("state poisoned".into()); };
-    if guard.is_some() {
-        // 引导锁窗口内被并发抢先：丢弃本次 bootstrap 产物。
+    let Ok(mut guard) = CORE.lock() else {
+        return Err(EnsureError::Plain("state poisoned".into()));
+    };
+    if let Some(core) = guard.as_ref() {
+        // 引导锁窗口内被并发抢先：同目录 → 丢弃本次 bootstrap 产物（幂等）；
+        // 异目录 → 经 check_data_dir_match 明确报 DATA_DIR_MISMATCH。
         //
         // 丢弃的 `ServerState` 里含 `Arc<DataDirLock>`。这里**不会**把数据目录锁
         // 弄丢：`data_dir_lock::acquire_shared` 的 Weak 登记表让同进程对同一目录
-        // 的重复取锁返回**同一把** `Arc`，所以被抢先的那个 state 只是少了一份
-        // strong 引用，锁仍由已装进 `CORE` 的那份持有。反过来，若这里是全进程
-        // 最后一份引用（即 `CORE` 之后又被清空），drop 也会正常释放 flock，
-        // 下一次 `ensure_core` 能重新取到 —— 两个方向都有测试钉住
-        // （`same_process_reentry_returns_same_lock` 与并发重入验证）。
-        return Ok(false);
+        // 的重复取锁返回**同一把** `Arc`（其登记表锁全程持有，并发首锁由
+        // `concurrent_first_acquire_shared_same_dir_never_misreports` 钉住——
+        // 本注释旧版声称的「并发重入验证」在该测试落地前并不存在），
+        // 所以被抢先的那个 state 只是少了一份 strong 引用，锁仍由已装进
+        // `CORE` 的那份持有。反过来，若这里是全进程最后一份引用（即 `CORE`
+        // 之后又被清空），drop 也会正常释放 flock，下一次 `ensure_core`
+        // 能重新取到 —— 两个方向都有测试钉住
+        // （`same_process_reentry_returns_same_lock` 等）。
+        return check_data_dir_match(core.state.data_dir(), data_dir);
     }
     *guard = Some(Core {
         state,
@@ -261,10 +316,25 @@ fn ensure_core(data_dir: &str, port: u16) -> Result<bool, String> {
     Ok(true)
 }
 
+/// ensure_core 的失败拆成错误信封字段：`DataDirMismatch` 额外带机器可读
+/// `code`（Kotlin 既有契约读取），其余保持纯文案、code 缺省。
+fn ensure_error_parts(error: EnsureError) -> (Option<&'static str>, String) {
+    match error {
+        EnsureError::Plain(reason) => (None, reason),
+        EnsureError::DataDirMismatch(reason) => (Some("DATA_DIR_MISMATCH"), reason),
+    }
+}
+
 /// Core 初始化 + 调度器对齐（Application 启动与 FGS 兜底都走这里）。
 fn core_init(data_dir: &str, port: u16, scheduler_on: bool) -> Value {
-    if let Err(reason) = ensure_core(data_dir, port) {
-        return json!({ "ok": false, "stage": "bootstrap", "error": reason });
+    if let Err(error) = ensure_core(data_dir, port) {
+        let (code, reason) = ensure_error_parts(error);
+        return match code {
+            Some(code) => {
+                json!({ "ok": false, "stage": "bootstrap", "code": code, "error": reason })
+            }
+            None => json!({ "ok": false, "stage": "bootstrap", "error": reason }),
+        };
     }
     scheduler_set(scheduler_on)
 }
@@ -483,9 +553,15 @@ fn start_gateway(data_dir: &str, port: u16, bind_lan: bool, api_key: Option<&str
     let runtime_key = api_key.filter(|key| bind_lan && !key.trim().is_empty());
     crate::server::config::parse::set_android_api_key_override(runtime_key);
     // Core 兜底：网关必先有 Core（通常 Application 已初始化，这里兜异常路径）
-    if let Err(reason) = ensure_core(data_dir, port) {
+    if let Err(error) = ensure_core(data_dir, port) {
         crate::server::config::parse::clear_android_api_key_override();
-        return json!({ "ok": false, "stage": "bootstrap", "error": reason });
+        let (code, reason) = ensure_error_parts(error);
+        return match code {
+            Some(code) => {
+                json!({ "ok": false, "stage": "bootstrap", "code": code, "error": reason })
+            }
+            None => json!({ "ok": false, "stage": "bootstrap", "error": reason }),
+        };
     }
     let host: IpAddr = if bind_lan {
         IpAddr::V4(Ipv4Addr::UNSPECIFIED)
@@ -904,6 +980,34 @@ mod tests {
         assert_eq!(status["ok"], json!(true));
         assert_eq!(status["running"], json!(false));
         assert_eq!(status["bridge"], json!(BRIDGE_CONTRACT_VERSION));
+    }
+
+    /// R47/T2.3：目录一致（规范化后）→ 幂等 Ok(false)。
+    #[test]
+    fn check_data_dir_match_accepts_same_dir() {
+        let dir = std::env::temp_dir().join(format!("agate-ddm-ok-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        let canonical = std::fs::canonicalize(&dir).unwrap_or_else(|_| dir.clone());
+        assert_eq!(
+            check_data_dir_match(&canonical, &dir.to_string_lossy()),
+            Ok(false)
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// R47/T2.3：目录失配 → DataDirMismatch，reason 同时带已绑定与请求目录。
+    #[test]
+    fn check_data_dir_match_rejects_different_dir() {
+        let bound = std::path::Path::new("/data/data/dev.agate/files/agate");
+        let requested = std::env::temp_dir();
+        match check_data_dir_match(bound, &requested.to_string_lossy()) {
+            Err(EnsureError::DataDirMismatch(reason)) => {
+                assert!(reason.contains("数据目录不一致"));
+                assert!(reason.contains(bound.to_string_lossy().as_ref()));
+                assert!(reason.contains(requested.to_string_lossy().as_ref()));
+            }
+            other => panic!("失配必须报 DataDirMismatch，实际: {other:?}"),
+        }
     }
 }
 

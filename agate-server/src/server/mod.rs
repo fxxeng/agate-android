@@ -267,11 +267,14 @@ pub struct ServerState {
     /// 同一进程对同一目录重复 bootstrap 必须拿到**同一把**锁而不是报 Occupied。
     /// `data_dir_lock::acquire_shared` 用 Weak 登记表实现这一点。
     ///
-    /// 该字段**从不被读取**，这正是它的用途：它存在的唯一意义是「活到
+    /// 该字段自身**从不被读取**，这正是它的用途：它存在的唯一意义是「活到
     /// `ServerState` 最后一份引用落地」（RAII）。因此按本仓既有惯例
     /// （`jni_bridge.rs` 的 `_class: JClass`）加下划线前缀表达「刻意不读」，
     /// 而不是用 `#[allow(dead_code)]` 压警告 —— 让「没人读它」这件事在类型
-    /// 签名上就可见。也**不对外暴露 getter**：外部拿到锁做任何事都是错的。
+    /// 签名上就可见。也**不对外暴露锁本身的 getter**：外部拿到锁做任何事
+    /// 都是错的。唯一的只读出口是 [`ServerState::data_dir`]（R47 T2.3）：它
+    /// 只返回绑定目录的路径快照（ensure_core 失配判定需要），锁对象本身
+    /// 仍不可触及。
     _data_dir_lock: Arc<DataDirLock>,
 }
 
@@ -887,6 +890,16 @@ impl ServerState {
     /// 账号存储句柄
     pub fn store(&self) -> &AccountStore {
         &self.store
+    }
+
+    /// 本进程 Core 已绑定的数据目录（规范化后的路径快照，R47 T2.3）。
+    ///
+    /// 只读用途：ensure_core 判断重复初始化请求与已绑定目录是否一致。
+    /// 刻意**不**返回 `Arc<DataDirLock>`——锁是 RAII 所有权，外部持有或
+    /// 操作它都会破坏「一个目录一个 Owner」的收口（见 `_data_dir_lock`
+    /// 字段注释）。
+    pub(crate) fn data_dir(&self) -> &std::path::Path {
+        self._data_dir_lock.config_dir()
     }
 
     /// 鉴权服务句柄
