@@ -343,28 +343,9 @@ impl ServerState {
         // 失败一律往上透（`Result<Self, String>`）：占用冲突要让用户看到「另一
         // 实例在跑」，IO 错误（含共享存储的 ENOSYS）要让用户看到路径与原因 ——
         // 两者都不降级、不带错继续。
-        if let Err(error) = std::fs::create_dir_all(&config_dir) {
-            return Err(format!(
-                "创建数据目录失败（{}）：{error}",
-                config_dir.display()
-            ));
-        }
-        let data_dir_lock = data_dir_lock::acquire_shared(&config_dir).map_err(|error| {
-            logging::console_line("[Storage]", &format!("❌ {error}"));
-            error.to_string()
-        })?;
-        // 用 `console_line` 而不是 `log`：此处 `logging::init_store` 还没跑，
-        // `log()` 的落库通道会静默跳过（见 logging::log 的 `store()` 分支），
-        // 而这行诊断恰恰是排查「谁占着数据目录」时最需要的。`console_line`
-        // 走 eprintln + Android logcat，在这个阶段是唯一真的能看到的通道。
-        logging::console_line(
-            "[Storage]",
-            &format!(
-                "数据目录锁已获取（{}，pid={}）",
-                data_dir_lock.path().display(),
-                std::process::id()
-            ),
-        );
+        // （R47 T2.2：建目录、取锁与两行诊断抽进 `bootstrap_preflight`，行为
+        // 逐行不变；锁冲突单测由此覆盖到 bootstrap 链路上的真实取锁路径。）
+        let data_dir_lock = Self::bootstrap_preflight(&config_dir)?;
 
         // 与 Node 版一致：verbose 由环境变量 AGATE_VERBOSE=1 打开
         // （旧名 WORKBUDDY_VERBOSE 仍可读，新名优先），
@@ -865,6 +846,42 @@ impl ServerState {
         core::usage_query::spawn_sweeper(state.store.clone());
 
         Ok(state)
+    }
+
+    /// bootstrap 的数据目录前奏：建目录 + 取 Owner Lock + 两行诊断
+    /// （R47 T2.2 从 `bootstrap` 抽出，行为与内联时逐行一致；插入点顺序的
+    /// 论证见 `bootstrap` 内对应注释块）。
+    ///
+    /// 抽它出来的唯一目的：锁冲突单测（`data_dir_lock` 的
+    /// `bootstrap_conflict_*` 用例）可以经由本函数让冲突真正发生在 bootstrap
+    /// 链路的 `acquire_shared` 上，并以「Err 先于 `Db::open`」为判据断言
+    /// config.json / kernel-state.json 零写入。
+    pub(crate) fn bootstrap_preflight(
+        config_dir: &std::path::Path,
+    ) -> Result<Arc<DataDirLock>, String> {
+        if let Err(error) = std::fs::create_dir_all(config_dir) {
+            return Err(format!(
+                "创建数据目录失败（{}）：{error}",
+                config_dir.display()
+            ));
+        }
+        let data_dir_lock = data_dir_lock::acquire_shared(config_dir).map_err(|error| {
+            logging::console_line("[Storage]", &format!("❌ {error}"));
+            error.to_string()
+        })?;
+        // 用 `console_line` 而不是 `log`：此处 `logging::init_store` 还没跑，
+        // `log()` 的落库通道会静默跳过（见 logging::log 的 `store()` 分支），
+        // 而这行诊断恰恰是排查「谁占着数据目录」时最需要的。`console_line`
+        // 走 eprintln + Android logcat，在这个阶段是唯一真的能看到的通道。
+        logging::console_line(
+            "[Storage]",
+            &format!(
+                "数据目录锁已获取（{}，pid={}）",
+                data_dir_lock.path().display(),
+                std::process::id()
+            ),
+        );
+        Ok(data_dir_lock)
     }
 
     /// 账号存储句柄

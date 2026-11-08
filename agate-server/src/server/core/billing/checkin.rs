@@ -975,10 +975,29 @@ mod tests {
     #[test]
     fn checkin_gate_rejects_overlapping_rounds_without_queueing() {
         let gate = checkin_gate();
-        let first = gate.try_lock().expect("first round should acquire the gate");
+        // 本用例与 auto_checkin 的进程内验收测试共享同一把进程级门锁（它们经
+        // run_checkin 真实持锁跑假轮次，cargo test 全量并行时窗口真实存在，
+        // T2 全量首跑即命中）。首取/复取改为「等到无人持有」：等待期间被
+        // 其他用例持有不改变被测语义——本用例真正钉住的是「first 持有期间
+        // 重叠轮次被拒」与「drop 后锁可再取」，这两步都不依赖跨用例调度。
+        // （R47 T2 附带修复，测试隔离；生产代码不动。）
+        let wait_free = |what: &str| -> tokio::sync::MutexGuard<'static, ()> {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            loop {
+                match gate.try_lock() {
+                    Ok(guard) => return guard,
+                    Err(_) if std::time::Instant::now() < deadline => {
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
+                    Err(error) => panic!("{what}: {error:?}"),
+                }
+            }
+        };
+        let first = wait_free("first round should acquire the gate");
         assert!(gate.try_lock().is_err(), "a competing round must be rejected");
         drop(first);
-        assert!(gate.try_lock().is_ok(), "the gate must be released after the round");
+        let released = wait_free("the gate must be released after the round");
+        drop(released);
     }
 
     // ── 下游判据本身 ────────────────────────────────────────────

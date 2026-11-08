@@ -128,7 +128,11 @@ impl DataDirLock {
     /// 在 `config_dir` 下取锁。目录**必须**已存在（调用方在 bootstrap 第 3 步
     /// 创建），本函数不 `create_dir_all` —— 建目录是启动顺序的一部分，
     /// 藏进锁里会让「冲突时不得产生副作用」这条判据失效。
-    pub fn acquire(config_dir: &Path) -> Result<Self, LockError> {
+    ///
+    /// `pub(crate)`（R47 T2.4）：生产取锁统一走 [`acquire_shared`]——同进程
+    /// 幂等与并发串行化都在那一层，绕过它直取会重新打开「并发首锁误报
+    /// Occupied」的窗口。crate 内直取只留给本模块测试与跨进程探针夹具。
+    pub(crate) fn acquire(config_dir: &Path) -> Result<Self, LockError> {
         let path = config_dir.join(LOCK_FILE_NAME);
         let io = |error| LockError::Io(path.clone(), error);
 
@@ -146,12 +150,20 @@ impl DataDirLock {
 
         let fd = file.as_raw_fd();
         // 复核并补一道 F_SETFD：老内核对 open 的 O_CLOEXEC 支持不完整时兜底。
+        // 两者任一失败都显式报错（约束 2「必须真的置上」，R47 T2.4）：fd 来自
+        // 刚成功打开的 File，F_GETFD/F_SETFD 在正常路径不可能失败；静默容忍
+        // 失败等于把这条约束虚设，不如按 Io 拒绝启动并带出底层原因。
         // SAFETY: fd 来自上面成功打开的 File，调用期间 File 存活、未关闭；
         // fcntl 不转移所有权。
         unsafe {
             let flags = libc::fcntl(fd, libc::F_GETFD);
-            if flags >= 0 && flags & libc::FD_CLOEXEC == 0 {
-                libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC);
+            if flags < 0 {
+                return Err(LockError::Io(path, std::io::Error::last_os_error()));
+            }
+            if flags & libc::FD_CLOEXEC == 0
+                && libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) != 0
+            {
+                return Err(LockError::Io(path, std::io::Error::last_os_error()));
             }
         }
 
@@ -250,28 +262,29 @@ fn held_registry() -> &'static Mutex<Vec<Weak<DataDirLock>>> {
 /// * 否则真正取锁；`Occupied` 意味着**另一个进程**持有，原样上报。
 pub fn acquire_shared(config_dir: &Path) -> Result<Arc<DataDirLock>, LockError> {
     let key = canonical_dir(config_dir);
+    let mut registry = held_registry()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    // 顺手清掉已落地的 Weak，避免登记表随启动次数无界增长
+    registry.retain(|weak| weak.strong_count() > 0);
+    if let Some(existing) = registry
+        .iter()
+        .filter_map(Weak::upgrade)
+        .find(|lock| lock.config_dir == key)
     {
-        let mut registry = held_registry()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        // 顺手清掉已落地的 Weak，避免登记表随启动次数无界增长
-        registry.retain(|weak| weak.strong_count() > 0);
-        if let Some(existing) = registry
-            .iter()
-            .filter_map(Weak::upgrade)
-            .find(|lock| lock.config_dir == key)
-        {
-            return Ok(existing);
-        }
+        return Ok(existing);
     }
 
+    // 登记表锁全程持有到 push 完成：查表与回写之间不再有窗口。两个线程并发
+    // 首次取同一目录时，后到者必然在本锁上等待，拿到锁后命中先到者已登记的
+    // Weak，绝不会再真发 flock。没有这道串行，并发后到者会真发 flock，而
+    // 同进程两个 fd 的 flock 也互斥（按 open file description 计），于是把
+    // 同进程幂等重入误报成 `Occupied`（「另一进程占用」）。
+    // 死锁核查：`DataDirLock::acquire` 不碰本登记表锁，登记表锁也无其他
+    // 使用者，无环。代价：跨目录的并发取锁在此同样串行——本函数只服务
+    // core_init 路径（进程生命周期个位数次调用），损失可忽略（R47 T2.1）。
     let lock = Arc::new(DataDirLock::acquire(config_dir)?);
-    {
-        let mut registry = held_registry()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        registry.push(Arc::downgrade(&lock));
-    }
+    registry.push(Arc::downgrade(&lock));
     Ok(lock)
 }
 
@@ -392,38 +405,46 @@ mod tests {
         }
     }
 
-    // 5
+    // 5 —— 冲突真正发生在 bootstrap 链路上：用例改走 `ServerState::bootstrap_preflight`
+    //（create_dir_all + acquire_shared，R47 T2.2 抽出），不再直调取锁。
+    // 判据：preflight 先于 `Db::open`，冲突后 config.json 与 kernel-state.json
+    // 内容/mtime 零变化。子进程握手读 stdout `HOLDING` 行，替旧实现固定 sleep。
     #[test]
     fn bootstrap_conflict_does_not_open_db_or_write_config() {
         let _guard = fork_guard();
-        let holder = TempDir::new("t5hold");
+        let _holder = TempDir::new("t5hold");
         let target = TempDir::new("t5target");
-        // 占位：在目标目录里预先放一份「已有配置」，冲突时它必须原样不动
+        // 占位：目标目录里预先放「已有配置」与「内核状态」，冲突时两者必须原样不动
         let config_path = target.path().join("config.json");
         std::fs::write(&config_path, "{\"preserved\":true}").expect("写占位配置");
+        let kernel_state_path = target.path().join("kernel-state.json");
+        std::fs::write(&kernel_state_path, "{\"port\":18090}").expect("写占位内核状态");
         let before_meta = std::fs::metadata(&config_path).expect("读元数据");
         let before_len = before_meta.len();
         let before_mtime = before_meta.modified().expect("mtime");
+        let before_state = std::fs::metadata(&kernel_state_path).expect("读元数据");
+        let before_state_len = before_state.len();
+        let before_state_mtime = before_state.modified().expect("mtime");
 
         // 由**子进程**持有目标目录的锁，然后本进程尝试取锁 —— 模拟「另一实例在跑」
-        let child = std::process::Command::new(std::env::current_exe().expect("当前 exe"))
+        let mut child = std::process::Command::new(std::env::current_exe().expect("当前 exe"))
             .arg("--exact")
             .arg("data_dir_lock::tests::zz_child_hold_lock")
             .arg("--nocapture")
+            .stdout(std::process::Stdio::piped())
             .env("AGATE_LOCK_PROBE_DIR", target.path())
             .env("AGATE_LOCK_PROBE_HOLD_MS", "3000")
             .spawn()
             .expect("拉起持锁子进程");
-        // 等子进程真正拿到锁
-        std::thread::sleep(std::time::Duration::from_millis(800));
+        wait_for_holding(&mut child);
 
-        let conflict = DataDirLock::acquire(target.path());
+        let conflict = crate::server::ServerState::bootstrap_preflight(target.path());
         assert!(
-            matches!(conflict, Err(LockError::Occupied(_))),
-            "另一进程持锁时必须冲突，实际: {conflict:?}"
+            matches!(&conflict, Err(reason) if reason.contains("另一个 Agate 实例")),
+            "另一进程持锁时 bootstrap 链路必须报占用冲突，实际: {conflict:?}"
         );
 
-        // 冲突后：数据库不存在、配置内容与 mtime 未变
+        // 冲突后：数据库不存在、配置与内核状态的内容和 mtime 均未变
         assert!(
             !target.path().join("agate.db").exists(),
             "冲突时不得创建数据库"
@@ -439,10 +460,35 @@ mod tests {
             std::fs::read_to_string(&config_path).expect("读配置"),
             "{\"preserved\":true}"
         );
+        let after_state = std::fs::metadata(&kernel_state_path).expect("读元数据");
+        assert_eq!(after_state.len(), before_state_len, "内核状态长度不得变化");
+        assert_eq!(
+            after_state.modified().expect("mtime"),
+            before_state_mtime,
+            "内核状态 mtime 不得变化"
+        );
 
-        let _ = holder; // 仅用于命名清晰
-        let mut child = child;
         let _ = child.wait();
+    }
+
+    /// 等待持锁子进程在 stdout 报出 `HOLDING`（已持锁握手），替换旧实现的
+    /// 固定 sleep。读到 EOF = 子进程在握手前退出（取锁失败/崩溃），立即失败。
+    fn wait_for_holding(child: &mut std::process::Child) {
+        use std::io::BufRead;
+        let stdout = child.stdout.take().expect("子进程 stdout 已接管");
+        let mut reader = std::io::BufReader::new(stdout);
+        loop {
+            let mut line = String::new();
+            match reader.read_line(&mut line) {
+                Ok(0) => panic!("持锁子进程在握手前退出（未读到 HOLDING）"),
+                Ok(_) => {
+                    if line.trim() == "HOLDING" {
+                        return;
+                    }
+                }
+                Err(error) => panic!("读子进程握手失败: {error}"),
+            }
+        }
     }
 
     // 6
@@ -552,6 +598,40 @@ mod tests {
             Arc::ptr_eq(&first, &second),
             "同进程重复取锁必须返回同一把锁（Android core_init 幂等路径依赖它）"
         );
+    }
+
+    // 12 —— 同目录并发首次取锁回归（R47 T2.1）：登记表锁全程持有使
+    // 「查表 → flock → 回写」原子。修复前并发窗口的落败者会真发 flock，
+    // 而同进程两个 fd 的 flock 互斥，于是误报 Occupied。
+    #[test]
+    fn concurrent_first_acquire_shared_same_dir_never_misreports() {
+        let dir = TempDir::new("t12conc");
+        let dir_path = dir.path().to_path_buf();
+
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                let path = dir_path.clone();
+                std::thread::spawn(move || acquire_shared(&path))
+            })
+            .collect();
+        let results: Vec<Result<Arc<DataDirLock>, LockError>> = handles
+            .into_iter()
+            .map(|handle| handle.join().expect("测试线程 panic"))
+            .collect();
+
+        for (index, result) in results.iter().enumerate() {
+            assert!(
+                result.is_ok(),
+                "线程 {index} 并发首次取锁误报失败: {result:?}"
+            );
+        }
+        let first = results[0].as_ref().expect("已断言 Ok");
+        for (index, other) in results.iter().enumerate().skip(1) {
+            assert!(
+                Arc::ptr_eq(first, other.as_ref().expect("已断言 Ok")),
+                "线程 {index} 未取到与首个线程相同的锁"
+            );
+        }
     }
 
     #[test]
