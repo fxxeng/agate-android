@@ -795,15 +795,28 @@ fn jni_argument_error(env: &mut JNIEnv<'_>, argument: &str, error: String) -> js
 }
 
 fn json_reply(env: &mut JNIEnv<'_>, value: Value) -> jstring {
+    // JNI 规范（Exceptions and Return Values）：pending exception 未清理时再调用
+    // 大多数 JNI 函数属未定义行为，且 native 方法带 pending 异常返回时 JVM 会在
+    // 调用点抛出该异常 —— 两层兜底的「失败以结构化信封 / null 交付、异常绝不逃逸
+    // 到 Kotlin」契约（GatewayEnvelopeTest 锚点）要求先清场再分配。兜底链自身
+    // 的首次分配失败（OOM 级）正是会留下 pending 异常的场景（R47/T3.2）。
+    clear_pending_exception(env);
     match env.new_string(value.to_string()) {
         Ok(s) => s.into_raw(),
         // OOM 级才走到：先试最小兜底信封（Kotlin 侧按结构化失败解析，不再让
         // 裸 JSONObject 解析点拿 null 抛 NPE）；连它都分配不出来才返回 null，
         // 由 Kotlin envelope() 收敛成 malformed native reply（两层兜底链）。
-        Err(_) => env
-            .new_string(r#"{"ok":false,"stage":"jni","error":"reply alloc failed"}"#)
-            .map(|s| s.into_raw())
-            .unwrap_or(std::ptr::null_mut()),
+        Err(_) => {
+            let fallback =
+                env.new_string(r#"{"ok":false,"stage":"jni","error":"reply alloc failed"}"#)
+                    .map(|s| s.into_raw());
+            if fallback.is_err() {
+                // 第二次分配的 pending 异常同样必须清掉：否则 null 一到 Java
+                // 侧就会被 JVM 换成抛异常，兜底契约失效（R47/T3.2）。
+                clear_pending_exception(env);
+            }
+            fallback.unwrap_or(std::ptr::null_mut())
+        }
     }
 }
 
