@@ -1,12 +1,14 @@
 //! Process-scoped task ownership for the Rust Core.
 //!
-//! Tasks are registered by scope and stable name. Registration is idempotent for a
+//! Tasks are registered by scope and stable name; the name may carry caller-level
+//! identity (e.g. `checkin-fire:<schedule-id>`) so the same idempotency rule
+//! doubles as per-entity re-entry protection. Registration is idempotent for a
 //! live task; shutdown is explicit, scoped, bounded, and safe to call repeatedly.
 //! This module deliberately does not own Tokio runtimes or host lifecycle hooks.
 
 use std::collections::HashSet;
 use std::future::Future;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use tokio::sync::oneshot;
@@ -64,7 +66,7 @@ impl TaskCancellation {
 
 struct TaskEntry {
     scope: TaskScope,
-    name: &'static str,
+    name: Arc<str>,
     cancel: Option<oneshot::Sender<()>>,
     handle: JoinHandle<()>,
 }
@@ -94,13 +96,14 @@ impl CoreTaskSupervisor {
     pub fn spawn<F, Fut>(
         &self,
         scope: TaskScope,
-        name: &'static str,
+        name: impl Into<Arc<str>>,
         task: F,
     ) -> Result<bool, TaskSpawnError>
     where
         F: FnOnce(TaskCancellation) -> Fut + Send + 'static,
         Fut: Future<Output = ()> + Send + 'static,
     {
+        let name = name.into();
         let mut tasks = self.tasks.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let stopped = self
             .stopped_scopes
@@ -170,7 +173,7 @@ impl CoreTaskSupervisor {
                 Ok(Ok(())) => {},
                 Ok(Err(error)) => {
                     if error.is_panic() {
-                        failed_tasks.push(selected[index].name);
+                        failed_tasks.push(selected[index].name.clone());
                     }
                 }
                 Err(_) => {
@@ -217,7 +220,7 @@ pub struct ShutdownReport {
     pub timed_out: bool,
     /// Names of tasks that terminated with a panic before/during shutdown in
     /// unwind builds. Release profiles using `panic=abort` cannot report panics here.
-    pub failed_tasks: Vec<&'static str>,
+    pub failed_tasks: Vec<Arc<str>>,
 }
 
 static CORE_TASK_SUPERVISOR: OnceLock<CoreTaskSupervisor> = OnceLock::new();
@@ -235,6 +238,7 @@ pub async fn shutdown_core_tasks(timeout: Duration) -> ShutdownReport {
 #[cfg(test)]
 mod tests {
     use super::{CoreTaskSupervisor, TaskScope, TaskSpawnError};
+    use std::sync::Arc;
     use std::time::Duration;
     use tokio::sync::oneshot;
 
@@ -308,7 +312,7 @@ mod tests {
         tokio::task::yield_now().await;
         let report = supervisor.shutdown_scope(TaskScope::Core, Duration::from_secs(1)).await;
         assert_eq!(report.tasks_joined, 1);
-        assert_eq!(report.failed_tasks, vec!["panicking"]);
+        assert_eq!(report.failed_tasks, vec![Arc::from("panicking")]);
         assert!(!report.timed_out);
     }
 
@@ -383,5 +387,58 @@ mod tests {
             .await
             .expect("aborted task should be dropped before shutdown returns")
             .expect("drop notification should be delivered");
+    }
+
+    /// R47 T1.1 饥饿回归锚点：条目级身份（动态名）不得互相阻挡 —— 旧全局
+    /// 固定名曾让整天 due 的条目锁死其后所有计划（见 auto_checkin 模块头）。
+    /// 同名防重入语义保持不变。
+    #[tokio::test]
+    async fn distinct_entry_names_do_not_block_each_other() {
+        let supervisor = CoreTaskSupervisor::new();
+        let (release_a, wait_a) = oneshot::channel::<()>();
+        let (release_b, wait_b) = oneshot::channel::<()>();
+        assert!(supervisor
+            .spawn(TaskScope::Core, "checkin-fire:entry-a", move |mut cancellation| async move {
+                tokio::select! {
+                    _ = wait_a => {}
+                    _ = cancellation.cancelled() => {}
+                }
+            })
+            .unwrap());
+        assert!(supervisor
+            .spawn(TaskScope::Core, "checkin-fire:entry-b", move |mut cancellation| async move {
+                tokio::select! {
+                    _ = wait_b => {}
+                    _ = cancellation.cancelled() => {}
+                }
+            })
+            .unwrap());
+        assert_eq!(supervisor.active_count(TaskScope::Core), 2);
+        assert!(!supervisor
+            .spawn(TaskScope::Core, "checkin-fire:entry-a", |_| async {})
+            .unwrap());
+        let _ = release_a.send(());
+        let _ = release_b.send(());
+        let _ = supervisor
+            .shutdown_scope(TaskScope::Core, Duration::from_secs(1))
+            .await;
+    }
+
+    /// R47 T1.1：动态任务名原样穿透到停机报告（报告须能定位到具体条目）。
+    #[tokio::test]
+    async fn failed_tasks_carry_dynamic_names() {
+        let supervisor = CoreTaskSupervisor::new();
+        let entry_id = "entry-42";
+        let name = format!("checkin-fire:{entry_id}");
+        supervisor
+            .spawn(TaskScope::Core, name.clone(), |_| async {
+                panic!("test task panic");
+            })
+            .unwrap();
+        tokio::task::yield_now().await;
+        let report = supervisor
+            .shutdown_scope(TaskScope::Core, Duration::from_secs(1))
+            .await;
+        assert_eq!(report.failed_tasks, vec![Arc::from(name.as_str())]);
     }
 }
