@@ -97,10 +97,10 @@ static RUNNING: Mutex<GatewayPhase> = Mutex::new(GatewayPhase::Stopped);
 /// 后台 serve 已退出时把残留相位归位 Stopped（异常退出 / 停止完成）。
 /// 返回是否发生了归位。
 fn reap_finished_phase(guard: &mut GatewayPhase) -> bool {
-    let finished = match guard {
-        GatewayPhase::Running(r) => r.done.is_done(),
-        GatewayPhase::Stopping(s) => s.done.is_done(),
-        GatewayPhase::Stopped => false,
+    let (finished, unexpected) = match guard {
+        GatewayPhase::Running(r) => (r.done.is_done(), true),
+        GatewayPhase::Stopping(s) => (s.done.is_done(), false),
+        GatewayPhase::Stopped => (false, false),
     };
     if finished {
         *guard = GatewayPhase::Stopped;
@@ -108,6 +108,11 @@ fn reap_finished_phase(guard: &mut GatewayPhase) -> bool {
         // Core 会话继承旧 Key；同时让 status/start 观察到真实停止（R50/T1）。
         crate::server::config::parse::clear_android_api_key_override();
         server::logging::log("[Server]", "监听已退出，网关状态归位为已停止");
+        if unexpected {
+            // 非 stop 路径的退出：通知 SSE 客户端网关已断（R50/T7）。
+            // publish 在无订阅者时直接返回，不会阻塞状态查询。
+            crate::server::events::publish("gateway_stopped", json!({ "reason": "serve_exited" }));
+        }
     }
     finished
 }
@@ -183,18 +188,12 @@ pub fn forward_log(tag: &str, text: &str) {
     // guard 离开作用域时自动脱离，不碰 Java 自己附着的线程
     if let Ok(mut env) = vm.get_env() {
         let _ = call_on_log(&mut env, &obj, prio_to_level(prio), tag, &message);
-    } else if let Ok(mut guard) = vm.attach_current_thread() {
-        let _ = call_on_log(&mut guard, &obj, prio_to_level(prio), tag, &message);
+    } else if let Ok(mut env) = vm.attach_current_thread_permanently() {
+        // R50/T7：Tokio worker 是长期存活的，不应该每行日志 attach/detach
+        // 一次。permanent 附着后线程退出时由 JNI 自动 detach。
+        let _ = call_on_log(&mut env, &obj, prio_to_level(prio), tag, &message);
     }
     IN_FORWARD.with(|f| f.store(false, Ordering::Relaxed));
-}
-
-/// NewStringUTF 期待 modified UTF-8：把增补平面字符（4 字节序列）换成
-/// U+FFFD，避免 JVM 按字节解释出乱码。BMP 内的中文/常用符号不受影响。
-fn jni_safe(s: &str) -> String {
-    s.chars()
-        .map(|c| if (c as u32) > 0xFFFF { '\u{FFFD}' } else { c })
-        .collect()
 }
 
 fn clear_pending_exception(env: &mut JNIEnv<'_>) {
@@ -211,9 +210,12 @@ fn call_on_log(
     message: &str,
 ) -> Result<(), jni::errors::Error> {
     let result = (|| {
-        let l = env.new_string(jni_safe(level))?;
-        let t = env.new_string(jni_safe(tag))?;
-        let m = env.new_string(jni_safe(message))?;
+        // jni 0.21 的 JNIString 已按 Java modified UTF-8（CESU-8）编码，
+        // 增补平面字符（emoji）会正确变成代理对；旧实现额外把非 BMP 换成
+        // U+FFFD 反而制造乱码（R50/T7，已对照 jni-0.21.1 ffi_str.rs）。
+        let l = env.new_string(level)?;
+        let t = env.new_string(tag)?;
+        let m = env.new_string(message)?;
         env.call_method(
             obj,
             "onLog",

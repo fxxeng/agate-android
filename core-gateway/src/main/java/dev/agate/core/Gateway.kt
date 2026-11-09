@@ -243,8 +243,12 @@ object Gateway {
     // 而 HandlerThread 在单元测试 classpath 是 android.jar 桩（方法体 throw
     // "Stub!"）——放类初始化器会让整只对象在测试里炸掉。首次注册日志监听时
     // 才真正起线程，生产语义不变（setLogListener 是唯一入口）。
+    private const val LOG_QUEUE_CAPACITY = 2048
+
     private val logThread: HandlerThread by lazy { HandlerThread("AgateLog").apply { start() } }
     private val logHandler: Handler by lazy { Handler(logThread.looper) }
+    /** 日志投递队列上限（R50/T7）：消费慢时丢弃而不是无界堆积。 */
+    private val logQueue = BoundedLogQueue(LOG_QUEUE_CAPACITY) { runnable -> logHandler.post(runnable) }
 
     private val logListenerRegistry = LogListenerRegistry<LogSink>()
 
@@ -260,7 +264,13 @@ object Gateway {
         ensureLoaded()
         val candidate = listener?.let { target ->
             LogSink { level, tag, message ->
-                logHandler.post { target.onLog(level, tag, message) }
+                if (!logQueue.submit { target.onLog(level, tag, message) }) {
+                    val dropped = logQueue.droppedCount()
+                    // 限频：第一次与每 1000 条提示一次，避免丢弃告警自己刷屏。
+                    if (dropped == 1L || dropped % 1000L == 0L) {
+                        android.util.Log.w("Agate", "日志回调积压，已丢弃 $dropped 条")
+                    }
+                }
             }
         }
         return logListenerRegistry.update(candidate) { callback ->
