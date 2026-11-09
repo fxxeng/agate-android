@@ -64,8 +64,12 @@ use std::sync::OnceLock;
 
 use tokio::runtime::Runtime;
 
-/// 惰性全局运行时：只承接「在非 Tokio 上下文里发起的后台任务」，
-/// 正常路径（handler / 既有任务体内）不会碰到它。
+/// 惰性全局运行时：**全部业务任务**的唯一落点（`spawn_task` 是唯一入口）。
+///
+/// R44b 起不再有 `Handle::try_current()` 分支：Android JNI 侧（无 Tokio
+/// 上下文）与 headless bootstrap 同步段都落在这里；axum handler 内再 spawn
+/// 命中的也是它自己（serve 就跑在上面）。bin 自建的 runtime 只负责信号监听
+/// 与 shutdown 的 `block_on` 驱动，零业务任务 —— 停机编排因此有统一视野。
 static GLOBAL_RUNTIME: OnceLock<Runtime> = OnceLock::new();
 
 /// 项目统一的 spawn 入口：Android JNI 与 headless 共用（原

@@ -8,8 +8,12 @@ import org.json.JSONObject
 /**
  * 网关内核（libagate_server.so）的 Kotlin 门面。
  *
- * 双通信面（方案 §3）：数据面全部走 HTTP（127.0.0.1:8787），本对象只管
- * 「电源开关 + 闹钟 + 日志回调」六件事，不碰任何业务数据结构。
+ * 双通信面（方案 §3）：数据面默认走 HTTP（127.0.0.1:8787）。本对象提供
+ * 12 个 JNI 导出 —— 电源（start/stop/status/coreInit）、闹钟与签到
+ * （triggerTask/schedulerSet/checkinRunNow/checkinRunAndWait/
+ * requestCheckinStop）、日志回调（setLogCallback）、版本（version），以及
+ * 管理面直调 apiCall（Core 态经内核内存 Router，不经 loopback 端口）。
+ * 全部按 JSON 文本进出，本对象不解释业务数据结构。
  *
  * 线程：JNI 导出可在任意线程调用（bootstrap/start 是同步调用、毫秒级返回，
  * 内部落到内核自己的 Tokio 运行时）；但建议在后台线程调 start/stop，

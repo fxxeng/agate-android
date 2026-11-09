@@ -1,9 +1,14 @@
 //! Agate JNI 控制面 —— Android 壳（dev.agate.android）与网关内核的唯一接口。
 //!
 //! 设计原则（docs/Agate移植方案-v3.0.md §3「双通信面」）：
-//!   · 数据面：全部业务交互走 127.0.0.1 的 HTTP API（Compose UI 用 Retrofit
-//!     消费），JNI 不碰任何业务数据结构；
-//!   · 控制面：本文件只提供 6 个「电源开关 + 闹钟 + 日志」函数。
+//!   · 数据面：业务交互默认走 127.0.0.1 的 HTTP API（Compose UI 用 Retrofit
+//!     消费）；Core 态（网关未运行）下管理面经 `apiCall` 在内核内存 Router
+//!     上直调，不经端口 —— 两条路径共用同一套 Router/handler，JNI 只传
+//!     JSON 文本，不解释任何业务数据结构；
+//!   · 控制面：本文件提供 12 个 JNI 入口 —— 电源（start/stop/status/
+//!     coreInit）、闹钟与签到（triggerTask/schedulerSet/checkinRunNow/
+//!     checkinRunAndWait/requestCheckinStop）、日志回调（setLogCallback）、
+//!     版本（version），以及管理面直调（apiCall）。
 //!
 //! 两级启动（B 包 · 方案 v2.0 三开关），桌面壳 `ensure_ready` 的序列拆两段：
 //!   Core（随进程）：Android 显式数据目录覆盖 → `ServerState::bootstrap` →

@@ -24,16 +24,18 @@ Agate 当前阶段以 Android App 为唯一产品交付主线。优先完成 And
 | Desktop 自动导入路径 | Provider 的桌面客户端目录发现 | Android 只允许显式文件导入/手动凭证；自动发现应返回明确不支持，不扫描桌面路径 |
 | Tauri/Desktop UI | R41 仓库中不存在完整 Desktop Host 工程 | 不需要重复删除；不得重新引入 Android 依赖链 |
 
-## 3. CI 收敛
+## 3. CI 收敛与当前门禁
 
-R42 将验证结构收敛为两个 job：
+R42 把验证结构收敛为两个 job；R47 起的门禁口径如下（以 `.github/workflows/android-build.yml` 为准）：
 
-1. `rust-tests`：Ubuntu 上仅运行可移植 Rust library `cargo check --lib` 与 `cargo test --lib`。它用于快速执行共享业务纯逻辑测试，不代表 Linux Desktop 产品构建，也不再构建 Headless binary。
-2. `android-build`：权威产品门禁。交叉编译 Android `arm64-v8a` 与 `x86_64` Rust `.so`，核对 JNI exports，运行 Gradle/JVM tests，构建 Debug/Release APK，检查 APK/ELF，并运行 x86_64 Emulator Instrumentation。
+1. `rust-tests`：Ubuntu 上运行可移植 Rust library 的 `cargo check --lib` + `cargo test --lib`，并执行宿主 panic 纪律门（clippy 六项 deny：unwrap/expect/panic/unreachable/todo/unimplemented）。`cargo fmt --check` 仍是**非阻塞**的历史债，不代表当前格式已收敛。它不构建 Headless binary，也不宣称 Linux Desktop 支持。
+2. `android-build`：权威产品门禁。交叉编译 Android `arm64-v8a` + `x86_64` Rust `.so`（单次 cargo 调用共享依赖编译），执行 **Android target clippy**（cargo-ndk 同环境注入 NDK 编译器，覆盖 `cfg(target_os="android")` 与 `jni_bridge.rs`），核对 JNI 导出符号 **并做 Kotlin/Rust 方法描述符签名级互检**，跑 JVM 单元测试，构建 Debug/Release APK，校验 APK 内容 / ELF 架构 / **debug 签名证书指纹**（release 未签名放行，正式签名暂缓），最后跑 x86_64 Emulator Instrumentation。
 
 删除 Windows Shared Core job。Windows 平台源码不再阻塞 Android 主线；保留在仓库中的 Windows 条件编译代码只作为未承诺的兼容遗留，不得标记为本项目当前交付能力。
 
 ## 4. 主线完成顺序（先闭环，再打磨）
+
+当前进度（2026-11-09，R47）：M1–M4 已代码闭环并通过 CI；M5/M6 待真机端到端验收；M7 未开始；release 正式签名按委托方裁定暂缓（README Signing）。
 
 ### M1 — Android Host 与构建边界闭环
 

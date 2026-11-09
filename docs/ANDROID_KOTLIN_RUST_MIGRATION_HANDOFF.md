@@ -10,8 +10,8 @@
 > 历史：R40 `d3e049e89b932325e49c57b5f6a5a23c825bcca8` 为 R42 之前的已验证基线（Run `42199123476`）；R41 本地候选（未推送远端；代码改动已合入 R42 ad1bc9cef3）。
 >
 > 当前验证分支：`verify/arch-8faa5f5`（只允许推送该分支，不修改 `main`、不合并）
-> 当前最后已验证基线：R42 `ad1bc9cef3a257d9776e1bcf89fac3da5528f649`（= `ad1bc9cef3`）
-> 当前工作候选：R43 Android Rust Core 数据目录 Owner Lock；R42 已移除 Windows Desktop/Core job，Linux job 仅执行 portable Rust library `--lib` 检查/测试（bin 编译范围待 R43 T2 审计结论），Android job 负责 Android 双 ABI、JNI、Gradle、APK 与 Emulator Instrumentation。
+> 当前最后已验证基线：R47（见文末「R43–R47 — 验证状态更新」节；本行不再重复具体 sha，避免二次维护时漏改）
+> 当前工作候选：R47 收尾批（文档与 ChatGLM 迁移测试）；R43–R47 已把 data-dir owner lock、Kotlin Service/Core 生命周期、JNI 契约与签名门禁收口并经 CI 验证（见文末「R43–R47 — 验证状态更新」）。R42 已移除 Windows Desktop/Core job；Linux job 仅执行 portable Rust library `--lib` 检查/测试，Android job 负责 Android 双 ABI、JNI（符号 + 描述符）、Gradle/JVM、APK 与 Emulator Instrumentation。
 > Agate 当前以 Android 为唯一产品交付目标；不再把桌面端功能完善作为 Android 前置任务。Rust Shared Core 保持单一实现，只隔离/删除经证明 Android 不需要且不破坏数据兼容的桌面代码。
 > 真机验收采用 APP 日常使用中的滚动证据，不作为独立架构批次的前置阻塞。
 
@@ -2645,3 +2645,9 @@ R41 当前为源码候选；尚未执行 Linux/Windows Cargo tests、Android ABI
 - 删除纪律：不删除 Shared Core Provider/协议/数据库；先按 Android target 依赖和运行时调用链识别桌面专属能力，再逐项隔离/删除。用户显式文件导入与凭证解析不能仅因“桌面来源”就误删。
 - 后续顺序：M1 Android build/release 闭环 → M2 Android data-dir owner lock → M3 Kotlin Service/Core/Sidecar 生命周期 → M4 JNI 并发/错误/取消契约 → M5 Android 网络/文件/权限/进程能力 → M6 功能与升级/恢复验收 → M7 主线完成后性能和代码打磨。详见 `ANDROID_ONLY_MAINLINE_PLAN_R42.md`。
 - 状态：R42 workflow 与文档候选；未运行 Cargo、Gradle、Android ABI、Emulator 或真机验证。R40 仍是最后 CI 验证基线。
+
+## R43–R47 — 验证状态更新（2026-11-09）
+
+- 本文 §32.6 与 R42 节里的「R40 仍是最后已验证基线」是**当时**的状态记录，已被后续轮次取代；最新代码基线以本节为准：R47 `1a634aa` 通过 GitHub Actions Run `42541283774`（rust-tests 790 passed / 11 ignored；android-build 全步 success：Android clippy、JNI 符号 + 描述符、JVM 119/119、双 APK 校验、Instrumentation 2/2）。
+- R47 收口了运行时正确性（checkin-fire 条目级身份、supervisor 回收）、数据目录所有权（`acquire_shared` 锁窗口、`ensure_core` 目录一致性、CLOEXEC 错误）、JNI 契约（pending exception 清理、信封从严、stop 三态、描述符签名级互检）与签名门禁；详见 README「R47 changes」与 `docs/JNI控制面契约.md`。
+- 仍未完成的验证：真机侧验收（APK 由用户自取 run artifacts）—— 存量嵌套账号恢复、D2/D3/D4、headless 信号退出、mihomo 子进程回收、下载中途 cancel、START/STOP 意图竞争、Service destroy、进程回收重建；release 正式签名按委托方裁定暂缓（README Signing）。

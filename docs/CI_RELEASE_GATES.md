@@ -9,8 +9,8 @@ protection/rulesets determine whether those checks actually block merges.
 
 | Check / job | Scope | Required policy |
 |---|---|---|
-| `rust-tests` | Ubuntu host execution of portable Rust library `--lib` check/tests; not a Linux Desktop build | Required |
-| `android-build` | Android Rust arm64-v8a/x86_64, JNI export parity, JVM tests, APK validation, Emulator Instrumentation | Required |
+| `rust-tests` | Ubuntu host execution of portable Rust library `--lib` check/tests + panic-discipline clippy (six denies); not a Linux Desktop build. `cargo fmt --check` remains non-blocking legacy debt | Required |
+| `android-build` | Android Rust arm64-v8a/x86_64, Android-target clippy (same six denies), JNI symbol + Kotlin/Rust descriptor parity, JVM unit tests, debug/release APK validation (incl. debug certificate fingerprint), Emulator Instrumentation | Required |
 
 The Android job is the authoritative product build and test gate. The Linux job
 exists only to execute portable Shared Core library tests quickly. It does not
