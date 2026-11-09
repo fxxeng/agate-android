@@ -16,6 +16,15 @@ The Android job is the authoritative product build and test gate. The Linux job
 exists only to execute portable Shared Core library tests quickly. It does not
 build the Headless binary or claim Linux Desktop support.
 
+R49 coverage: `rust-tests` covers AutoCheckin backfill cancellation (6 cases:
+stop before first plan / during plan / generation hand-off / generation advance
+without a dispatch loop / configure-off) and the `bind → start_gateway_tasks`
+ordering contract (3 cases). The STOP four-state consumption and probe-port
+decision are Kotlin logic and run in the `android-build` JVM unit-test step
+(`StopLifecyclePolicyTest`, `GatewayPortChoiceTest`,
+`RuntimeControllerTest`). R49 adds 9 Rust cases (796 → 805) and 15 JVM cases
+(121 → 136 expected; authoritative count is the CI log, not this file).
+
 ## Repository settings still required
 
 A repository administrator must configure a branch protection rule or ruleset

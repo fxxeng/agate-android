@@ -76,12 +76,16 @@
    布尔（optBoolean 无法区分缺字段与 false）；ok=false 必带非空 error；
    违者与畸形回复同路收敛（{ok:false,stage:"jni",error:"malformed native
    reply"}）且不保留原内容。只捕 JSONException，Error 诚实上抛。
-9. **stop 三态消费（R47/T3.4，Kotlin 侧）**：wire 不变（released 自 F6 起
-   存在）；Kotlin 对 `released=false` 发布 `GatewayStopTimedOut` →
-   `GatewayRuntimeState.StopTimeout`，不再假装 Stopped；新 START 可从
-   StopTimeout 直接迁移（快速 STOP→START 校准链），权威
-   NativeStatusObserved 探测归位；Service 在 StopTimeout 下保留前台通知
-   并 bounded 复核（10s × 3 轮后台探测，startId 校验防误杀新 START）。
+9. **stop 四态消费（R47/T3.4 起，R49/T1 收口）**：wire 不变（released 自
+   F6 起存在）。Kotlin `StopExecutionResult` 把回复分成四态：
+   - `SkippedByNewerIntent`：守卫读到更新的 START，未执行 STOP；
+   - `Stopped`：Native `ok=true`（`not_running` 是**唯一**被接受的幂等成功）；
+   - `StopTimedOut`：`ok=true && released=false` → `GatewayRuntimeState.StopTimeout`；
+   - `Failed(code,message,cause)`：`ok=false` 或 JNI 异常（异常不再上抛）。
+   **只有 `Stopped` 才允许释放 WakeLock/WifiLock 并退出前台**；超时/失败保留
+   FGS 与保活锁，按 10s × 3 复核（每轮先校验新 START 未到达，探测走
+   `refreshStatus`），复核用尽仍保留服务并给出可诊断通知。R48 的「超限退出
+   前台」语义废止。
 
 ## 4. 版本沿革
 
@@ -92,6 +96,9 @@
 - **v1 增补（R47/T3，bridge 仍 =1）**：wire 零变更；补 json_reply 兜底链
   异常清理、Kotlin envelope 结构契约、released 三态消费语义；android
   target clippy 门与 verify-jni-exports 签名级互检上线（§3.5 流程外注）。
+- **v1 增补（R49/T1，bridge 仍 =1）**：wire 零变更；stop 结果四态化（JNI
+  异常收敛为 `Failed.cause`、`not_running` 唯一幂等）、Service 只在 Stopped
+  时放锁/退出、复核用尽保留前台并区分启动/停止失败卡片。
 
 ## 5. 变更流程
 

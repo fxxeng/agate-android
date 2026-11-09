@@ -1,7 +1,7 @@
 # Agate — Android-only Mainline Candidate
 
 - Verification branch: `verify/arch-8faa5f5`
-- Current batch: R48 / 全库格式化与格式门（R47 已收口）
+- Current batch: R49 / 运行时正确性（STOP 生命周期、补签取消、启动顺序、端口；R48 已收口）
 - Latest verified: `b9dcaa0` — GitHub Actions Run `42562774123`（双 job 全绿；R48 格式批）
 - 状态：rust-tests 793 passed / 11 ignored + Rust 格式门阻断；android-build JVM 单元测试 121/121、JNI 12 入口（符号 + Kotlin/Rust 描述符签名级互检）、双 APK 校验（debug 共享凭证指纹硬断言）、Instrumentation 2/2。
 - 真机验收待做（APK 自取 run artifacts）；release 正式签名按委托方裁定暂缓。
@@ -25,6 +25,14 @@ The repository already has no complete Tauri/Desktop UI Host. The remaining desk
 
 1. **全库格式化**：`cargo fmt --all`（agate-server workspace）418 文件 +21475/−8800，纯格式化无逻辑改动；rustfmt 非幂等，两轮收敛后 `--check` 干净；本地 `cargo test --lib` 796/0/11。
 2. **格式门转阻断**：CI `rust-tests` 的 `cargo fmt --check` 移除 `continue-on-error`，格式漂移自此红灯。预检确认本机与 CI stable 的 rustfmt `1.10.0 (58cf8f9c35 2026-10-13)` 对同一提交输出 diff 的 SHA-256 完全一致。
+
+## R49 changes — 运行时正确性（STOP / 补签 / 启动顺序 / 端口）
+
+1. **STOP 生命周期（T1）**：新增 `StopExecutionResult` 四态（SkippedByNewerIntent / Stopped / StopTimedOut / Failed）与 `StopLifecyclePolicy`；只有 `Stopped` 释放保活锁并退出前台，超时与失败保留 FGS、10s×3 有界复核，复核用尽仍保留服务（R48「超限退出前台」废止）；JNI 异常收敛为 `Failed(cause)`，不再上抛。
+2. **补签取消（T2）**：`AutoCheckin` 引入调度代次；`stop()` 无条件推进（修 `task.is_none()` early-return）；`start()` 每代一个 `checkin-backfill:{gen}` 任务；`configure(enabled=false)` 直接停调度；取消骨架 `run_backfill` 在每条计划启动前/收尾后校验，只阻止后续计划、不中断在途 Provider 请求。
+3. **启动顺序（T3）**：`server::run_after_successful_bind` —— 端口绑定成功后才提交 Sidecar autostart；`jni_bridge` 与 headless bin 同一契约。
+4. **端口（T4）**：`GatewayPortChoice` 统一探测端口（运行态实际端口优先、配置端口回落）；控制页 5s 轮询刷新、不再写死 8787；健康卡文案取设置；失败卡片区分「启动失败 / 停止未完成」。
+5. **文档**：新增 `docs/R49_RUNTIME_CORRECTNESS_IMPLEMENTATION.md`（含未执行的真机验收清单与「不得折算为通过」声明）；JNI 契约 §3.9 与沿革同步。
 
 ## Verification state
 
