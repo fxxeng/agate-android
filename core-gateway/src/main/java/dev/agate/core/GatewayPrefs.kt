@@ -47,9 +47,9 @@ object GatewayPrefs {
      * KeyStore 加密为增强项，见方案 §3.7）。
      *
      * R50/T3：随机源必须是 CSPRNG。旧实现用 `Collection.random()`（JVM 上
-     * 落 ThreadLocalRandom，种子来自时间），而 `apiKey` 是 `/api/backup/*`
-     * 等管理接口的唯一凭证；把可预测的 key 暴露在明文 LAN HTTP 上，等于把
-     * 备份导出/导入能力交给同网段攻击者。
+     * 落 ThreadLocalRandom，种子来自时间），而 `apiKey` 是备份导出/导入
+     * （/api/backup）等管理接口的唯一凭证；把可预测的 key 暴露在明文 LAN
+     * HTTP 上，等于把备份能力交给同网段攻击者。
      */
     fun apiKey(ctx: Context): String {
         prefs(ctx).getString(KEY_API_KEY, null)?.let { return it }
