@@ -47,12 +47,21 @@ impl std::fmt::Display for TaskSpawnError {
 /// Cooperative cancellation handle passed into each managed task.
 pub struct TaskCancellation {
     receiver: oneshot::Receiver<()>,
+    /// 一旦观察到取消就锁存：tokio oneshot 的 Receiver 只能被消费一次，
+    /// 再次 poll/try_recv 会 panic（"called after complete"）。调用方会在
+    /// `is_cancelled()` 为真后继续走到 `wait_or_cancel()`（scheduled_tasks
+    /// 的循环出口），所以两个入口都必须幂等（R50/T6）。
+    cancelled: bool,
 }
 
 impl TaskCancellation {
     /// Resolve when the owning scope requests shutdown.
     pub async fn cancelled(&mut self) {
+        if self.cancelled {
+            return;
+        }
         let _ = (&mut self.receiver).await;
+        self.cancelled = true;
     }
 
     /// Wait for either cancellation or a delay. Returns false on cancellation.
@@ -65,8 +74,14 @@ impl TaskCancellation {
 
     /// Non-blocking cancellation check, intended for safe points between units of work.
     pub fn is_cancelled(&mut self) -> bool {
+        if self.cancelled {
+            return true;
+        }
         match self.receiver.try_recv() {
-            Ok(()) | Err(oneshot::error::TryRecvError::Closed) => true,
+            Ok(()) | Err(oneshot::error::TryRecvError::Closed) => {
+                self.cancelled = true;
+                true
+            }
             Err(oneshot::error::TryRecvError::Empty) => false,
         }
     }
@@ -148,6 +163,7 @@ impl CoreTaskSupervisor {
         let (cancel_tx, cancel_rx) = oneshot::channel();
         let handle = crate::spawn_task(task(TaskCancellation {
             receiver: cancel_rx,
+            cancelled: false,
         }));
         tasks.push(TaskEntry {
             scope,
@@ -360,7 +376,9 @@ pub async fn shutdown_core_tasks(timeout: Duration) -> ShutdownReport {
 
 #[cfg(test)]
 mod tests {
-    use super::{CoreTaskSupervisor, TaskScope, TaskSpawnError, FAILURE_HISTORY_CAP};
+    use super::{
+        CoreTaskSupervisor, TaskCancellation, TaskScope, TaskSpawnError, FAILURE_HISTORY_CAP,
+    };
     use std::sync::Arc;
     use std::time::Duration;
     use tokio::sync::oneshot;
@@ -740,4 +758,26 @@ mod tests {
         );
         assert!(supervisor.recent_task_failures().is_empty());
     }
+}
+
+/// R50/T6：取消信号被 try_recv 消费后，再次 await / 检查不得 panic。
+#[tokio::test]
+async fn cancellation_handle_is_idempotent_after_signal() {
+    let (tx, rx) = oneshot::channel();
+    let mut cancellation = TaskCancellation {
+        receiver: rx,
+        cancelled: false,
+    };
+    tx.send(()).expect("send cancellation");
+
+    assert!(cancellation.is_cancelled());
+    assert!(cancellation.is_cancelled(), "二次检查必须仍为 true");
+
+    tokio::time::timeout(Duration::from_millis(50), cancellation.cancelled())
+        .await
+        .expect("已取消的句柄再次 await 必须立即返回");
+    assert!(
+        !cancellation.wait_or_cancel(Duration::from_millis(5)).await,
+        "已取消的 wait_or_cancel 必须返回 false 而不是 panic"
+    );
 }
