@@ -60,6 +60,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import dev.agate.android.data.AuthChannel
@@ -71,6 +72,8 @@ import dev.agate.android.data.LoginClient
 import dev.agate.android.data.LoginKind
 import dev.agate.android.data.ProviderCategory
 import dev.agate.android.data.ProviderPreset
+import dev.agate.android.data.SmsCaptcha
+import dev.agate.android.data.jsonTextOrNull
 import dev.agate.android.data.PresetApiRegistry
 import dev.agate.android.data.PresetRegistry
 import dev.agate.core.AgateForegroundService
@@ -525,6 +528,8 @@ private fun SmsLoginForm(preset: ProviderPreset, onDone: (Boolean, String) -> Un
     var name by remember { mutableStateOf("") }
     // 本次发码的中间态（内核统一的 `ticket`：三家的原名是 deviceId / msgid / uuid）
     var ticket by remember { mutableStateOf<String?>(null) }
+    // 风控挑战：非空时这一轮**没有真的发出码**，界面停在「打开验证页 → 回来重发」
+    var captcha by remember { mutableStateOf<SmsCaptcha?>(null) }
     var sent by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
     var countdown by remember { mutableStateOf(0) }
@@ -552,7 +557,10 @@ private fun SmsLoginForm(preset: ProviderPreset, onDone: (Boolean, String) -> Un
         }
         Spacer(Modifier.width(10.dp))
         Text(
-            if (countdown > 0) "${countdown}s" else if (sent) "重发" else "发送验证码",
+            if (countdown > 0) "${countdown}s"
+            else if (captcha != null) "已完成验证，重发"
+            else if (sent) "重发"
+            else "发送验证码",
             color = if (countdown == 0 && !busy && phone.length >= 5) C.accent else C.textDim,
             fontSize = 12.sp,
             fontWeight = FontWeight.SemiBold,
@@ -562,14 +570,26 @@ private fun SmsLoginForm(preset: ProviderPreset, onDone: (Boolean, String) -> Un
                 .clickable(enabled = countdown == 0 && !busy && phone.length >= 5) {
                     busy = true; hint = null
                     scope.launch {
-                        val r = AccountOps.smsSend(preset.id, phone)
+                        // 带上上一轮的 ticket：过完滑块重发必须复用同一个 uuid，
+                        // 否则上游找不到刚通过的风控结论（内核走 ticket_of 统一认它）
+                        val r = AccountOps.smsSend(preset.id, phone, ticket)
                         busy = false
                         if (r.ok) {
-                            sent = true
-                            // 内核在发码响应里统一补出 `ticket`（原名 deviceId /
-                            // msgid / uuid 各自保留，但客户端只认这一个名字）
-                            ticket = r.data?.optString("ticket")?.ifBlank { null }
-                            hint = "验证码已发送，请查收短信"
+                            val challenge = AccountOps.smsCaptcha(r.data)
+                            // 两种响应都要把 ticket 记下来：挑战态下它是待复用的
+                            // uuid，正常发码后它是 verify 要回传的中间态
+                            ticket = r.data?.let { jsonTextOrNull(it, "ticket") } ?: ticket
+                            captcha = challenge
+                            if (challenge == null) {
+                                sent = true
+                                hint = "验证码已发送，请查收短信"
+                            } else {
+                                // 没真发码 ⇒ 不开倒计时、不放开登录按钮。
+                                // 原因文案在下面的挑战卡里显示，别在 hint 里重复一遍
+                                sent = false
+                                countdown = 0
+                                hint = null
+                            }
                         } else hint = r.error ?: "发送失败"
                     }
                 }
@@ -581,6 +601,28 @@ private fun SmsLoginForm(preset: ProviderPreset, onDone: (Boolean, String) -> Un
     hint?.let {
         Spacer(Modifier.height(8.dp))
         Text(it, color = if (it.contains("已发送")) C.green else C.red, fontSize = 12.sp)
+    }
+    captcha?.let { challenge ->
+        Spacer(Modifier.height(10.dp))
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(C.insetBg, RoundedCornerShape(12.dp))
+                .border(1.dp, C.border, RoundedCornerShape(12.dp))
+                .padding(12.dp),
+        ) {
+            Text(challenge.message, color = C.red, fontSize = 12.sp)
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "在浏览器里完成滑块验证，回到这里点「已完成验证，重发」",
+                color = C.textDim,
+                fontSize = 11.sp,
+            )
+            Spacer(Modifier.height(8.dp))
+            SmallAction("打开验证页") {
+                openVerifyPage(ctx, challenge.verifyUrl) { message -> hint = message }
+            }
+        }
     }
     Spacer(Modifier.height(12.dp))
     Button(
@@ -597,6 +639,24 @@ private fun SmsLoginForm(preset: ProviderPreset, onDone: (Boolean, String) -> Un
         modifier = Modifier.fillMaxWidth(),
         colors = ButtonDefaults.buttonColors(containerColor = C.accent, contentColor = C.onAccent),
     ) { Text(if (busy) "处理中…" else "登录", fontWeight = FontWeight.SemiBold) }
+}
+
+/**
+ * 用系统浏览器打开风控验证页。地址由内核 `challenge_of` 给出并限定为美团
+ * https 域（`is_meituan_https` 是**唯一**校验点），这里只做两件本地防护：
+ * 空地址不发起 Intent、没有浏览器时把失败说清楚。别在这里再判一次域名 ——
+ * 两处判据迟早分叉。
+ */
+private fun openVerifyPage(ctx: Context, url: String, onError: (String) -> Unit) {
+    if (url.isBlank()) {
+        onError("验证页地址不可用，请重试发送验证码")
+        return
+    }
+    runCatching {
+        ctx.startActivity(
+            Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        )
+    }.onFailure { onError("打不开验证页，请确认已安装浏览器") }
 }
 
 /* ── 粘贴凭证通道：按家出表单（kuku Cookie / commandcode Key / antigravity token）── */

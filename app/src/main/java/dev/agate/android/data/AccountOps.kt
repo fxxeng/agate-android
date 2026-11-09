@@ -8,6 +8,15 @@ import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
 /**
+ * 发码被风控拦下时的挑战信息（内核 `tabbit::login::challenge_of`）。
+ *
+ * [verifyUrl] 已由内核限定为 https 的 `*.meituan.com` 域（`is_meituan_https`），
+ * 客户端**不再判第二次** —— 地址校验只有一处，界面只负责把它打开。
+ * [requestCode] 只用于排障展示，重发靠的是同一轮的 [AccountOps.smsSend] ticket。
+ */
+data class SmsCaptcha(val message: String, val verifyUrl: String, val requestCode: String)
+
+/**
  * 账号添加（短信 / 粘贴凭证）与账号操作（启停 / 删除）（M3-4）。
  *
  * 与 LoginClient 同款约定：suspend + IO、不持状态；apiKey 与 GatewayRepository
@@ -36,7 +45,6 @@ object AccountOps {
 
     class OpResult(val ok: Boolean, val data: JSONObject?, val error: String?)
 
-    /** 发送验证码。loomy 返回的 msgid 由调用方保存、verify 时回传。 */
     /**
      * provider → 短信端点前缀（**唯一一份**：smsSend / smsVerify 共用）。
      *
@@ -57,9 +65,35 @@ object AccountOps {
         else -> "/api/session/login/sms"
     }
 
-    suspend fun smsSend(providerId: String, phone: String): OpResult {
+    /**
+     * 发送验证码。loomy 返回的 msgid 由调用方保存、verify 时回传。
+     *
+     * [ticket] 是**上一轮**发码的中间态（Tabbit 那里就是 uuid）。过完滑块重发时
+     * 必须原样带回：换了 uuid 上游就找不到刚通过的风控结论，滑块等于白过。
+     * 内核 `login_tabbit_sms_send` 走 `ticket_of` 统一认这个字段，这里不需要
+     * 再按 provider 分叉（三家都忽略多余字段）。
+     */
+    suspend fun smsSend(providerId: String, phone: String, ticket: String? = null): OpResult {
         val body = JSONObject().put("phone", phone).put("provider", providerId)
+        if (!ticket.isNullOrBlank()) body.put("ticket", ticket)
         return post(smsEndpoint(providerId) + "/send", body)
+    }
+
+    /**
+     * 从发码响应里读风控挑战：只有 `status:captcha` 且给了能打开的验证页才算。
+     *
+     * 字段一律走 `jsonTextOrNull`：真机 libcore 的 `optString` 会把 JSON null
+     * 读成字面量 `"null"`，拿它当文案会显示 "null"、当地址会打开一个坏链接；
+     * 单测用的 org.json 返回 default，测不出这个差异（路由队列踩过同一个坑）。
+     * 返回 null = 这是一次**正常**发码，界面照旧走验证码流程。
+     */
+    fun smsCaptcha(data: JSONObject?): SmsCaptcha? {
+        if (data == null || jsonTextOrNull(data, "status") != "captcha") return null
+        val captcha = data.optJSONObject("captcha") ?: return null
+        val verifyUrl = jsonTextOrNull(captcha, "verifyUrl") ?: return null
+        val message = jsonTextOrNull(captcha, "message") ?: "需要进行人机验证"
+        val requestCode = jsonTextOrNull(captcha, "requestCode") ?: ""
+        return SmsCaptcha(message, verifyUrl, requestCode)
     }
 
     /** 用手机号 + 验证码登录并直接落成账号 → {account, list}。 */

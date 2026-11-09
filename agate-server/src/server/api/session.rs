@@ -1211,8 +1211,9 @@ pub async fn login_loomy_sms_verify(State(state): State<ServerState>, body: Byte
 /// handler 只能靠 if 分叉 —— 那正是 issue #93 的成因（另一个家的 id 发过来时
 /// 号码被发去错的站点、账号也存成错的 provider，调用方却拿到成功响应）。
 ///
-/// body `{phone, provider?, uuid?|deviceId?}` → `{uuid, deviceId}`；
-/// 风控拦截时返回 `status:"captcha"` 与验证信息，`uuid` 必须原样带回重发。
+/// body `{phone, provider?, ticket?|uuid?|deviceId?}` → `{uuid, deviceId, ticket}`；
+/// 风控拦截时返回 `status:"captcha"` 与验证信息，`ticket`（即同一轮的 uuid）
+/// 必须原样带回重发 —— 否则上游找不到刚通过的风控结论。
 ///
 /// `provider` 只用来认国际站：`tabbit-intl` 会被明确拒绝并给出替代（粘贴
 /// Cookie）。判据在核心层（`tabbit::login::send_code`），这里只做透传 ——
@@ -1225,10 +1226,12 @@ pub async fn login_tabbit_sms_send(body: Bytes) -> Response {
         Err(response) => return response,
     };
     // 过完滑块重发时把上一轮的 uuid 带回来：换了 uuid 上游就丢掉风控结论。
-    let reuse_uuid = payload
-        .get("uuid")
-        .and_then(Value::as_str)
-        .or_else(|| payload.get("deviceId").and_then(Value::as_str));
+    //
+    // 走 `ticket_of` 这个**统一入口**，不在这里另写一份字段优先级：发码响应经
+    // `with_ticket` 补出的统一名就是 `ticket`，客户端重发时只会回传它。原先这里
+    // 只认 `uuid`/`deviceId`，结果是「重发带了 ticket、内核却当成没带」——
+    // 每轮都换新 uuid，滑块白过。
+    let reuse_uuid = ticket_of(&payload, &["uuid", "deviceId"]);
     match crate::server::core::providers::tabbit::login::send_code(realm, phone, reuse_uuid).await {
         // `ticket` 是跨三家的统一中间态名（见 [`with_ticket`]），`uuid` 保留
         Ok(result) => ok_json(with_ticket(result, "uuid")),
@@ -1856,5 +1859,32 @@ pub async fn auth_login(State(state): State<ServerState>, body: Bytes) -> Respon
             use axum::response::IntoResponse;
             error.to_gateway_error().into_response()
         }
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// 重发回传的是响应里那个统一名 `ticket`，内核必须认它 —— 这是「过完滑块
+    /// 重发」能不能复用同一 uuid 的唯一判据。
+    #[test]
+    fn ticket_of_prefers_unified_ticket_over_legacy_names() {
+        let payload = json!({ "ticket": "uuid-after-slider", "uuid": "old", "deviceId": "older" });
+        assert_eq!(
+            ticket_of(&payload, &["uuid", "deviceId"]),
+            Some("uuid-after-slider")
+        );
+    }
+
+    /// 老客户端 / web 面板仍按各家的原名回传。
+    #[test]
+    fn ticket_of_falls_back_to_legacy_names() {
+        assert_eq!(ticket_of(&json!({ "uuid": "u1" }), &["uuid", "deviceId"]), Some("u1"));
+        assert_eq!(ticket_of(&json!({ "deviceId": "d1" }), &["uuid", "deviceId"]), Some("d1"));
+        assert_eq!(ticket_of(&json!({ "uuid": "  " }), &["uuid", "deviceId"]), None);
+        assert_eq!(ticket_of(&json!({}), &["uuid", "deviceId"]), None);
     }
 }
