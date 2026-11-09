@@ -108,6 +108,12 @@ object Gateway {
          * >1 = 未知新内核，只允许取已知字段。默认 0 仅供手工构造（测试桩）。
          */
         val bridge: Int = 0,
+        /**
+         * 停机已发出、但内核尚未确认 listener 释放（R50/T1，bridge >= 2）。
+         * true 时 [running] 必为 false，但网关仍可能在收尾；调用方不得把它
+         * 当成「已停止」而释放保活资源。旧内核缺省 false。
+         */
+        val stopping: Boolean = false,
     ) {
         companion object {
             fun parse(raw: String?): Status {
@@ -128,6 +134,7 @@ object Gateway {
                     j.optBoolean("core"),
                     j.optBoolean("scheduler"),
                     j.optInt("bridge", 0),
+                    j.optBoolean("stopping", false),
                 )
             }
         }

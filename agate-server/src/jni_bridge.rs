@@ -31,7 +31,7 @@
 
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
 use jni::objects::{GlobalRef, JClass, JObject, JString, JValue};
@@ -50,7 +50,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// 随 `status_json()` 信封下发（`bridge` 字段）；Kotlin 读到 0 = 旧内核（未
 /// 携带该字段的历史版本），按 R44 `kind` 的 null 兼容先例降级。字段变更必须
 /// 同步 bump、改 Gateway.kt 两侧并更新 docs/JNI控制面契约.md。
-pub const BRIDGE_CONTRACT_VERSION: u32 = 1;
+pub const BRIDGE_CONTRACT_VERSION: u32 = 2;
 
 /// logcat 优先级（android/log.h 的数值）
 const LOG_INFO: i32 = 4;
@@ -63,14 +63,54 @@ extern "C" {
 }
 
 struct Running {
-    shutdown_tx: oneshot::Sender<()>,
+    /// 只在 Running→Stopping 迁移时取走；None = 停机信号已发出。
+    shutdown_tx: Option<oneshot::Sender<()>>,
     port: u16,
     bind_lan: bool,
     started_at: Instant,
+    /// serve 任务的完成标记：true = listener 已释放。
+    done: Arc<server::ServeDone>,
 }
 
-/// 网关运行句柄；`None` = 已停止。Mutex 常量化初始化（Rust 1.63+）。
-static RUNNING: Mutex<Option<Running>> = Mutex::new(None);
+/// 停机已发出、但 listener 尚未确认退出的过渡态（R50/T1）。
+///
+/// 不能把这段窗口折算成「已停止」：旧实现的 `RUNNING.take()` 让
+/// `status_json` 立刻返回 running=false，Kotlin 复核据此释放保活锁并退出
+/// 前台，而端口可能仍被旧 serve 占着。过渡态要保留到 done 置位。
+struct Stopping {
+    port: u16,
+    bind_lan: bool,
+    started_at: Instant,
+    done: Arc<server::ServeDone>,
+}
+
+/// 网关三态；Stopped 是唯一「没有 listener」的状态。
+enum GatewayPhase {
+    Stopped,
+    Running(Running),
+    Stopping(Stopping),
+}
+
+/// 网关相位；Stopped 无字段，可直接 const 构造。
+static RUNNING: Mutex<GatewayPhase> = Mutex::new(GatewayPhase::Stopped);
+
+/// 后台 serve 已退出时把残留相位归位 Stopped（异常退出 / 停止完成）。
+/// 返回是否发生了归位。
+fn reap_finished_phase(guard: &mut GatewayPhase) -> bool {
+    let finished = match guard {
+        GatewayPhase::Running(r) => r.done.is_done(),
+        GatewayPhase::Stopping(s) => s.done.is_done(),
+        GatewayPhase::Stopped => false,
+    };
+    if finished {
+        *guard = GatewayPhase::Stopped;
+        // serve 自行退出（异常或外部停机）也要归还 LAN Key 覆盖，避免下一次
+        // Core 会话继承旧 Key；同时让 status/start 观察到真实停止（R50/T1）。
+        crate::server::config::parse::clear_android_api_key_override();
+        server::logging::log("[Server]", "监听已退出，网关状态归位为已停止");
+    }
+    finished
+}
 /// 串行化网关 start/stop：避免并发启动重复 bind，或重复 start 在
 /// already_running 返回前改写当前会话的鉴权环境变量。
 static GATEWAY_OP: Mutex<()> = Mutex::new(());
@@ -540,17 +580,32 @@ fn start_gateway(data_dir: &str, port: u16, bind_lan: bool, api_key: Option<&str
     // 重复发起本机模式 start」会先 remove_var，再返回 already_running，
     // 导致正在运行的 LAN 网关瞬间失去 API Key。
     {
-        let Ok(guard) = RUNNING.lock() else {
+        let Ok(mut guard) = RUNNING.lock() else {
             return json!({ "ok": false, "error": "state poisoned" });
         };
-        if let Some(r) = guard.as_ref() {
-            return json!({
-                "ok": false,
-                "error": "already_running",
-                "port": r.port,
-                "bind_lan": r.bind_lan,
-                "version": VERSION
-            });
+        reap_finished_phase(&mut guard);
+        match &*guard {
+            GatewayPhase::Running(r) => {
+                return json!({
+                    "ok": false,
+                    "error": "already_running",
+                    "port": r.port,
+                    "bind_lan": r.bind_lan,
+                    "version": VERSION
+                });
+            }
+            GatewayPhase::Stopping(s) => {
+                // 上一个 stop 尚未收尾：此时 bind 必然撞旧 listener，明确拒绝。
+                return json!({
+                    "ok": false,
+                    "error": "stopping",
+                    "port": s.port,
+                    "bind_lan": s.bind_lan,
+                    "stopping": true,
+                    "version": VERSION
+                });
+            }
+            GatewayPhase::Stopped => {}
         }
     }
     // 登录期可能临时占着该端口（Core 态收回调用，见 core::login_listener）：
@@ -576,7 +631,7 @@ fn start_gateway(data_dir: &str, port: u16, bind_lan: bool, api_key: Option<&str
     } else {
         IpAddr::V4(Ipv4Addr::LOCALHOST)
     };
-    let shutdown_tx = {
+    let handles = {
         let Ok(mut core_guard) = CORE.lock() else {
             crate::server::config::parse::clear_android_api_key_override();
             return json!({ "ok": false, "error": "state poisoned" });
@@ -612,10 +667,10 @@ fn start_gateway(data_dir: &str, port: u16, bind_lan: bool, api_key: Option<&str
         // 函数内部）；旧顺序在 bind 失败时也会把它提交出去——用户看到
         // 「网关起不来」，后台却多了一个内核进程。
         match server::run_after_successful_bind(
-            || server::start(&core.state),
+            || server::start_tracked(&core.state),
             server::start_gateway_tasks,
         ) {
-            Ok(tx) => tx,
+            Ok(handles) => handles,
             Err(conflict) => {
                 crate::server::config::parse::clear_android_api_key_override();
                 logcat_write(
@@ -633,7 +688,7 @@ fn start_gateway(data_dir: &str, port: u16, bind_lan: bool, api_key: Option<&str
         }
     };
     let Ok(mut guard) = RUNNING.lock() else {
-        let _ = shutdown_tx.send(());
+        let _ = handles.shutdown.send(());
         crate::server::config::parse::clear_android_api_key_override();
         return json!({ "ok": false, "error": "state poisoned" });
     };
@@ -644,11 +699,12 @@ fn start_gateway(data_dir: &str, port: u16, bind_lan: bool, api_key: Option<&str
             if bind_lan { "0.0.0.0" } else { "127.0.0.1" }
         ),
     );
-    *guard = Some(Running {
-        shutdown_tx,
+    *guard = GatewayPhase::Running(Running {
+        shutdown_tx: Some(handles.shutdown),
         port,
         bind_lan,
         started_at: Instant::now(),
+        done: handles.done,
     });
     // SSE 总线（M3）：App 的 GatewayRepository 重连上即收到，UI 据此从
     // 「轮询降级」回到 SSE 通道（O9）。stop 不推 —— 那时 SSE 已断流，
@@ -664,43 +720,84 @@ fn stop_gateway() -> Value {
     let Ok(_op) = GATEWAY_OP.lock() else {
         return json!({ "ok": false, "error": "gateway operation lock poisoned" });
     };
-    let r = {
+    // Running → Stopping（取走停机信号）；已经在 Stopping 时保持原相位继续
+    // 等待 —— 重复 STOP 不能回 not_running，否则「没停完」会被当成
+    // 「本来就没跑」而幂等成功。serve 已自行退出的残留相位先在这里归位。
+    let (port, bind_lan, done, was_running) = {
         let Ok(mut guard) = RUNNING.lock() else {
             crate::server::config::parse::clear_android_api_key_override();
             return json!({ "ok": false, "error": "state poisoned" });
         };
-        guard.take()
-    };
-    let Some(r) = r else {
-        crate::server::config::parse::clear_android_api_key_override();
-        return json!({ "ok": false, "error": "not_running" });
-    };
-    // 优雅停机：start() 内部的协调任务会把它转成 watch 广播，
-    // 在途请求有 graceful shutdown 收尾（见 server::start）。
-    // 只停网关；Core 与签到调度器不受影响（B 包语义）。
-    let _ = r.shutdown_tx.send(());
-    server::logging::log("[Server]", &format!("网关已停止（:{}）", r.port));
-    // F6：等端口真的释放（serve 退出 + listener drop）再返回 —— 否则
-    // 「停止后立刻重启」会 bind 冲突。5s 上限、100ms 探测一次、连续 2 次
-    // 成功才判释放（防单次 bind 成功的竞态误判）。
-    let deadline = Instant::now() + std::time::Duration::from_secs(5);
-    let mut hits = 0;
-    while Instant::now() < deadline {
-        if server::probe_port(r.port).is_ok() {
-            hits += 1;
-            if hits >= 2 {
+        reap_finished_phase(&mut guard);
+        match std::mem::replace(&mut *guard, GatewayPhase::Stopped) {
+            GatewayPhase::Stopped => {
                 crate::server::config::parse::clear_android_api_key_override();
-                return json!({ "ok": true, "port": r.port, "released": true });
+                return json!({ "ok": false, "error": "not_running" });
             }
-        } else {
-            hits = 0;
+            GatewayPhase::Running(mut r) => {
+                if let Some(tx) = r.shutdown_tx.take() {
+                    // 优雅停机：start() 内部的协调任务会把它转成 watch 广播，
+                    // 在途请求有 graceful shutdown 收尾（见 server::start）。
+                    let _ = tx.send(());
+                }
+                let done = r.done.clone();
+                *guard = GatewayPhase::Stopping(Stopping {
+                    port: r.port,
+                    bind_lan: r.bind_lan,
+                    started_at: r.started_at,
+                    done: done.clone(),
+                });
+                (r.port, r.bind_lan, done, true)
+            }
+            GatewayPhase::Stopping(s) => {
+                let done = s.done.clone();
+                let (port, bind_lan) = (s.port, s.bind_lan);
+                *guard = GatewayPhase::Stopping(s);
+                (port, bind_lan, done, false)
+            }
         }
-        std::thread::sleep(std::time::Duration::from_millis(100));
+    };
+
+    // 等 serve 真正退出（listener drop）。5s 上限不变，判据从「端口探测」
+    // 换成「任务完成标记」：探测成功只说明这一刻没人占，无法证明旧 listener
+    // 已经交出端口；完成标记由 serve 任务的 drop guard 记账，是权威信号。
+    let deadline = Instant::now() + std::time::Duration::from_secs(5);
+    while Instant::now() < deadline && !done.is_done() {
+        std::thread::sleep(std::time::Duration::from_millis(25));
     }
-    // 即使端口释放探测超时，也已发出 shutdown；清除覆盖，避免下一次 Core
-    // 会话意外继承旧 LAN Key。下一次 start 会重新设置覆盖。
+
+    if done.is_done() {
+        if let Ok(mut guard) = RUNNING.lock() {
+            if matches!(*guard, GatewayPhase::Stopping(_)) {
+                *guard = GatewayPhase::Stopped;
+            }
+        }
+        crate::server::config::parse::clear_android_api_key_override();
+        if was_running {
+            server::logging::log("[Server]", &format!("网关已停止（:{port}）"));
+        }
+        return json!({
+            "ok": true,
+            "port": port,
+            "released": true,
+            "stopping": false
+        });
+    }
+
+    // 超时：保留 Stopping。下一次 status 仍返回 stopping=true，下一次 start
+    // 被明确拒绝，直到 done 置位后自动归位 —— 不再把未确认伪装成已停止。
     crate::server::config::parse::clear_android_api_key_override();
-    json!({ "ok": true, "port": r.port, "released": false })
+    server::logging::log(
+        "[Server]",
+        &format!("网关停止超时（:{port}），listener 仍在收尾"),
+    );
+    json!({
+        "ok": true,
+        "port": port,
+        "bind_lan": bind_lan,
+        "released": false,
+        "stopping": true
+    })
 }
 
 fn status_json() -> Value {
@@ -713,20 +810,28 @@ fn status_json() -> Value {
             .map(|c| (c.scheduler_on, c.started_at.elapsed().as_secs()))
     };
     let running = {
-        let Ok(guard) = RUNNING.lock() else {
+        let Ok(mut guard) = RUNNING.lock() else {
             return json!({ "ok": false, "error": "state poisoned" });
         };
-        guard
-            .as_ref()
-            .map(|r| (r.port, r.bind_lan, r.started_at.elapsed().as_secs()))
+        reap_finished_phase(&mut guard);
+        match &*guard {
+            GatewayPhase::Running(r) => {
+                Some((r.port, r.bind_lan, r.started_at.elapsed().as_secs(), false))
+            }
+            GatewayPhase::Stopping(s) => {
+                Some((s.port, s.bind_lan, s.started_at.elapsed().as_secs(), true))
+            }
+            GatewayPhase::Stopped => None,
+        }
     };
     // running/port/bind_lan/uptime_sec 字段向后兼容（M3 的 UI 读这几个）；
     // core/scheduler 是 B 包新增的两级状态。
     let scheduler = core.as_ref().map(|c| c.0).unwrap_or(false);
     match running {
-        Some((port, bind_lan, uptime)) => json!({
+        Some((port, bind_lan, uptime, stopping)) => json!({
             "ok": true,
-            "running": true,
+            "running": !stopping,
+            "stopping": stopping,
             "core": true,
             "scheduler": scheduler,
             "bridge": BRIDGE_CONTRACT_VERSION,
@@ -738,6 +843,7 @@ fn status_json() -> Value {
         None => json!({
             "ok": true,
             "running": false,
+            "stopping": false,
             "core": core.is_some(),
             "scheduler": scheduler,
             "bridge": BRIDGE_CONTRACT_VERSION,
@@ -750,18 +856,22 @@ fn status_json() -> Value {
 /// 闹钟唤醒入口。M0 策略：转发到本机管理 API（与面板按钮同一入口），
 /// 桥层不直接触达业务协程；路由映射跟随上游 http.rs。
 fn trigger_task(task: &str) -> Value {
-    let Ok(guard) = RUNNING.lock() else {
-        return json!({"ok": false, "error": "state poisoned"});
-    };
-    let Some(r) = guard.as_ref() else {
-        return json!({"ok": false, "error": "not_running"});
+    let port = {
+        let Ok(mut guard) = RUNNING.lock() else {
+            return json!({"ok": false, "error": "state poisoned"});
+        };
+        reap_finished_phase(&mut guard);
+        match &*guard {
+            GatewayPhase::Running(r) => r.port,
+            _ => return json!({"ok": false, "error": "not_running"}),
+        }
     };
     let route = match task {
         "scheduled_tick" | "auto_checkin" | "auto-checkin" => "/api/auto-checkin/run",
         "claim_checkin" | "checkin" => "/api/checkin/claim-and-report",
         other => return json!({"ok": false, "error": format!("未知任务: {other}")}),
     };
-    let url = format!("http://127.0.0.1:{}{route}", r.port);
+    let url = format!("http://127.0.0.1:{port}{route}");
     crate::spawn_task(async move {
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(120))
@@ -1039,6 +1149,7 @@ mod tests {
         let status = status_json();
         assert_eq!(status["ok"], json!(true));
         assert_eq!(status["running"], json!(false));
+        assert_eq!(status["stopping"], json!(false));
         assert_eq!(status["bridge"], json!(BRIDGE_CONTRACT_VERSION));
     }
 

@@ -152,10 +152,56 @@ mod static_files;
 
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use tokio::sync::oneshot;
+
+/// 监听任务全部退出的完成标记（R50/T1）。
+///
+/// 每个 `axum::serve` 任务持有一个 [`ServeDoneGuard`]：任务无论正常结束、
+/// 提前 return 还是 unwind，guard 都会在 drop 时递减计数；计数归零才置
+/// `done`。这是 `stop_gateway` 需要的权威信号 —— 端口探测只能说明「此刻
+/// 有人占着/没人占着」，说明不了「旧 listener 已经交出端口」。分端口形态
+/// 有两个 serve，必须两个都退出才算完成。
+pub struct ServeDone {
+    remaining: AtomicUsize,
+    done: AtomicBool,
+}
+
+impl ServeDone {
+    fn new(tasks: usize) -> Self {
+        Self {
+            remaining: AtomicUsize::new(tasks),
+            done: AtomicBool::new(false),
+        }
+    }
+
+    fn finish_one(&self) {
+        if self.remaining.fetch_sub(1, Ordering::SeqCst) == 1 {
+            self.done.store(true, Ordering::SeqCst);
+        }
+    }
+
+    /// 所有监听任务都已退出（listener 已 drop，端口已归还）。
+    pub fn is_done(&self) -> bool {
+        self.done.load(Ordering::SeqCst)
+    }
+}
+
+struct ServeDoneGuard(Arc<ServeDone>);
+
+impl Drop for ServeDoneGuard {
+    fn drop(&mut self) {
+        self.0.finish_one();
+    }
+}
+
+/// [`start_tracked`] 的返回：停机信号 + listener 全部退出标记。
+pub struct StartHandles {
+    pub shutdown: oneshot::Sender<()>,
+    pub done: Arc<ServeDone>,
+}
 
 use crate::data_dir_lock::{self, DataDirLock};
 use crate::port_conflict::{ConflictKind, PortConflict};
@@ -1067,6 +1113,14 @@ fn available_account_count(state: &ServerState) -> usize {
 /// 落在系统保留段里则只能「更换端口」。分类判据（`std::io::ErrorKind`）
 /// 只有在这里才拿得到，所以在这里分好类往上带，别让界面去猜错误文案。
 pub fn start(state: &ServerState) -> Result<oneshot::Sender<()>, PortConflict> {
+    start_tracked(state).map(|handles| handles.shutdown)
+}
+
+/// [`start`] 的可观测版本：额外返回「所有监听任务已退出」的完成标记。
+///
+/// Android 桥（`jni_bridge::stop_gateway`）用它区分两件事：停机信号已发出，
+/// 以及 listener 真正释放。只有后者才能回答「网关是否已经停止」。
+pub fn start_tracked(state: &ServerState) -> Result<StartHandles, PortConflict> {
     // ── 路由按形态拆分 ─────────────────────────────────────────
     // 默认（panel_port = None，桌面壳 / 未设 PANEL_PORT 的 headless）：单端口
     // 挂完整路由（面板 + 网关合并），行为与拆分前逐字一致。分端口形态
@@ -1115,6 +1169,8 @@ pub fn start(state: &ServerState) -> Result<oneshot::Sender<()>, PortConflict> {
         None => None,
     };
 
+    // 完成标记在 spawn 之前创建：serve 任务的 drop guard 共享同一个 Arc。
+    let done = Arc::new(ServeDone::new(1 + usize::from(panel_listener.is_some())));
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
     // 停机广播：oneshot 只有一个 receiver，而分端口形态有两个 serve 都要
     // 收到停机信号。协调任务把 oneshot 信号（send 或发送端被 drop）转成
@@ -1130,7 +1186,11 @@ pub fn start(state: &ServerState) -> Result<oneshot::Sender<()>, PortConflict> {
     // 随 async move 一起走）
     let request_stats = state.request_stats();
     let stop_main = stop_rx.clone();
+    let done_main = done.clone();
     crate::spawn_task(async move {
+        // R50/T1：任务无论从哪条路径退出（含 from_std 失败提前 return），
+        // guard 都会记账；只有最后一个 serve 退出时 done 才置位。
+        let _serve_done = ServeDoneGuard(done_main);
         // 运行时上下文在这里必然成立，from_std 不会 panic
         let listener = match tokio::net::TcpListener::from_std(listener) {
             Ok(listener) => listener,
@@ -1171,7 +1231,9 @@ pub fn start(state: &ServerState) -> Result<oneshot::Sender<()>, PortConflict> {
         #[allow(clippy::expect_used)]
         // panel_port 与 panel_router 由同一处赋值，成对不变量（R46/T1 白名单）
         let router = panel_router.expect("panel_port 与 panel_router 必须成对");
+        let done_panel = done.clone();
         crate::spawn_task(async move {
+            let _serve_done = ServeDoneGuard(done_panel);
             let listener = match tokio::net::TcpListener::from_std(listener) {
                 Ok(listener) => listener,
                 Err(error) => {
@@ -1193,7 +1255,10 @@ pub fn start(state: &ServerState) -> Result<oneshot::Sender<()>, PortConflict> {
         });
     }
 
-    Ok(shutdown_tx)
+    Ok(StartHandles {
+        shutdown: shutdown_tx,
+        done,
+    })
 }
 
 /// 启动前的端口自检：能不能真的 bind 上这个端口。
@@ -1278,5 +1343,35 @@ mod gateway_start_order_tests {
         );
 
         assert_eq!(Err(expected), result);
+    }
+}
+
+#[cfg(test)]
+mod serve_done_tests {
+    use super::{ServeDone, ServeDoneGuard};
+    use std::sync::Arc;
+
+    /// 单个 serve 退出不能宣布完成：分端口形态必须等第二个也退出。
+    #[test]
+    fn done_only_after_every_listener_exits() {
+        let done = Arc::new(ServeDone::new(2));
+        let first = ServeDoneGuard(done.clone());
+        drop(first);
+        assert!(!done.is_done(), "还有一个 serve 未退出，不得报告已释放");
+
+        let second = ServeDoneGuard(done.clone());
+        drop(second);
+        assert!(done.is_done(), "全部 serve 退出后必须报告已释放");
+    }
+
+    /// 提前 return（from_std 失败）同样走 drop guard，不能漏记账。
+    #[test]
+    fn early_return_still_counts_as_exit() {
+        let done = Arc::new(ServeDone::new(1));
+        {
+            let _guard = ServeDoneGuard(done.clone());
+            // 模拟 serve 任务在建立监听前提前返回
+        }
+        assert!(done.is_done());
     }
 }

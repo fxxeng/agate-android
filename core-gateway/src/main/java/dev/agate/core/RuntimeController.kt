@@ -358,6 +358,7 @@ object RuntimeController {
         bindLan = bindLan,
         version = version,
         schedulerEnabled = scheduler,
+        stopping = stopping,
     )
 
     private val executor = Executors.newSingleThreadExecutor(

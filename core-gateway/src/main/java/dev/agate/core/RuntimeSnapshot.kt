@@ -95,6 +95,8 @@ sealed interface RuntimeStateEvent {
         val bindLan: Boolean,
         val version: String,
         val schedulerEnabled: Boolean,
+        /** 停止已发出、listener 尚未确认释放（R50/T1）；与 gatewayRunning 互斥。 */
+        val stopping: Boolean = false,
     ) : RuntimeStateEvent
 }
 
@@ -174,10 +176,13 @@ object RuntimeSnapshotReducer {
             is RuntimeStateEvent.SchedulerObserved -> current.copy(schedulerEnabled = event.enabled)
             is RuntimeStateEvent.NativeStatusObserved -> current.copy(
                 core = if (event.coreReady) CoreRuntimeState.Ready else CoreRuntimeState.NotInitialized,
-                gateway = if (event.gatewayRunning) {
-                    GatewayRuntimeState.Running(event.port, event.bindLan, event.version)
-                } else {
-                    GatewayRuntimeState.Stopped
+                gateway = when {
+                    event.gatewayRunning ->
+                        GatewayRuntimeState.Running(event.port, event.bindLan, event.version)
+                    // R50/T1：stopping 是独立观测，不能折算成 Stopped —— 否则
+                    // 停止复核会把「还在收尾」当成「已停」，提前释放保活锁。
+                    event.stopping -> GatewayRuntimeState.Stopping
+                    else -> GatewayRuntimeState.Stopped
                 },
                 schedulerEnabled = event.schedulerEnabled,
             )

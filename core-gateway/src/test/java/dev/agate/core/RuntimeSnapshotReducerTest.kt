@@ -106,6 +106,40 @@ class RuntimeSnapshotReducerTest {
 
 
     @Test
+    fun stoppingObservationDoesNotCollapseIntoStopped() {
+        // R50/T1：status 的 stopping 必须映射为 Stopping，而不是 Stopped。
+        val running = RuntimeSnapshot(gateway = GatewayRuntimeState.Running(8787, false, "x"))
+        val stopping = reduce(
+            running,
+            RuntimeStateEvent.NativeStatusObserved(
+                coreReady = true,
+                gatewayRunning = false,
+                port = 8787,
+                bindLan = false,
+                version = "x",
+                schedulerEnabled = false,
+                stopping = true,
+            ),
+            5,
+        )
+        assertEquals(GatewayRuntimeState.Stopping, stopping.gateway)
+
+        val stopped = reduce(
+            stopping,
+            RuntimeStateEvent.NativeStatusObserved(
+                coreReady = true,
+                gatewayRunning = false,
+                port = 8787,
+                bindLan = false,
+                version = "x",
+                schedulerEnabled = false,
+            ),
+            6,
+        )
+        assertEquals(GatewayRuntimeState.Stopped, stopped.gateway)
+    }
+
+    @Test
     fun nativeStatusReconcilesAllThreeIndependentDimensions() {
         val observed = reduce(
             RuntimeSnapshot(

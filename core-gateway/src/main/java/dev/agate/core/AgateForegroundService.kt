@@ -541,7 +541,10 @@ class AgateForegroundService : Service() {
             if (!gatewayIntent.mayStopNow()) return@postDelayed
             Thread {
                 val stopped = try {
-                    !RuntimeController.refreshStatus().running
+                    // R50/T1：stopping=true 表示停机已发出但 listener 尚未释放。
+                    // 只看 running 会把这种「未确认」误判成已停止。
+                    val status = RuntimeController.refreshStatus()
+                    !status.running && !status.stopping
                 } catch (t: Throwable) {
                     android.util.Log.w("Agate", "停止确认探测失败（第 $attempt 轮）", t)
                     false

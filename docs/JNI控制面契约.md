@@ -27,7 +27,7 @@
 | # | 入口 | 线程要求 | 阻断上限 | 返回形态 |
 |---|---|---|---|---|
 | 1 | `nativeStart(configJson)` | 后台线程（bind 阻塞） | bind + 引导，秒级 | 信封 JSON |
-| 2 | `nativeStop()` | 后台线程 | ≤5s（端口释放探测） | 信封 JSON |
+| 2 | `nativeStop()` | 后台线程 | ≤5s（serve 退出确认） | 信封 JSON |
 | 3 | `nativeStatus()` | 任意（UI 5s 轮询） | 锁等待，μs 级 | 信封 JSON |
 | 4 | `nativeTriggerTask(task)` | 后台线程 | 即返（派发即回） | 信封 JSON |
 | 5 | `nativeCoreInit(dir,port,on)` | 后台线程（Application/FGS） | bootstrap，秒级 | 信封 JSON |
@@ -56,8 +56,11 @@
 
 1. **start 幂等语义**：已运行返回 `already_running` 且不触碰鉴权覆盖（LAN
    会话 Key 不能被本机模式重复 start 摘掉）。
-2. **stop 释放语义**：shutdown 信号 + 5s/100ms×连续 2 命中端口探测；超时也
-   返回 ok=true + released=false。只停网关，Core/调度器不受影响。
+2. **stop 释放语义（R50/T1 起）**：shutdown 信号 + 等待 serve 任务完成标记
+   （所有 listener 已 drop），5s 上限。超时返回 `ok=true, released=false,
+   stopping=true` 并保留 Stopping 相位：`status` 继续报 `running:false,
+   stopping:true`，`start` 返回 `stopping` 错误，直到完成标记置位后自动归位。
+   端口探测只作辅助信号，不再是判据。只停网关，Core/调度器不受影响。
 3. **apiCall 直调**：内存 `Router::oneshot`，完整鉴权/CORS/错误信封栈；body
    上限 4MB；API Key 走 Bearer；Core 未就绪返回 `core_not_ready`。
 4. **checkin 三入口**：RunNow 超时不断任务（fire 已后台跑，返回 timeout +
@@ -87,13 +90,20 @@
    `refreshStatus`），复核用尽仍保留服务并给出可诊断通知。R48 的「超限退出
    前台」语义废止。
 
-10. **网关启动顺序（R49/T3）**：`nativeStart` 先 `server::start`（bind），
+10. **status 相位（R50/T1，bridge=2）**：`status` 增 `stopping` 字段。它与
+    `running` 互斥；`stopping=true` 表示停机已发出但 listener 尚未释放。
+    Kotlin 复核必须以 `!running && !stopping` 判「已停」，不得只看 `running`。
+
+11. **网关启动顺序（R49/T3）**：`nativeStart` 先 `server::start`（bind），
     成功后才提交 `start_gateway_tasks()`（当前唯一内容 = Sidecar 自动拉起）。
     bind 失败原样返回 `port_conflict`，不产生任何 Sidecar 副作用；顺序由
     `server::run_after_successful_bind` 固定，jni_bridge 与 headless bin 同源。
 
 ## 4. 版本沿革
 
+- **v2（R50，bridge=2）**：status 增 `stopping`；stop 判据从「端口探测」改为
+  serve 任务完成标记；Stopping 相位贯穿 Rust 桥与 Kotlin 快照（复核不再把
+  未确认当已停止），serve 异常退出也会被归位为 Stopped。
 - **v1（R46，bridge=1）**：定稿本文；status 增 `bridge`；envelope 收口；
   panic 纪律门上线。
 - **pre-v1**：无 bridge 字段（Kotlin 读 0）；R44 增 `kind`（null 兼容）；

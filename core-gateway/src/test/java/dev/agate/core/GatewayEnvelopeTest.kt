@@ -70,6 +70,21 @@ class GatewayEnvelopeTest {
     }
 
     @Test
+    fun status_parse_carries_stopping_phase() {
+        // R50/T1：bridge>=2 的 status 会带 stopping；旧内核缺省 false。
+        val stopping = Gateway.Status.parse(
+            """{"ok":true,"running":false,"stopping":true,"port":8787,"core":true,"scheduler":false,"bridge":2,"version":"3.0.8"}""",
+        )
+        assertEquals(true, stopping.stopping)
+        assertEquals(false, stopping.running)
+
+        val legacy = Gateway.Status.parse(
+            """{"ok":true,"running":false,"core":true,"scheduler":false,"version":"3.0.7"}""",
+        )
+        assertEquals(false, legacy.stopping)
+    }
+
+    @Test
     fun status_parse_carries_bridge_contract_version() {
         // 新内核：bridge=1 显式携带（R46/T2 起契约握手）
         val modern = Gateway.Status.parse(
