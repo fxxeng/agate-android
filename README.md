@@ -2,7 +2,7 @@
 
 - Verification branch: `verify/arch-8faa5f5`
 - Current batch: R49 / 运行时正确性（STOP 生命周期、补签取消、启动顺序、端口；R48 已收口）
-- Latest verified: `3e47d97` — GitHub Actions Run `42597312744`（双 job 全绿；R49 运行时正确性批）
+- Latest verified: `9fe250e` — GitHub Actions Run `42605799073`（双 job 全绿；R49 运行时正确性批）
 - 状态：rust-tests 802 passed / 11 ignored + 格式门 / 六 deny clippy（宿主 + Android target）；android-build JVM 单元测试 136/136、JNI 12 入口（符号 + Kotlin/Rust 描述符签名级互检）、双 APK 校验（debug 共享凭证指纹硬断言）、Instrumentation 2/2。
 - 真机验收待做（APK 自取 run artifacts）；release 正式签名按委托方裁定暂缓。
 
@@ -36,7 +36,7 @@ The repository already has no complete Tauri/Desktop UI Host. The remaining desk
 
 ## Verification state
 
-R49 代码基线 `3e47d97` 通过 Run `42597312744`：rust-tests 802 passed / 11 ignored（`cargo fmt --check` + 宿主 clippy 六 deny 全绿）；android-build 全步 success（Rust 全量重编译、Android target clippy 六 deny、JNI 符号 + 描述符互检、JVM 136/136、双 APK 校验、Instrumentation 2/2）。R49 新增 9 条 Rust 用例（本地 `--lib` 805，宿主 802——3 条 `jni_bridge` 用例是 Android-only）与 15 条 JVM 用例（121 → 136）。
+R49 代码基线 `9fe250e` 通过 Run `42605799073`：rust-tests 812 passed / 11 ignored（`cargo fmt --check` + 宿主 clippy 六 deny 全绿）；android-build 全步 success（Rust 全量重编译、Android target clippy 六 deny、JNI 符号 + 描述符互检、JVM 136/136、双 APK 校验、Instrumentation 2/2）。R49 新增 19 条 Rust 用例（本地 `--lib` 815，宿主 812——3 条 `jni_bridge` 用例是 Android-only）与 15 条 JVM 用例（121 → 136）。
 
 R48 代码基线 `b9dcaa0` 通过 Run `42562774123`：rust-tests 793 passed / 11 ignored（`cargo fmt --check` 已阻断并通过）；android-build 全步 success（Rust 全量重编译、Android clippy 门、JNI 符号 + 描述符、JVM 121/121、双 APK 校验、Instrumentation 2/2）。
 
