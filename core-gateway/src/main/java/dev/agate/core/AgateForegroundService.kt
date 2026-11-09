@@ -154,6 +154,11 @@ class AgateForegroundService : Service() {
     private val checkinStopExecutor = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "AgateCheckinStop").apply { isDaemon = true }
     }
+    // 停止未确认时的有界复核（每轮 refreshStatus 是 JNI 调用）。专用单线程
+    // 避免每次复核 new Thread，也不占用 commandExecutor 的生命周期队列。
+    private val recheckExecutor = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "AgateStopRecheck").apply { isDaemon = true }
+    }
     // 只合并队列尾部连续的同类命令；不同命令构成屏障，不能被在途标记跨过。
     private val commandCoalescer = ServiceCommandCoalescer()
     // STOP snapshots accepted TICKs so a later TICK is not cancelled by an older STOP.
@@ -554,7 +559,9 @@ class AgateForegroundService : Service() {
         mainHandler.postDelayed({
             if (RuntimeController.snapshot().gateway is GatewayRuntimeState.Running) return@postDelayed
             if (!gatewayIntent.mayStopNow()) return@postDelayed
-            Thread {
+            // R50/T9：停止复核走专用单线程，不占用 lifecycle 串行队列，也不
+            // 每次 new Thread；refreshStatus 内部仍进 RuntimeController 的串行边界。
+            recheckExecutor.execute {
                 val stopped = try {
                     // R50/T1：stopping=true 表示停机已发出但 listener 尚未释放。
                     // 只看 running 会把这种「未确认」误判成已停止。
@@ -589,7 +596,7 @@ class AgateForegroundService : Service() {
                         }
                     }
                 }
-            }.start()
+            }
         }, STOP_CONFIRM_RETRY_MS)
     }
 
@@ -621,6 +628,9 @@ class AgateForegroundService : Service() {
     // ── 通知 ─────────────────────────────────────────────────────
 
     override fun onDestroy() {
+        // R50/T9：Service 销毁后不再执行排队中的停止复核回调（否则可能在
+        // 已释放的实例上跑 stopSelf/通知更新）。
+        mainHandler.removeCallbacksAndMessages(null)
         // 真正的守卫在清理执行时刻读取 mayStopNow()；不使用捕获快照相等比较。
         try {
             commandExecutor.execute {
@@ -652,6 +662,7 @@ class AgateForegroundService : Service() {
         } finally {
             commandExecutor.shutdown()
             checkinStopExecutor.shutdown()
+            recheckExecutor.shutdownNow()
             super.onDestroy()
         }
     }

@@ -1,5 +1,6 @@
 package dev.agate.android.navigation
 
+import dev.agate.android.BuildConfig
 import android.app.Activity
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -235,7 +236,7 @@ private fun AgateDrawer(
         // 页脚（固定）
         DashedDivider()
         Text(
-            "Agate · v0.4.0-m3",
+            "Agate · v${BuildConfig.VERSION_NAME}",
             fontSize = 11.sp,
             color = C.textDim,
             modifier = Modifier.padding(start = 24.dp, top = 10.dp, bottom = 12.dp),

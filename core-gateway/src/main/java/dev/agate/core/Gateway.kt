@@ -39,6 +39,10 @@ object Gateway {
     // ── JNI 导出（与 agate-server/src/jni_bridge.rs 一一对应，勿直接调用）──
     // 返回类型 String?：JNI 层面分配失败确实可能拿到 null（见 json_reply 的
     // 两层兜底链），如实声明，统一由 envelope() 收敛成结构化失败信封。
+    // 注：Gateway 是 object，external 方法在字节码里是实例方法，JNI 第二个
+    // 参数实际是 jobject(this)。Rust 侧统一声明为 JClass 只是 ABI 等价占位
+    // （两者都是指针），参数未使用；若将来改成 class，需同步调整导出签名与
+    // tools/verify-jni-exports.py。
     private external fun nativeStart(configJson: String): String?
     private external fun nativeStop(): String?
     private external fun nativeStatus(): String?

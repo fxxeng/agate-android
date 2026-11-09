@@ -69,7 +69,8 @@ jobs:
           fi
           yes | "$SDKMANAGER" --install "ndk;27.2.12479018" > /dev/null
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"
-          cargo install cargo-ndk --locked
+          # 钉版本：浮动 latest 会让 CI 因 cargo-ndk 自身升级而突然变红。
+          cargo install cargo-ndk --version 4.1.2 --locked
       # R47/T3.1：Android target clippy（六 lint 与宿主 rust-tests 门同口径）。
       # jni_bridge 与全部 cfg(target_os="android") 代码此前只被 cargo-ndk build
       # 编译过、从未被 clippy 照过（R46 盲区声明），此处收口。只跑 aarch64：

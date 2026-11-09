@@ -917,10 +917,21 @@ fn trigger_task(task: &str) -> Value {
     };
     let url = format!("http://127.0.0.1:{port}{route}");
     crate::spawn_task(async move {
-        let client = reqwest::Client::builder()
+        // R50/T9：不再用 unwrap_or_default 兜底 —— panic=abort 下 Client 构建
+        // 失败会直接终止进程；这里显式记录并放弃本次触发（闹钟下一轮会再来）。
+        let client = match reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(120))
             .build()
-            .unwrap_or_default();
+        {
+            Ok(client) => client,
+            Err(error) => {
+                server::logging::log(
+                    "[Checkin]",
+                    &format!("创建触发客户端失败，跳过本轮：{error}"),
+                );
+                return;
+            }
+        };
         // Android host 的 LAN Key 现在保存在显式运行时覆盖中，不再写入
         // AGATE_PROXY_API_KEY 环境变量。内部触发请求必须使用与鉴权中间件
         // 相同的取值入口，否则 LAN 模式会出现「外部请求能鉴权、闹钟内部
@@ -1028,7 +1039,8 @@ pub extern "system" fn Java_dev_agate_core_Gateway_nativeStart<'local>(
     let port = cfg
         .get("port")
         .and_then(Value::as_u64)
-        .unwrap_or(8080)
+        // 与 Kotlin GatewayPrefs 的默认端口一致（旧值 8080 是历史遗留）。
+        .unwrap_or(8787)
         .clamp(1, 65535) as u16;
     // api_key（M3）：Android host 通过显式运行时覆盖注入，不修改进程环境变量，
     // config::active_keys_from 每次鉴权读取该覆盖，无需写 config.json；
