@@ -38,18 +38,37 @@ object GatewayPrefs {
 
     /** 局域网监听（0.0.0.0 + 内核 panel gate + fail-closed）。默认关。 */
     /**
-     * 本机网关 Key（M3）：首次调用生成 `agate-` + 32 位 hex 并持久化，
+     * 本机网关 Key（M3）：首次调用生成 `agate-` + 48 位 hex 并持久化，
      * 之后跨重启稳定。经 nativeStart 的 api_key 注入内核（env 兼容模式），
      * 作用：① 局域网形态下壳自身的 /api、/v1 请求凭它过闸门；② 展示在
      * 「访问密钥」页供局域网设备配置。仅存 SharedPreferences（M3/M5 的
      * KeyStore 加密为增强项，见方案 §3.7）。
+     *
+     * R50/T3：随机源必须是 CSPRNG。旧实现用 `Collection.random()`（JVM 上
+     * 落 ThreadLocalRandom，种子来自时间），而 `apiKey` 是 `/api/backup/*`
+     * 等管理接口的唯一凭证；把可预测的 key 暴露在明文 LAN HTTP 上，等于把
+     * 备份导出/导入能力交给同网段攻击者。
      */
     fun apiKey(ctx: Context): String {
         prefs(ctx).getString(KEY_API_KEY, null)?.let { return it }
-        val alphabet = "0123456789abcdef"
-        val key = "agate-" + (1..32).map { alphabet.random() }.joinToString("")
+        val key = generateApiKey()
         prefs(ctx).edit().putString(KEY_API_KEY, key).apply()
         return key
+    }
+
+    /**
+     * 生成 24 字节 CSPRNG Key（`agate-` + 48 位 hex）。
+     *
+     * 拆成 internal 纯函数供 JVM 单测锁格式/唯一性；生产路径不注入随机源。
+     * 旧安装的 Key 保持原样不强制轮换（轮换会让已配对的局域网设备瞬间失效），
+     * 新装与重置后走本函数。
+     */
+    internal fun generateApiKey(
+        random: java.security.SecureRandom = java.security.SecureRandom(),
+    ): String {
+        val bytes = ByteArray(24)
+        random.nextBytes(bytes)
+        return "agate-" + bytes.joinToString("") { "%02x".format(it.toInt() and 0xFF) }
     }
 
     fun bindLan(ctx: Context): Boolean =
