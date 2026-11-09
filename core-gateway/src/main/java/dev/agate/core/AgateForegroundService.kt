@@ -256,11 +256,21 @@ class AgateForegroundService : Service() {
                     onEnqueued = { pendingTicks.register(startId) },
                     onRejected = { pendingTicks.complete(startId) },
                 ) { runTick(startId) }
-                return START_STICKY
+                // R50/T4：TICK 只是闹钟唤醒，不是「保持网关运行」的意图。
+                // 返回 STICKY 会让系统在进程被杀后用 null intent 重启服务，
+                // 而 null 分支会拉起网关 —— 用户明明停了网关，却被动复活。
+                return START_NOT_STICKY
             }
 
             else -> {
                 // ACTION_START，或 null intent（START_STICKY 被杀重启）
+                // R50/T4：系统重启不得复活用户已停止的网关；只有最后一次明确
+                // START 仍未收到 STOP（持久化意图为 true）时才按意图恢复。
+                if (intent == null && !GatewayPrefs.gatewayDesiredRunning(this)) {
+                    stopSelfResult(startId)
+                    return START_NOT_STICKY
+                }
+                if (intent != null) GatewayPrefs.setGatewayDesiredRunning(this, true)
                 gatewayIntent.requestStart()
                 enterForeground("启动中…")
                 enqueueCommand(ACTION_START) { runStart() }
@@ -595,6 +605,9 @@ class AgateForegroundService : Service() {
         mainHandler.post {
             val stopped = stopSelfResult(startId)
             if (stopped) {
+                // 服务真正结束 = 没有网关要承载；持久化意图同步归 false，
+                // 防止下一次系统重启把已停止的网关复活（R50/T4）。
+                GatewayPrefs.setGatewayDesiredRunning(this, false)
                 stopForeground(STOP_FOREGROUND_REMOVE)
             }
         }

@@ -14,6 +14,8 @@ object GatewayPrefs {
 
     private const val KEY_BIND_LAN = "bind_lan"
     private const val KEY_API_KEY = "api_key"
+    /** 用户最后一次明确意图：网关是否应当运行（R50/T4，跨进程死亡保留）。 */
+    private const val KEY_GATEWAY_DESIRED = "gateway_desired_running"
     private const val KEY_BOOT_AUTO_START = "boot_auto_start"
     private const val KEY_CHECKIN_ALARM = "checkin_alarm"
     private const val KEY_ALARM_TIMES = "alarm_times"
@@ -69,6 +71,13 @@ object GatewayPrefs {
         val bytes = ByteArray(24)
         random.nextBytes(bytes)
         return "agate-" + bytes.joinToString("") { "%02x".format(it.toInt() and 0xFF) }
+    }
+
+    fun gatewayDesiredRunning(ctx: Context): Boolean =
+        prefs(ctx).getBoolean(KEY_GATEWAY_DESIRED, false)
+
+    fun setGatewayDesiredRunning(ctx: Context, value: Boolean) {
+        prefs(ctx).edit().putBoolean(KEY_GATEWAY_DESIRED, value).apply()
     }
 
     fun bindLan(ctx: Context): Boolean =
