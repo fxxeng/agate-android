@@ -2,8 +2,8 @@
 
 - Verification branch: `verify/arch-8faa5f5`
 - Current batch: R47 / 运行时正确性与所有权收口（T1–T5）
-- Latest verified: `1a634aa` — GitHub Actions Run `42541283774`（双 job 全绿；T5 收尾批的验证记录见提交后的新 run）
-- 状态：rust-tests 790 passed / 11 ignored；android-build JVM 单元测试 119/119、JNI 12 入口（符号 + Kotlin/Rust 描述符签名级互检）、双 APK 校验（debug 共享凭证指纹硬断言）、Instrumentation 2/2。
+- Latest verified: `a5fb016` — GitHub Actions Run `42551225790`（双 job 全绿；R47 T5 收尾批）
+- 状态：rust-tests 793 passed / 11 ignored；android-build JVM 单元测试 119/119、JNI 12 入口（符号 + Kotlin/Rust 描述符签名级互检）、双 APK 校验（debug 共享凭证指纹硬断言）、Instrumentation 2/2。
 - 真机验收待做（APK 自取 run artifacts）；release 正式签名按委托方裁定暂缓。
 
 ## Direction
@@ -22,7 +22,7 @@ The repository already has no complete Tauri/Desktop UI Host. The remaining desk
 
 ## Verification state
 
-R47 代码基线 `1a634aa` 通过 Run `42541283774`：rust-tests 790 passed / 11 ignored；android-build 全步 success（Android clippy 门、JNI 符号 + 描述符、JVM 119/119、双 APK 校验、Instrumentation 2/2）。
+R47 代码基线 `a5fb016` 通过 Run `42551225790`：rust-tests 793 passed / 11 ignored；android-build 全步 success（Android clippy 门、JNI 符号 + 描述符、JVM 119/119、双 APK 校验、Instrumentation 2/2）。
 
 历史：R40 `d3e049e89b932325e49c57b5f6a5a23c825bcca8` 为 R42 之前的已验证基线（Run `42199123476`）；R41 本地候选（未推送远端；代码改动已合入 R42）；R42 完成 Android-only 范围收敛（Run `42235540958`：JVM 99/99）。
 
