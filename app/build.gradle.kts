@@ -180,13 +180,23 @@ val verifyReleaseKernelSo by tasks.registering {
         val apks = dir.listFiles { f -> f.extension == "apk" }.orEmpty()
         check(apks.isNotEmpty()) { "Release APK 未生成：${dir.absolutePath}" }
         apks.forEach { apk ->
-            val hasKernel = ZipFile(apk).use { zip ->
-                zip.getEntry("lib/arm64-v8a/libagate_server.so") != null
+            val (abiDirs, hasKernel) = ZipFile(apk).use { zip ->
+                val dirs = zip.entries().asSequence()
+                    .mapNotNull { entry ->
+                        Regex("^lib/([^/]+)/").find(entry.name)?.groupValues?.get(1)
+                    }
+                    .toSet()
+                dirs to (zip.getEntry("lib/arm64-v8a/libagate_server.so") != null)
+            }
+            // R50/T11 产品口径：交付 APK 只允许 arm64-v8a。即使误传
+            // -PagateInstrumentationAbi=x86_64，这里也必须拦住。
+            check(abiDirs == setOf("arm64-v8a")) {
+                "${apk.name} 的 ABI 必须仅 arm64-v8a，实际：$abiDirs"
             }
             check(hasKernel) {
                 "${apk.name} 缺少 lib/arm64-v8a/libagate_server.so，拒绝将不可运行的 Release 包作为交付产物"
             }
-            logger.lifecycle("[ok] ${apk.name} 包含 arm64-v8a/libagate_server.so")
+            logger.lifecycle("[ok] ${apk.name} 仅 arm64-v8a 且包含 libagate_server.so")
         }
     }
 }
