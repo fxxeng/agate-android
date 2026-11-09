@@ -32,7 +32,7 @@ The repository already has no complete Tauri/Desktop UI Host. The remaining desk
 2. **补签取消（T2）**：`AutoCheckin` 引入调度代次；`stop()` 无条件推进（修 `task.is_none()` early-return）；`start()` 每代一个 `checkin-backfill:{gen}` 任务；`configure(enabled=false)` 直接停调度；取消骨架 `run_backfill` 在每条计划启动前/收尾后校验，只阻止后续计划、不中断在途 Provider 请求。
 3. **启动顺序（T3）**：`server::run_after_successful_bind` —— 端口绑定成功后才提交 Sidecar autostart；`jni_bridge` 与 headless bin 同一契约。
 4. **端口（T4）**：`GatewayPortChoice` 统一探测端口（运行态实际端口优先、配置端口回落）；控制页 5s 轮询刷新、不再写死 8787；健康卡文案取设置；失败卡片区分「启动失败 / 停止未完成」。
-5. **文档**：新增 `docs/R49_RUNTIME_CORRECTNESS_IMPLEMENTATION.md`（含未执行的真机验收清单与「不得折算为通过」声明）；JNI 契约 §3.9 与沿革同步。
+5. **文档**：新增 `docs/R49_RUNTIME_CORRECTNESS.md`（含未执行的真机验收清单与「不得折算为通过」声明）；JNI 契约 §3.9 与沿革同步。
 
 ## Verification state
 

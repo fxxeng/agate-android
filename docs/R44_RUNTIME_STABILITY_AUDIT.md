@@ -103,6 +103,8 @@ Hyper-V/winnat/WSL2 出现即失败）；Kotlin JVM `GatewayStartFailureTest` 4 
 既有测试（duplicate_live_registration_is_ignored / shutdown_cancels_and_joins…）背书。
 另加 `lib.rs::runtime_tests::spawn_task_works_from_plain_thread` 回归锚点。
 
+【R49 补记 2026-11-09】`stop()` 的职责再扩一格：除 abort 轮询外，**无条件推进调度代次**（旧实现在 `task.is_none()` 时提前 return），启动补签任务按代次在每条计划前后自检，关掉调度器后不再启动后续计划；在途 Provider 请求仍不中断。细节见 `docs/R49_RUNTIME_CORRECTNESS.md` §2 与本目录 `ANDROID_CHECKIN_COOPERATIVE_STOP.md` 末节。
+
 ### 6.2 runtime 收敛：单一权威运行时
 
 核验事实：Android（JNI 链路无 Tokio 上下文 + serve 本身由 spawn_task 拉起）与

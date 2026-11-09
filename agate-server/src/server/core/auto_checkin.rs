@@ -1432,9 +1432,10 @@ mod scheduling_tests {
         cleanup_config();
     }
 
-    /// 计划验收 #5 的结构性部分：stop() 只掐调度循环，stop 后触发/记账路径
-    /// 照常可用（R44b：fire 不在循环任务名下，stop 摸不到它）。条目在 start
-    /// 时已触发 ⇒ start 不派补签，后台无任务搅局。
+    /// 计划验收 #5 的结构性部分：stop() 掐调度循环并推进代次，但**手动 tick
+    /// 的触发/记账路径照常可用**（R44b：fire 不在循环任务名下；R49/T2 只让
+    /// 补签任务按代次自检，不改 tick 语义）。条目在 start 时已触发 ⇒ start
+    /// 不派补签，后台无任务搅局。
     #[tokio::test]
     async fn stop_only_cancels_dispatch_loop() {
         let _serial = SCHEDULING_LOCK

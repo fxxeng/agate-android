@@ -45,6 +45,18 @@
 - `StopLifecyclePolicyTest`：8 条（四态映射 + 复核 `Exit/Retry/KeepService` 矩阵 + `Failed` 字段保真）。
 - Service 本身无法在 JVM 实例化（模块只有 junit + org.json，无 Robolectric），接线由 CI 编译 + 真机验收覆盖；判定已全部下沉到纯逻辑，Service 只保留 `when` 分支。
 
+### 1.4 Android Foreground Service 停止契约
+
+本节是 FGS 停止行为的权威说明（其它文档引用这里，不再各写一份）：
+
+- **Service 只做执行器**：STOP 分支必须先经 `StopLifecyclePolicy.actionFor(result)`，不得在 Service 内重新解释 `ok/released`。
+- **释放顺序**：`Stopped` → `releaseKeepAwakeLocks()` → `stopIfCurrentStart(startId)`（`stopSelfResult(startId)` + `stopForeground(REMOVE)`）。放锁一定在确认停止之后。
+- **startId 边界**：STOP/TICK 不做跨 startId 合并；`stopSelfResult(startId)` 只能结束实际执行的那次 start，旧 STOP 不得结束新 START。
+- **保留态**：`StopTimedOut` / `Failed` → 保留 FGS 与 WakeLock/WifiLock、更新通知、`10s × 3` 复核；每轮先查 `gatewayIntent.mayStopNow()`，探测走 `RuntimeController.refreshStatus()`。
+- **复核用尽**：保留 FGS 与保活锁，通知 `STOP_FAILED_TEXT_FINAL`（可诊断），**不退出前台**。
+- **onDestroy**：仍走「尽力 stop + 本地锁兜底释放」，失败只记日志；服务正在销毁，不做复核也不保留资源。
+- **禁止**：把 FGS STOP / Gateway STOP 映射成 `shutdown_core()`；把 `released=false` 或 `ok=false` 当停止成功。
+
 ## 2. T2 — 自动签到补签的取消
 
 ### 2.1 根因链

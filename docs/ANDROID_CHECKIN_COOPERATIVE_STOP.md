@@ -62,3 +62,18 @@ Android ACTION_STOP
 - 新增 `PendingTickRegistryTest`，覆盖 STOP 快照不捕获后续 TICK、多条既有 TICK 全部退出才结束、已完成 TICK 不残留。
 
 本轮本地验证：PendingTickRegistry 单独由 kotlinc 编译通过；使用轻量 JUnit stub 执行上述 3 个测试，3/3 通过；`git diff --check`、`tools/rust_balance.py`、`tools/check_eol.py` 通过。该测试不是 Gradle/JUnit 工程测试；Android Service 完整编译和真机队列竞态回归仍待工具链/设备验证。
+
+## 补充：调度器关闭与启动补签（R49/T2，2026-11-09）
+
+「关闭自动签到」与本文前面的 `ACTION_STOP` 是两条独立语义，不能混用：
+
+| 入口 | 作用对象 | 在途 Provider 请求 | 后续计划 |
+|---|---|---|---|
+| `ACTION_STOP` → `request_cancel_current()` | 当前签到轮次 | 不中断 | 账号边界停止后续账号 |
+| 关闭自动签到 → `AutoCheckin::stop()` / `configure(enabled=false)` | 调度轮询 + 启动补签 | 不中断 | 每条计划启动前/收尾后检查代次，失效即停止 |
+
+- `Inner.generation`：`stop()` **无条件**推进（不再受 `task.is_none()` 提前 return 影响），每次 `start()` 也推进。
+- 补签任务名 `checkin-backfill:{generation}`：旧代次收尾期间新一代仍能注册自己的补签（固定名会被同名去重吃掉）。
+- `run_backfill(pending, is_current, fire)`：每条计划**启动前**与**收尾后**各判一次 `is_current`；已启动的那一条允许自然完成，只阻止后续计划。
+- `is_current` = 总开关仍开 **且** 代次未变；`POST /api/auto-checkin {enabled:false}` 这类不走 `stop()` 的路径也会立刻失效。
+- 进程停机的有界 abort+join 仍由 `shutdown_core_tasks` 负责，本机制不替代它。

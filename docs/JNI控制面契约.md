@@ -87,6 +87,11 @@
    `refreshStatus`），复核用尽仍保留服务并给出可诊断通知。R48 的「超限退出
    前台」语义废止。
 
+10. **网关启动顺序（R49/T3）**：`nativeStart` 先 `server::start`（bind），
+    成功后才提交 `start_gateway_tasks()`（当前唯一内容 = Sidecar 自动拉起）。
+    bind 失败原样返回 `port_conflict`，不产生任何 Sidecar 副作用；顺序由
+    `server::run_after_successful_bind` 固定，jni_bridge 与 headless bin 同源。
+
 ## 4. 版本沿革
 
 - **v1（R46，bridge=1）**：定稿本文；status 增 `bridge`；envelope 收口；
@@ -99,6 +104,8 @@
 - **v1 增补（R49/T1，bridge 仍 =1）**：wire 零变更；stop 结果四态化（JNI
   异常收敛为 `Failed.cause`、`not_running` 唯一幂等）、Service 只在 Stopped
   时放锁/退出、复核用尽保留前台并区分启动/停止失败卡片。
+- **v1 增补（R49/T3，bridge 仍 =1）**：wire 零变更；`nativeStart` 改为 bind
+  成功后才提交随网关副作用，端口冲突不再误拉起 Sidecar。
 
 ## 5. 变更流程
 
