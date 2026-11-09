@@ -757,76 +757,99 @@ mod tests {
         assert_eq!(migrate_nested_tokens(&mut accounts), 0);
     }
 
-    /// **落库失败不是终态**：写失败时不能把内存里的改动报成已修复，库里的
-    /// 原始记录必须原样保留，下一次启动（恢复可写后）仍能重试成功。
+    /// **落库失败不是终态，且失败不留半截数据**：写失败时不能把内存里的
+    /// 改动报成已修复，库里的原始记录必须原样保留，下一次启动（故障排除后）
+    /// 仍能重试成功。
     ///
-    /// 失败用连接级 `PRAGMA query_only` 制造（真实 SQLite `SQLITE_READONLY`，
-    /// 与磁盘满 / 只读挂载在调用方看来同类），走的是真实 `save` 路径而不是
-    /// mock：若哪天有人把 `save_state` 改成非事务写，中途失败留下半截数据，
-    /// 这条测试会立刻暴露（原始记录丢失 / 顶部被半写）。
+    /// 故障注入用 SQLite 触发器：两条存量按 rowid 顺序更新，第一条**已经写
+    /// 成功之后**、第二条 UPDATE 触发 `RAISE(ABORT)`。这比“第一条就失败”
+    /// 强的地方在于它能证明 `save_state` 的事务原子性 —— 若哪天有人把它改成
+    /// 非事务写（逐行提交），第一条会留在「已迁移」状态，本用例立刻发现半截
+    /// 数据；`PRAGMA query_only` 那种整体只读做不到这一点。
     #[test]
     fn migration_save_failure_keeps_original_data_and_next_run_retries() {
         let (db, _keep) =
             crate::server::db::test_temp::TempDb::open("chatglm-nested-token-save-failure");
         let connection = db.clone();
         let store = AccountStore::with_db(Some(db));
-        let legacy = StoredAccount::from_map(
-            json!({
-                "id": "6ad26bd46976b1c1ab1c2cb2",
-                "provider": "chatglm",
-                "auth": {
-                    "accessToken": "nested-access-token",
-                    "refreshToken": "nested-refresh-token",
-                },
-                "deviceId": "c9074ab1-208b-4255-8f71-09cc2ce32278",
-            })
-            .as_object()
-            .cloned()
-            .unwrap_or_default(),
-        );
-        store.with_lock(|guard| {
-            let mut state = store.load_locked(guard);
-            state.accounts.push(legacy);
-            store
-                .save_locked(&state, guard)
-                .expect("存量种子应当能落库");
-        });
+        for (id, access) in [("glm-a", "nested-access-a"), ("glm-b", "nested-access-b")] {
+            let legacy = StoredAccount::from_map(
+                json!({
+                    "id": id,
+                    "provider": "chatglm",
+                    "auth": {
+                        "accessToken": access,
+                        "refreshToken": format!("{access}-refresh"),
+                    },
+                    "deviceId": "c9074ab1-208b-4255-8f71-09cc2ce32278",
+                })
+                .as_object()
+                .cloned()
+                .unwrap_or_default(),
+            );
+            store.with_lock(|guard| {
+                let mut state = store.load_locked(guard);
+                state.accounts.push(legacy);
+                store
+                    .save_locked(&state, guard)
+                    .expect("存量种子应当能落库");
+            });
+        }
 
-        // 让这条连接上的写全部失败：迁移必须返回 0（不能把内存改动当已提交）
-        connection.set_query_only(true);
+        // 本用例依赖 rowid 顺序（save_state 按 state.accounts 顺序逐行写）：
+        // 先钉住顺序，避免将来排序变化让「中途失败」退化成「第一条就失败」
+        let before = store.with_lock(|guard| store.load_locked(guard));
+        assert_eq!(
+            (before.accounts[0].id(), before.accounts[1].id()),
+            ("glm-a", "glm-b")
+        );
+
+        // 第二条（glm-b）在第一条（glm-a）写成功之后中断：模拟落库中途失败
+        let installed = connection.with(|conn| {
+            conn.execute_batch(
+                "CREATE TRIGGER r47_fail_second_update
+                 BEFORE UPDATE ON accounts
+                 WHEN OLD.id = 'glm-b'
+                 BEGIN SELECT RAISE(ABORT, 'injected mid-write failure'); END;",
+            )
+        });
+        assert_eq!(installed, Some(Ok(())), "故障触发器应当创建成功");
+
+        // 迁移必须返回 0（不能把内存改动当已提交）
         assert_eq!(store.migrate_nested_tokens(), 0, "写失败时不能报修复数");
 
-        // 原始数据完整：嵌套 auth 原样、顶层没有被半截写入
+        // 事务回滚：两条都保持原样，第一条也不许留下「已迁移」的半截状态
         let after_failure = store.with_lock(|guard| store.load_locked(guard));
-        assert_eq!(after_failure.accounts.len(), 1);
-        assert!(!after_failure.accounts[0].has_credentials());
-        assert!(after_failure.accounts[0].access_token().is_empty());
-        assert!(after_failure.accounts[0].refresh_token().is_empty());
-        assert!(
-            after_failure.accounts[0].get("auth").is_some(),
-            "落库失败后原始嵌套记录必须原样保留（下次启动还要靠它重试）"
-        );
-        assert_eq!(
-            after_failure.accounts[0]
-                .get("auth")
-                .and_then(|value| value.get("accessToken"))
-                .and_then(|value| value.as_str()),
-            Some("nested-access-token")
-        );
+        assert_eq!(after_failure.accounts.len(), 2);
+        for (index, access) in ["nested-access-a", "nested-access-b"].iter().enumerate() {
+            assert!(
+                after_failure.accounts[index].get("auth").is_some(),
+                "落库失败后原始嵌套记录必须原样保留（含第一条）"
+            );
+            assert!(
+                after_failure.accounts[index].access_token().is_empty(),
+                "失败回滚后顶层不该残留半截令牌"
+            );
+            assert_eq!(
+                after_failure.accounts[index]
+                    .get("auth")
+                    .and_then(|value| value.get("accessToken"))
+                    .and_then(|value| value.as_str()),
+                Some(*access)
+            );
+        }
 
-        // 恢复可写：同一条记录重跑迁移应当成功（失败不是「试过就跳过」）
-        connection.set_query_only(false);
-        assert_eq!(store.migrate_nested_tokens(), 1, "恢复可写后应能重试成功");
+        // 排除故障后重跑：两条都能修好（失败不是「试过就跳过」）
+        let dropped =
+            connection.with(|conn| conn.execute_batch("DROP TRIGGER r47_fail_second_update;"));
+        assert_eq!(dropped, Some(Ok(())));
+        assert_eq!(store.migrate_nested_tokens(), 2, "恢复后应能重试成功");
         let after_retry = store.with_lock(|guard| store.load_locked(guard));
+        assert_eq!(after_retry.accounts[0].access_token(), "nested-access-a");
+        assert_eq!(after_retry.accounts[1].access_token(), "nested-access-b");
         assert!(after_retry.accounts[0].has_credentials());
-        assert_eq!(
-            after_retry.accounts[0].access_token(),
-            "nested-access-token"
-        );
-        assert_eq!(
-            after_retry.accounts[0].refresh_token(),
-            "nested-refresh-token"
-        );
+        assert!(after_retry.accounts[1].has_credentials());
         assert!(after_retry.accounts[0].get("auth").is_none());
+        assert!(after_retry.accounts[1].get("auth").is_none());
     }
 }
