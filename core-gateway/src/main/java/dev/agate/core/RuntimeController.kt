@@ -212,12 +212,23 @@ object RuntimeController {
         val released: Boolean = true,
     )
 
+    /**
+     * Evaluate the latest Service intent and, only when permitted, stop Gateway in the
+     * same serialized lifecycle task. The guard and Native stop must never be split:
+     * a newer START intent arriving while this task is queued must prevent stale STOP.
+     *
+     * R49/T1: 返回 [StopExecutionResult] 四态，而不是含义模糊的 Boolean。
+     * `not_running` 是幂等成功；`released=false` 是 StopTimedOut；Native
+     * `ok=false` / JNI 异常是 Failed（网关可能仍在运行）。异常不再上抛 ——
+     * 调用方必须能对「抛异常」做与 ok=false 相同的保留与复核处理，
+     * 原始异常放在 [StopExecutionResult.Failed.cause] 里，信息不丢失。
+     */
     internal fun stopWith(
         mayStopNow: () -> Boolean,
         stop: () -> StopOutcome,
         nowMillis: () -> Long = { System.currentTimeMillis() },
-    ): Boolean = runSerialized {
-        if (!mayStopNow()) return@runSerialized false
+    ): StopExecutionResult = runSerialized {
+        if (!mayStopNow()) return@runSerialized StopExecutionResult.SkippedByNewerIntent
 
         recordStateEvent(RuntimeStateEvent.GatewayStopStarted, nowMillis())
         val result = try {
@@ -231,20 +242,19 @@ object RuntimeController {
                 ),
                 nowMillis(),
             )
-            throw failure
+            return@runSerialized StopExecutionResult.Failed(
+                message = failure.message ?: failure.javaClass.simpleName,
+                cause = failure,
+            )
         }
 
-        if (result.ok || result.error == "not_running") {
-            // not_running 是幂等停止（本来就没跑）；released=false 才是真正的
-            // 三态：停止已发出但端口释放未确认，发布 StopTimeout 而不是假
-            // Stopped —— 随后的权威 status 探测（NativeStatusObserved）会把
-            // 它归位（R47/T3.4）。
-            if (result.ok && !result.released) {
-                recordStateEvent(RuntimeStateEvent.GatewayStopTimedOut, nowMillis())
-            } else {
-                recordStateEvent(RuntimeStateEvent.GatewayStopSucceeded, nowMillis())
-            }
-        } else {
+        // not_running 只有在 Native 明确这么回时才算幂等停止；不能把任意
+        // 错误都解释成「已经停了」（任务书 §2.3）。
+        if (result.error == "not_running") {
+            recordStateEvent(RuntimeStateEvent.GatewayStopSucceeded, nowMillis())
+            return@runSerialized StopExecutionResult.Stopped
+        }
+        if (!result.ok) {
             recordStateEvent(
                 RuntimeStateEvent.GatewayFailed(
                     stage = "stop",
@@ -253,12 +263,23 @@ object RuntimeController {
                 ),
                 nowMillis(),
             )
+            return@runSerialized StopExecutionResult.Failed(
+                code = result.code,
+                message = result.error ?: "Native Gateway stop failed",
+            )
         }
-        true
+        // ok=true 但端口释放未确认：停止已发出、网关可能仍在收尾，按三态
+        // 发布 StopTimeout，交给 Service 的 bounded 复核归位（R47/T3.4）。
+        if (!result.released) {
+            recordStateEvent(RuntimeStateEvent.GatewayStopTimedOut, nowMillis())
+            return@runSerialized StopExecutionResult.StopTimedOut
+        }
+        recordStateEvent(RuntimeStateEvent.GatewayStopSucceeded, nowMillis())
+        StopExecutionResult.Stopped
     }
 
     /** Production STOP entry point; intent validation and JNI stop are atomic. */
-    fun stopIfAllowed(mayStopNow: () -> Boolean): Boolean = stopWith(
+    fun stopIfAllowed(mayStopNow: () -> Boolean): StopExecutionResult = stopWith(
         mayStopNow = mayStopNow,
         stop = {
             val result = Gateway.stop()

@@ -48,10 +48,11 @@ class AgateForegroundService : Service() {
         // 文案。停止是 Kotlin 侧自有状态（非 Rust 文案透传），单点常量即可；
         // 权威 status 探测确认后服务退出、通知随之移除。
         private const val STOP_UNCONFIRMED_TEXT = "网关停止指令已发出（端口释放未确认，稍后自动校准）"
-        /** 未确认态的复核节奏：10s × 3 轮，超限后按现状退出前台（不无限滞留）。 */
+        /** R49/T1：复核次数用尽仍未确认停止——保留服务，给用户可诊断文案。 */
+        private const val STOP_FAILED_TEXT_FINAL = "网关仍在运行：停止未确认，已保留保活（可再次停止）"
+        /** 未确认态的复核节奏：10s × 3 轮；超限只保留服务，不退出前台（R49 §2.5）。 */
         private const val STOP_CONFIRM_RETRY_MS = 10_000L
         private const val STOP_CONFIRM_MAX_ATTEMPTS = 3
-
         // 跨 Service 实例保存带代次的最新网关意图。布尔值只能表达当前状态，
         // 不能识别「旧销毁清理捕获后又发生新 STOP/START」这样的过期快照。
         private val gatewayIntent = GatewayIntentTracker()
@@ -203,33 +204,46 @@ class AgateForegroundService : Service() {
                 // STOP/TICK 不做跨 startId 合并：stopSelfResult(startId) 必须对应
                 // 实际执行的最后一条 start 请求，否则重复命令可能让服务无法退出。
                 enqueueCommand("$ACTION_STOP#$startId") {
-                    var skipStop = false
-                    try {
-                        skipStop = !RuntimeController.stopIfAllowed {
-                            // 守卫在 RuntimeController 的串行任务执行时刻读取；
-                            // 必须与 Gateway.stop() 保持在同一个原子区间。
-                            // 若队列期间已有新 START 意图，则跳过旧 STOP。
-                            gatewayIntent.mayStopNow()
-                        }
-                    } catch (t: Throwable) {
-                        android.util.Log.e("Agate", "内核停止异常", t)
+                    // R49/T1：STOP 结果不再是 Boolean。stopIfAllowed 返回四态执行
+                    // 结果，由 StopLifecyclePolicy 决定放锁/保留——旧实现把
+                    // 「未确认」和「失败」都当成功，直接放锁并 stopSelf。
+                    val result = RuntimeController.stopIfAllowed {
+                        // 守卫在 RuntimeController 的串行任务执行时刻读取；
+                        // 必须与 Gateway.stop() 保持在同一个原子区间。
+                        // 若队列期间已有新 START 意图，则跳过旧 STOP。
+                        gatewayIntent.mayStopNow()
                     }
-                    // 跳过 stop 时网关仍在运行，锁由接管网关的 runStart 对齐。
-                    if (!skipStop) {
-                        releaseKeepAwakeLocks()
-                        // R47/T3.4：released=false（端口释放未确认）时不立刻
-                        // 退出前台 —— 那会让「未确认」对用户完全不可见。保留
-                        // 常驻通知并按 bounded 节奏复核；stopSelfResult 的
-                        // startId 校验天然防住复核期间到来的新 START。
-                        if (RuntimeController.snapshot().gateway is GatewayRuntimeState.StopTimeout) {
-                            updateNotification(STOP_UNCONFIRMED_TEXT)
+                    when (StopLifecyclePolicy.actionFor(result)) {
+                        StopServiceAction.ReleaseAndExit -> {
+                            releaseKeepAwakeLocks()
+                            // 只允许停止当前这次 start 请求；若后面已有
+                            // START/TICK，保留 Service 与前台通知，避免旧
+                            // STOP 杀掉新启动意图。
+                            stopIfCurrentStart(startId)
+                        }
+
+                        StopServiceAction.KeepAndRecheck -> {
+                            // 停止未确认 / 停止失败：网关可能仍在监听。
+                            // 保活锁与前台服务都必须保留，否则同网段设备
+                            // 会连不上、用户也看不到失败原因（R49 §2.4）。
+                            if (result is StopExecutionResult.Failed) {
+                                android.util.Log.e(
+                                    "Agate",
+                                    "网关停止失败：code=${result.code} message=${result.message}",
+                                    result.cause,
+                                )
+                                updateNotification(stopFailedText(result.message))
+                            } else {
+                                updateNotification(STOP_UNCONFIRMED_TEXT)
+                            }
                             scheduleStopConfirmation(startId, attempt = 1)
-                            return@enqueueCommand
+                        }
+
+                        StopServiceAction.DoNothing -> {
+                            // 旧 STOP 被更新的 START 抑制：网关仍在运行，
+                            // 锁与前台通知由接管的新 START 对齐。
                         }
                     }
-                    // 只允许停止当前这次 start 请求；若后面已有 START/TICK，
-                    // 保留 Service 与前台通知，避免旧 STOP 杀掉新启动意图。
-                    stopIfCurrentStart(startId)
                 }
                 return START_NOT_STICKY
             }
@@ -510,33 +524,64 @@ class AgateForegroundService : Service() {
     }
 
     /**
-     * 未确认停止（StopTimeout）的 bounded 复核：JNI 探测必须在后台线程
-     * （RuntimeController 约定「调用方不得在主线程直接执行 JNI」），判定回主
-     * 线程处理服务退出。复核期间若快照回到 Running（新 START 已接管）则放弃
-     * 本次复核；探测失败不等于已停止，继续等；超限后按现状退出前台，未确认
-     * 状态留待后续权威探测归位。
+     * 停止未确认（StopTimedOut）或停止失败（Failed）的有界复核（R49/T1）。
+     *
+     * 与 R48 的差异：
+     *  1. 探测走 [RuntimeController.refreshStatus]（生命周期串行边界上的权威
+     *     观测），而不是 readStatus —— 复核结果要能纠正 RuntimeSnapshot；
+     *  2. 复核开始前重新确认「这条 STOP 仍然有效」：期间到达的新 START 会让
+     *     [GatewayIntentTracker.mayStopNow] 变假，旧 STOP 的复核直接放弃；
+     *  3. 次数用尽**不再退出前台**：网关可能仍在运行，退出等于把「停止失败」
+     *     伪装成「停止成功」。保留 FGS + 保活锁，通知说明未确认，等用户或
+     *     下一次 START/STOP 重新校准。
      */
     private fun scheduleStopConfirmation(startId: Int, attempt: Int) {
         mainHandler.postDelayed({
             if (RuntimeController.snapshot().gateway is GatewayRuntimeState.Running) return@postDelayed
+            if (!gatewayIntent.mayStopNow()) return@postDelayed
             Thread {
                 val stopped = try {
-                    !RuntimeController.readStatus().running
+                    !RuntimeController.refreshStatus().running
                 } catch (t: Throwable) {
                     android.util.Log.w("Agate", "停止确认探测失败（第 $attempt 轮）", t)
                     false
                 }
                 mainHandler.post {
                     if (RuntimeController.snapshot().gateway is GatewayRuntimeState.Running) return@post
-                    if (stopped || attempt >= STOP_CONFIRM_MAX_ATTEMPTS) {
-                        stopIfCurrentStart(startId)
-                    } else {
-                        scheduleStopConfirmation(startId, attempt + 1)
+                    when (
+                        StopLifecyclePolicy.recheckAction(
+                            stopped = stopped,
+                            attempt = attempt,
+                            maxAttempts = STOP_CONFIRM_MAX_ATTEMPTS,
+                        )
+                    ) {
+                        StopRecheckAction.Exit -> {
+                            releaseKeepAwakeLocks()
+                            stopIfCurrentStart(startId)
+                        }
+
+                        StopRecheckAction.Retry -> scheduleStopConfirmation(startId, attempt + 1)
+
+                        StopRecheckAction.KeepService -> {
+                            android.util.Log.w(
+                                "Agate",
+                                "网关停止未确认（已复核 $attempt 轮），保留前台服务与保活锁",
+                            )
+                            updateNotification(STOP_FAILED_TEXT_FINAL)
+                        }
                     }
                 }
             }.start()
         }, STOP_CONFIRM_RETRY_MS)
     }
+
+    /** 停止失败的通知文案（Native 文案可能为空）。 */
+    private fun stopFailedText(message: String?): String =
+        if (message.isNullOrBlank()) {
+            "停止失败：网关可能仍在运行，正在复核…"
+        } else {
+            "停止失败：$message"
+        }
 
     /**
      * Service startId 与前台状态变更统一回主线程：这样 stopSelfResult 的判断
@@ -559,13 +604,20 @@ class AgateForegroundService : Service() {
         try {
             commandExecutor.execute {
                 try {
-                    RuntimeController.stopIfAllowed {
+                    val result = RuntimeController.stopIfAllowed {
                         // 兜底清理以「执行时刻」的最后意图为准；守卫与 Native
                         // STOP 由 RuntimeController 在同一个串行任务中连续执行。
                         gatewayIntent.mayStopNow()
                     }
+                    if (result is StopExecutionResult.Failed) {
+                        android.util.Log.w(
+                            "Agate",
+                            "Service 销毁时停止内核失败：${result.message}",
+                            result.cause,
+                        )
+                    }
                 } catch (t: Throwable) {
-                    android.util.Log.w("Agate", "Service 销毁时停止内核失败", t)
+                    android.util.Log.w("Agate", "Service 销毁时停止内核异常", t)
                 } finally {
                     releaseKeepAwakeLocks()
                 }

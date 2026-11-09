@@ -521,7 +521,7 @@ class RuntimeControllerTest {
         val stopThread = AtomicReference<Thread?>()
         val calls = mutableListOf<String>()
 
-        val allowed = RuntimeController.stopWith(
+        val result = RuntimeController.stopWith(
             mayStopNow = {
                 guardThread.set(Thread.currentThread())
                 calls += "guard"
@@ -535,7 +535,7 @@ class RuntimeControllerTest {
             nowMillis = { 5100L },
         )
 
-        assertTrue(allowed)
+        assertEquals(StopExecutionResult.Stopped, result)
         assertEquals(listOf("guard", "stop"), calls)
         assertSame(guardThread.get(), stopThread.get())
         assertTrue(guardThread.get() !== callerThread)
@@ -548,7 +548,7 @@ class RuntimeControllerTest {
         prepareRunningGatewaySnapshot()
         var stopCalled = false
 
-        val allowed = RuntimeController.stopWith(
+        val result = RuntimeController.stopWith(
             mayStopNow = { false },
             stop = {
                 stopCalled = true
@@ -557,7 +557,7 @@ class RuntimeControllerTest {
             nowMillis = { 5200L },
         )
 
-        assertFalse(allowed)
+        assertEquals(StopExecutionResult.SkippedByNewerIntent, result)
         assertFalse(stopCalled)
         assertEquals(
             GatewayRuntimeState.Running(8787, true, "stop-test"),
@@ -569,21 +569,21 @@ class RuntimeControllerTest {
     fun gatewayStopTreatsNotRunningAsIdempotentSuccess() {
         prepareRunningGatewaySnapshot()
 
-        val allowed = RuntimeController.stopWith(
+        val result = RuntimeController.stopWith(
             mayStopNow = { true },
             stop = { RuntimeController.StopOutcome(ok = false, error = "not_running") },
             nowMillis = { 5300L },
         )
 
-        assertTrue(allowed)
+        assertEquals(StopExecutionResult.Stopped, result)
         assertEquals(GatewayRuntimeState.Stopped, RuntimeController.snapshot().gateway)
     }
 
     @Test
-    fun gatewayStopPublishesNativeFailureWithoutChangingCallerDecision() {
+    fun gatewayStopPublishesNativeFailureAndReportsFailedResult() {
         prepareRunningGatewaySnapshot()
 
-        val allowed = RuntimeController.stopWith(
+        val result = RuntimeController.stopWith(
             mayStopNow = { true },
             stop = {
                 RuntimeController.StopOutcome(
@@ -595,7 +595,9 @@ class RuntimeControllerTest {
             nowMillis = { 5400L },
         )
 
-        assertTrue("guard approval remains the return value", allowed)
+        val failed = result as StopExecutionResult.Failed
+        assertEquals("state_poisoned", failed.code)
+        assertEquals("state poisoned", failed.message)
         assertEquals(
             GatewayRuntimeState.Failed("stop", "state_poisoned", "state poisoned"),
             RuntimeController.snapshot().gateway,
@@ -603,22 +605,19 @@ class RuntimeControllerTest {
     }
 
     @Test
-    fun gatewayStopExceptionPublishesFailureAndRethrowsOriginal() {
+    fun gatewayStopExceptionIsReportedAsFailedResultWithoutThrowing() {
         prepareRunningGatewaySnapshot()
         val expected = IllegalStateException("jni-stop-failed")
 
-        val actual = try {
-            RuntimeController.stopWith(
-                mayStopNow = { true },
-                stop = { throw expected },
-                nowMillis = { 5500L },
-            )
-            null
-        } catch (failure: Throwable) {
-            failure
-        }
+        val result = RuntimeController.stopWith(
+            mayStopNow = { true },
+            stop = { throw expected },
+            nowMillis = { 5500L },
+        )
 
-        assertSame(expected, actual)
+        val failed = result as StopExecutionResult.Failed
+        assertSame(expected, failed.cause)
+        assertEquals("jni-stop-failed", failed.message)
         assertEquals(
             GatewayRuntimeState.Failed("stop", null, "jni-stop-failed"),
             RuntimeController.snapshot().gateway,
@@ -857,13 +856,13 @@ class RuntimeControllerTest {
     fun gatewayStopTimeoutPublishesStopTimeoutWhenReleaseUnconfirmed() {
         prepareRunningGatewaySnapshot()
 
-        val allowed = RuntimeController.stopWith(
+        val result = RuntimeController.stopWith(
             mayStopNow = { true },
             stop = { RuntimeController.StopOutcome(ok = true, released = false) },
             nowMillis = { 5450L },
         )
 
-        assertTrue(allowed)
+        assertEquals(StopExecutionResult.StopTimedOut, result)
         assertEquals(GatewayRuntimeState.StopTimeout, RuntimeController.snapshot().gateway)
     }
 
@@ -923,5 +922,49 @@ class RuntimeControllerTest {
             )
         }
         assertEquals(GatewayRuntimeState.Stopped, RuntimeController.snapshot().gateway)
+    }
+
+    @Test
+    fun stopFailureKeepsSnapshotDiagnosableInsteadOfPretendingStopped() {
+        prepareRunningGatewaySnapshot()
+
+        val result = RuntimeController.stopWith(
+            mayStopNow = { true },
+            stop = {
+                RuntimeController.StopOutcome(
+                    ok = false,
+                    code = "stop_timeout",
+                    error = "native stop failed",
+                )
+            },
+            nowMillis = { 5600L },
+        )
+
+        assertEquals(
+            StopExecutionResult.Failed::class.java,
+            result.javaClass,
+        )
+        val gateway = RuntimeController.snapshot().gateway
+        assertTrue(
+            "stop failure must not be published as Stopped",
+            gateway is GatewayRuntimeState.Failed,
+        )
+        gateway as GatewayRuntimeState.Failed
+        assertEquals("stop", gateway.stage)
+        assertEquals("stop_timeout", gateway.code)
+    }
+
+    @Test
+    fun stopTimeoutResultAndSnapshotTellTheSameStory() {
+        prepareRunningGatewaySnapshot()
+
+        val result = RuntimeController.stopWith(
+            mayStopNow = { true },
+            stop = { RuntimeController.StopOutcome(ok = true, released = false) },
+            nowMillis = { 5610L },
+        )
+
+        assertEquals(StopExecutionResult.StopTimedOut, result)
+        assertEquals(GatewayRuntimeState.StopTimeout, RuntimeController.snapshot().gateway)
     }
 }
