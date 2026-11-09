@@ -628,4 +628,205 @@ mod tests {
             "带其它键的 auth 不该被删（会丢数据）"
         );
     }
+    /// **只有 refreshToken 的嵌套记录也要搬**：当年写入侧可能只落了 refresh
+    /// （access 过期后被清掉）。迁移按「顶层缺哪枚补哪枚」处理，不要求两枚
+    /// 同时存在；但只有 refresh 仍不构成可转发凭证（`has_credentials()` 只认
+    /// 顶层 access），这条测试把「搬完之后的真实状态」一并钉住，避免被误读成
+    /// 「迁移能凭空救出可用账号」。
+    #[test]
+    fn migration_promotes_refresh_only_nested_token() {
+        let mut accounts = vec![StoredAccount::from_map(
+            json!({
+                "id": "refresh-only",
+                "provider": "chatglm",
+                "auth": { "refreshToken": "nested-refresh-only-token" },
+                "deviceId": "c9074ab1-208b-4255-8f71-09cc2ce32278",
+            })
+            .as_object()
+            .cloned()
+            .unwrap_or_default(),
+        )];
+        assert_eq!(migrate_nested_tokens(&mut accounts), 1);
+        assert_eq!(accounts[0].refresh_token(), "nested-refresh-only-token");
+        assert!(
+            accounts[0].access_token().is_empty(),
+            "access 不该被 refresh 顶上（两枚令牌语义不同）"
+        );
+        assert!(
+            !accounts[0].has_credentials(),
+            "只有 refresh 仍不可转发（判据只看顶层 access）"
+        );
+        assert!(accounts[0].get("auth").is_none(), "只装令牌的空壳应当清掉");
+        assert_eq!(
+            accounts[0]
+                .get("tokenTail")
+                .and_then(|value| value.as_str()),
+            Some("oken"),
+            "尾段按实际搬上来的那枚令牌重算"
+        );
+        // 幂等
+        assert_eq!(migrate_nested_tokens(&mut accounts), 0);
+    }
+
+    /// **一次启动修完全部存量记录**：迁移是整表扫描，计数只算真正改动的行
+    /// （已在新口径上的、别家的都不计）。用混合列表锁住「多账号同批修复」
+    /// 这个真实场景 —— 用户库里通常不止一条 chatglm。
+    #[test]
+    fn migration_heals_all_legacy_chatglm_accounts_in_one_pass() {
+        let mut accounts = vec![
+            StoredAccount::from_map(
+                json!({
+                    "id": "glm-a",
+                    "provider": "chatglm",
+                    "auth": { "accessToken": "access-a", "refreshToken": "refresh-a" },
+                })
+                .as_object()
+                .cloned()
+                .unwrap_or_default(),
+            ),
+            StoredAccount::from_map(
+                json!({
+                    "id": "glm-b",
+                    "provider": "chatglm",
+                    "auth": { "accessToken": "access-b" },
+                })
+                .as_object()
+                .cloned()
+                .unwrap_or_default(),
+            ),
+            StoredAccount::from_map(
+                json!({
+                    "id": "glm-c",
+                    "provider": "chatglm",
+                    "auth": { "refreshToken": "refresh-c" },
+                })
+                .as_object()
+                .cloned()
+                .unwrap_or_default(),
+            ),
+            // 已在新口径上的记录：不该被算进 healed，也不该被动 updatedAt
+            StoredAccount::from_map(
+                json!({
+                    "id": "glm-clean",
+                    "provider": "chatglm",
+                    "accessToken": "already-top-level",
+                    "updatedAt": 123,
+                })
+                .as_object()
+                .cloned()
+                .unwrap_or_default(),
+            ),
+            // 别家：原样留着
+            StoredAccount::from_map(
+                json!({
+                    "id": "wb-1",
+                    "provider": "workbuddy",
+                    "auth": { "accessToken": "someone-elses-token" },
+                })
+                .as_object()
+                .cloned()
+                .unwrap_or_default(),
+            ),
+        ];
+
+        assert_eq!(migrate_nested_tokens(&mut accounts), 3, "三条存量各算一次");
+
+        assert_eq!(accounts[0].access_token(), "access-a");
+        assert_eq!(accounts[0].refresh_token(), "refresh-a");
+        assert!(accounts[0].get("auth").is_none());
+
+        assert_eq!(accounts[1].access_token(), "access-b");
+        assert!(accounts[1].refresh_token().is_empty());
+        assert!(accounts[1].get("auth").is_none());
+
+        assert_eq!(accounts[2].refresh_token(), "refresh-c");
+        assert!(accounts[2].access_token().is_empty());
+        assert!(accounts[2].get("auth").is_none());
+
+        assert_eq!(accounts[3].access_token(), "already-top-level");
+        assert_eq!(
+            accounts[3]
+                .get("updatedAt")
+                .and_then(|value| value.as_u64()),
+            Some(123),
+            "已在新口径上的记录不该被迁移碰 updatedAt"
+        );
+        assert!(accounts[4].get("auth").is_some(), "别家的 auth 原样");
+
+        // 幂等：整批再跑一遍没有任何改动
+        assert_eq!(migrate_nested_tokens(&mut accounts), 0);
+    }
+
+    /// **落库失败不是终态**：写失败时不能把内存里的改动报成已修复，库里的
+    /// 原始记录必须原样保留，下一次启动（恢复可写后）仍能重试成功。
+    ///
+    /// 失败用连接级 `PRAGMA query_only` 制造（真实 SQLite `SQLITE_READONLY`，
+    /// 与磁盘满 / 只读挂载在调用方看来同类），走的是真实 `save` 路径而不是
+    /// mock：若哪天有人把 `save_state` 改成非事务写，中途失败留下半截数据，
+    /// 这条测试会立刻暴露（原始记录丢失 / 顶部被半写）。
+    #[test]
+    fn migration_save_failure_keeps_original_data_and_next_run_retries() {
+        let (db, _keep) =
+            crate::server::db::test_temp::TempDb::open("chatglm-nested-token-save-failure");
+        let connection = db.clone();
+        let store = AccountStore::with_db(Some(db));
+        let legacy = StoredAccount::from_map(
+            json!({
+                "id": "6ad26bd46976b1c1ab1c2cb2",
+                "provider": "chatglm",
+                "auth": {
+                    "accessToken": "nested-access-token",
+                    "refreshToken": "nested-refresh-token",
+                },
+                "deviceId": "c9074ab1-208b-4255-8f71-09cc2ce32278",
+            })
+            .as_object()
+            .cloned()
+            .unwrap_or_default(),
+        );
+        store.with_lock(|guard| {
+            let mut state = store.load_locked(guard);
+            state.accounts.push(legacy);
+            store
+                .save_locked(&state, guard)
+                .expect("存量种子应当能落库");
+        });
+
+        // 让这条连接上的写全部失败：迁移必须返回 0（不能把内存改动当已提交）
+        connection.set_query_only(true);
+        assert_eq!(store.migrate_nested_tokens(), 0, "写失败时不能报修复数");
+
+        // 原始数据完整：嵌套 auth 原样、顶层没有被半截写入
+        let after_failure = store.with_lock(|guard| store.load_locked(guard));
+        assert_eq!(after_failure.accounts.len(), 1);
+        assert!(!after_failure.accounts[0].has_credentials());
+        assert!(after_failure.accounts[0].access_token().is_empty());
+        assert!(after_failure.accounts[0].refresh_token().is_empty());
+        assert!(
+            after_failure.accounts[0].get("auth").is_some(),
+            "落库失败后原始嵌套记录必须原样保留（下次启动还要靠它重试）"
+        );
+        assert_eq!(
+            after_failure.accounts[0]
+                .get("auth")
+                .and_then(|value| value.get("accessToken"))
+                .and_then(|value| value.as_str()),
+            Some("nested-access-token")
+        );
+
+        // 恢复可写：同一条记录重跑迁移应当成功（失败不是「试过就跳过」）
+        connection.set_query_only(false);
+        assert_eq!(store.migrate_nested_tokens(), 1, "恢复可写后应能重试成功");
+        let after_retry = store.with_lock(|guard| store.load_locked(guard));
+        assert!(after_retry.accounts[0].has_credentials());
+        assert_eq!(
+            after_retry.accounts[0].access_token(),
+            "nested-access-token"
+        );
+        assert_eq!(
+            after_retry.accounts[0].refresh_token(),
+            "nested-refresh-token"
+        );
+        assert!(after_retry.accounts[0].get("auth").is_none());
+    }
 }

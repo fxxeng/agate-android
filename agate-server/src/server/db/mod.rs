@@ -239,6 +239,27 @@ impl Db {
     }
 }
 
+#[cfg(test)]
+impl Db {
+    /// 测试专用：切换本连接的 `PRAGMA query_only`。
+    ///
+    /// 用来制造**真实**的写失败（SQLite `SQLITE_READONLY`，与磁盘满 / 只读
+    /// 挂载在调用方看来同一类错误），验证「落库失败不把内存改动当已提交、
+    /// 原始数据完整、恢复后可重试」。只切换这一条连接（本项目单连接），
+    /// 不动库文件权限，也不影响并行测试（各自独立 TempDb）。
+    pub(crate) fn set_query_only(&self, on: bool) {
+        let switched = self.with(|conn| {
+            conn.execute_batch(if on {
+                "PRAGMA query_only=ON;"
+            } else {
+                "PRAGMA query_only=OFF;"
+            })
+            .is_ok()
+        });
+        assert_eq!(switched, Some(true), "切换 PRAGMA query_only 失败");
+    }
+}
+
 /// 只读地取某个库文件的 `PRAGMA user_version`（读不到返回 `None`）。
 ///
 /// ── 为什么需要一条「独立于 `Db`」的读法 ──────────────────────
