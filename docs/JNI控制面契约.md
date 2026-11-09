@@ -33,7 +33,7 @@
 | 5 | `nativeCoreInit(dir,port,on)` | 后台线程（Application/FGS） | bootstrap，秒级 | 信封 JSON |
 | 6 | `nativeSchedulerSet(on)` | 任意 | 锁等待 | 信封 JSON |
 | 7 | `nativeCheckinRunNow(ms)` | 后台线程（闹钟） | ≤ms（默认 120s） | 信封 JSON |
-| 8 | `nativeCheckinRunAndWait()` | 后台线程 + 必须持 WakeLock | 不封顶（等本轮真实结束） | 信封 JSON |
+| 8 | `nativeCheckinRunAndWait()` | 后台线程 + 必须持 WakeLock | ≤15min（超时 done:false/timeout） | 信封 JSON |
 | 9 | `nativeRequestCheckinStop()` | 任意 | 锁等待 | 信封 JSON |
 | 10 | `nativeVersion()` | 任意 | 即返 | **裸字符串**（唯一非信封） |
 | 11 | `nativeSetLogCallback(cb\|null)` | 任意（@Synchronized） | 锁等待 | 信封 JSON |
@@ -64,8 +64,10 @@
 3. **apiCall 直调**：内存 `Router::oneshot`，完整鉴权/CORS/错误信封栈；body
    上限 4MB；API Key 走 Bearer；Core 未就绪返回 `core_not_ready`。
 4. **checkin 三入口**：RunNow 超时不断任务（fire 已后台跑，返回 timeout +
-   ok=true）；RunAndWait 等 CAS 抢锁的 busy 轮真实结束（FGS WakeLock）；
-   RequestStop 合作式（当前账号自然收尾，不中断在途 Provider 请求）。
+   ok=true）；RunAndWait 等 CAS 抢锁的 busy 轮真实结束（FGS WakeLock），
+   但等待有 15min 上限：超时返回 `done:false, error:"timeout"` 并调用
+   `request_cancel_current()`（账号边界停止后续账号，不中断在途 Provider
+   请求）——R50/T5 前是无限等待；RequestStop 合作式。
 5. **日志回调**：单 GlobalRef；网关运行期不换监听；Kotlin 侧固定在 AgateLog
    HandlerThread 执行，回调内禁重活；Rust 侧回调异常一律清理不留 pending
    exception；增补平面字符转 U+FFFD（NewStringUTF 是 modified UTF-8）。

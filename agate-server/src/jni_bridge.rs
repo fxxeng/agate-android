@@ -433,6 +433,32 @@ fn checkin_run_now(timeout_ms: u64) -> Value {
 ///
 /// Android FGS 使用此入口持有 WakeLock 直到执行完成；不能用带超时的
 /// `checkin_run_now`，因为超时只停止 JNI 调用方等待，不会取消 Tokio 任务。
+/// `checkin_run_and_wait` 的等待上限。Kotlin FGS 的 WakeLock 用同一个
+/// 15min 预算（另加 1min 余量）；超时只结束等待，不杀在途任务（R50/T5）。
+const CHECKIN_WAIT_LIMIT: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+
+/// 等一轮签到的结果信封。单独抽出来便于 JVM 之外的单测锁超时语义。
+fn wait_for_checkin_result(
+    rx: std::sync::mpsc::Receiver<Option<Value>>,
+    timeout: std::time::Duration,
+    cancel_current: &dyn Fn(),
+) -> Value {
+    match rx.recv_timeout(timeout) {
+        Ok(Some(result)) => json!({ "ok": true, "done": true, "result": result }),
+        // None = 已有一轮在执行，本次没有启动新的签到。
+        Ok(None) => json!({ "ok": false, "done": true, "error": "busy" }),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            // 不杀任务：Provider 请求不能被硬中断；请求在当前账号边界停止，
+            // 避免继续跑后续账号（返回 done=false，前端不得当成已完成）。
+            cancel_current();
+            json!({ "ok": false, "done": false, "error": "timeout" })
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            json!({ "ok": false, "done": true, "error": "checkin task ended without result" })
+        }
+    }
+}
+
 fn checkin_run_and_wait() -> Value {
     let checkin = {
         let Ok(guard) = CORE.lock() else {
@@ -444,25 +470,21 @@ fn checkin_run_and_wait() -> Value {
         core.state.auto_checkin().clone()
     };
     let (tx, rx) = std::sync::mpsc::channel::<Option<Value>>();
+    let checkin_task = checkin.clone();
     crate::spawn_task(async move {
-        let result = checkin.fire("alarm").await;
+        let result = checkin_task.fire("alarm").await;
         // None 也可能表示调度器/手动入口已经抢到 running 标记。
         // FGS 持锁期间必须等那一轮真实结束，不能把 busy 当作任务已结束。
         if result.is_none() {
-            while checkin.is_running() {
+            while checkin_task.is_running() {
                 tokio::time::sleep(std::time::Duration::from_millis(250)).await;
             }
         }
         let _ = tx.send(result);
     });
-    match rx.recv() {
-        Ok(Some(result)) => json!({ "ok": true, "done": true, "result": result }),
-        // None = 已有一轮在执行，本次没有启动新的签到。
-        Ok(None) => json!({ "ok": false, "done": true, "error": "busy" }),
-        Err(_) => {
-            json!({ "ok": false, "done": true, "error": "checkin task ended without result" })
-        }
-    }
+    wait_for_checkin_result(rx, CHECKIN_WAIT_LIMIT, &|| {
+        checkin.request_cancel_current();
+    })
 }
 
 // =====================================================================
@@ -1174,6 +1196,19 @@ mod tests {
     }
 
     /// R47/T2.3：目录一致（规范化后）→ 幂等 Ok(false)。
+    /// R50/T5：等待必须有上限；超时要请求「账号边界停止」且 done=false。
+    #[test]
+    fn checkin_wait_times_out_and_requests_cancel() {
+        let (_tx, rx) = std::sync::mpsc::channel::<Option<Value>>();
+        let cancelled = std::sync::atomic::AtomicBool::new(false);
+        let reply = wait_for_checkin_result(rx, std::time::Duration::from_millis(5), &|| {
+            cancelled.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+        assert_eq!(reply["error"], json!("timeout"));
+        assert_eq!(reply["done"], json!(false));
+        assert!(cancelled.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
     #[test]
     fn check_data_dir_match_accepts_same_dir() {
         let dir = std::env::temp_dir().join(format!("agate-ddm-ok-{}", std::process::id()));

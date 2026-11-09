@@ -53,6 +53,8 @@ class AgateForegroundService : Service() {
         /** 未确认态的复核节奏：10s × 3 轮；超限只保留服务，不退出前台（R49 §2.5）。 */
         private const val STOP_CONFIRM_RETRY_MS = 10_000L
         private const val STOP_CONFIRM_MAX_ATTEMPTS = 3
+        // R50/T5：WakeLock 必须有上限 —— Rust 侧 checkin 等待上限同为 15min。
+        private const val TICK_WAKE_LOCK_TIMEOUT_MS = 16 * 60 * 1000L
         // 跨 Service 实例保存带代次的最新网关意图。布尔值只能表达当前状态，
         // 不能识别「旧销毁清理捕获后又发生新 STOP/START」这样的过期快照。
         private val gatewayIntent = GatewayIntentTracker()
@@ -369,7 +371,10 @@ class AgateForegroundService : Service() {
             acquiredLock.setReferenceCounted(false)
             // 签到可按账号串行执行，耗时可能超过 120s；无超时持锁，
             // 由 finally 在 Rust 任务实际结束后释放，避免 JNI 等待超时后任务仍在跑。
-            acquiredLock.acquire()
+            // R50/T5：有上限地持锁。旧实现无超时，任意上游请求挂住就会
+            // 无限期持锁（耗电 + Play vitals stuck wake lock）；Rust 侧
+            // checkinRunAndWait 的等待上限同为 15min，这里留 1min 余量。
+            acquiredLock.acquire(TICK_WAKE_LOCK_TIMEOUT_MS)
             // F2：tick 不再拉起网关 —— Core 态直调签到执行体，网关保持原状
             //（没在跑就继续没在跑；Core 未就绪时这里兜底初始化）
             val init = try {
