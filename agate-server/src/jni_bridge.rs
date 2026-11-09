@@ -471,9 +471,16 @@ fn checkin_run_and_wait() -> Value {
 // Core 态（进程存活、端口未监听）必须照常可用。
 // =====================================================================
 
-/// `/api/*` 管理请求的进程内直调路由缓存：进程内单 Core、`ensure_core`
-/// 幂等永不重建 ServerState，Router 只组装一次。
-static API_ROUTER: OnceLock<axum::Router> = OnceLock::new();
+/// `/api/*` 管理请求的进程内直调路由缓存：键 = `(port, host, local_panel)`。
+///
+/// `ServerState` 的这三个字段是普通字段，`start_gateway` 改的是 CORE 里那
+/// 一份；Router 持有的是首次 `apiCall` 时的 clone，不会跟着变。若缓存永不
+/// 失效，改端口后 OAuth 回调地址与登录监听仍用旧端口（R50/T2）。Router
+/// clone 是 Arc 级，键变化时重建即可。
+type RouterCacheKey = (u16, IpAddr, bool);
+type RouterCache = Option<(RouterCacheKey, axum::Router)>;
+
+static API_ROUTER: Mutex<RouterCache> = Mutex::new(None);
 
 fn api_call(method: &str, path: &str, body: Option<String>, api_key: &str) -> Value {
     // 参数显式校验：非法参数返回明确错误，不静默兜底。
@@ -492,7 +499,20 @@ fn api_call(method: &str, path: &str, body: Option<String>, api_key: &str) -> Va
     })() else {
         return json!({ "ok": false, "error": "core_not_ready" });
     };
-    let router = API_ROUTER.get_or_init(|| server::http::router(state));
+    let key = (state.port, state.host, state.local_panel);
+    let router = {
+        let Ok(mut cached) = API_ROUTER.lock() else {
+            return json!({ "ok": false, "error": "router cache poisoned" });
+        };
+        match cached.as_ref() {
+            Some((cached_key, router)) if *cached_key == key => router.clone(),
+            _ => {
+                let router = server::http::router(state.clone());
+                *cached = Some((key, router.clone()));
+                router
+            }
+        }
+    };
     let mut builder = axum::http::Request::builder().method(method).uri(uri);
     if body.is_some() {
         builder = builder.header("content-type", "application/json");
