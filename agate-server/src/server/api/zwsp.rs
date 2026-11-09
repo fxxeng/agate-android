@@ -278,7 +278,10 @@ mod tests {
     fn duplicates_are_dropped_but_the_authors_order_is_kept() {
         let words = validated_words(&json!(["乙", "甲", "乙", "丙", "甲"]))
             .expect("重复不是错误，只是要收成一个");
-        assert_eq!(words, vec!["乙".to_string(), "甲".to_string(), "丙".to_string()]);
+        assert_eq!(
+            words,
+            vec!["乙".to_string(), "甲".to_string(), "丙".to_string()]
+        );
     }
 
     /// 首尾空白被去掉，且去掉空白后若相同则视为重复。
@@ -296,6 +299,9 @@ mod tests {
             assert!(error.contains("字符串数组"), "文案要说清期望: {error}");
         }
         let error = validated_words(&json!([1, 2])).expect_err("非字符串项必须 400");
-        assert!(error.contains("不是字符串"), "文案要看得出是第几项: {error}");
+        assert!(
+            error.contains("不是字符串"),
+            "文案要看得出是第几项: {error}"
+        );
     }
 }

@@ -105,8 +105,16 @@ fn app_component(region: Region) -> Option<Component> {
         let mut candidates: Vec<PathBuf> = Vec::new();
         if cfg!(target_os = "macos") {
             let home = home_dir();
-            candidates.push(PathBuf::from("/Applications").join(format!("{mac_name}.app")).join("Contents/Resources"));
-            candidates.push(home.join("Applications").join(format!("{mac_name}.app")).join("Contents/Resources"));
+            candidates.push(
+                PathBuf::from("/Applications")
+                    .join(format!("{mac_name}.app"))
+                    .join("Contents/Resources"),
+            );
+            candidates.push(
+                home.join("Applications")
+                    .join(format!("{mac_name}.app"))
+                    .join("Contents/Resources"),
+            );
         } else {
             let slug = install_name.to_lowercase().replace(' ', "-");
             candidates.push(PathBuf::from("/opt").join(install_name).join("resources"));
@@ -114,8 +122,15 @@ fn app_component(region: Region) -> Option<Component> {
             candidates.push(PathBuf::from("/usr/lib").join(&slug).join("resources"));
             candidates.push(PathBuf::from("/snap").join(&slug).join("current/resources"));
         }
-        if let Some(exe) = candidates.iter().find_map(|resources| runtime_info_in(resources)) {
-            return Some(Component { exe, env, source: "app" });
+        if let Some(exe) = candidates
+            .iter()
+            .find_map(|resources| runtime_info_in(resources))
+        {
+            return Some(Component {
+                exe,
+                env,
+                source: "app",
+            });
         }
     }
     None
@@ -139,7 +154,9 @@ fn cli_component(region: Region) -> Option<Component> {
     let home = home_dir();
     for dir in homes {
         let bin = home.join(dir).join(".bin");
-        let Ok(entries) = std::fs::read_dir(&bin) else { continue };
+        let Ok(entries) = std::fs::read_dir(&bin) else {
+            continue;
+        };
         let mut dirs: Vec<PathBuf> = entries
             .flatten()
             .map(|entry| entry.path())
@@ -152,8 +169,16 @@ fn cli_component(region: Region) -> Option<Component> {
             })
             .collect();
         dirs.sort();
-        if let Some(exe) = dirs.into_iter().map(|dir| dir.join(exe_name)).find(|path| exists(path)) {
-            return Some(Component { exe, env, source: "cli" });
+        if let Some(exe) = dirs
+            .into_iter()
+            .map(|dir| dir.join(exe_name))
+            .find(|path| exists(path))
+        {
+            return Some(Component {
+                exe,
+                env,
+                source: "cli",
+            });
         }
     }
     None
@@ -162,13 +187,21 @@ fn cli_component(region: Region) -> Option<Component> {
 /// 网关数据目录里安装的组件（data 来源，Linux/Docker 的
 /// `install_component` 落地路径）。env 与 cli 来源一致。
 fn data_component() -> Option<Component> {
-    let exe = crate::server::config::config_dir().join("qoder-umid").join("runtime-info");
-    exists(&exe).then(|| Component { exe, env: 4, source: "data" })
+    let exe = crate::server::config::config_dir()
+        .join("qoder-umid")
+        .join("runtime-info");
+    exists(&exe).then(|| Component {
+        exe,
+        env: 4,
+        source: "data",
+    })
 }
 
 /// 组件发现（按 app → cli → data 的顺序，同 variant 优先）。
 pub(crate) fn find_component(region: Region) -> Option<Component> {
-    app_component(region).or_else(|| cli_component(region)).or_else(|| data_component())
+    app_component(region)
+        .or_else(|| cli_component(region))
+        .or_else(|| data_component())
 }
 
 /// 本机是否能生成风控身份（界面提示用）
@@ -187,7 +220,11 @@ pub fn machine_os() -> String {
     } else {
         "unknown"
     };
-    let platform = if cfg!(target_os = "macos") { "darwin" } else { "linux" };
+    let platform = if cfg!(target_os = "macos") {
+        "darwin"
+    } else {
+        "linux"
+    };
     format!("{arch}_{platform}")
 }
 
@@ -201,7 +238,11 @@ pub fn machine_hostname() -> Option<String> {
     }
     let short_hash = |text: &str| {
         let digest = sha2::Sha256::digest(text.as_bytes());
-        digest.iter().take(4).map(|byte| format!("{byte:02x}")).collect::<String>()
+        digest
+            .iter()
+            .take(4)
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
     };
     let clip = |text: &str| -> String {
         if text.chars().count() <= 96 {
@@ -210,9 +251,15 @@ pub fn machine_hostname() -> Option<String> {
         let hash = short_hash(text);
         let head: String = text.chars().take(96 - 8 - 1).collect();
         let head = head.trim_end_matches(['-', ' ']).to_string();
-        if head.is_empty() { format!("unknown-{hash}") } else { format!("{head}-{hash}") }
+        if head.is_empty() {
+            format!("unknown-{hash}")
+        } else {
+            format!("{head}-{hash}")
+        }
     };
-    let printable = raw.chars().all(|ch| ('\x21'..='\x7e').contains(&ch) || ch == ' ')
+    let printable = raw
+        .chars()
+        .all(|ch| ('\x21'..='\x7e').contains(&ch) || ch == ' ')
         && raw.starts_with(|ch: char| ('\x21'..='\x7e').contains(&ch))
         && raw.ends_with(|ch: char| ('\x21'..='\x7e').contains(&ch));
     if printable {
@@ -221,10 +268,24 @@ pub fn machine_hostname() -> Option<String> {
     let hash = short_hash(raw);
     let cleaned: String = raw
         .chars()
-        .map(|ch| if ('\x21'..='\x7e').contains(&ch) { ch } else { '-' })
+        .map(|ch| {
+            if ('\x21'..='\x7e').contains(&ch) {
+                ch
+            } else {
+                '-'
+            }
+        })
         .collect();
-    let cleaned = cleaned.split('-').filter(|part| !part.is_empty()).collect::<Vec<_>>().join("-");
-    Some(clip(&if cleaned.is_empty() { format!("unknown-{hash}") } else { format!("{cleaned}-{hash}") }))
+    let cleaned = cleaned
+        .split('-')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+    Some(clip(&if cleaned.is_empty() {
+        format!("unknown-{hash}")
+    } else {
+        format!("{cleaned}-{hash}")
+    }))
 }
 
 fn hostname() -> String {
@@ -244,14 +305,22 @@ fn client_version(region: Region) -> String {
     for name in versions {
         let mut candidates: Vec<PathBuf> = Vec::new();
         if cfg!(target_os = "macos") {
-            candidates.push(PathBuf::from("/Applications").join(format!("{name}.app")).join("Contents/Resources"));
+            candidates.push(
+                PathBuf::from("/Applications")
+                    .join(format!("{name}.app"))
+                    .join("Contents/Resources"),
+            );
         } else {
             candidates.push(PathBuf::from("/opt").join(name).join("resources"));
         }
         for resources in candidates {
             let manifest = resources.join("build-manifest.json");
-            let Ok(text) = std::fs::read_to_string(&manifest) else { continue };
-            let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else { continue };
+            let Ok(text) = std::fs::read_to_string(&manifest) else {
+                continue;
+            };
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+                continue;
+            };
             if let Some(version) = value.get("productVersion").and_then(|value| value.as_str()) {
                 let version = version.trim();
                 if !version.is_empty() {
@@ -279,10 +348,16 @@ async fn run_component(component: &Component, uid: &str) -> Result<RiskIdentity,
     } else {
         command.arg(component.env.to_string());
     }
-    command.stdin(if with_stdin { std::process::Stdio::piped() } else { std::process::Stdio::null() });
+    command.stdin(if with_stdin {
+        std::process::Stdio::piped()
+    } else {
+        std::process::Stdio::null()
+    });
     command.stdout(std::process::Stdio::piped());
     command.stderr(std::process::Stdio::null());
-    let mut child = command.spawn().map_err(|error| format!("UMID 组件启动失败：{error}"))?;
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("UMID 组件启动失败：{error}"))?;
     if with_stdin {
         if let Some(mut stdin) = child.stdin.take() {
             let payload = format!("{}\n", serde_json::json!({ "account": uid }));
@@ -291,19 +366,27 @@ async fn run_component(component: &Component, uid: &str) -> Result<RiskIdentity,
             // drop 关闭 stdin，组件读到 EOF 才会输出
         }
     }
-    let output = tokio::time::timeout(Duration::from_millis(RISK_TIMEOUT_MS), child.wait_with_output())
-        .await
-        .map_err(|_| format!("UMID 组件调用超时（{RISK_TIMEOUT_MS} 秒）"))?
-        .map_err(|error| format!("UMID 组件执行失败：{error}"))?;
+    let output = tokio::time::timeout(
+        Duration::from_millis(RISK_TIMEOUT_MS),
+        child.wait_with_output(),
+    )
+    .await
+    .map_err(|_| format!("UMID 组件调用超时（{RISK_TIMEOUT_MS} 秒）"))?
+    .map_err(|error| format!("UMID 组件执行失败：{error}"))?;
     if output.stdout.len() > MAX_OUTPUT_BYTES {
         return Err("UMID 组件输出过大".to_string());
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
     let line = stdout.lines().next().unwrap_or("").trim();
-    let parsed: serde_json::Value =
-        serde_json::from_str(line).map_err(|_| format!("UMID 组件输出不是 JSON：{}", truncate(line, 120)))?;
+    let parsed: serde_json::Value = serde_json::from_str(line)
+        .map_err(|_| format!("UMID 组件输出不是 JSON：{}", truncate(line, 120)))?;
     let pick = |key: &str| -> Result<String, String> {
-        let value = parsed.get(key).and_then(|value| value.as_str()).unwrap_or("").trim().to_string();
+        let value = parsed
+            .get(key)
+            .and_then(|value| value.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
         if value.is_empty() || value.len() > 4096 {
             return Err(format!("UMID 组件输出缺少 {key}"));
         }
@@ -347,9 +430,18 @@ pub async fn identity(region: Region, uid: &str) -> Option<RiskIdentity> {
     match run_component(&component, uid).await {
         Ok(value) => {
             if let Ok(mut guard) = CACHE.lock() {
-                guard.get_or_insert_with(HashMap::new).insert(key, CacheEntry { value: value.clone(), at: logging::now_ms() });
+                guard.get_or_insert_with(HashMap::new).insert(
+                    key,
+                    CacheEntry {
+                        value: value.clone(),
+                        at: logging::now_ms(),
+                    },
+                );
             }
-            logging::verbose("[Qoder]", &format!("设备风控身份已生成（来源 {}）", component.source));
+            logging::verbose(
+                "[Qoder]",
+                &format!("设备风控身份已生成（来源 {}）", component.source),
+            );
             Some(value)
         }
         Err(error) => {
@@ -433,7 +525,10 @@ pub async fn install_component() -> Result<serde_json::Value, GatewayError> {
         return Err(GatewayError::with_status(400, "当前平台不需要或不支持下载安装 UMID 组件（Windows / macOS 请安装 Qoder 客户端或 qodercli）"));
     }
     if INSTALLING.swap(true, std::sync::atomic::Ordering::Relaxed) {
-        return Err(GatewayError::with_status(409, "UMID 组件正在安装中，请稍候"));
+        return Err(GatewayError::with_status(
+            409,
+            "UMID 组件正在安装中，请稍候",
+        ));
     }
     let result = install_component_inner().await;
     INSTALLING.store(false, std::sync::atomic::Ordering::Relaxed);
@@ -442,7 +537,10 @@ pub async fn install_component() -> Result<serde_json::Value, GatewayError> {
 
 const NPM_PACKAGE: &str = "@qoder-ai/qodercli";
 const NPM_PACKAGE_ESCAPED: &str = "@qoder-ai%2fqodercli";
-const NPM_MIRRORS: [&str; 2] = ["https://registry.npmmirror.com", "https://registry.npmjs.org"];
+const NPM_MIRRORS: [&str; 2] = [
+    "https://registry.npmmirror.com",
+    "https://registry.npmjs.org",
+];
 const NPM_AUTHORITY: &str = "https://registry.npmjs.org";
 const BUNDLE_ENTRY: &str = "package/bundle/qodercli.js";
 const DOWNLOAD_TIMEOUT_MS: u64 = 180_000;
@@ -474,7 +572,9 @@ async fn install_component_inner() -> Result<serde_json::Value, GatewayError> {
             if let Some(authority) = authority.as_ref() {
                 let authority_version = authority.version.as_deref().unwrap_or("");
                 if !authority_version.is_empty() && authority_version != version {
-                    errors.push(format!("{registry}：版本（{version}）与 npmjs（{authority_version}）不一致"));
+                    errors.push(format!(
+                        "{registry}：版本（{version}）与 npmjs（{authority_version}）不一致"
+                    ));
                     continue;
                 }
                 if let Some((_, authority_integrity)) = &authority.dist {
@@ -485,7 +585,10 @@ async fn install_component_inner() -> Result<serde_json::Value, GatewayError> {
                 }
             }
         }
-        logging::log("[Qoder]", &format!("正在下载 {NPM_PACKAGE}@{version}（{registry}）"));
+        logging::log(
+            "[Qoder]",
+            &format!("正在下载 {NPM_PACKAGE}@{version}（{registry}）"),
+        );
         let body = match http_get(&tarball, DOWNLOAD_TIMEOUT_MS).await {
             Ok(body) => body,
             Err(error) => {
@@ -510,17 +613,27 @@ async fn install_component_inner() -> Result<serde_json::Value, GatewayError> {
             }
         };
         let Some(bundle) = tar_entry(&tarball, BUNDLE_ENTRY) else {
-            errors.push(format!("{registry}：包里没有 {BUNDLE_ENTRY}（qodercli 结构可能变化）"));
+            errors.push(format!(
+                "{registry}：包里没有 {BUNDLE_ENTRY}（qodercli 结构可能变化）"
+            ));
             continue;
         };
         // ④ 挑本机架构的内嵌 ELF
-        let machine = if cfg!(target_arch = "x86_64") { 62u16 } else if cfg!(target_arch = "aarch64") { 183u16 } else { 0 };
+        let machine = if cfg!(target_arch = "x86_64") {
+            62u16
+        } else if cfg!(target_arch = "aarch64") {
+            183u16
+        } else {
+            0
+        };
         if machine == 0 {
             return Err(fail("当前 CPU 架构不受支持".to_string()));
         }
         let bundle = String::from_utf8_lossy(&bundle).to_string();
         let Some(elf) = extract_elf(&bundle, machine) else {
-            errors.push(format!("{registry}：qodercli {version} 里没有本机架构的 UMID 程序"));
+            errors.push(format!(
+                "{registry}：qodercli {version} 里没有本机架构的 UMID 程序"
+            ));
             continue;
         };
         // ⑤ 落地 + 试跑 + 原子替换
@@ -538,7 +651,11 @@ async fn install_component_inner() -> Result<serde_json::Value, GatewayError> {
             use std::os::unix::fs::PermissionsExt;
             let _ = std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o755));
         }
-        let component = Component { exe: tmp_path.clone(), env: 4, source: "data" };
+        let component = Component {
+            exe: tmp_path.clone(),
+            env: 4,
+            source: "data",
+        };
         if let Err(error) = run_component(&component, "install-test").await {
             let _ = std::fs::remove_file(&tmp_path);
             return Err(fail(format!("组件试运行失败：{error}")));
@@ -552,11 +669,20 @@ async fn install_component_inner() -> Result<serde_json::Value, GatewayError> {
             "registry": registry,
             "installedAt": logging::now_ms(),
         });
-        let _ = std::fs::write(dir.join("manifest.json"), serde_json::to_string_pretty(&manifest).unwrap_or_default());
-        logging::log("[Qoder]", &format!("✅ 设备风控组件已安装：qodercli {version}"));
+        let _ = std::fs::write(
+            dir.join("manifest.json"),
+            serde_json::to_string_pretty(&manifest).unwrap_or_default(),
+        );
+        logging::log(
+            "[Qoder]",
+            &format!("✅ 设备风控组件已安装：qodercli {version}"),
+        );
         return Ok(manifest);
     }
-    Err(fail(format!("设备身份组件安装失败 —— {}", errors.join("；"))))
+    Err(fail(format!(
+        "设备身份组件安装失败 —— {}",
+        errors.join("；")
+    )))
 }
 
 struct NpmMeta {
@@ -568,12 +694,24 @@ struct NpmMeta {
 async fn npm_meta(registry: &str) -> Result<NpmMeta, String> {
     let url = format!("{registry}/{NPM_PACKAGE_ESCAPED}/latest");
     let body = http_get(&url, META_TIMEOUT_MS).await?;
-    let value: serde_json::Value = serde_json::from_slice(&body).map_err(|error| format!("元数据不是 JSON: {error}"))?;
+    let value: serde_json::Value =
+        serde_json::from_slice(&body).map_err(|error| format!("元数据不是 JSON: {error}"))?;
     Ok(NpmMeta {
-        version: value.get("version").and_then(|value| value.as_str()).map(str::to_string),
+        version: value
+            .get("version")
+            .and_then(|value| value.as_str())
+            .map(str::to_string),
         dist: value.get("dist").and_then(|dist| {
-            let tarball = dist.get("tarball").and_then(|value| value.as_str())?.trim().to_string();
-            let integrity = dist.get("integrity").and_then(|value| value.as_str())?.trim().to_string();
+            let tarball = dist
+                .get("tarball")
+                .and_then(|value| value.as_str())?
+                .trim()
+                .to_string();
+            let integrity = dist
+                .get("integrity")
+                .and_then(|value| value.as_str())?
+                .trim()
+                .to_string();
             (!tarball.is_empty() && !integrity.is_empty()).then_some((tarball, integrity))
         }),
     })
@@ -600,7 +738,10 @@ async fn http_get(url: &str, timeout_ms: u64) -> Result<Vec<u8>, String> {
 
 /// `sha512-<base64>` → base64 部分（前缀不匹配返回 None = 不校验）
 fn strip_integrity_prefix(integrity: &str) -> Option<String> {
-    integrity.strip_prefix("sha512-").map(str::to_string).filter(|value| !value.is_empty())
+    integrity
+        .strip_prefix("sha512-")
+        .map(str::to_string)
+        .filter(|value| !value.is_empty())
 }
 
 /// GzDecoder 的小包装（`bytes_to_vec` 不存在，读全量兜个底）
@@ -620,7 +761,10 @@ impl<R: std::io::Read> BytesToVec for flate2::read::GzDecoder<R> {
 /// 处理 GNU longname 与 pax 扩展头的 path 覆盖）。
 fn tar_entry(tar: &[u8], wanted: &str) -> Option<Vec<u8>> {
     let cstr = |bytes: &[u8]| -> String {
-        let end = bytes.iter().position(|byte| *byte == 0).unwrap_or(bytes.len());
+        let end = bytes
+            .iter()
+            .position(|byte| *byte == 0)
+            .unwrap_or(bytes.len());
         String::from_utf8_lossy(&bytes[..end]).to_string()
     };
     let mut offset = 0usize;
@@ -634,7 +778,11 @@ fn tar_entry(tar: &[u8], wanted: &str) -> Option<Vec<u8>> {
         let entry_type = header[156] as char;
         let prefix = cstr(&header[345..500]);
         let mut name = long_name.clone().unwrap_or_else(|| {
-            if prefix.is_empty() { cstr(&header[..100]) } else { format!("{prefix}/{}", cstr(&header[..100])) }
+            if prefix.is_empty() {
+                cstr(&header[..100])
+            } else {
+                format!("{prefix}/{}", cstr(&header[..100]))
+            }
         });
         long_name = None;
         let body_start = offset + 512;
@@ -645,11 +793,16 @@ fn tar_entry(tar: &[u8], wanted: &str) -> Option<Vec<u8>> {
         offset = body_start + size.div_ceil(512) * 512;
         match entry_type {
             'L' => {
-                name = String::from_utf8_lossy(&tar[body_start..body_end]).trim_end_matches('\0').to_string();
+                name = String::from_utf8_lossy(&tar[body_start..body_end])
+                    .trim_end_matches('\0')
+                    .to_string();
             }
             'x' => {
                 let body = String::from_utf8_lossy(&tar[body_start..body_end]);
-                if let Some(value) = body.lines().find_map(|line| line.strip_prefix("path=").map(|value| value.trim().to_string())) {
+                if let Some(value) = body.lines().find_map(|line| {
+                    line.strip_prefix("path=")
+                        .map(|value| value.trim().to_string())
+                }) {
                     long_name = Some(value);
                 }
             }
@@ -676,11 +829,15 @@ fn extract_elf(bundle: &str, machine: u16) -> Option<Vec<u8>> {
             break;
         };
         let encoded = &bundle[start + 1..end];
-        if let Ok(head) = base64::engine::general_purpose::STANDARD.decode(&encoded[..encoded.len().min(4096).min(encoded.len())]) {
+        if let Ok(head) = base64::engine::general_purpose::STANDARD
+            .decode(&encoded[..encoded.len().min(4096).min(encoded.len())])
+        {
             if head.len() >= 20 {
                 let value = u16::from_le_bytes([head[18], head[19]]);
                 if value == machine {
-                    return base64::engine::general_purpose::STANDARD.decode(encoded).ok();
+                    return base64::engine::general_purpose::STANDARD
+                        .decode(encoded)
+                        .ok();
                 }
             }
         }

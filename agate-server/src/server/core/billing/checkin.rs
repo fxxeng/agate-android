@@ -41,8 +41,7 @@ use crate::server::core::billing::BillingService;
 use crate::server::core::billing::WorkbuddyActivity;
 use crate::server::logging;
 
-static CHECKIN_RUN_SEQUENCE: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(1);
+static CHECKIN_RUN_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 pub fn new_checkin_run_id() -> String {
     let sequence = CHECKIN_RUN_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -59,7 +58,10 @@ pub struct CheckinError {
 
 impl CheckinError {
     fn new(message: impl Into<String>, status_code: i32) -> Self {
-        Self { message: message.into(), status_code }
+        Self {
+            message: message.into(),
+            status_code,
+        }
     }
 }
 
@@ -73,8 +75,7 @@ fn checkin_gate() -> &'static tokio::sync::Mutex<()> {
 
 /// 获取全进程签到互斥门，供不经过 `run_checkin_cancellable()` 的独立签到入口复用。
 /// 不排队：并发请求立即返回 409，避免两个入口同时操作同一账号。
-pub fn try_acquire_checkin_gate(
-) -> Result<tokio::sync::MutexGuard<'static, ()>, CheckinError> {
+pub fn try_acquire_checkin_gate() -> Result<tokio::sync::MutexGuard<'static, ()>, CheckinError> {
     checkin_gate()
         .try_lock()
         .map_err(|_| CheckinError::new("签到正在执行中，请稍候", 409))
@@ -267,7 +268,11 @@ pub async fn checkin_for(
     account: &Value,
     manual: bool,
 ) -> Value {
-    let id = account.get("id").and_then(Value::as_str).unwrap_or("").to_string();
+    let id = account
+        .get("id")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
     // 结果行的 name 是**签到记录台账与前端结果卡的展示名快照**：优先读统一
     // 展示名 `displayName`（与账号页 / 请求日志同一口径，见
     // `store_view::display_name_of`；「以邮箱报名字」的三家在这里同样显示邮箱），
@@ -292,10 +297,9 @@ pub async fn checkin_for(
             claim_result(id, name, &display, true, claim)
         }
         "autoclaw" | "autoclaw-intl" => {
-            let region = crate::server::core::providers::autoclaw::Region::from_provider_id(
-                provider_id,
-            )
-            .unwrap_or(crate::server::core::providers::autoclaw::Region::Cn);
+            let region =
+                crate::server::core::providers::autoclaw::Region::from_provider_id(provider_id)
+                    .unwrap_or(crate::server::core::providers::autoclaw::Region::Cn);
             let claim = crate::server::core::providers::autoclaw::checkin::claim_daily_signin(
                 region, store, &id,
             )
@@ -308,14 +312,16 @@ pub async fn checkin_for(
             // 实现按地区分支：中国版直接领；国际版要先带设备风控身份重新拉
             // 活动列表（见 `qoder::checkin` 的模块头）。地区由 provider id
             // 反查（拆家后它就是身份），与 AutoClaw 两个地区的分派同款。
-            let region = crate::server::core::providers::qoder::endpoints::Region::from_provider_id(
-                provider_id,
+            let region =
+                crate::server::core::providers::qoder::endpoints::Region::from_provider_id(
+                    provider_id,
+                )
+                .unwrap_or(crate::server::core::providers::qoder::endpoints::Region::Cn);
+            let claim = crate::server::core::providers::qoder::checkin::claim_daily_checkin(
+                store, region, &id,
             )
-            .unwrap_or(crate::server::core::providers::qoder::endpoints::Region::Cn);
-            let claim =
-                crate::server::core::providers::qoder::checkin::claim_daily_checkin(store, region, &id)
-                    .await
-                    .map_err(|error| error.message);
+            .await
+            .map_err(|error| error.message);
             claim_result(id, name, &display, true, claim)
         }
         "trae" => {
@@ -323,11 +329,10 @@ pub async fn checkin_for(
             // `alreadyCompleted` / 中性结果都由实现自己给：活动未下发、
             // 凭据没有 deviceId、国际版谱系这三格都不算失败，也不落当日台账
             // （除"已签"那格），免得定时链把一次"没得签"当成"没签成"反复重打。
-            let claim = crate::server::core::providers::trae::checkin::claim_daily_checkin(
-                store, &id,
-            )
-            .await
-            .map_err(|error| error.message);
+            let claim =
+                crate::server::core::providers::trae::checkin::claim_daily_checkin(store, &id)
+                    .await
+                    .map_err(|error| error.message);
             claim_result(id, name, &display, true, claim)
         }
         "workbuddy-intl" => {
@@ -349,16 +354,21 @@ pub async fn checkin_for(
             let activity = billing
                 .workbuddy_daily_activity(&entry.session, WorkbuddyActivity::Full)
                 .await;
-            let claim = activity
-                .get("claim")
-                .cloned()
-                .unwrap_or_else(|| json!({ "success": false, "code": -1, "msg": "活跃任务未返回领取结果" }));
-            let claim_success = claim.get("success").and_then(Value::as_bool).unwrap_or(false);
+            let claim = activity.get("claim").cloned().unwrap_or_else(
+                || json!({ "success": false, "code": -1, "msg": "活跃任务未返回领取结果" }),
+            );
+            let claim_success = claim
+                .get("success")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
             let message = claim.get("msg").and_then(Value::as_str).unwrap_or("");
             if claim_success {
                 logging::log("[Accounts]", &format!("账号 {display}: 签到成功"));
             } else {
-                logging::log("[Accounts]", &format!("账号 {display}: WorkBuddy 国际版 {message}"));
+                logging::log(
+                    "[Accounts]",
+                    &format!("账号 {display}: WorkBuddy 国际版 {message}"),
+                );
             }
             json!({
                 "id": id,
@@ -455,10 +465,7 @@ pub async fn checkin_for(
                             if credited {
                                 let message =
                                     reward.get("msg").and_then(Value::as_str).unwrap_or("");
-                                logging::log(
-                                    "[Accounts]",
-                                    &format!("账号 {display}: {message}"),
-                                );
+                                logging::log("[Accounts]", &format!("账号 {display}: {message}"));
                             }
                             rewards.push(reward);
                         }
@@ -530,7 +537,10 @@ fn claim_result(
 ) -> Value {
     match result {
         Ok(claim) => {
-            let success = claim.get("success").and_then(Value::as_bool).unwrap_or(false);
+            let success = claim
+                .get("success")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
             let msg = claim.get("msg").and_then(Value::as_str).unwrap_or("");
             if success {
                 if log_success_msg && !msg.is_empty() {
@@ -539,7 +549,10 @@ fn claim_result(
                     logging::log("[Accounts]", &format!("账号 {display}: 签到成功"));
                 }
             } else {
-                logging::log("[Accounts]", &format!("账号 {display}: 签到未领取（{msg}）"));
+                logging::log(
+                    "[Accounts]",
+                    &format!("账号 {display}: 签到未领取（{msg}）"),
+                );
             }
             json!({ "id": id, "name": name, "claim": claim, "error": Value::Null })
         }
@@ -645,7 +658,11 @@ pub fn claim_pending(claim: &Value) -> bool {
         return false;
     }
     // error 字段非空 = 执行出错（网络 / 凭证），那不是「等窗口」能解决的
-    if claim.get("error").and_then(Value::as_str).is_some_and(|text| !text.trim().is_empty()) {
+    if claim
+        .get("error")
+        .and_then(Value::as_str)
+        .is_some_and(|text| !text.trim().is_empty())
+    {
         return false;
     }
     let message = claim.get("msg").and_then(Value::as_str).unwrap_or("");
@@ -679,7 +696,10 @@ pub async fn run_checkin(
     reason: &str,
     source: &str,
 ) -> Result<Value, CheckinError> {
-    run_checkin_cancellable(store, billing, providers, id, reason, source, None, None, false).await
+    run_checkin_cancellable(
+        store, billing, providers, id, reason, source, None, None, false,
+    )
+    .await
 }
 
 /// 可合作式停止的批量签到执行体。停止信号只在账号边界读取；当前账号的 Provider
@@ -713,7 +733,9 @@ pub async fn run_checkin_cancellable(
         .map_err(|error| CheckinError::new(format!("无法检查签到不确定状态：{error}"), 500))?;
     if let Some(account_id) = id.filter(|id| uncertain.contains(*id)) {
         return Err(CheckinError::new(
-            format!("账号 {account_id} 今天存在结果不确定的签到请求，为避免重复领取已暂停；请明天再试"),
+            format!(
+                "账号 {account_id} 今天存在结果不确定的签到请求，为避免重复领取已暂停；请明天再试"
+            ),
             409,
         ));
     }
@@ -781,18 +803,36 @@ pub async fn run_checkin_cancellable(
                 started_at: logging::now_ms(),
             },
         )
-        .map_err(|error| CheckinError::new(format!("无法记录账号 {account_id} 的执行意图：{error}"), 500))?;
+        .map_err(|error| {
+            CheckinError::new(
+                format!("无法记录账号 {account_id} 的执行意图：{error}"),
+                500,
+            )
+        })?;
 
         let row = checkin_for(store, billing, account, manual).await;
         // Provider 返回后先保存完整结果证据。若此处失败，账号仍停留在
         // in_flight；重启恢复必须隔离为 uncertain，不能重放远端请求。
         let result_saved_at = logging::now_ms();
-        let result_json = serde_json::to_string(&row)
-            .map_err(|error| CheckinError::new(format!("账号 {account_id} 的签到结果无法序列化：{error}"), 500))?;
+        let result_json = serde_json::to_string(&row).map_err(|error| {
+            CheckinError::new(
+                format!("账号 {account_id} 的签到结果无法序列化：{error}"),
+                500,
+            )
+        })?;
         crate::server::core::checkin_run_ledger::save_result(
-            db, &run_id, account_id, result_saved_at, &result_json,
+            db,
+            &run_id,
+            account_id,
+            result_saved_at,
+            &result_json,
         )
-        .map_err(|error| CheckinError::new(format!("账号 {account_id} 的签到结果未能持久化：{error}"), 500))?;
+        .map_err(|error| {
+            CheckinError::new(
+                format!("账号 {account_id} 的签到结果未能持久化：{error}"),
+                500,
+            )
+        })?;
 
         // 落签到时间：手动单签与定时签到走的是**这一段**（两条链都调本函数），
         // 所以账号页的「已签到」在两种路径下都会亮起来。现在先持久化结果快照，
@@ -819,24 +859,36 @@ pub async fn run_checkin_cancellable(
         // 签到记录台账（schema v17）：按 (run_id, account_id) 幂等投影。
         // 这里采用严格写入；失败时不推进 projected，也不继续下一个账号。
         crate::server::core::checkin_records::record_row_for_run_at(
-            &row, provider, source, reason, Some(&run_id), Some(result_saved_at),
+            &row,
+            provider,
+            source,
+            reason,
+            Some(&run_id),
+            Some(result_saved_at),
         )
-        .map_err(|error| CheckinError::new(
-            format!("账号 {account_id} 的签到历史未能持久化：{error}"), 500,
-        ))?;
+        .map_err(|error| {
+            CheckinError::new(
+                format!("账号 {account_id} 的签到历史未能持久化：{error}"),
+                500,
+            )
+        })?;
         crate::server::core::checkin_run_ledger::mark_projected(
-            db, &run_id, account_id, logging::now_ms(),
+            db,
+            &run_id,
+            account_id,
+            logging::now_ms(),
         )
-        .map_err(|error| CheckinError::new(
-            format!("账号 {account_id} 的签到投影状态未能提交：{error}"), 500,
-        ))?;
+        .map_err(|error| {
+            CheckinError::new(
+                format!("账号 {account_id} 的签到投影状态未能提交：{error}"),
+                500,
+            )
+        })?;
         results.push(row);
     }
     // 停止请求可能在最后一个账号执行期间到达；即使没有后续账号可跳过，
     // 也要把「请求已收到、当前轮次自然收尾」准确反映给调用方。
-    cancelled |= cancel.is_some_and(|flag| {
-        flag.load(std::sync::atomic::Ordering::SeqCst)
-    });
+    cancelled |= cancel.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::SeqCst));
     // 「真实领取」与「今日已领取」都表示本日成功领到分，计入 succeeded；
     // 活跃链路（保活对话 / 活跃上报 / 网页会话）单独统计在 `active` ——
     // 它不产生「领取」，不并入 succeeded，免得把两类事混成一个数。
@@ -874,7 +926,11 @@ pub async fn run_checkin_cancellable(
         "[Accounts]",
         &format!(
             "{}: {succeeded}/{} 个账号成功领取，{active} 个账号完成活跃保活",
-            if cancelled { "签到已按请求停止" } else { "签到完成" },
+            if cancelled {
+                "签到已按请求停止"
+            } else {
+                "签到完成"
+            },
             results.len()
         ),
     );
@@ -906,13 +962,14 @@ pub async fn run_checkin_cancellable(
         "failed": failures.iter().take(5).cloned().collect::<Vec<_>>(),
         "failedCount": failures.len(),
     });
-    let summary_json = if id.is_none() {
-        Some(serde_json::to_string(&history_summary).map_err(|error| {
-            CheckinError::new(format!("签到批次汇总无法序列化：{error}"), 500)
-        })?)
-    } else {
-        None
-    };
+    let summary_json =
+        if id.is_none() {
+            Some(serde_json::to_string(&history_summary).map_err(|error| {
+                CheckinError::new(format!("签到批次汇总无法序列化：{error}"), 500)
+            })?)
+        } else {
+            None
+        };
     crate::server::core::checkin_run_ledger::finish_run_with_summary(
         db,
         &run_id,
@@ -933,10 +990,14 @@ pub async fn run_checkin_cancellable(
     // 启动/签到前恢复会按 run_id 幂等补写，不把已成功的远端签到伪装成失败。
     if id.is_none() {
         match crate::server::core::checkin_history::record_for_run(
-            &history_summary, &run_id, reason,
+            &history_summary,
+            &run_id,
+            reason,
         ) {
             Ok(()) => {
-                if let Err(error) = crate::server::core::checkin_run_ledger::mark_history_projected(db, &run_id) {
+                if let Err(error) =
+                    crate::server::core::checkin_run_ledger::mark_history_projected(db, &run_id)
+                {
                     logging::verbose("[Checkin]", &format!("签到时间线投影标记待恢复：{error}"));
                 }
             }
@@ -994,7 +1055,10 @@ mod tests {
             }
         };
         let first = wait_free("first round should acquire the gate");
-        assert!(gate.try_lock().is_err(), "a competing round must be rejected");
+        assert!(
+            gate.try_lock().is_err(),
+            "a competing round must be rejected"
+        );
         drop(first);
         let released = wait_free("the gate must be released after the round");
         drop(released);
@@ -1005,16 +1069,24 @@ mod tests {
     #[test]
     fn success_and_already_completed_are_done() {
         // 第 1 条：本次真的领到了
-        assert!(checkin_completed_today(&json!({"success": true, "code": 0})));
+        assert!(checkin_completed_today(
+            &json!({"success": true, "code": 0})
+        ));
         // 第 2 条：上游明确告知（AutoClaw 的 daily_signin 带这个字段）
-        assert!(checkin_completed_today(&json!({"success": false, "alreadyCompleted": true})));
+        assert!(checkin_completed_today(
+            &json!({"success": false, "alreadyCompleted": true})
+        ));
     }
 
     #[test]
     fn message_wording_marks_today_done() {
         // 第 3 条：WorkBuddy 只把「今日已签到」放在文案里，没有码位可用
-        assert!(checkin_completed_today(&json!({"success": false, "msg": REAL_DUPLICATE})));
-        assert!(checkin_completed_today(&json!({"success": false, "msg": "该奖励已领取"})));
+        assert!(checkin_completed_today(
+            &json!({"success": false, "msg": REAL_DUPLICATE})
+        ));
+        assert!(checkin_completed_today(
+            &json!({"success": false, "msg": "该奖励已领取"})
+        ));
     }
 
     #[test]
@@ -1029,7 +1101,10 @@ mod tests {
             // 键缺失：`claim` 为 null 时上游路径根本没走到判据，这里模拟 msg 缺失
             json!({"success": false, "code": 40001}),
         ] {
-            assert!(!checkin_completed_today(&claim), "不该被判成已完成: {claim}");
+            assert!(
+                !checkin_completed_today(&claim),
+                "不该被判成已完成: {claim}"
+            );
         }
     }
 
@@ -1054,7 +1129,10 @@ mod tests {
         // 2) 放行后的归一化产出：失败形状，但 msg 保留上游文案
         let claim = normalize_daily_claim(tolerated);
         assert_eq!(claim.get("success").and_then(Value::as_bool), Some(false));
-        assert_eq!(claim.get("msg").and_then(Value::as_str), Some(REAL_DUPLICATE));
+        assert_eq!(
+            claim.get("msg").and_then(Value::as_str),
+            Some(REAL_DUPLICATE)
+        );
 
         // 3) 下游据此判出「今天已完成」→ `mark_checkin` 会被调用、面板标识点亮。
         //    这一跳就是 #137 里断掉的那一环：原代码在 1) 之前就 Err 了，claim 为
@@ -1070,7 +1148,10 @@ mod tests {
         // 反向：同为 400，文案与「重复领取」无关时上游**不**放行（仍 Err），
         // 因此不会有 claim 走到下游。这里直接断言判据不命中，钉住「不能过度放宽」。
         for detail in ["参数错误", "请求内容不是有效 JSON", "活动已结束"] {
-            assert!(!is_duplicate_claim(400, detail), "detail={detail:?} 不该被放行");
+            assert!(
+                !is_duplicate_claim(400, detail),
+                "detail={detail:?} 不该被放行"
+            );
         }
     }
 
@@ -1156,10 +1237,16 @@ mod tests {
             "只该打一发上游（重复领取不做重试）"
         );
         assert_eq!(claim.get("success").and_then(Value::as_bool), Some(false));
-        assert_eq!(claim.get("msg").and_then(Value::as_str), Some(REAL_DUPLICATE));
+        assert_eq!(
+            claim.get("msg").and_then(Value::as_str),
+            Some(REAL_DUPLICATE)
+        );
         // 端到端闭环：这一跳就是 #137 断掉的地方（原代码在上一行就 Err 了，
         // claim 为 null，于是这里恒为 false，checkinAt 永远写不进去）。
-        assert!(checkin_completed_today(&claim), "#137：放行后仍判不出已完成");
+        assert!(
+            checkin_completed_today(&claim),
+            "#137：放行后仍判不出已完成"
+        );
     }
 
     #[tokio::test]

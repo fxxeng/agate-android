@@ -194,7 +194,11 @@ fn valid_port(value: Option<&Value>) -> Option<u16> {
 }
 
 fn text_of(value: &Value, key: &str) -> String {
-    value.get(key).and_then(Value::as_str).unwrap_or("").to_string()
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string()
 }
 
 /// 把 API 输入（新建 / 编辑的整份表单）归一成一条**手动**池条目。
@@ -224,9 +228,7 @@ fn normalize_item(input: &Value, existing: Option<&Value>) -> Result<Value, Stri
     }
 
     let now = logging::now_ms();
-    let id = existing
-        .map(|item| text_of(item, "id"))
-        .unwrap_or_default();
+    let id = existing.map(|item| text_of(item, "id")).unwrap_or_default();
     let id = if id.is_empty() { new_id() } else { id };
     let created_at = existing
         .and_then(|item| item.get("createdAt"))
@@ -243,7 +245,11 @@ fn normalize_item(input: &Value, existing: Option<&Value>) -> Result<Value, Stri
 
     let protocol = {
         let cleaned = clean_string(object.get("protocol"), 10).to_lowercase();
-        if cleaned.is_empty() { "http".to_string() } else { cleaned }
+        if cleaned.is_empty() {
+            "http".to_string()
+        } else {
+            cleaned
+        }
     };
     if protocol != "http" && protocol != "socks5" {
         return Err("代理协议只支持 http 或 socks5".to_string());
@@ -336,23 +342,26 @@ pub fn resolve_item(item: &Value) -> Option<ProxyResolution> {
             // 「没有端口」是未引用节点的**正常状态**而不是待补建的缺口：
             // 测试走统一测试口（见模块头），不再需要端口；地址只在「真在用」
             // 时存在。
-            let node_alive = crate::server::core::subscriptions::ids()
-                .contains(&text_of(item, "providerId"));
+            let node_alive =
+                crate::server::core::subscriptions::ids().contains(&text_of(item, "providerId"));
             return Some(ProxyResolution::Failed(if node_alive {
-                "该节点还没有监听端口（还没有账号引用它 —— 在账号里选它并保存后，内核会自动开端口）".to_string()
+                "该节点还没有监听端口（还没有账号引用它 —— 在账号里选它并保存后，内核会自动开端口）"
+                    .to_string()
             } else {
                 "订阅节点已不存在（订阅更新后节点被移除，等下一次同步或重新订阅）".to_string()
             }));
         };
-        return Some(ProxyResolution::Resolved(crate::server::core::proxies::ResolvedProxy {
-            source: "pool".to_string(),
-            protocol: "http".to_string(),
-            host: "127.0.0.1".to_string(),
-            port: Some(port),
-            username: String::new(),
-            password: String::new(),
-            label: String::new(),
-        }));
+        return Some(ProxyResolution::Resolved(
+            crate::server::core::proxies::ResolvedProxy {
+                source: "pool".to_string(),
+                protocol: "http".to_string(),
+                host: "127.0.0.1".to_string(),
+                port: Some(port),
+                username: String::new(),
+                password: String::new(),
+                label: String::new(),
+            },
+        ));
     } else {
         json!({
             "source": "custom",
@@ -373,7 +382,9 @@ pub fn resolve_item(item: &Value) -> Option<ProxyResolution> {
 ///   `Ok(proxy)` 出口可用；
 ///   `Err(原因)` 条目不存在 / 被禁用 / 解析失败 —— 调用方原样报出去
 ///               （账号列表的「代理异常」气泡、转发时回退直连的日志）。
-pub fn resolve_reference(proxy_id: &str) -> Result<crate::server::core::proxies::ResolvedProxy, String> {
+pub fn resolve_reference(
+    proxy_id: &str,
+) -> Result<crate::server::core::proxies::ResolvedProxy, String> {
     let Some(item) = find_raw(proxy_id) else {
         return Err(format!("代理「{proxy_id}」不存在或已被删除"));
     };
@@ -389,7 +400,9 @@ pub fn resolve_reference(proxy_id: &str) -> Result<crate::server::core::proxies:
 /// 出口测试专用解析：与 `resolve_reference` 只差**不看禁用位** ——
 /// 「先测通、再启用」是常见操作顺序，禁用的条目也要能测（只有引用解析
 /// 那条链必须挡住禁用项，理由见 `resolve_reference`）。
-pub fn resolve_for_test(proxy_id: &str) -> Result<crate::server::core::proxies::ResolvedProxy, String> {
+pub fn resolve_for_test(
+    proxy_id: &str,
+) -> Result<crate::server::core::proxies::ResolvedProxy, String> {
     let Some(item) = find_raw(proxy_id) else {
         return Err(format!("代理「{proxy_id}」不存在或已被删除"));
     };
@@ -398,7 +411,11 @@ pub fn resolve_for_test(proxy_id: &str) -> Result<crate::server::core::proxies::
 
 fn display_name(item: &Value, fallback: &str) -> String {
     let name = text_of(item, "name");
-    if name.is_empty() { fallback.to_string() } else { name }
+    if name.is_empty() {
+        fallback.to_string()
+    } else {
+        name
+    }
 }
 
 fn resolve_entry(
@@ -586,7 +603,8 @@ pub fn set_enabled(id: &str, enabled: bool) -> Result<(Vec<Value>, EnabledChange
     let source = text_of(&items[index], "source");
     let name = display_name(&items[index], id);
     // 关闭流程的判据：这条现在是不是真开着**本机**监听端口（只有订阅节点有）
-    let had_port = is_subscription_item(&items[index]) && valid_port(items[index].get("port")).is_some();
+    let had_port =
+        is_subscription_item(&items[index]) && valid_port(items[index].get("port")).is_some();
     let now = logging::now_ms();
     let Some(object) = items[index].as_object_mut() else {
         return Err("代理条目形状异常".to_string());
@@ -603,9 +621,24 @@ pub fn set_enabled(id: &str, enabled: bool) -> Result<(Vec<Value>, EnabledChange
     write_items(&items)?;
     logging::log(
         "[Proxies]",
-        &format!("{}代理「{name}」", if enabled { "✅ 启用" } else { "⏸️ 禁用" }),
+        &format!(
+            "{}代理「{name}」",
+            if enabled {
+                "✅ 启用"
+            } else {
+                "⏸️ 禁用"
+            }
+        ),
     );
-    Ok((list(), EnabledChange { name, source, had_port, enabled }))
+    Ok((
+        list(),
+        EnabledChange {
+            name,
+            source,
+            had_port,
+            enabled,
+        },
+    ))
 }
 
 /// 删除条目；返回（最新列表, 被删条目的名称 —— 调用方拼日志/提示用）。
@@ -754,14 +787,20 @@ pub fn sync_clash() -> ClashSyncReport {
 
     if changes > 0 {
         if let Err(error) = write_items(&items) {
-            return ClashSyncReport { changes: 0, error: Some(error) };
+            return ClashSyncReport {
+                changes: 0,
+                error: Some(error),
+            };
         }
         logging::log(
             "[Proxies]",
             &format!("🔄 已同步 Clash Verge 出口（{changes} 项变更）"),
         );
     }
-    ClashSyncReport { changes, error: None }
+    ClashSyncReport {
+        changes,
+        error: None,
+    }
 }
 
 /// 一次出口测试的结果（字段与 `egress::ConnectivityResult` 对应）。
@@ -878,12 +917,16 @@ pub fn sync_subscription_nodes(targets: &[SubscriptionNodeTarget]) -> Result<usi
         };
         let existing = items.iter_mut().position(|item| {
             is_subscription_item(item)
-                && item.get("providerId").and_then(Value::as_str) == Some(target.provider_id.as_str())
+                && item.get("providerId").and_then(Value::as_str)
+                    == Some(target.provider_id.as_str())
                 && item.get("node").and_then(Value::as_str) == Some(target.node.as_str())
         });
         match existing {
             Some(index) => {
-                let current_port = items[index].get("port").and_then(Value::as_u64).map(|v| v as u16);
+                let current_port = items[index]
+                    .get("port")
+                    .and_then(Value::as_u64)
+                    .map(|v| v as u16);
                 let port_changed = current_port != target.port;
                 let name_changed = text_of(&items[index], "name") != name;
                 if port_changed || name_changed {
@@ -893,7 +936,10 @@ pub fn sync_subscription_nodes(targets: &[SubscriptionNodeTarget]) -> Result<usi
                         // 前端按 null 显示「未分配」
                         object.insert(
                             "port".to_string(),
-                            target.port.map(|port| Value::from(port)).unwrap_or(Value::Null),
+                            target
+                                .port
+                                .map(|port| Value::from(port))
+                                .unwrap_or(Value::Null),
                         );
                         object.insert("updatedAt".to_string(), Value::from(now));
                     }
@@ -970,7 +1016,9 @@ pub fn unprovision_subscription_nodes() -> Result<usize, String> {
         if !is_subscription_item(item) || valid_port(item.get("port")).is_none() {
             continue;
         }
-        let Some(object) = item.as_object_mut() else { continue };
+        let Some(object) = item.as_object_mut() else {
+            continue;
+        };
         object.insert("port".to_string(), Value::Null);
         object.insert("updatedAt".to_string(), Value::from(now));
         changes += 1;
@@ -990,7 +1038,9 @@ pub fn unprovision_subscription_nodes() -> Result<usize, String> {
 /// **本页禁用中的条目不算**（`is_enabled`）：账号虽然还引用着它，但引用解析已经
 /// 按「已禁用」失败并回退直连了（见 `resolve_reference`）—— 再给它开着监听端口
 /// 就是为一条没人用的节点白占端口，也与用户在启用列上按下的那一下自相矛盾。
-pub fn subscription_node_keys(pool_ids: &std::collections::HashSet<&str>) -> std::collections::HashSet<String> {
+pub fn subscription_node_keys(
+    pool_ids: &std::collections::HashSet<&str>,
+) -> std::collections::HashSet<String> {
     read_items()
         .iter()
         .filter(|item| is_subscription_item(item) && is_enabled(item))
@@ -1014,7 +1064,9 @@ pub fn subscription_node_keys(pool_ids: &std::collections::HashSet<&str>) -> std
 /// （`api::proxies::reconcile_listeners`）都从这一处取，必须同一口径
 /// —— 口径不一致就会出现「判定说没有缺口、内核却不建」这类谁也解释不清的
 /// 状态。测试不在此列（测试走统一测试口，不需要端口，见模块头）。
-pub fn listener_node_keys(pool_ids: &std::collections::HashSet<&str>) -> std::collections::HashSet<String> {
+pub fn listener_node_keys(
+    pool_ids: &std::collections::HashSet<&str>,
+) -> std::collections::HashSet<String> {
     subscription_node_keys(pool_ids)
 }
 

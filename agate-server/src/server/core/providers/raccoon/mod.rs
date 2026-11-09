@@ -71,8 +71,8 @@ pub mod balance;
 pub mod credentials;
 pub mod jwt;
 pub mod models;
-pub mod onboarding;
 pub mod oauth;
+pub mod onboarding;
 
 /// 默认 LLM 网关地址（源实现 `DEFAULT_LLM_BASE_URL`）
 const DEFAULT_LLM_BASE_URL: &str = "https://xiaohuanxiong.com/api/web/llm/v2";
@@ -243,9 +243,7 @@ impl ProviderAdapter for RaccoonAdapter {
         store: &'a AccountStore,
         account_id: &'a str,
         force: bool,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = ModelRefreshOutcome> + Send + 'a>,
-    > {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ModelRefreshOutcome> + Send + 'a>> {
         Box::pin(async move {
             let (token, proxy) = match credentials::snapshot_for(store, account_id) {
                 Ok(credentials) => {
@@ -389,9 +387,8 @@ impl ProviderAdapter for RaccoonAdapter {
         &'a self,
         store: &'a AccountStore,
         account_id: &'a str,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<Value, GatewayError>> + Send + 'a>,
-    > {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value, GatewayError>> + Send + 'a>>
+    {
         Box::pin(async move { balance::query_usage(store, account_id).await })
     }
 }

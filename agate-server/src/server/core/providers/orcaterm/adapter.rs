@@ -99,7 +99,11 @@ impl ProviderAdapter for OrcatermAdapter {
             .filter(|text| !text.is_empty())
             .unwrap_or("上游错误")
             .to_string();
-        UpstreamErrorClass::Fatal { status, message, upstream_code: None }
+        UpstreamErrorClass::Fatal {
+            status,
+            message,
+            upstream_code: None,
+        }
     }
 
     /// 拉取远程模型目录：**没有**远程接口（见 `models.rs` 模块头的排除依据），
@@ -110,9 +114,7 @@ impl ProviderAdapter for OrcatermAdapter {
         _store: &'a AccountStore,
         _account_id: &'a str,
         _force: bool,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = ModelRefreshOutcome> + Send + 'a>,
-    > {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ModelRefreshOutcome> + Send + 'a>> {
         Box::pin(async move { ModelRefreshOutcome::unchanged() })
     }
 
@@ -191,9 +193,8 @@ impl ProviderAdapter for OrcatermAdapter {
         &'a self,
         store: &'a AccountStore,
         account_id: &'a str,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<Value, GatewayError>> + Send + 'a>,
-    > {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value, GatewayError>> + Send + 'a>>
+    {
         Box::pin(async move { balance::query_usage(store, account_id).await })
     }
 
@@ -213,12 +214,10 @@ impl ProviderAdapter for OrcatermAdapter {
         stream: bool,
         telemetry: &'a Arc<RequestTelemetry>,
     ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<Output = Result<ForwardOutcome, GatewayError>> + Send + 'a,
-        >,
+        Box<dyn std::future::Future<Output = Result<ForwardOutcome, GatewayError>> + Send + 'a>,
     > {
-        Box::pin(async move {
-            chat::run_chat(store, account_id, body, proxy, stream, telemetry).await
-        })
+        Box::pin(
+            async move { chat::run_chat(store, account_id, body, proxy, stream, telemetry).await },
+        )
     }
 }

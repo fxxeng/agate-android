@@ -71,9 +71,10 @@ fn sha256_hex(value: &str) -> String {
 }
 
 fn hmac_hex(secret: &str, message: &str) -> String {
-    #[allow(clippy::expect_used)] // HMAC-SHA256 接受任意长度密钥，Err 仅泛型 API 占位（R46/T1 白名单）
-    let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes())
-        .expect("HMAC 接受任意长度的密钥");
+    #[allow(clippy::expect_used)]
+    // HMAC-SHA256 接受任意长度密钥，Err 仅泛型 API 占位（R46/T1 白名单）
+    let mut mac =
+        Hmac::<Sha256>::new_from_slice(secret.as_bytes()).expect("HMAC 接受任意长度的密钥");
     mac.update(message.as_bytes());
     format!("{:x}", mac.finalize().into_bytes())
 }
@@ -145,14 +146,11 @@ pub fn challenge() -> Option<Value> {
 /// 验证登录 / 注册请求携带的 ALTCHA payload。
 /// 失败返回给用户看的原因（端点原样转 400）。
 pub fn verify(token: &str) -> Result<(), String> {
-    let decoded = base64::Engine::decode(
-        &base64::engine::general_purpose::STANDARD,
-        token.trim(),
-    )
-    .or_else(|_| {
-        base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE, token.trim())
-    })
-    .map_err(|_| "机器人校验无效，请刷新页面重试".to_string())?;
+    let decoded = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, token.trim())
+        .or_else(|_| {
+            base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE, token.trim())
+        })
+        .map_err(|_| "机器人校验无效，请刷新页面重试".to_string())?;
     let parsed: Value = serde_json::from_slice(&decoded)
         .map_err(|_| "机器人校验无效，请刷新页面重试".to_string())?;
 

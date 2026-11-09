@@ -21,10 +21,10 @@
 //! ── 硬约束 ──────────────────────────────────────────────────
 //! release 是 `panic=abort`：本文件零 unwrap/expect/panic。
 
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use super::spec::ObjectId;
-use super::{DESKTOP_UA, GrowthAccount, WEB_BASE, WEB_UA, bill_call};
+use super::{bill_call, GrowthAccount, DESKTOP_UA, WEB_BASE, WEB_UA};
 
 /// 小程序任务端点头（list / accept / claim 用）。
 pub fn mp_platform_header(mp: bool) -> Vec<(String, String)> {
@@ -84,8 +84,14 @@ fn mp_device_fingerprint(account: &GrowthAccount) -> Value {
 /// chat 域桌面指纹请求头（fork ReportDesktopEvent 同款）。
 fn desktop_headers(account: &GrowthAccount) -> Vec<(String, String)> {
     vec![
-        ("Accept".to_string(), "application/json, text/plain, */*".to_string()),
-        ("Content-Type".to_string(), "application/json;charset=UTF-8".to_string()),
+        (
+            "Accept".to_string(),
+            "application/json, text/plain, */*".to_string(),
+        ),
+        (
+            "Content-Type".to_string(),
+            "application/json;charset=UTF-8".to_string(),
+        ),
         ("User-Agent".to_string(), DESKTOP_UA.to_string()),
         ("X-Domain".to_string(), super::CHAT_BASE.to_string()),
         ("X-Product".to_string(), "SaaS".to_string()),
@@ -114,10 +120,16 @@ fn web_event_headers(account: &GrowthAccount, page_url: &str) -> Vec<(String, St
 /// web 域领奖头（fork ClaimReward 同款，claim web 降级用）。
 pub fn web_claim_headers(account: &GrowthAccount) -> Vec<(String, String)> {
     vec![
-        ("Accept".to_string(), "application/json, text/plain, */*".to_string()),
+        (
+            "Accept".to_string(),
+            "application/json, text/plain, */*".to_string(),
+        ),
         ("Content-Type".to_string(), "application/json".to_string()),
         ("Origin".to_string(), WEB_BASE.to_string()),
-        ("Referer".to_string(), format!("{WEB_BASE}/profile/growth-center")),
+        (
+            "Referer".to_string(),
+            format!("{WEB_BASE}/profile/growth-center"),
+        ),
         ("x-client-platform".to_string(), "web".to_string()),
         ("User-Agent".to_string(), WEB_UA.to_string()),
         ("X-User-Id".to_string(), account.uid.clone()),
@@ -140,8 +152,16 @@ pub fn build_event(account: &GrowthAccount, kind: &str, object: &ObjectId, index
     let now = now_ms();
     let (cid, rid) = conversation(index);
     let uid = account.uid.clone();
-    let meta = if object.meta.is_null() { json!({}) } else { object.meta.clone() };
-    let name = meta.get("name").and_then(Value::as_str).unwrap_or("").to_string();
+    let meta = if object.meta.is_null() {
+        json!({})
+    } else {
+        object.meta.clone()
+    };
+    let name = meta
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
     let object_id = object.id.as_str();
     match kind {
         "canvas" => json!({
@@ -193,8 +213,16 @@ pub fn build_event(account: &GrowthAccount, kind: &str, object: &ObjectId, index
             "prompt": "每周五自动整理本周工作，生成一份周报。", "userId": uid,
         }),
         "playbook" => {
-            let skills = meta.get("skills").and_then(Value::as_array).cloned().unwrap_or_default();
-            let experts = meta.get("experts").and_then(Value::as_array).cloned().unwrap_or_default();
+            let skills = meta
+                .get("skills")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            let experts = meta
+                .get("experts")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
             let category = meta
                 .get("categories")
                 .and_then(Value::as_array)
@@ -298,9 +326,10 @@ pub fn build_event(account: &GrowthAccount, kind: &str, object: &ObjectId, index
                 "command": "", "traceId": cid,
                 "userId": uid,
             });
-            if let (Some(base), Some(fp)) =
-                (event.as_object_mut(), mp_device_fingerprint(account).as_object())
-            {
+            if let (Some(base), Some(fp)) = (
+                event.as_object_mut(),
+                mp_device_fingerprint(account).as_object(),
+            ) {
                 for (key, value) in fp {
                     base.insert(key.clone(), value.clone());
                 }
@@ -391,9 +420,10 @@ pub(super) fn desktop_chat_sequence(
     .into_iter()
     .map(|mut event| {
         // 注入桌面指纹（覆盖同名业务键）
-        if let (Some(base), Some(fp)) =
-            (event.as_object_mut(), desktop_fingerprint(account).as_object())
-        {
+        if let (Some(base), Some(fp)) = (
+            event.as_object_mut(),
+            desktop_fingerprint(account).as_object(),
+        ) {
             for (key, value) in fp {
                 base.insert(key.clone(), value.clone());
             }
@@ -404,7 +434,11 @@ pub(super) fn desktop_chat_sequence(
 }
 
 /// 五连「进入 Buddy 应用」事件（点亮 Buddy_App / Buddy_App_QQ；fork DesktopBuddyAppSequence）。
-fn desktop_buddy5_sequence(account: &GrowthAccount, buddy_id: &str, buddy_name: &str) -> Vec<Value> {
+fn desktop_buddy5_sequence(
+    account: &GrowthAccount,
+    buddy_id: &str,
+    buddy_name: &str,
+) -> Vec<Value> {
     let mut events = Vec::new();
     let mut push = |code: &str, extra: Value| {
         let mut event = json!({
@@ -419,7 +453,10 @@ fn desktop_buddy5_sequence(account: &GrowthAccount, buddy_id: &str, buddy_name: 
         events.push(event);
     };
     push("buddyapp_discover_click", json!({}));
-    push("buddyapp_show", json!({ "elementId": buddy_id, "elementName": buddy_name, "position": 2 }));
+    push(
+        "buddyapp_show",
+        json!({ "elementId": buddy_id, "elementName": buddy_name, "position": 2 }),
+    );
     push(
         "buddyapp_enter_click",
         json!({ "elementId": buddy_id, "elementName": buddy_name, "position": 2, "isFirstPage": "1" }),
@@ -438,14 +475,21 @@ fn desktop_buddy5_sequence(account: &GrowthAccount, buddy_id: &str, buddy_name: 
 
 /// 一次常规「chat_request_send」上报（billing 域；领养前置解锁用）。
 pub async fn report_chat_send(account: &GrowthAccount, night: bool) -> Result<(), String> {
-    let object = ObjectId { id: String::new(), meta: Value::Null };
+    let object = ObjectId {
+        id: String::new(),
+        meta: Value::Null,
+    };
     let kind = if night { "cat" } else { "chat" };
     let event = build_event(account, kind, &object, 0);
     let call = bill_call(account, "POST", "/v2/report", Some(&json!([event])), &[]).await?;
     if call.ok() {
         Ok(())
     } else {
-        Err(format!("report HTTP {} code={:?}", call.status, call.code()))
+        Err(format!(
+            "report HTTP {} code={:?}",
+            call.status,
+            call.code()
+        ))
     }
 }
 
@@ -543,19 +587,25 @@ pub async fn light_up(
         "buddyfirst" => None,
         // 其余常规：billing 域逐事件上报
         _ => {
-            let count = if objects.is_empty() { need.max(1) } else { objects.len().min(need.max(1)) };
+            let count = if objects.is_empty() {
+                need.max(1)
+            } else {
+                objects.len().min(need.max(1))
+            };
             for index in 0..count {
-                let object = objects
-                    .get(index)
-                    .cloned()
-                    .unwrap_or(ObjectId { id: String::new(), meta: Value::Null });
+                let object = objects.get(index).cloned().unwrap_or(ObjectId {
+                    id: String::new(),
+                    meta: Value::Null,
+                });
                 let event = build_event(account, kind, &object, index);
                 if let Err(error) = report_regular(account, &event).await {
                     return Some(error);
                 }
                 if index + 1 < count {
-                    tokio::time::sleep(std::time::Duration::from_millis(super::GROWTH_WRITE_GAP_MS))
-                        .await;
+                    tokio::time::sleep(std::time::Duration::from_millis(
+                        super::GROWTH_WRITE_GAP_MS,
+                    ))
+                    .await;
                 }
             }
             None
@@ -570,7 +620,10 @@ fn buddy_app_of(code: &str) -> (&'static str, &'static str) {
 }
 
 /// 桌面事件组上报：chat 域（`{chat}/v2/report`），注入桌面指纹已在构造时完成。
-pub async fn report_desktop_events(account: &GrowthAccount, events: &[Value]) -> Result<(), String> {
+pub async fn report_desktop_events(
+    account: &GrowthAccount,
+    events: &[Value],
+) -> Result<(), String> {
     let headers = desktop_headers(account);
     let call = super::growth_request(
         account,
@@ -583,20 +636,17 @@ pub async fn report_desktop_events(account: &GrowthAccount, events: &[Value]) ->
     if call.ok() {
         Ok(())
     } else {
-        Err(format!("桌面事件上报 HTTP {} code={:?}", call.status, call.code()))
+        Err(format!(
+            "桌面事件上报 HTTP {} code={:?}",
+            call.status,
+            call.code()
+        ))
     }
 }
 
 /// 常规事件上报：billing 域（`{bill}/v2/report`）。
 async fn report_regular(account: &GrowthAccount, event: &Value) -> Result<(), String> {
-    let call = bill_call(
-        account,
-        "POST",
-        "/v2/report",
-        Some(&json!([event])),
-        &[],
-    )
-    .await?;
+    let call = bill_call(account, "POST", "/v2/report", Some(&json!([event])), &[]).await?;
     if call.ok() {
         Ok(())
     } else {
@@ -633,6 +683,10 @@ async fn report_web_library(account: &GrowthAccount) -> Result<(), String> {
     if call.ok() {
         Ok(())
     } else {
-        Err(format!("web 事件上报 HTTP {} code={:?}", call.status, call.code()))
+        Err(format!(
+            "web 事件上报 HTTP {} code={:?}",
+            call.status,
+            call.code()
+        ))
     }
 }

@@ -80,7 +80,9 @@ fn build_escaped_path(path: &str) -> String {
 /// UTC 时间字符串（对应 JS `new Date().toUTCString()`）：
 /// `Sun, 06 Oct 2026 12:34:56 GMT`
 fn utc_date_string() -> String {
-    chrono::Utc::now().format("%a, %d %b %Y %H:%M:%S GMT").to_string()
+    chrono::Utc::now()
+        .format("%a, %d %b %Y %H:%M:%S GMT")
+        .to_string()
 }
 
 /// UUID v4 形态的 Nonce（对应 JS `crypto.randomUUID().replace(/-/g, '')` 之前的形态；
@@ -156,7 +158,10 @@ pub fn signed_headers(
 
     let secret = endpoints::access_key_secret();
     let mut mac = Hmac::<Sha1>::new_from_slice(secret.as_bytes()).map_err(|_| {
-        GatewayError::with_status(500, "Loomy 签名初始化失败（密钥长度非法，请检查 LOOMY_XFYUN_ACCESS_KEY_SECRET）")
+        GatewayError::with_status(
+            500,
+            "Loomy 签名初始化失败（密钥长度非法，请检查 LOOMY_XFYUN_ACCESS_KEY_SECRET）",
+        )
     })?;
     mac.update(string_to_sign.as_bytes());
     let signature = base64::engine::general_purpose::STANDARD.encode(mac.finalize().into_bytes());
@@ -174,4 +179,3 @@ pub fn signed_headers(
     }
     Ok(headers)
 }
-

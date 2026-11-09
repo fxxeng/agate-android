@@ -55,8 +55,8 @@ use std::sync::{Mutex, OnceLock};
 
 use serde_json::{json, Value};
 
-use crate::server::core::providers::catalog_cache;
 use crate::server::core::providers::adapter::ModelRefreshOutcome;
+use crate::server::core::providers::catalog_cache;
 
 use super::{endpoints, http};
 
@@ -71,10 +71,7 @@ const TTL_MS: i64 = 10 * 60 * 1000;
 /// 形状与远程条目**逐字一致**（含 `reasoning_efforts` 归一后的
 /// `reasoningEfforts`）—— 兜底与远程两个来源产出同一个形状，
 /// 下游（`model_meta::fill` 读等级、界面读展示名）才不必分辨清单来自哪边。
-const FALLBACK_MODELS: &[(&str, &str)] = &[
-    ("glm-5.3", "GLM-5.3"),
-    ("glm-5.3-flash", "GLM-Flash"),
-];
+const FALLBACK_MODELS: &[(&str, &str)] = &[("glm-5.3", "GLM-5.3"), ("glm-5.3-flash", "GLM-Flash")];
 
 /// 进程内缓存（首次访问时从落盘缓存读回）
 struct CatalogState {
@@ -92,7 +89,9 @@ fn state() -> &'static Mutex<Option<CatalogState>> {
 /// 在锁内执行一段取值，并在首次访问时把落盘缓存装回内存
 fn with_state<R>(f: impl FnOnce(&mut Option<CatalogState>) -> R) -> R {
     let mutex = state();
-    let mut guard = mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut guard = mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if guard.is_none() {
         if let Some(cached) = catalog_cache::load(SCOPE) {
             *guard = Some(CatalogState {
@@ -186,7 +185,10 @@ fn normalize_entry(entry: &Value) -> Value {
         return entry.clone();
     };
     let name = entry_display_name(entry, id);
-    let description = entry.get("description").and_then(Value::as_str).unwrap_or("");
+    let description = entry
+        .get("description")
+        .and_then(Value::as_str)
+        .unwrap_or("");
     let efforts = entry
         .get("reasoningEfforts")
         .or_else(|| entry.get("reasoning_efforts"))
@@ -316,11 +318,7 @@ pub fn parse_defaults(payload: &Value) -> Value {
 ///
 /// `force = false`（自动路径）时 TTL 内早退为 `unchanged()`；
 /// `force = true`（用户手动刷新）真打上游。
-pub async fn refresh(
-    token: &str,
-    device_id: &str,
-    force: bool,
-) -> ModelRefreshOutcome {
+pub async fn refresh(token: &str, device_id: &str, force: bool) -> ModelRefreshOutcome {
     let now = crate::server::logging::now_ms();
     if !force {
         let fresh = with_state(|slot| {
@@ -347,9 +345,7 @@ pub async fn refresh(
     };
     let models = parse_models(&payload);
     if models.is_empty() {
-        return ModelRefreshOutcome::failed(
-            "智谱清言模型目录为空或格式不认识（保留现有清单）",
-        );
+        return ModelRefreshOutcome::failed("智谱清言模型目录为空或格式不认识（保留现有清单）");
     }
     let count = models.len();
     with_state(|slot| {
@@ -527,7 +523,10 @@ mod tests {
         let normalized = normalize_entry(&legacy);
         assert_eq!(model_id(&normalized), "glm-5.3", "旧形状必须能读出模型名");
         assert_eq!(normalized["name"], json!("GLM-5.3"));
-        assert_eq!(normalized["reasoningEfforts"].as_array().map(Vec::len), Some(1));
+        assert_eq!(
+            normalized["reasoningEfforts"].as_array().map(Vec::len),
+            Some(1)
+        );
         // 幂等：归一过的再归一一次不变
         assert_eq!(normalize_entry(&normalized), normalized);
     }

@@ -139,9 +139,17 @@ impl ProviderAdapter for OfficeAceAdapter {
             };
         }
         let rate_limited = status == 429
-            || ["81111", "81112", "81114", "0308", "tpm", "rate limit", "too many requests"]
-                .iter()
-                .any(|marker| lower.contains(marker) || text.contains(marker));
+            || [
+                "81111",
+                "81112",
+                "81114",
+                "0308",
+                "tpm",
+                "rate limit",
+                "too many requests",
+            ]
+            .iter()
+            .any(|marker| lower.contains(marker) || text.contains(marker));
         if rate_limited {
             return UpstreamErrorClass::QuotaLimited {
                 reset_at: None,
@@ -240,9 +248,8 @@ impl ProviderAdapter for OfficeAceAdapter {
         &'a self,
         store: &'a AccountStore,
         account_id: &'a str,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<Value, GatewayError>> + Send + 'a>,
-    > {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value, GatewayError>> + Send + 'a>>
+    {
         Box::pin(super::balance::query_usage(store, account_id))
     }
 
@@ -266,7 +273,9 @@ impl ProviderAdapter for OfficeAceAdapter {
         &'a self,
         store: &'a AccountStore,
         account_id: &'a str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, GatewayError>> + Send + 'a>> {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<String, GatewayError>> + Send + 'a>,
+    > {
         Box::pin(async move { super::refresh_control_plane(store, account_id).await })
     }
 }
@@ -311,10 +320,15 @@ mod tests {
         let adapter = adapter_for(ProviderKind::OfficeAce);
         let body = too_large();
         let (status, message) = match adapter.classify_error(429, &body) {
-            UpstreamErrorClass::Fatal { status, message, .. } => (status, message),
+            UpstreamErrorClass::Fatal {
+                status, message, ..
+            } => (status, message),
             other => panic!("体积超限不该罚账号池，实际 {other:?}"),
         };
-        assert_eq!(status, 413, "客户端要看到「请求太大」而不是「暂时忙」：{message}");
+        assert_eq!(
+            status, 413,
+            "客户端要看到「请求太大」而不是「暂时忙」：{message}"
+        );
         assert!(
             message.contains("exceeds the maximum size"),
             "文案要保住上游原话：{message}"

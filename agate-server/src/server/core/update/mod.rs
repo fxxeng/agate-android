@@ -47,14 +47,14 @@ use serde_json::{json, Map, Value};
 
 use crate::server::logging;
 
+/// 「更新设置」弹窗的 GitHub 令牌接口（api::update 走这两条；加解密本体
+/// 只在 token 模块内部，见它的模块头）
+pub use token::{set_token, status_json};
 pub use version::{
     api_base, assert_downloadable, compare_versions, custom_api_base, installer_kind,
     pick_asset_by_name, pick_installer, safe_file_name, server_bundle_name, UpdateError,
     DEFAULT_REPO, GITHUB_API, MAX_INSTALLER_BYTES,
 };
-/// 「更新设置」弹窗的 GitHub 令牌接口（api::update 走这两条；加解密本体
-/// 只在 token 模块内部，见它的模块头）
-pub use token::{set_token, status_json};
 
 /// 请求 GitHub 的 UA（Node 版字面量，随项目改名同步）
 const USER_AGENT: &str = "agate-local-proxy";
@@ -200,7 +200,11 @@ impl UpdateManager {
             .as_ref()
             .and_then(|value| value.get("asset"))
             .filter(|value| {
-                value.get("url").and_then(Value::as_str).map(|url| !url.is_empty()).unwrap_or(false)
+                value
+                    .get("url")
+                    .and_then(Value::as_str)
+                    .map(|url| !url.is_empty())
+                    .unwrap_or(false)
             })
             .cloned();
         // 容器内更新包与它的 .sha256 伴随文件（非 Linux、或该发布没挂这两个
@@ -208,13 +212,20 @@ impl UpdateManager {
         let downloadable = |value: Option<&Value>| -> Option<Value> {
             value
                 .filter(|item| {
-                    item.get("url").and_then(Value::as_str).map(|url| !url.is_empty()).unwrap_or(false)
+                    item.get("url")
+                        .and_then(Value::as_str)
+                        .map(|url| !url.is_empty())
+                        .unwrap_or(false)
                 })
                 .cloned()
         };
-        let server_asset = downloadable(latest.as_ref().and_then(|value| value.get("serverBundle")));
-        let server_checksum =
-            downloadable(latest.as_ref().and_then(|value| value.get("serverChecksums")));
+        let server_asset =
+            downloadable(latest.as_ref().and_then(|value| value.get("serverBundle")));
+        let server_checksum = downloadable(
+            latest
+                .as_ref()
+                .and_then(|value| value.get("serverChecksums")),
+        );
         let latest_text = |key: &str| -> Value {
             match latest.as_ref().and_then(|value| value.get(key)) {
                 Some(Value::String(text)) if !text.is_empty() => Value::String(text.clone()),
@@ -317,7 +328,11 @@ impl UpdateManager {
             .and_then(|mut segments| segments.next_back())
             .unwrap_or("")
             .to_string();
-        let filename = safe_file_name(if name.is_empty() { &fallback_name } else { name });
+        let filename = safe_file_name(if name.is_empty() {
+            &fallback_name
+        } else {
+            name
+        });
         let download_dir = self.download_dir();
         if let Err(error) = std::fs::create_dir_all(&download_dir) {
             return Err(UpdateError::new(format!("创建下载目录失败: {error}")));
@@ -365,7 +380,9 @@ impl UpdateManager {
         file_path: PathBuf,
         cancel_flag: Arc<std::sync::atomic::AtomicBool>,
     ) {
-        let outcome = self.download_stream(&target, &file_path, &cancel_flag).await;
+        let outcome = self
+            .download_stream(&target, &file_path, &cancel_flag)
+            .await;
         let canceled = cancel_flag.load(std::sync::atomic::Ordering::SeqCst);
         let succeeded = matches!(&outcome, Ok(_)) && !canceled;
 
@@ -541,7 +558,9 @@ impl UpdateManager {
             return Ok(received);
         }
         // 磁盘写入完成后再核一次大小，避免「进度 100% 但文件不完整」
-        let size = std::fs::metadata(file_path).map(|meta| meta.len()).unwrap_or(0);
+        let size = std::fs::metadata(file_path)
+            .map(|meta| meta.len())
+            .unwrap_or(0);
         if declared > 0 && size != declared {
             return Err(UpdateError::new(format!(
                 "安装包不完整（期望 {declared} 字节，实际 {size} 字节）"
@@ -569,8 +588,17 @@ impl UpdateManager {
             ));
         }
         // 下载还在跑的时候文件是半截的：宁可让人等，也不要拿半个包去替换
-        if self.lock().task.as_ref().map(|task| task.active).unwrap_or(false) {
-            return Err(UpdateError::with_status(400, "更新包还在下载中，请等下载完成后再安装"));
+        if self
+            .lock()
+            .task
+            .as_ref()
+            .map(|task| task.active)
+            .unwrap_or(false)
+        {
+            return Err(UpdateError::with_status(
+                400,
+                "更新包还在下载中，请等下载完成后再安装",
+            ));
         }
         // 已经应用过一次、还没重启：再替换一次会把上一版的备份顶掉（见 Inner 的说明）
         if self.lock().pending_restart {
@@ -620,7 +648,10 @@ impl UpdateManager {
         }
         let archive = self.download_dir().join(safe_file_name(&bundle));
         if !archive.is_file() {
-            return Err(UpdateError::with_status(400, "更新包尚未下载，请先点击「下载并更新」"));
+            return Err(UpdateError::with_status(
+                400,
+                "更新包尚未下载，请先点击「下载并更新」",
+            ));
         }
         let expected = selfupdate::fetch_checksum(&checksum_url).await?;
         let actual = selfupdate::file_sha256(&archive)?;
@@ -640,7 +671,11 @@ impl UpdateManager {
             "[Update]",
             &format!(
                 "✅ 已在容器内替换程序{}（v{version}），重启后生效",
-                if outcome.ui_updated { "与界面文件" } else { "" }
+                if outcome.ui_updated {
+                    "与界面文件"
+                } else {
+                    ""
+                }
             ),
         );
         Ok(json!({
@@ -668,7 +703,11 @@ impl UpdateManager {
             "[Update]",
             &format!(
                 "⚠️ 已回滚到上一版本{}，重启后生效",
-                if outcome.ui_updated { "（含界面文件）" } else { "" }
+                if outcome.ui_updated {
+                    "（含界面文件）"
+                } else {
+                    ""
+                }
             ),
         );
         Ok(json!({
@@ -721,7 +760,9 @@ static GLOBAL: std::sync::OnceLock<UpdateManager> = std::sync::OnceLock::new();
 
 /// 更新检查的排期按仓库隔离，缓存里的版本比较仍使用当前二进制版本。
 pub fn global_check_key() -> String {
-    GLOBAL.get().map(UpdateManager::check_key)
+    GLOBAL
+        .get()
+        .map(UpdateManager::check_key)
         .unwrap_or_else(|| format!("updateCheck:{DEFAULT_REPO}"))
 }
 

@@ -65,7 +65,11 @@ pub async fn refresh(manual: bool, interval_ms: i64) -> Value {
         row["message"] = json!("已在设置里关闭 models.dev 模型元数据");
         return row;
     }
-    let backoff = if manual { ManualBackoff::Bypass } else { ManualBackoff::Respect };
+    let backoff = if manual {
+        ManualBackoff::Bypass
+    } else {
+        ManualBackoff::Respect
+    };
     let guard = match task_state::claim(
         &format!("modelRefresh:{SCHEDULE_SCOPE}"),
         interval_ms,
@@ -130,7 +134,10 @@ async fn fetch_json(url: &str) -> Result<Value, String> {
     if !response.status().is_success() {
         return Err(format!("{url} 返回 HTTP {}", response.status().as_u16()));
     }
-    response.json::<Value>().await.map_err(|error| format!("{url} 响应不是合法 JSON：{error}"))
+    response
+        .json::<Value>()
+        .await
+        .map_err(|error| format!("{url} 响应不是合法 JSON：{error}"))
 }
 
 /// 两份官方 JSON → 精简索引（与 `scripts/sync-modelsdev.mjs` 逐字同口径）。
@@ -170,7 +177,9 @@ fn reduce(api: &Value, models: &Value) -> Option<Snapshot> {
     let mut providers: Vec<(&String, &Value)> = api.as_object()?.iter().collect();
     providers.sort_by(|(left, _), (right, _)| left.cmp(right));
     for (provider_id, provider) in providers {
-        let Some(entries) = provider.get("models").and_then(Value::as_object) else { continue };
+        let Some(entries) = provider.get("models").and_then(Value::as_object) else {
+            continue;
+        };
         for entry in entries.values() {
             let canonical = entry
                 .get("canonical_model_id")
@@ -182,7 +191,9 @@ fn reduce(api: &Value, models: &Value) -> Option<Snapshot> {
             if key.is_empty() {
                 continue;
             }
-            let Some(levels) = effort_levels(entry) else { continue };
+            let Some(levels) = effort_levels(entry) else {
+                continue;
+            };
             let is_lab = canonical.split('/').next() == Some(provider_id.as_str());
             match picks.get(&key) {
                 // 实验室自述的那条优先；两条都不是 lab 时按 provider 名序取第一条
@@ -219,7 +230,10 @@ fn is_chat_model(entry: &Value) -> bool {
             return false;
         }
     }
-    match entry.pointer("/modalities/output").and_then(Value::as_array) {
+    match entry
+        .pointer("/modalities/output")
+        .and_then(Value::as_array)
+    {
         Some(output) => output.iter().any(|item| item.as_str() == Some("text")),
         None => true,
     }

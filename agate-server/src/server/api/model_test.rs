@@ -72,8 +72,8 @@ use serde_json::{json, Value};
 
 use crate::server::core::key_scope::KeyScope;
 use crate::server::core::protocol::{anthropic, responses};
-use crate::server::core::proxies::ResolvedProxy;
 use crate::server::core::providers::catalog;
+use crate::server::core::proxies::ResolvedProxy;
 use crate::server::core::upstream::aggregate::aggregate_frame_stream;
 use crate::server::core::upstream::cancellation;
 use crate::server::core::upstream::sse::FramePolicy;
@@ -540,7 +540,10 @@ pub async fn run_model_test(State(state): State<ServerState>, body: Bytes) -> Re
     let reasoning = text_field(&payload, "reasoning", 32);
     // 缺省按流式（与前端默认一致）：流式才看得到首字延迟，而那是这个测试
     // 最有价值的一个读数
-    let stream = payload.get("stream").and_then(Value::as_bool).unwrap_or(true);
+    let stream = payload
+        .get("stream")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
 
     let (protocol_request, request_body) = match build_protocol_request(
         protocol,
@@ -723,7 +726,10 @@ async fn run_forward(
     match tokio::time::timeout(TEST_TIMEOUT, forward).await {
         Err(_elapsed) => TestOutcome {
             status: 504,
-            error: Some(format!("测试超时（{} 秒内没拿到完整回答）", TEST_TIMEOUT.as_secs())),
+            error: Some(format!(
+                "测试超时（{} 秒内没拿到完整回答）",
+                TEST_TIMEOUT.as_secs()
+            )),
             reply: String::new(),
             reasoning_text: String::new(),
             raw_response: None,
@@ -738,7 +744,10 @@ async fn run_forward(
         Ok(Ok(ForwardOutcome::Completion { body })) => {
             translate_completion(protocol, model, protocol_request, 200, body)
         }
-        Ok(Ok(ForwardOutcome::Stream { status, stream: source })) => {
+        Ok(Ok(ForwardOutcome::Stream {
+            status,
+            stream: source,
+        })) => {
             let status = i64::from(status);
             // `ForwardOutcome::Stream` 给的是 `Box<dyn Stream + Unpin>`，聚合器要
             // 的是 `BoxStream`（`Pin<Box<dyn Stream>>`）—— `boxed()` 这一步就是

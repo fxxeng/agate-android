@@ -23,14 +23,14 @@
 //! 可用性优先级排列；运行时真正使用的模型链可在签到中心自定义
 //! （`billing::keepalive` 读配置），列表为空或全失败时逐个回退到下一个。
 
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use crate::server::core::proxies::ResolvedProxy;
 use crate::server::core::upstream::request::TransportRequest;
 
-use super::Region;
 use super::adapter::{chat_completions_url, chat_headers, web_conversations_url};
 use super::growth::WEB_UA;
+use super::Region;
 
 /// 国际版每日活跃任务默认使用的免费模型，按可用性优先级尝试。
 ///
@@ -120,8 +120,8 @@ pub fn build_web_conversation_request(
         "conversationOrigin": "workbuddy-app",
         "plugins": [{"name": "weixinpay", "marketplace": "codebuddy-builtin"}],
     });
-    let payload = serde_json::to_string(&body)
-        .map_err(|error| format!("网页会话请求序列化失败: {error}"))?;
+    let payload =
+        serde_json::to_string(&body).map_err(|error| format!("网页会话请求序列化失败: {error}"))?;
     let headers = vec![
         ("Content-Type".to_string(), "application/json".to_string()),
         (
@@ -129,10 +129,7 @@ pub fn build_web_conversation_request(
             "application/json, text/plain, */*".to_string(),
         ),
         ("User-Agent".to_string(), WEB_UA.to_string()),
-        (
-            "Origin".to_string(),
-            "https://www.workbuddy.ai".to_string(),
-        ),
+        ("Origin".to_string(), "https://www.workbuddy.ai".to_string()),
         (
             "Referer".to_string(),
             "https://www.workbuddy.ai/app".to_string(),

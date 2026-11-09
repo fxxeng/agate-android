@@ -23,12 +23,12 @@ pub use routing::{
     default_model_catalog, default_model_usable, forwarding_providers, model_blocked_everywhere,
     providers_for_model, split_provider_prefix, wire_target_for_provider, WireTarget,
 };
+pub use view::ListMode;
 pub use view::{
     advertised_manifest_contains, advertised_model_ids, has_available_providers, manage_view,
     models_by_provider, models_response, models_response_with_mode, session_models,
     suggest_advertised,
 };
-pub use view::ListMode;
 
 /// 原始能力清单不应用绑定开关；关闭原始 ID 后，别名仍需解析到这条上游记录。
 ///
@@ -48,7 +48,9 @@ fn manifest_for(kind: ProviderKind) -> Vec<Value> {
     for item in model_rules::custom_models_for(kind_id(kind)) {
         let id = model_id(&item);
         if !id.is_empty()
-            && !models.iter().any(|existing| model_id(existing).eq_ignore_ascii_case(&id))
+            && !models
+                .iter()
+                .any(|existing| model_id(existing).eq_ignore_ascii_case(&id))
         {
             models.push(item);
         }
@@ -160,8 +162,8 @@ pub(crate) fn refresh_meta(kind: ProviderKind) -> (bool, i64) {
         // MonkeyCode 的两个站点各有一份独立清单（缓存按地区分格，见
         // `monkeycode::models` 的模块头）：这里如实各查**自己那一格**。
         ProviderKind::MonkeyCode | ProviderKind::MonkeyCodeIntl => {
-            let region = super::monkeycode::Region::from_kind(kind)
-                .unwrap_or(super::monkeycode::Region::Cn);
+            let region =
+                super::monkeycode::Region::from_kind(kind).unwrap_or(super::monkeycode::Region::Cn);
             (
                 super::monkeycode::models::remote_refreshed(region),
                 super::monkeycode::models::last_refreshed_at(region),
@@ -202,7 +204,10 @@ pub(crate) fn refresh_meta(kind: ProviderKind) -> (bool, i64) {
 }
 
 fn all_kinds() -> Vec<ProviderKind> {
-    PROVIDERS.iter().filter_map(|meta| kind_from_id(meta.id)).collect()
+    PROVIDERS
+        .iter()
+        .filter_map(|meta| kind_from_id(meta.id))
+        .collect()
 }
 
 pub fn provider_available(store: &AccountStore, kind: ProviderKind) -> bool {
@@ -229,6 +234,12 @@ fn aggregate_source(active: &[(ProviderKind, Vec<Value>)]) -> (&'static str, i64
             (if remote { "remote" } else { "builtin" }, refreshed_at)
         }
         [] => ("none", 0),
-        _ => ("aggregate", active.first().map(|(kind, _)| refresh_meta(*kind).1).unwrap_or(0)),
+        _ => (
+            "aggregate",
+            active
+                .first()
+                .map(|(kind, _)| refresh_meta(*kind).1)
+                .unwrap_or(0),
+        ),
     }
 }

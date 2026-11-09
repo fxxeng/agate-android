@@ -103,7 +103,10 @@ mod tests {
         let (started, observed) = same_day_ms();
         let evidence = classify_status(Region::Cn, started, observed, &json!({"checkedIn": true}));
         assert_eq!(evidence["verdict"], "confirmed");
-        assert_eq!(evidence["businessDay"], crate::server::core::beijing::date_key_of_ms(started).unwrap_or_default());
+        assert_eq!(
+            evidence["businessDay"],
+            crate::server::core::beijing::date_key_of_ms(started).unwrap_or_default()
+        );
         assert_eq!(evidence["upstreamCheckedIn"], true);
     }
 
@@ -111,12 +114,16 @@ mod tests {
     fn intl_requires_available_status_and_today_checked_in() {
         let (started, observed) = same_day_ms();
         let positive = classify_status(
-            Region::Intl, started, observed,
+            Region::Intl,
+            started,
+            observed,
             &json!({"statusAvailable": true, "todayCheckedIn": true}),
         );
         assert_eq!(positive["verdict"], "confirmed");
         let unavailable = classify_status(
-            Region::Intl, started, observed,
+            Region::Intl,
+            started,
+            observed,
             &json!({"statusAvailable": false, "todayCheckedIn": true}),
         );
         assert_eq!(unavailable["verdict"], "unknown");
@@ -128,7 +135,12 @@ mod tests {
         let negative = classify_status(Region::Cn, started, observed, &json!({"checkedIn": false}));
         assert_eq!(negative["verdict"], "unknown");
         let previous_day = started.saturating_sub(24 * 60 * 60 * 1000);
-        let cross_day = classify_status(Region::Cn, previous_day, observed, &json!({"checkedIn": true}));
+        let cross_day = classify_status(
+            Region::Cn,
+            previous_day,
+            observed,
+            &json!({"checkedIn": true}),
+        );
         assert_eq!(cross_day["verdict"], "unknown");
         assert!(cross_day["reason"].as_str().unwrap_or("").contains("不同"));
     }

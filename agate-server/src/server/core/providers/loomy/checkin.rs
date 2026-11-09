@@ -84,7 +84,11 @@ pub async fn claim_daily_login(
     let daily_hint = payload
         .pointer("/data/dailyBalance")
         .and_then(Value::as_i64)
-        .or_else(|| payload.pointer("/data/data/dailyBalance").and_then(Value::as_i64));
+        .or_else(|| {
+            payload
+                .pointer("/data/data/dailyBalance")
+                .and_then(Value::as_i64)
+        });
     let msg = match daily_hint {
         Some(balance) => format!("每日赠送积分已刷新（当前 {balance}）"),
         None => "每日赠送积分已刷新".to_string(),

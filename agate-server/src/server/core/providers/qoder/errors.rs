@@ -101,7 +101,12 @@ pub struct ClassifiedError {
 
 impl ClassifiedError {
     fn new(kind: UpstreamKind, message: impl Into<String>, pricing_url: Option<String>) -> Self {
-        Self { kind, message: message.into(), pricing_url, queue: None }
+        Self {
+            kind,
+            message: message.into(),
+            pricing_url,
+            queue: None,
+        }
     }
 }
 
@@ -119,8 +124,9 @@ const AUTH_CODES: &[&str] = &["105"];
 /// 额度类：110 每日用量上限、112 额度耗尽、113 用量配额耗尽、114 试用额度用完、
 /// 115 免费用户配额用完、116/117/118 团队 / 成员 / 个人 Credits 用完、
 /// 119 所选模型的免费额度用完、122 计费组上限（110 / 112 另有 9router 实测佐证）
-const QUOTA_CODES: &[&str] =
-    &["110", "112", "113", "114", "115", "116", "117", "118", "119", "122"];
+const QUOTA_CODES: &[&str] = &[
+    "110", "112", "113", "114", "115", "116", "117", "118", "119", "122",
+];
 
 /// 嵌套 JSON 的钻取深度上限（防病态输入下的环；实测两层就到底了）
 const SIGNAL_SCAN_DEPTH: usize = 5;
@@ -281,15 +287,9 @@ pub fn classify_upstream_error(status: u16, text: &str) -> ClassifiedError {
     }
     // ② 业务码：登录态失效（105）与额度类（110 / 112 / 113 …）
     if signals.has_code(AUTH_CODES) || AUTH_CODES.iter().any(|code| raw_has_code(text, code)) {
-        return ClassifiedError::new(
-            UpstreamKind::Auth,
-            "登录态已失效，请重新登录",
-            None,
-        );
+        return ClassifiedError::new(UpstreamKind::Auth, "登录态已失效，请重新登录", None);
     }
-    if signals.has_code(QUOTA_CODES)
-        || QUOTA_CODES.iter().any(|code| raw_has_code(text, code))
-    {
+    if signals.has_code(QUOTA_CODES) || QUOTA_CODES.iter().any(|code| raw_has_code(text, code)) {
         return ClassifiedError::new(
             UpstreamKind::Quota,
             "当前账号额度不足或套餐不支持该模型",

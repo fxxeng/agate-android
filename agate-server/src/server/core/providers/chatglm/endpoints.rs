@@ -110,8 +110,7 @@ pub const PATH_DAILY_LOGIN_SCORE: &str = "/chatglm/member-api/member/daily_login
 pub const PATH_SCORE_RECORD: &str = "/chatglm/member-api/member/score_record";
 
 /// 夏季/季节性活动领取状态
-pub const PATH_SUMMER_DAY_CLAIM_STATUS: &str =
-    "/chatglm/member-api/member/summer_day_claim_status";
+pub const PATH_SUMMER_DAY_CLAIM_STATUS: &str = "/chatglm/member-api/member/summer_day_claim_status";
 
 /// 夏季/季节性活动领取
 pub const PATH_SUMMER_DAY_GIVE_SCORE: &str = "/chatglm/member-api/member/summer_day_give_score";

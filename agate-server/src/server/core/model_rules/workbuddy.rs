@@ -87,9 +87,8 @@ pub fn seed_workbuddy_defaults(
     // 早就过期（它连 `glm-5.3` 都没有）。「哪些模型是官方认可的」这件事只有
     // 上游知道，写在代码里的副本一定会烂掉。
     let _ = WORKBUDDY_DEFAULT_ENABLED;
-    let whitelist: Option<Vec<&str>> = official.map(|list| {
-        list.iter().map(String::as_str).collect::<Vec<&str>>()
-    });
+    let whitelist: Option<Vec<&str>> =
+        official.map(|list| list.iter().map(String::as_str).collect::<Vec<&str>>());
     let summary = super::seed_default_enabled(provider, &label, whitelist.as_deref(), ids);
     // 一次性纠偏：把旧白名单**自动关掉**的那些模型重新打开。
     // `authoritative` 透传：非权威清单整段跳过（不烧标记，也不动手），见函数头。
@@ -163,7 +162,10 @@ pub fn migrate_workbuddy_split() -> (SplitMigrationOutcome, Option<String>) {
         if entry.provider.as_deref() != Some(LEGACY_PROVIDER) {
             continue;
         }
-        if !known_ids.iter().any(|id| id.eq_ignore_ascii_case(&entry.id)) {
+        if !known_ids
+            .iter()
+            .any(|id| id.eq_ignore_ascii_case(&entry.id))
+        {
             known_ids.push(entry.id.clone());
         }
     }
@@ -187,10 +189,7 @@ pub fn migrate_workbuddy_split() -> (SplitMigrationOutcome, Option<String>) {
             .disabled
             .iter()
             .any(|entry| entry.matches(LEGACY_PROVIDER, id));
-        let intl_disabled = rules
-            .disabled
-            .iter()
-            .any(|entry| entry.matches(intl, id));
+        let intl_disabled = rules.disabled.iter().any(|entry| entry.matches(intl, id));
         if cn_disabled && !intl_disabled {
             rules.disabled.push(super::RuleEntry::new(Some(intl), id));
             changed += 1;
@@ -243,7 +242,12 @@ pub fn migrate_workbuddy_split() -> (SplitMigrationOutcome, Option<String>) {
         .custom
         .iter()
         .filter(|item| item.provider.eq_ignore_ascii_case(LEGACY_PROVIDER))
-        .filter(|item| !rules.custom.iter().any(|existing| existing.matches(intl, &item.id)))
+        .filter(|item| {
+            !rules
+                .custom
+                .iter()
+                .any(|existing| existing.matches(intl, &item.id))
+        })
         .cloned()
         .collect();
     for mut item in copies {
@@ -261,7 +265,12 @@ pub fn migrate_workbuddy_split() -> (SplitMigrationOutcome, Option<String>) {
         .capabilities
         .iter()
         .filter(|item| item.provider.eq_ignore_ascii_case(LEGACY_PROVIDER))
-        .filter(|item| !rules.capabilities.iter().any(|existing| existing.matches(intl, &item.id)))
+        .filter(|item| {
+            !rules
+                .capabilities
+                .iter()
+                .any(|existing| existing.matches(intl, &item.id))
+        })
         .cloned()
         .collect();
     for mut item in copies {
@@ -284,7 +293,12 @@ pub fn migrate_workbuddy_split() -> (SplitMigrationOutcome, Option<String>) {
         .iter()
         .filter_map(|key| key.strip_prefix(&prefix))
         .map(|rest| format!("{intl_prefix}{rest}"))
-        .filter(|key| !rules.seeded.iter().any(|existing| existing.eq_ignore_ascii_case(key)))
+        .filter(|key| {
+            !rules
+                .seeded
+                .iter()
+                .any(|existing| existing.eq_ignore_ascii_case(key))
+        })
         .collect();
     for key in copies {
         rules.seeded.push(key);

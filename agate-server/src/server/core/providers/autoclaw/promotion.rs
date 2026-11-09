@@ -62,8 +62,7 @@ const LEDGERS_PATH: &str = "/agent-assetmgr/api/v1/ledgers_std?asset_type=point&
 /// `autoclaw_user_signup_day`：登录动作还会带出**新手期**的「注册 Day 1-7 奖励」
 /// （event_type 形如 `autoclaw_user_signup_day_1`，实测 2026-09-22 国际版
 /// +10000「New-user credits (Day 1/7)」）—— 同一个发放钩子，一并确认。
-const ACTIVE_EVENT_TYPE_PREFIXES: [&str; 2] =
-    ["autoclaw_user_active", "autoclaw_user_signup_day"];
+const ACTIVE_EVENT_TYPE_PREFIXES: [&str; 2] = ["autoclaw_user_active", "autoclaw_user_signup_day"];
 
 /// activity_id 前缀兜底（event_type 缺失的老数据 / 变体）。
 ///
@@ -104,7 +103,10 @@ pub async fn today_reward(
     }
     let credentials = credentials::snapshot_for(record.as_ref(), region)?;
     if credentials.token.trim().is_empty() {
-        return Err(GatewayError::with_status(401, "该账号没有可用凭证，无法查询活动福利"));
+        return Err(GatewayError::with_status(
+            401,
+            "该账号没有可用凭证，无法查询活动福利",
+        ));
     }
 
     let payload = userapi_get(&credentials, LEDGERS_PATH, "活动福利查询").await?;
@@ -114,7 +116,12 @@ pub async fn today_reward(
         .get("data")
         .and_then(|data| data.get("entries"))
         .and_then(Value::as_array)
-        .map(|entries| entries.iter().filter(|entry| is_today_reward(entry, &today)).collect())
+        .map(|entries| {
+            entries
+                .iter()
+                .filter(|entry| is_today_reward(entry, &today))
+                .collect()
+        })
         .unwrap_or_default();
 
     let Some(first) = entries.first() else {
@@ -157,15 +164,27 @@ fn is_today_reward(entry: &Value, today: &str) -> bool {
     let Some(metadata) = entry.get("metadata") else {
         return false;
     };
-    let grant_date = metadata.get("grant_date").and_then(Value::as_str).unwrap_or("");
+    let grant_date = metadata
+        .get("grant_date")
+        .and_then(Value::as_str)
+        .unwrap_or("");
     if grant_date != today {
         return false;
     }
-    let event_type = metadata.get("event_type").and_then(Value::as_str).unwrap_or("");
-    if ACTIVE_EVENT_TYPE_PREFIXES.iter().any(|prefix| event_type.starts_with(prefix)) {
+    let event_type = metadata
+        .get("event_type")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if ACTIVE_EVENT_TYPE_PREFIXES
+        .iter()
+        .any(|prefix| event_type.starts_with(prefix))
+    {
         return true;
     }
-    let activity_id = metadata.get("activity_id").and_then(Value::as_str).unwrap_or("");
+    let activity_id = metadata
+        .get("activity_id")
+        .and_then(Value::as_str)
+        .unwrap_or("");
     ACTIVE_ACTIVITY_PREFIXES
         .iter()
         .any(|prefix| activity_id.starts_with(prefix))

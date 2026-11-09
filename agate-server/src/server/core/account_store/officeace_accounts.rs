@@ -313,7 +313,10 @@ impl AccountStore {
             ));
         }
         let app_key = pick(payload, &["modelAppKey", "appKey", "model_app_key"]);
-        let app_secret = pick(payload, &["modelAppSecret", "appSecret", "model_app_secret"]);
+        let app_secret = pick(
+            payload,
+            &["modelAppSecret", "appSecret", "model_app_secret"],
+        );
         if app_key.is_empty() || app_secret.is_empty() {
             return Err(AccountStoreError::new(
                 "缺少网关凭据（modelAppKey 与 modelAppSecret 两项都要）",
@@ -404,7 +407,10 @@ impl AccountStore {
                 .and_then(|value| value.as_str().map(str::to_string))
         };
         for (key, candidates) in [
-            ("accessKeyId", &["accessKeyId", "access_key_id", "accessKey"][..]),
+            (
+                "accessKeyId",
+                &["accessKeyId", "access_key_id", "accessKey"][..],
+            ),
             (
                 "secretAccessKey",
                 &["secretAccessKey", "secret_access_key", "secretKey"][..],
@@ -477,7 +483,12 @@ impl AccountStore {
         record.insert("priority".to_string(), Value::from(priority));
         record.insert(
             "enabled".to_string(),
-            Value::Bool(existing.as_ref().map(StoredAccount::enabled).unwrap_or(true)),
+            Value::Bool(
+                existing
+                    .as_ref()
+                    .map(StoredAccount::enabled)
+                    .unwrap_or(true),
+            ),
         );
         record.insert(
             "addedAt".to_string(),
@@ -577,12 +588,18 @@ mod tests {
 
     #[test]
     fn the_identifier_look_only_matches_a_bare_hex_account_id() {
-        assert!(looks_like_upstream_identifier("0123456789abcdef0123456789abcdef"));
+        assert!(looks_like_upstream_identifier(
+            "0123456789abcdef0123456789abcdef"
+        ));
         assert!(!looks_like_upstream_identifier("我的果办号"));
         assert!(!looks_like_upstream_identifier("OfficeAce 果办"));
         // 短一位/长一位都不算：只有上游那串 32 位形态才当它是标识
-        assert!(!looks_like_upstream_identifier("0123456789abcdef0123456789abcde"));
-        assert!(!looks_like_upstream_identifier("0123456789abcdef0123456789abcdef0"));
+        assert!(!looks_like_upstream_identifier(
+            "0123456789abcdef0123456789abcde"
+        ));
+        assert!(!looks_like_upstream_identifier(
+            "0123456789abcdef0123456789abcdef0"
+        ));
     }
 
     /// 临时库 + 目录守卫：删除挂在 Drop 上（"打开前先删"只保证不复用、不保证不留垃圾，
@@ -601,13 +618,14 @@ mod tests {
     fn temp_store(tag: &str) -> TempStore {
         static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let dir = std::env::temp_dir().join(format!(
-            "officeace-name-{tag}-{}-{seq}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("officeace-name-{tag}-{}-{seq}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let db = crate::server::db::Db::open(&dir.join("agate.db")).expect("临时库该建得起来");
-        TempStore { store: AccountStore::with_db(Some(db)), dir }
+        TempStore {
+            store: AccountStore::with_db(Some(db)),
+            dir,
+        }
     }
 
     /// 落一个 OfficeAce 账号（`name_custom` 区分面板打的与登录派生的），回它的 id。
@@ -631,13 +649,19 @@ mod tests {
         let temp = temp_store("flag");
         let panel = add_account(&temp.store, "K_PANEL", "我的果办号", true);
         let login = add_account(&temp.store, "K_LOGIN", HEX_ID, false);
-        let record = temp.store.officeace_account_record(&panel).expect("面板那一条");
+        let record = temp
+            .store
+            .officeace_account_record(&panel)
+            .expect("面板那一条");
         assert_eq!(
             Some(&Value::Bool(true)),
             record.get("nameCustom"),
             "用户在面板打的名字要标 custom"
         );
-        let record = temp.store.officeace_account_record(&login).expect("登录那一条");
+        let record = temp
+            .store
+            .officeace_account_record(&login)
+            .expect("登录那一条");
         assert_ne!(
             Some(&Value::Bool(true)),
             record.get("nameCustom"),
@@ -702,10 +726,16 @@ mod tests {
                 .expect("改名不该失败"),
             "用户改过的名不能被上游冲掉"
         );
-        let record = temp.store.officeace_account_record(&mine).expect("账号还在");
+        let record = temp
+            .store
+            .officeace_account_record(&mine)
+            .expect("账号还在");
         assert_eq!("我的果办号", record["name"].as_str().unwrap());
         // 上游没给显示名：一个字都不动，也不算错误
-        assert!(!temp.store.heal_officeace_display_name(&mine, "").expect("空名不该失败"));
+        assert!(!temp
+            .store
+            .heal_officeace_display_name(&mine, "")
+            .expect("空名不该失败"));
     }
 
     /// 添加响应走**公开形态**。审计抓到本家是全家族唯一的明文出口：原先直接回
@@ -740,10 +770,16 @@ mod tests {
             "refreshToken",
             "dpopKeyPair",
         ] {
-            assert!(account.get(key).is_none(), "{key} 是凭据字段，不许出现在添加响应里");
+            assert!(
+                account.get(key).is_none(),
+                "{key} 是凭据字段，不许出现在添加响应里"
+            );
         }
         assert_eq!("我的果办号", account["name"].as_str().unwrap());
-        assert_eq!("https://gw.example.com/v2", account["baseUrl"].as_str().unwrap());
+        assert_eq!(
+            "https://gw.example.com/v2",
+            account["baseUrl"].as_str().unwrap()
+        );
         assert_eq!(
             Some(&Value::Bool(true)),
             account.get("hasRefreshToken"),
@@ -756,7 +792,14 @@ mod tests {
         );
         // 列表同口径：officeace 分支接上之后，凭据值不该出现在任何一处出口
         let listed = temp.store.list_accounts().to_string();
-        for secret in ["SK-GATEWAY", "AK-GATEWAY", "AK-CONTROL", "SK-CONTROL", "STS-TOKEN", "REFRESH-ONCE"] {
+        for secret in [
+            "SK-GATEWAY",
+            "AK-GATEWAY",
+            "AK-CONTROL",
+            "SK-CONTROL",
+            "STS-TOKEN",
+            "REFRESH-ONCE",
+        ] {
             assert!(!listed.contains(secret), "账号列表里出现了凭据值 {secret}");
         }
     }
@@ -766,8 +809,8 @@ mod tests {
     /// 「凭证准备失败（沿用现有 token）」—— 因为我把调用时机读错了（不是只在 401 之后走）。
     #[tokio::test]
     async fn ensuring_the_forward_credential_is_a_silent_no_op() {
-        use crate::server::core::providers::ProviderKind;
         use crate::server::core::providers::adapter::adapter_for;
+        use crate::server::core::providers::ProviderKind;
         use serde_json::json;
         let temp = temp_store("ensure");
         let payload = json!({
@@ -827,8 +870,9 @@ mod tests {
         let profile = URL_SAFE_NO_PAD.encode(
             br#"{"account_id":"acc_0123456789abcdef","account_name":"hid_synthetic-1","principal_id":"0123456789abcdef0123456789abcdef"}"#,
         );
-        let claims =
-            format!(r#"{{"client_id":"pdp5_for_agentarts","type":"refreshToken","user_profile":"{profile}"}}"#);
+        let claims = format!(
+            r#"{{"client_id":"pdp5_for_agentarts","type":"refreshToken","user_profile":"{profile}"}}"#
+        );
         let bearer = format!("h.{}.s", URL_SAFE_NO_PAD.encode(claims.as_bytes()));
         let hex_name = "0123456789abcdef0123456789abcdef".to_string();
 

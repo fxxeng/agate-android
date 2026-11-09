@@ -103,7 +103,10 @@ fn normalize_schedule(raw: &Value) -> Schedule {
             .get("lastFiredDate")
             .and_then(Value::as_str)
             .map(str::to_string),
-        last_result: raw.get("lastResult").filter(|value| value.is_object()).cloned(),
+        last_result: raw
+            .get("lastResult")
+            .filter(|value| value.is_object())
+            .cloned(),
     }
 }
 
@@ -166,8 +169,7 @@ pub fn upsert(payload: &Value) -> Result<Schedule, String> {
         .filter(|text| !text.is_empty())
         .map(str::to_string)
         .unwrap_or_else(|| format!("schedule-{}", crate::server::logging::now_ms()));
-    let time = auto_checkin::normalize_time(payload.get("time"))
-        .map_err(|error| error.message)?;
+    let time = auto_checkin::normalize_time(payload.get("time")).map_err(|error| error.message)?;
     // 范围：只认注册过的提供商（去重、按注册顺序）；一条不勾到点也无账号可签
     let list_value = payload.get("providers");
     let picked: Vec<String> = CHECKIN_PROVIDERS
@@ -190,9 +192,9 @@ pub fn upsert(payload: &Value) -> Result<Schedule, String> {
         .to_string();
 
     let mut entries = stored_entries().unwrap_or_default();
-    let existing = entries.iter().position(|raw| {
-        raw.get("id").and_then(Value::as_str) == Some(id.as_str())
-    });
+    let existing = entries
+        .iter()
+        .position(|raw| raw.get("id").and_then(Value::as_str) == Some(id.as_str()));
     if existing.is_none() && entries.len() >= MAX_SCHEDULES {
         return Err(format!("定时条目最多 {MAX_SCHEDULES} 条"));
     }
@@ -203,9 +205,7 @@ pub fn upsert(payload: &Value) -> Result<Schedule, String> {
         // 「原开关」在旧字段里（合成的 default 读的就是它），一并带过来
         None => match existing_entry.as_ref().map(|old| old.enabled) {
             Some(flag) => flag,
-            None if !stored_key_exists() && id == DEFAULT_SCHEDULE_ID => {
-                legacy_schedule().enabled
-            }
+            None if !stored_key_exists() && id == DEFAULT_SCHEDULE_ID => legacy_schedule().enabled,
             None => true,
         },
     };
@@ -214,12 +214,13 @@ pub fn upsert(payload: &Value) -> Result<Schedule, String> {
         .map(|old| (old.last_fired_date, old.last_result))
         .unwrap_or((None, None));
     // 存量兼容：第一次编辑合成的默认条目时，把旧字段的去重状态带过来
-    let (last_fired_date, last_result) = if last_fired_date.is_none() && !stored_key_exists() && id == DEFAULT_SCHEDULE_ID {
-        let legacy = legacy_schedule();
-        (legacy.last_fired_date, legacy.last_result)
-    } else {
-        (last_fired_date, last_result)
-    };
+    let (last_fired_date, last_result) =
+        if last_fired_date.is_none() && !stored_key_exists() && id == DEFAULT_SCHEDULE_ID {
+            let legacy = legacy_schedule();
+            (legacy.last_fired_date, legacy.last_result)
+        } else {
+            (last_fired_date, last_result)
+        };
     let schedule = Schedule {
         id,
         label,
@@ -293,9 +294,10 @@ pub fn mark_result_checked(id: &str, result: Option<Value>) -> Result<(), String
         };
     }
     let mut entries = stored_entries().unwrap_or_default();
-    let Some(index) = entries.iter().position(|raw| {
-        raw.get("id").and_then(Value::as_str) == Some(id)
-    }) else {
+    let Some(index) = entries
+        .iter()
+        .position(|raw| raw.get("id").and_then(Value::as_str) == Some(id))
+    else {
         return Ok(());
     };
     let mut schedule = normalize_schedule(&entries[index]);
@@ -398,9 +400,9 @@ pub fn extend_providers_once() -> bool {
             }
         }
         None => {
-            let legacy = ordered_providers(
-                &auto_checkin::normalize_providers(auto_checkin::raw_object().get("providers")),
-            );
+            let legacy = ordered_providers(&auto_checkin::normalize_providers(
+                auto_checkin::raw_object().get("providers"),
+            ));
             let mut providers = legacy.clone();
             for id in &added {
                 if !providers.iter().any(|item| item == id) {

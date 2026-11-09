@@ -59,11 +59,11 @@ use serde_json::{json, Map, Value};
 use crate::server::core::account_store::AccountStoreError;
 use crate::server::core::auth::WorkBuddyAuthError;
 use crate::server::core::billing::checkin;
-use crate::server::core::proxies::ProxyConfigError;
 use crate::server::core::providers::adapter::adapter_for;
 use crate::server::core::providers::kuku::credentials::KukuCredentials;
 use crate::server::core::providers::zcode;
 use crate::server::core::providers::ProviderKind;
+use crate::server::core::proxies::ProxyConfigError;
 use crate::server::errors::management_error;
 use crate::server::http::{ok_json, parse_body, query_param};
 use crate::server::logging;
@@ -114,7 +114,9 @@ fn describe_file_import_error(
     AccountStoreError::new(
         format!(
             "凭证文件{}无法导入：{}",
-            file_name.map(|name| format!("「{name}」")).unwrap_or_default(),
+            file_name
+                .map(|name| format!("「{name}」"))
+                .unwrap_or_default(),
             error.message,
         ),
         error.status_code,
@@ -243,19 +245,21 @@ fn decode_segment(value: &str) -> String {
 ///
 /// 用 `any(...)` 注册（接受任意方法），因为 Node 的判定里有「PATCH/DELETE 落到
 /// `<id>` 分支」这种跨方法的路径匹配 —— 交给 axum 的方法路由反而会把它拆错。
-pub async fn accounts_entry(State(state): State<ServerState>, request: axum::extract::Request) -> Response {
+pub async fn accounts_entry(
+    State(state): State<ServerState>,
+    request: axum::extract::Request,
+) -> Response {
     let method = request.method().clone();
     let full_path = request.uri().path().to_string();
     // 原始查询串（未解码的原文，由用到它的分支自行 `query_param` 解码）。
     // 目前只有 `GET /api/accounts/usage?id=<id>` 用它 —— 那一支是「用户手点某一行
     // 的余额按钮」，与批量的区别见 `core::usage_query::query_all` 的说明。
     let query = request.uri().query().unwrap_or("").to_string();
-    let body = match axum::body::to_bytes(request.into_body(), crate::server::http::MAX_BODY_SIZE)
-        .await
-    {
-        Ok(bytes) => bytes,
-        Err(error) => return management_error(413, format!("请求体读取失败或过大: {error}")),
-    };
+    let body =
+        match axum::body::to_bytes(request.into_body(), crate::server::http::MAX_BODY_SIZE).await {
+            Ok(bytes) => bytes,
+            Err(error) => return management_error(413, format!("请求体读取失败或过大: {error}")),
+        };
     // `suffix` 为空 = 精确命中 `/api/accounts`（列表/新增）；其它情况（含 `/api/accounts/`
     // 这个只有尾斜杠的形态）都是子路径 —— Node 版用 `path === '/api/accounts'` 严格
     // 判等，所以 `/api/accounts/` 落到最后的 404 分支，这里必须保留这个区分
@@ -286,7 +290,10 @@ fn reconcile_kernel_listeners(state: &ServerState, before: &std::collections::Ha
 /// `/pool/test`、`/pool/sync-clash`（「网络代理」页的代理池 CRUD + 启停 + 测试
 /// + Clash 同步，见 `api::proxies` 的模块头）。池那几条的 id 走 body，不做
 /// 路径段 —— 判定的写法因此还是一张 (方法, 剩余路径) 的表，与原来的两条完全同形。
-pub async fn proxies_entry(State(state): State<ServerState>, request: axum::extract::Request) -> Response {
+pub async fn proxies_entry(
+    State(state): State<ServerState>,
+    request: axum::extract::Request,
+) -> Response {
     let method = request.method().clone();
     let full_path = request.uri().path().to_string();
     let rest = full_path
@@ -294,12 +301,11 @@ pub async fn proxies_entry(State(state): State<ServerState>, request: axum::extr
         .unwrap_or("")
         .trim_start_matches('/')
         .to_string();
-    let body = match axum::body::to_bytes(request.into_body(), crate::server::http::MAX_BODY_SIZE)
-        .await
-    {
-        Ok(bytes) => bytes,
-        Err(error) => return management_error(413, format!("请求体读取失败或过大: {error}")),
-    };
+    let body =
+        match axum::body::to_bytes(request.into_body(), crate::server::http::MAX_BODY_SIZE).await {
+            Ok(bytes) => bytes,
+            Err(error) => return management_error(413, format!("请求体读取失败或过大: {error}")),
+        };
     match (method.as_str(), rest.as_str()) {
         ("GET", "") => super::proxies::list_proxies(&state).await,
         ("POST", "test") => super::proxies::test_proxy(&state, &body).await,
@@ -313,10 +319,7 @@ pub async fn proxies_entry(State(state): State<ServerState>, request: axum::extr
         ("GET", "settings") => super::proxies::settings_get().await,
         ("POST", "settings") => super::proxies::settings_save(&body).await,
         // 已注册路径上的其它方法：Node 的 tryHandleProxies 落到它自己的 404 信封
-        _ => management_error(
-            404,
-            format!("Not found: {} {full_path}", method.as_str()),
-        ),
+        _ => management_error(404, format!("Not found: {} {full_path}", method.as_str())),
     }
 }
 
@@ -372,9 +375,7 @@ pub async fn dispatch(
         ("POST", "refresh-expiring") => return refresh_expiring_accounts(&state).await,
         // 余额 / 积分查询（四家混查）实现在 `api::accounts_usage`（拆分见那里的模块头）。
         // `?id=` 是「手点某一行积分按钮」的单查形态，语义见 accounts_usage 的说明。
-        ("GET", "usage") => {
-            return super::accounts_usage::accounts_usage(&state, query).await
-        }
+        ("GET", "usage") => return super::accounts_usage::accounts_usage(&state, query).await,
         // 定时查询那一轮的结果快照（形状同 usage，多一个 `at`）
         ("GET", "usage/snapshot") => {
             return super::accounts_usage::accounts_usage_snapshot(&state).await
@@ -716,8 +717,10 @@ pub async fn add_account(state: &ServerState, body: &Bytes) -> Response {
         // 域名发请求）。`importDesktop` 两地都给：桌面端那个 auth.json 没有地区
         // 标记、两个构建共用，**地区由用户选的那一项决定**（见
         // `import_autoclaw_desktop_account` 与 `region.rs` 的完整讨论）。
-        Some(kind @ (crate::server::core::providers::ProviderKind::AutoClaw
-            | crate::server::core::providers::ProviderKind::AutoClawIntl)) => {
+        Some(
+            kind @ (crate::server::core::providers::ProviderKind::AutoClaw
+            | crate::server::core::providers::ProviderKind::AutoClawIntl),
+        ) => {
             let region = crate::server::core::providers::autoclaw::Region::from_kind(kind)
                 .unwrap_or(crate::server::core::providers::autoclaw::Region::Cn);
             if import_desktop {
@@ -731,7 +734,9 @@ pub async fn add_account(state: &ServerState, body: &Bytes) -> Response {
         // 授权码；目录与连通性由刷新链路验。
         // 网页登录（要 DPoP + PKCE 回调）在 M5 后续切片，届时这里加一条分支。
         Some(crate::server::core::providers::ProviderKind::CodeArts) => {
-            match crate::server::core::providers::codearts::credentials::Credential::from_payload(&payload) {
+            match crate::server::core::providers::codearts::credentials::Credential::from_payload(
+                &payload,
+            ) {
                 Ok(credential) => store.add_codearts_account(&credential, import_name, "manual"),
                 Err(reason) => Err(AccountStoreError::new(reason, 400)),
             }
@@ -740,12 +745,18 @@ pub async fn add_account(state: &ServerState, body: &Bytes) -> Response {
         // 粘贴 PAT / 凭证 → 手动添加。拆家后界面上是两张卡片（`qoder` /
         // `qoder-intl`），地区由 kind 反查（provider 身份是权威，payload 里
         // 的 `mode` 只是兼容字段）。
-        Some(kind @ (crate::server::core::providers::ProviderKind::Qoder
-            | crate::server::core::providers::ProviderKind::QoderIntl)) => {
+        Some(
+            kind @ (crate::server::core::providers::ProviderKind::Qoder
+            | crate::server::core::providers::ProviderKind::QoderIntl),
+        ) => {
             let region = crate::server::core::providers::qoder::endpoints::Region::from_kind(kind)
                 .unwrap_or(crate::server::core::providers::qoder::endpoints::Region::Cn);
-            match crate::server::core::providers::qoder::auth::prepare_account(&payload, region).await {
-                Ok(credentials) => store.add_qoder_account(region, &credentials, import_name, "manual"),
+            match crate::server::core::providers::qoder::auth::prepare_account(&payload, region)
+                .await
+            {
+                Ok(credentials) => {
+                    store.add_qoder_account(region, &credentials, import_name, "manual")
+                }
                 Err(error) => Err(AccountStoreError::new(error.message, error.status_code)),
             }
         }
@@ -757,8 +768,10 @@ pub async fn add_account(state: &ServerState, body: &Bytes) -> Response {
         // `importDesktop` 不提供：Accio 桌面端的登录态落在 Electron 会话与 OS
         // 加密区里（没有 auth.json 那种稳定可读的文件形态），给了入口只会稳定
         // 失败 —— 与 AutoClaw「一读一解密」不同，不要照抄那边。
-        Some(kind @ (crate::server::core::providers::ProviderKind::Accio
-            | crate::server::core::providers::ProviderKind::AccioCn)) => {
+        Some(
+            kind @ (crate::server::core::providers::ProviderKind::Accio
+            | crate::server::core::providers::ProviderKind::AccioCn),
+        ) => {
             let region = crate::server::core::providers::accio::endpoints::Region::from_kind(kind)
                 .unwrap_or(crate::server::core::providers::accio::endpoints::Region::Global);
             if import_desktop {
@@ -783,8 +796,10 @@ pub async fn add_account(state: &ServerState, body: &Bytes) -> Response {
         // 展示名）都在 `add_cline_account` 里，与设备授权登录共用同一入口。
         // **两个池各是一个 provider**（`cline-free` / `cline-pass`），添加时
         // 由 body 的 `provider` 决定进哪一家 —— 不需要额外的池参数。
-        Some(kind @ (crate::server::core::providers::ProviderKind::ClineFree
-            | crate::server::core::providers::ProviderKind::ClinePass)) => {
+        Some(
+            kind @ (crate::server::core::providers::ProviderKind::ClineFree
+            | crate::server::core::providers::ProviderKind::ClinePass),
+        ) => {
             let provider_id = crate::server::core::providers::kind_id(kind);
             // ── 文件导入优先于 importDesktop（文件导入契约）────────────
             // 两条路径的语义完全不同，别混用：
@@ -826,8 +841,10 @@ pub async fn add_account(state: &ServerState, body: &Bytes) -> Response {
         // `importDesktop` 不提供：ZCode 客户端的凭证在它自己的加密存储里，
         // 没有 auth.json 那种稳定可读的形态 —— 给了入口只会稳定失败
         // （与 Accio 同一处境、同一处置，不要照抄 AutoClaw 那边）。
-        Some(kind @ (crate::server::core::providers::ProviderKind::Zcode
-            | crate::server::core::providers::ProviderKind::ZcodeIntl)) => {
+        Some(
+            kind @ (crate::server::core::providers::ProviderKind::Zcode
+            | crate::server::core::providers::ProviderKind::ZcodeIntl),
+        ) => {
             let region = crate::server::core::providers::zcode::region::Region::from_kind(kind)
                 .unwrap_or(crate::server::core::providers::zcode::region::Region::Cn);
             if import_desktop {
@@ -855,16 +872,18 @@ pub async fn add_account(state: &ServerState, body: &Bytes) -> Response {
                     "请至少填写 accessToken（用于转发）或 jwt（用于领取套餐）",
                 );
             }
-            let credentials = crate::server::core::providers::zcode::credentials::ZcodeCredentials {
-                region,
-                access_token,
-                jwt,
-                user_id: text_field("userId"),
-                // 设备标识是领取链路的活动期要求（见 `credentials.rs` 的模块头）：
-                // 用户没给就新生成一个，随凭证落盘后跨请求稳定
-                device_mid: crate::server::core::providers::zcode::credentials::new_device_mid()
+            let credentials =
+                crate::server::core::providers::zcode::credentials::ZcodeCredentials {
+                    region,
+                    access_token,
+                    jwt,
+                    user_id: text_field("userId"),
+                    // 设备标识是领取链路的活动期要求（见 `credentials.rs` 的模块头）：
+                    // 用户没给就新生成一个，随凭证落盘后跨请求稳定
+                    device_mid: crate::server::core::providers::zcode::credentials::new_device_mid(
+                    )
                     .unwrap_or_default(),
-            };
+                };
             store.add_zcode_account(&credentials, import_name, "manual")
         }
         // Trae：**粘贴凭据**（`accessToken` / `refreshToken` / 设备三件套）→ 手动添加。
@@ -888,7 +907,9 @@ pub async fn add_account(state: &ServerState, body: &Bytes) -> Response {
                 );
             }
             let mut credential =
-                match crate::server::core::providers::trae::credentials::Credential::from_payload(&payload) {
+                match crate::server::core::providers::trae::credentials::Credential::from_payload(
+                    &payload,
+                ) {
                     Ok(credential) => credential,
                     Err(reason) => return management_error(400, reason),
                 };
@@ -898,7 +919,8 @@ pub async fn add_account(state: &ServerState, body: &Bytes) -> Response {
             // 昵称而判失败」是本家明确要避免的那种行为。
             if credential.uid.is_empty() {
                 if let Ok(identity) =
-                    crate::server::core::providers::trae::profile::get_user_info(&credential, None).await
+                    crate::server::core::providers::trae::profile::get_user_info(&credential, None)
+                        .await
                 {
                     credential.uid = identity.uid;
                     credential.nickname = identity.nickname;
@@ -965,9 +987,7 @@ pub async fn add_account(state: &ServerState, body: &Bytes) -> Response {
                         // 三件套 + uk）通过才落账号；网络失败同样 400 —— 要的是
                         // 「现在真的能用」。
                         match crate::server::core::providers::kuku::credentials::enrich_identity(
-                            &parsed,
-                            None,
-                            true,
+                            &parsed, None, true,
                         )
                         .await
                         {
@@ -1003,16 +1023,15 @@ pub async fn add_account(state: &ServerState, body: &Bytes) -> Response {
                         Err(reason) => return management_error(400, reason),
                     }
                 };
-                let verified = match crate::server::core::providers::kuku::credentials::enrich_identity(
-                    &parsed,
-                    None,
-                    true,
-                )
-                .await
-                {
-                    Ok(credentials) => credentials,
-                    Err(error) => return management_error(error.status_code, error.message),
-                };
+                let verified =
+                    match crate::server::core::providers::kuku::credentials::enrich_identity(
+                        &parsed, None, true,
+                    )
+                    .await
+                    {
+                        Ok(credentials) => credentials,
+                        Err(error) => return management_error(error.status_code, error.message),
+                    };
                 store.add_kuku_account(
                     &verified,
                     import_name,
@@ -1027,8 +1046,10 @@ pub async fn add_account(state: &ServerState, body: &Bytes) -> Response {
         //
         // `importDesktop` 不提供：本家的登录态就是浏览器 cookie，没有客户端
         // 「auth.json」那种可读文件（与 Accio / ZCode 同一处境）。
-        Some(kind @ (crate::server::core::providers::ProviderKind::MonkeyCode
-            | crate::server::core::providers::ProviderKind::MonkeyCodeIntl)) => {
+        Some(
+            kind @ (crate::server::core::providers::ProviderKind::MonkeyCode
+            | crate::server::core::providers::ProviderKind::MonkeyCodeIntl),
+        ) => {
             let region = crate::server::core::providers::monkeycode::Region::from_kind(kind)
                 .unwrap_or(crate::server::core::providers::monkeycode::Region::Cn);
             if import_desktop {
@@ -1049,7 +1070,10 @@ pub async fn add_account(state: &ServerState, body: &Bytes) -> Response {
                 .unwrap_or("")
                 .to_string();
             if session.is_empty() {
-                return management_error(400, "请粘贴 MonkeyCode 的 session cookie（monkeycode_ai_session）");
+                return management_error(
+                    400,
+                    "请粘贴 MonkeyCode 的 session cookie（monkeycode_ai_session）",
+                );
             }
             let provided_image = payload
                 .get("imageId")
@@ -1114,14 +1138,15 @@ pub async fn add_account(state: &ServerState, body: &Bytes) -> Response {
                     "Antigravity 不支持导入桌面端登录态，请粘贴 Google refresh token（1// 开头）添加账号",
                 );
             }
-            let credentials = match crate::server::core::providers::antigravity::login::verify_paste(
-                &payload, None,
-            )
-            .await
-            {
-                Ok(credentials) => credentials,
-                Err(error) => return management_error(error.status_code, error.message),
-            };
+            let credentials =
+                match crate::server::core::providers::antigravity::login::verify_paste(
+                    &payload, None,
+                )
+                .await
+                {
+                    Ok(credentials) => credentials,
+                    Err(error) => return management_error(error.status_code, error.message),
+                };
             store.add_antigravity_account(&credentials, import_name, "manual")
         }
         // OfficeAce（华为云果办 / OfficeClaw）：粘贴模型网关的 Basic 凭据
@@ -1159,23 +1184,24 @@ pub async fn add_account(state: &ServerState, body: &Bytes) -> Response {
             };
             // 真实校验 + 补身份：GetUserInfo 失败（token 无效 / 上游拒绝）→ 400。
             // 网络失败同样 400 —— 添加时验证与 kuku 同一口径（要的是「现在真的能用」）。
-            let verified = match crate::server::core::providers::orcaterm::credentials::fetch_user_info(
-                &parsed, None,
-            )
-            .await
-            {
-                Ok((user_id, nickname)) => {
-                    let mut credentials = parsed;
-                    if credentials.user_id.is_empty() {
-                        credentials.user_id = user_id;
+            let verified =
+                match crate::server::core::providers::orcaterm::credentials::fetch_user_info(
+                    &parsed, None,
+                )
+                .await
+                {
+                    Ok((user_id, nickname)) => {
+                        let mut credentials = parsed;
+                        if credentials.user_id.is_empty() {
+                            credentials.user_id = user_id;
+                        }
+                        if credentials.nickname.is_empty() {
+                            credentials.nickname = nickname;
+                        }
+                        credentials
                     }
-                    if credentials.nickname.is_empty() {
-                        credentials.nickname = nickname;
-                    }
-                    credentials
-                }
-                Err(error) => return management_error(error.status_code, error.message),
-            };
+                    Err(error) => return management_error(error.status_code, error.message),
+                };
             store.add_orcaterm_account(
                 &verified,
                 import_name,
@@ -1205,8 +1231,8 @@ pub async fn add_account(state: &ServerState, body: &Bytes) -> Response {
 
             // ── 路径 3：导入本机客户端登录态 ─────────────────────────
             let (access, refresh) = if import_desktop {
-                match crate::server::core::providers::chatglm::credentials::read_desktop_credentials()
-                {
+                match crate::server::core::providers::chatglm::credentials::read_desktop_credentials(
+                ) {
                     Ok(Some((access, refresh))) => {
                         let access = (!access.trim().is_empty()).then_some(access);
                         let refresh = (!refresh.trim().is_empty()).then_some(refresh);
@@ -1223,10 +1249,8 @@ pub async fn add_account(state: &ServerState, body: &Bytes) -> Response {
                 }
             } else if want_guest {
                 // ── 路径 1：访客换证（本家独有）──────────────────────
-                match crate::server::core::providers::chatglm::http::guest_access(
-                    &device_id, None,
-                )
-                .await
+                match crate::server::core::providers::chatglm::http::guest_access(&device_id, None)
+                    .await
                 {
                     Ok((access, refresh, _uid)) => (Some(access), Some(refresh)),
                     Err(error) => return management_error(error.status_code, error.message),
@@ -1254,7 +1278,12 @@ pub async fn add_account(state: &ServerState, body: &Bytes) -> Response {
             .await
             {
                 Ok(info) => info,
-                Err(error) => return management_error(400, format!("{provider_label}校验失败：{}", error.message)),
+                Err(error) => {
+                    return management_error(
+                        400,
+                        format!("{provider_label}校验失败：{}", error.message),
+                    )
+                }
             };
             let is_guest = verified
                 .get("is_guest")
@@ -1277,15 +1306,16 @@ pub async fn add_account(state: &ServerState, body: &Bytes) -> Response {
                 .unwrap_or("")
                 .trim()
                 .to_string();
-            let credentials = crate::server::core::providers::chatglm::credentials::ChatglmCredentials {
-                access_token: access,
-                // 粘贴路径拿不到 refresh_token：留空，续期会如实报「没有 refresh_token」
-                refresh_token: refresh.unwrap_or_default(),
-                device_id,
-                is_guest,
-                uid,
-                nickname,
-            };
+            let credentials =
+                crate::server::core::providers::chatglm::credentials::ChatglmCredentials {
+                    access_token: access,
+                    // 粘贴路径拿不到 refresh_token：留空，续期会如实报「没有 refresh_token」
+                    refresh_token: refresh.unwrap_or_default(),
+                    device_id,
+                    is_guest,
+                    uid,
+                    nickname,
+                };
             store.add_chatglm_account(
                 &credentials,
                 import_name,
@@ -1440,14 +1470,18 @@ pub async fn batch_accounts(state: &ServerState, body: &Bytes) -> Response {
         "remove" => state.store().batch_remove(&ids),
         "enable" | "disable" => {
             let enabled = action == "enable";
-            state.store().batch_update(&ids, &json!({ "enabled": enabled }))
+            state
+                .store()
+                .batch_update(&ids, &json!({ "enabled": enabled }))
         }
         "proxy" => {
             // 允许 proxy=null（批量改为直连）；缺字段是显式报错
             let Some(target) = payload.get("proxy") else {
                 return management_error(400, "批量修改代理时缺少 proxy 字段");
             };
-            state.store().batch_update(&ids, &json!({ "proxy": target }))
+            state
+                .store()
+                .batch_update(&ids, &json!({ "proxy": target }))
         }
         "concurrency" => {
             // 并发上限（0 = 不限）；缺字段是显式报错，值本身由 store 归一
@@ -1542,11 +1576,7 @@ pub async fn refresh_account(state: &ServerState, body: &Bytes) -> Response {
     // Qoder（两个地区各查一次 —— 账号集合按 provider 隔离，同一 id 不可能
     // 同时属于两家，与 Accio / AutoClaw 同一条遍历）
     for region in crate::server::core::providers::qoder::endpoints::Region::ALL {
-        if state
-            .store()
-            .qoder_account_record(region, &id)
-            .is_some()
-        {
+        if state.store().qoder_account_record(region, &id).is_some() {
             return refresh_provider_account(state, &id, region.kind()).await;
         }
     }
@@ -1627,7 +1657,11 @@ pub async fn refresh_account(state: &ServerState, body: &Bytes) -> Response {
         crate::server::core::providers::autoclaw::Region::Intl,
     ] {
         if let Some(record) = state.store().autoclaw_account_record(region, &id) {
-            if record.get("desktop").and_then(Value::as_bool).unwrap_or(false) {
+            if record
+                .get("desktop")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
                 return management_error(
                     400,
                     "AutoClaw 桌面端登录态由桌面客户端维护，网关不主动刷新：\
@@ -1739,7 +1773,6 @@ pub async fn refresh_expiring_accounts(state: &ServerState) -> Response {
 /// · 签到的目标集合：`core::billing::checkin::resolve_checkin_targets`
 ///   （定时签到与手动签到必须共用同一段逻辑）。
 /// 本文件只剩 `accounts_checkin` 一个转发壳。
-
 
 /// POST /api/accounts/checkin
 ///
@@ -1922,7 +1955,10 @@ pub async fn patch_account(state: &ServerState, id: &str, body: &Bytes) -> Respo
                 scoped.insert(key.to_string(), value.clone());
             }
         }
-        match state.store().update_custom_credentials(&id, &Value::Object(scoped)) {
+        match state
+            .store()
+            .update_custom_credentials(&id, &Value::Object(scoped))
+        {
             Ok(changes) => balance_changes.extend(changes),
             Err(error) => return store_error(error),
         }
@@ -2071,7 +2107,9 @@ pub fn clear_rate_limits(state: &ServerState, id: &str, body: &Bytes) -> Respons
             "[Accounts]",
             &format!(
                 "🧹 已清除账号 {id} 的限流标记（{}）",
-                model.map(|value| value.to_string()).unwrap_or_else(|| format!("{cleared} 个模型"))
+                model
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| format!("{cleared} 个模型"))
             ),
         );
     }

@@ -65,7 +65,10 @@ pub fn x_timestamp_from(millis: u128) -> String {
         sum += u32::from(byte.saturating_sub(b'0'));
     }
     // 倒数第二位的下标（= len - 2）；越界不可能，稳妥起见用 get 取值
-    let Some(penultimate) = ms.as_bytes().get(len - 2).map(|byte| u32::from(*byte - b'0'))
+    let Some(penultimate) = ms
+        .as_bytes()
+        .get(len - 2)
+        .map(|byte| u32::from(*byte - b'0'))
     else {
         return ms;
     };
@@ -182,7 +185,11 @@ mod tests {
         // 手工算一次作为向量
         let mut hasher = Md5::new();
         hasher.update(format!("1792175060134-abc-{SIGN_SECRET_PROD}").as_bytes());
-        let expected: String = hasher.finalize().iter().map(|b| format!("{b:02x}")).collect();
+        let expected: String = hasher
+            .finalize()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
         assert_eq!(headers.sign, expected);
         assert_eq!(headers.timestamp, "1792175060134");
         assert_eq!(headers.nonce, "abc");
@@ -192,9 +199,15 @@ mod tests {
     #[test]
     fn picks_secret_per_environment() {
         assert_eq!(pick_secret("https://chatglm.cn"), SIGN_SECRET_PROD);
-        assert_eq!(pick_secret("https://agentmore.chatglm.cn/"), SIGN_SECRET_PROD);
+        assert_eq!(
+            pick_secret("https://agentmore.chatglm.cn/"),
+            SIGN_SECRET_PROD
+        );
         assert_eq!(pick_secret("https://test.chatglm.cn"), SIGN_SECRET_TEST);
-        assert_eq!(pick_secret("https://agent-test.chatglm.cn/"), SIGN_SECRET_TEST);
+        assert_eq!(
+            pick_secret("https://agent-test.chatglm.cn/"),
+            SIGN_SECRET_TEST
+        );
         // 未知域兜底测试密钥（与客户端一致）
         assert_eq!(pick_secret("https://example.com"), SIGN_SECRET_TEST);
     }
@@ -213,7 +226,10 @@ mod tests {
         assert!(value.chars().all(|ch| ch.is_ascii_hexdigit() || ch == '-'));
         // 版本位与变体位
         assert!(value.chars().nth(14) == Some('4'), "版本位应为 4: {value}");
-        assert!(matches!(value.chars().nth(19), Some('8') | Some('9') | Some('a') | Some('b')));
+        assert!(matches!(
+            value.chars().nth(19),
+            Some('8') | Some('9') | Some('a') | Some('b')
+        ));
         // 两次生成不相同
         assert_ne!(uuid_v4(), uuid_v4());
     }

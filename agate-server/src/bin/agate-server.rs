@@ -209,9 +209,9 @@ fn main() -> ExitCode {
 
     // 这是 headless 宿主的真实进程退出路径：先停止 Sidecar intake/worker/Child，
     // 再停止 Core 周期任务。Gateway stop 本身不调用 Core shutdown。
-    let shutdown = runtime.block_on(agate_server::shutdown_core(
-        std::time::Duration::from_secs(8),
-    ));
+    let shutdown = runtime.block_on(agate_server::shutdown_core(std::time::Duration::from_secs(
+        8,
+    )));
     logging::log(
         "[Server]",
         &format!(

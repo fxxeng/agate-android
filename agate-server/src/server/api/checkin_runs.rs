@@ -45,7 +45,11 @@ pub async fn query_evidence(
     Query(params): Query<HashMap<String, String>>,
 ) -> Response {
     let run_id = params.get("runId").map(String::as_str).unwrap_or("").trim();
-    let account_id = params.get("accountId").map(String::as_str).unwrap_or("").trim();
+    let account_id = params
+        .get("accountId")
+        .map(String::as_str)
+        .unwrap_or("")
+        .trim();
     if run_id.is_empty() || account_id.is_empty() {
         return crate::server::errors::management_error(400, "必须提供 runId 与 accountId");
     }
@@ -66,20 +70,29 @@ pub async fn inspect_provider(
     Query(params): Query<HashMap<String, String>>,
 ) -> Response {
     let run_id = params.get("runId").map(String::as_str).unwrap_or("").trim();
-    let account_id = params.get("accountId").map(String::as_str).unwrap_or("").trim();
+    let account_id = params
+        .get("accountId")
+        .map(String::as_str)
+        .unwrap_or("")
+        .trim();
     if run_id.is_empty() || account_id.is_empty() {
         return crate::server::errors::management_error(400, "必须提供 runId 与 accountId");
     }
     let Some(db) = state.store().db() else {
         return crate::server::errors::management_error(
-            503, "签到执行台账数据库不可用，无法核对不确定记录",
+            503,
+            "签到执行台账数据库不可用，无法核对不确定记录",
         );
     };
-    let context = match checkin_run_ledger::uncertain_reconciliation_context(db, run_id, account_id) {
+    let context = match checkin_run_ledger::uncertain_reconciliation_context(db, run_id, account_id)
+    {
         Ok(Some(value)) => value,
-        Ok(None) => return crate::server::errors::management_error(
-            404, "找不到对应的 uncertain 签到记录，或该记录已不处于待核对状态",
-        ),
+        Ok(None) => {
+            return crate::server::errors::management_error(
+                404,
+                "找不到对应的 uncertain 签到记录，或该记录已不处于待核对状态",
+            )
+        }
         Err(error) => return crate::server::errors::management_error(503, &error),
     };
     let (provider, account_started_at_ms) = context;
@@ -87,8 +100,13 @@ pub async fn inspect_provider(
         crate::server::core::providers::qoder::endpoints::Region::from_provider_id(&provider)
     {
         match crate::server::core::providers::qoder::checkin::inspect_uncertain_claim(
-            state.store(), region, account_id, account_started_at_ms,
-        ).await {
+            state.store(),
+            region,
+            account_id,
+            account_started_at_ms,
+        )
+        .await
+        {
             Ok(result) => result,
             Err(error) => serde_json::json!({
                 "verdict": "unknown",
@@ -103,21 +121,32 @@ pub async fn inspect_provider(
     {
         let status = match state.store().get_session_by_id(account_id) {
             Some(session)
-                if session.session.get("edition").and_then(serde_json::Value::as_str)
+                if session
+                    .session
+                    .get("edition")
+                    .and_then(serde_json::Value::as_str)
                     == Some(region.id()) =>
             {
-                state.billing().get_checkin_status(Some(&session.session)).await
+                state
+                    .billing()
+                    .get_checkin_status(Some(&session.session))
+                    .await
             }
             Some(_) => Err(crate::server::core::billing::BillingError::new(
-                "WorkBuddy 账号地区与 CheckinRun Provider 不一致，拒绝跨地区核验", 409,
+                "WorkBuddy 账号地区与 CheckinRun Provider 不一致，拒绝跨地区核验",
+                409,
             )),
             None => Err(crate::server::core::billing::BillingError::new(
-                "WorkBuddy 账号会话不可用，无法读取签到状态", 404,
+                "WorkBuddy 账号会话不可用，无法读取签到状态",
+                404,
             )),
         };
         match status {
             Ok(status) => crate::server::core::providers::workbuddy::reconcile::classify_status(
-                region, account_started_at_ms, crate::server::logging::now_ms(), &status,
+                region,
+                account_started_at_ms,
+                crate::server::logging::now_ms(),
+                &status,
             ),
             Err(error) => serde_json::json!({
                 "verdict": "unknown",
@@ -139,10 +168,14 @@ pub async fn inspect_provider(
     match checkin_run_ledger::record_reconciliation_evidence(db, run_id, account_id, &result) {
         Ok(mut audit) => {
             if audit.get("resolved").and_then(serde_json::Value::as_bool) == Some(true) {
-                match checkin_run_ledger::project_pending_reconciliation_history(db, state.store()) {
+                match checkin_run_ledger::project_pending_reconciliation_history(db, state.store())
+                {
                     Ok(count) => {
                         if let Some(object) = audit.as_object_mut() {
-                            object.insert("historyProjected".to_string(), serde_json::json!(count > 0));
+                            object.insert(
+                                "historyProjected".to_string(),
+                                serde_json::json!(count > 0),
+                            );
                         }
                     }
                     Err(error) => {
@@ -161,6 +194,9 @@ pub async fn inspect_provider(
             }
             ok_json(result)
         }
-        Err(error) => crate::server::errors::management_error(503, &format!("对账结果未能安全持久化: {error}")),
+        Err(error) => crate::server::errors::management_error(
+            503,
+            &format!("对账结果未能安全持久化: {error}"),
+        ),
     }
 }

@@ -20,7 +20,7 @@
 
 use std::sync::{Mutex, OnceLock};
 
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use crate::server::core::providers::catalog_cache;
 use crate::server::errors::GatewayError;
@@ -47,7 +47,9 @@ fn state() -> &'static Mutex<Option<CatalogState>> {
 
 fn with_state<R>(f: impl FnOnce(&mut Option<CatalogState>) -> R) -> R {
     let mutex = state();
-    let mut guard = mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut guard = mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if guard.is_none() {
         if let Some(cached) = catalog_cache::load(SCOPE) {
             *guard = Some(CatalogState {
@@ -61,7 +63,11 @@ fn with_state<R>(f: impl FnOnce(&mut Option<CatalogState>) -> R) -> R {
 
 /// 当前清单（内存 → 落盘缓存；都没有时为空，由刷新路径填）。
 pub fn list() -> Vec<Value> {
-    with_state(|slot| slot.as_ref().map(|state| state.models.clone()).unwrap_or_default())
+    with_state(|slot| {
+        slot.as_ref()
+            .map(|state| state.models.clone())
+            .unwrap_or_default()
+    })
 }
 
 /// 这份清单是否来自远程拉取（界面「来源」列的判据）。
@@ -167,10 +173,7 @@ pub fn attach_rates(models: Vec<Value>, rates: &[(String, f64)]) -> Vec<Value> {
                 .to_lowercase();
             if let Some((_, value)) = rates.iter().find(|(name, _)| *name == id) {
                 if let Some(object) = model.as_object_mut() {
-                    object.insert(
-                        "credits".to_string(),
-                        Value::String(credits_text(*value)),
-                    );
+                    object.insert("credits".to_string(), Value::String(credits_text(*value)));
                 }
             }
             model
@@ -231,7 +234,10 @@ fn map_entry(entry: &Value) -> Option<Value> {
         // 所以不写 `supportsImages` —— 缺席 = 「不知道」，闸门据此不拦（见
         // `catalog/routing.rs` 的 `entry_refuses_images` 与它的模块头）。
         if let Some(developer) = entry.get("developer").and_then(Value::as_str) {
-            object.insert("developer".to_string(), Value::String(developer.to_string()));
+            object.insert(
+                "developer".to_string(),
+                Value::String(developer.to_string()),
+            );
         }
     }
     Some(out)
@@ -261,14 +267,20 @@ pub async fn refresh(credential: &OfficeAceCredential, force: bool) -> ModelRefr
             return ModelRefreshOutcome::unchanged();
         }
     }
-    let url = format!("{}/models", super::chat::normalize_base(&credential.base_url));
+    let url = format!(
+        "{}/models",
+        super::chat::normalize_base(&credential.base_url)
+    );
     if url == "/models" {
         return ModelRefreshOutcome::failed("OfficeAce 账号缺少模型网关基址");
     }
     let headers = vec![
         (
             "Authorization".to_string(),
-            super::chat::basic_authorization(&credential.model_app_key, &credential.model_app_secret),
+            super::chat::basic_authorization(
+                &credential.model_app_key,
+                &credential.model_app_secret,
+            ),
         ),
         ("Accept".to_string(), "application/json".to_string()),
     ];
@@ -316,7 +328,10 @@ pub async fn refresh(credential: &OfficeAceCredential, force: bool) -> ModelRefr
     let models = attach_rates(models, &rates);
     // 一条事实留痕：上游给了几条读数、几条对上了目录。少了这条，「只有 4 个模型显示倍率」
     // 就分不清是**上游只发布这几个**还是**两边命名对不上**（后者才需要改匹配规则）。
-    let with_rate = models.iter().filter(|model| model.get("credits").is_some()).count();
+    let with_rate = models
+        .iter()
+        .filter(|model| model.get("credits").is_some())
+        .count();
     crate::server::logging::log(
         "[OfficeAce]",
         &format!(
@@ -353,7 +368,10 @@ pub async fn refresh_from_record(record: Option<&Value>, force: bool) -> ModelRe
 
 /// 目录为空时的兜底错误（供适配器用）。
 pub fn unavailable_error() -> GatewayError {
-    GatewayError::with_status(503, "OfficeAce 模型目录尚未拉取：请先在模型管理页点「刷新模型清单」")
+    GatewayError::with_status(
+        503,
+        "OfficeAce 模型目录尚未拉取：请先在模型管理页点「刷新模型清单」",
+    )
 }
 
 /// 模型目录刷新结果（与各家同一类型）
@@ -413,9 +431,17 @@ mod tests {
             names,
             "空名/缺字段/负数/非数字都不该产出读数：{rates:?}"
         );
-        assert_eq!(Some(&0.7), rates.iter().find(|(name, _)| name == "glm-5.2").map(|(_, value)| value));
+        assert_eq!(
+            Some(&0.7),
+            rates
+                .iter()
+                .find(|(name, _)| name == "glm-5.2")
+                .map(|(_, value)| value)
+        );
         // `0` 是合法读数（免费/限免那一档），不许被「非零才算有」滤掉
-        assert!(rates.iter().any(|(name, value)| name == "kimi-k2.6" && *value == 0.0));
+        assert!(rates
+            .iter()
+            .any(|(name, value)| name == "kimi-k2.6" && *value == 0.0));
     }
 
     /// 匹配只认精确 id：表里没有 `glm-5.3` 就**不许**蹭 `glm-5` 的读数
@@ -469,7 +495,11 @@ mod tests {
     fn an_empty_rate_table_keeps_the_last_reading() {
         let fresh = vec![("glm-5.1".to_string(), 0.5f64)];
         assert_eq!(1, remember_rates(fresh).len());
-        assert_eq!(1, remember_rates(Vec::new()).len(), "空表要回上一份，不是空");
+        assert_eq!(
+            1,
+            remember_rates(Vec::new()).len(),
+            "空表要回上一份，不是空"
+        );
         assert_eq!("glm-5.1", current_rates()[0].0);
     }
 }

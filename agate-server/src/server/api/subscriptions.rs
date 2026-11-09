@@ -56,7 +56,10 @@ fn build_payload() -> Value {
             providers
                 .iter()
                 .filter_map(|(id, value)| {
-                    value.get("count").and_then(Value::as_u64).map(|count| (id.clone(), count as usize))
+                    value
+                        .get("count")
+                        .and_then(Value::as_u64)
+                        .map(|count| (id.clone(), count as usize))
                 })
                 .collect::<std::collections::HashMap<String, usize>>()
         })
@@ -115,12 +118,11 @@ pub async fn entry(request: axum::extract::Request) -> Response {
         .unwrap_or("")
         .trim_start_matches('/')
         .to_string();
-    let body = match axum::body::to_bytes(request.into_body(), crate::server::http::MAX_BODY_SIZE)
-        .await
-    {
-        Ok(bytes) => bytes,
-        Err(error) => return management_error(413, format!("请求体读取失败或过大: {error}")),
-    };
+    let body =
+        match axum::body::to_bytes(request.into_body(), crate::server::http::MAX_BODY_SIZE).await {
+            Ok(bytes) => bytes,
+            Err(error) => return management_error(413, format!("请求体读取失败或过大: {error}")),
+        };
     match (method.as_str(), rest.as_str()) {
         ("GET", "") => ok_json(build_payload()),
         ("POST", "add") => add(&body).await,
@@ -134,10 +136,7 @@ pub async fn entry(request: axum::extract::Request) -> Response {
         ("POST", "kernel/restart") => kernel_restart(),
         ("POST", "kernel/stop") => kernel_stop(),
         ("POST", "kernel/remove") => kernel_remove(),
-        _ => management_error(
-            404,
-            format!("Not found: {} {full_path}", method.as_str()),
-        ),
+        _ => management_error(404, format!("Not found: {} {full_path}", method.as_str())),
     }
 }
 
@@ -276,8 +275,17 @@ async fn remove(body: &Bytes) -> Response {
 /// 单节点分享链接的 scheme（识别到这些 → 明确报「暂不支持」而不是笼统的
 /// 「不是订阅链接」，把排查方向点明）
 const NODE_SCHEMES: &[&str] = &[
-    "ss://", "ssr://", "vmess://", "vless://", "trojan://", "hysteria://", "hysteria2://",
-    "hy2://", "tuic://", "socks://", "socks5://",
+    "ss://",
+    "ssr://",
+    "vmess://",
+    "vless://",
+    "trojan://",
+    "hysteria://",
+    "hysteria2://",
+    "hy2://",
+    "tuic://",
+    "socks://",
+    "socks5://",
 ];
 
 /// POST /api/subscriptions/decode-qr —— 从图片解二维码。
@@ -298,7 +306,10 @@ fn decode_qr(body: &Bytes) -> Response {
         return management_error(400, "缺少图片数据");
     }
     // data URL 前缀剥掉（`base64,` 之后才是正文）
-    let encoded = raw.split_once("base64,").map(|(_, rest)| rest).unwrap_or(raw);
+    let encoded = raw
+        .split_once("base64,")
+        .map(|(_, rest)| rest)
+        .unwrap_or(raw);
     let bytes = match base64::engine::general_purpose::STANDARD.decode(encoded) {
         Ok(bytes) => bytes,
         Err(_) => return management_error(400, "图片数据不是有效的 base64"),
@@ -380,7 +391,10 @@ async fn kernel_download(body: &Bytes) -> Response {
         .as_ref()
         .is_some_and(crate::server::core::proxies::is_rotate_config)
     {
-        return management_error(400, "订阅下载出口不支持「轮询」档（轮询用于 OpenCode Zen 账号的出网）");
+        return management_error(
+            400,
+            "订阅下载出口不支持「轮询」档（轮询用于 OpenCode Zen 账号的出网）",
+        );
     }
     // 目录：**缺字段 = 不动已存的设置**（老客户端与别的入口不带它）；
     // 有值就必须是绝对路径（空串 = 恢复默认）
@@ -478,7 +492,10 @@ fn kernel_stop() -> Response {
         return ok_json(status);
     }
     sub_kernel::request_halt();
-    logging::log("[Subscription]", "🛑 关闭代理内核（手动；订阅与端口注册表保留）");
+    logging::log(
+        "[Subscription]",
+        "🛑 关闭代理内核（手动；订阅与端口注册表保留）",
+    );
     ok_json(status)
 }
 

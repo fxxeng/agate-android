@@ -246,10 +246,7 @@ async fn run_daily_signin(
     // （与积分查询同一组 AUTH_EXPIRED_CODES，见 balance.rs）。
     if let Some(code) = payload.get("code").and_then(Value::as_i64) {
         if super::balance::is_auth_expired_code(code) {
-            return Err(GatewayError::with_status(
-                401,
-                "登录态已过期，无法签到",
-            ));
+            return Err(GatewayError::with_status(401, "登录态已过期，无法签到"));
         }
         if code != 0 {
             let message = payload
@@ -266,8 +263,14 @@ async fn run_daily_signin(
         .get("already_completed")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let reported_success = data.get("success").and_then(Value::as_bool).unwrap_or(false);
-    let reward_points = data.get("reward_points").and_then(Value::as_i64).unwrap_or(0);
+    let reported_success = data
+        .get("success")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let reward_points = data
+        .get("reward_points")
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
 
     // 「本次领到了」的判据是 reward_points > 0 或显式 success。**已领过不算成功**：
     // 上游对重复调用返回 success:false + already_completed:true，把它算成成功会让
@@ -308,10 +311,10 @@ async fn run_daily_signin(
 ///
 /// 返回 None 表示「列表里没有可用信息」——调用方据此退回通用文案，
 /// 不把一次辅助查询的失败拼接进用户看到的消息里。
-async fn describe_task_state(
-    credentials: &credentials::AutoClawCredentials,
-) -> Option<String> {
-    let payload = userapi_get(credentials, TASK_LIST_PATH, "任务列表查询").await.ok()?;
+async fn describe_task_state(credentials: &credentials::AutoClawCredentials) -> Option<String> {
+    let payload = userapi_get(credentials, TASK_LIST_PATH, "任务列表查询")
+        .await
+        .ok()?;
     if payload.get("code").and_then(Value::as_i64).unwrap_or(0) != 0 {
         return None;
     }
@@ -343,11 +346,18 @@ async fn describe_task_state(
 /// 什么」。未到账**不改 msg** —— 活动有期限，结束后每天提示「未到账」只会变成
 /// 噪音；状态仍在 `promotionReward` 字段里，给需要的地方读。
 fn attach_today_reward(mut claim: Value, reward: Value) -> Value {
-    let granted = reward.get("granted").and_then(Value::as_bool).unwrap_or(false);
+    let granted = reward
+        .get("granted")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     let points = reward.get("points").and_then(Value::as_i64).unwrap_or(0);
     if let Some(object) = claim.as_object_mut() {
         if granted && points > 0 {
-            let base = object.get("msg").and_then(Value::as_str).unwrap_or("").to_string();
+            let base = object
+                .get("msg")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
             if !base.is_empty() {
                 object.insert(
                     "msg".to_string(),

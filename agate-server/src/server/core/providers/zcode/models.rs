@@ -62,26 +62,81 @@ struct Spec {
 ///
 /// 顺序 = 展示顺序：能力由强到弱、同代相邻，便于管理页阅读。
 const MODELS: &[Spec] = &[
-    Spec { id: "glm-5.3", name: "GLM-5.3", max_output: 128_000, reasoning: None },
+    Spec {
+        id: "glm-5.3",
+        name: "GLM-5.3",
+        max_output: 128_000,
+        reasoning: None,
+    },
     // `glm-5.3-flash` 的视觉位由 models.dev 给出（目录 `agent/configs` 的
     // `capabilities.vision` 与实测一致：2026-09-30 发一张红色 4×4 PNG 它答「红色」；
     // 同一张图打 `glm-5.3` 被 400 拒掉，原文是「messages.content.type 参数非法，
     // 取值范围 ['text']」）。
-    Spec { id: "glm-5.3-flash", name: "GLM-5.3 Flash", max_output: 128_000, reasoning: None },
-    Spec { id: "glm-5.2", name: "GLM-5.2", max_output: 128_000, reasoning: None },
-    Spec { id: "glm-5.1", name: "GLM-5.1", max_output: 64_000, reasoning: None },
-    Spec { id: "glm-5", name: "GLM-5", max_output: 64_000, reasoning: None },
-    Spec { id: "glm-5-turbo", name: "GLM-5 Turbo", max_output: 64_000, reasoning: None },
-    Spec { id: "glm-4.7", name: "GLM-4.7", max_output: 131_072, reasoning: None },
-    Spec { id: "glm-4.6", name: "GLM-4.6", max_output: 131_072, reasoning: None },
-    Spec { id: "glm-4.5-air", name: "GLM-4.5 Air", max_output: 98_304, reasoning: None },
+    Spec {
+        id: "glm-5.3-flash",
+        name: "GLM-5.3 Flash",
+        max_output: 128_000,
+        reasoning: None,
+    },
+    Spec {
+        id: "glm-5.2",
+        name: "GLM-5.2",
+        max_output: 128_000,
+        reasoning: None,
+    },
+    Spec {
+        id: "glm-5.1",
+        name: "GLM-5.1",
+        max_output: 64_000,
+        reasoning: None,
+    },
+    Spec {
+        id: "glm-5",
+        name: "GLM-5",
+        max_output: 64_000,
+        reasoning: None,
+    },
+    Spec {
+        id: "glm-5-turbo",
+        name: "GLM-5 Turbo",
+        max_output: 64_000,
+        reasoning: None,
+    },
+    Spec {
+        id: "glm-4.7",
+        name: "GLM-4.7",
+        max_output: 131_072,
+        reasoning: None,
+    },
+    Spec {
+        id: "glm-4.6",
+        name: "GLM-4.6",
+        max_output: 131_072,
+        reasoning: None,
+    },
+    Spec {
+        id: "glm-4.5-air",
+        name: "GLM-4.5 Air",
+        max_output: 98_304,
+        reasoning: None,
+    },
     // 视觉两档**反对**思考，这两行是本表唯一保留 `reasoning` 的地方：
     // 目录里明确写着它们不支持思考，且标错的方向是不对称的 —— 声明成 true 会让
     // 客户端按「支持思考」去发 `thinking`，上游直接拒（400）；声明成 false 只是
     // 让客户端不启用思考。models.dev 对这两支给的是 true（那是实验室 API 的口径，
     // 与本通道的目录不一致），按「上游声明 > models.dev」取本目录的 false。
-    Spec { id: "glm-4.6v", name: "GLM-4.6V", max_output: 32_768, reasoning: Some(false) },
-    Spec { id: "glm-5v-turbo", name: "GLM-5V Turbo", max_output: 131_072, reasoning: Some(false) },
+    Spec {
+        id: "glm-4.6v",
+        name: "GLM-4.6V",
+        max_output: 32_768,
+        reasoning: Some(false),
+    },
+    Spec {
+        id: "glm-5v-turbo",
+        name: "GLM-5V Turbo",
+        max_output: 131_072,
+        reasoning: Some(false),
+    },
 ];
 
 /// 一个模型的**目录补充信息**（`agent/configs` 的 `builtinModels[]`）

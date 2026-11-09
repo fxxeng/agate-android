@@ -21,9 +21,9 @@ pub async fn claim_daily_checkin(
     store: &AccountStore,
     account_id: &str,
 ) -> Result<Value, GatewayError> {
-    let record = store
-        .officeace_account_record(account_id)
-        .ok_or_else(|| GatewayError::with_status(400, "OfficeAce 账号不存在或不可用，请重新选择"))?;
+    let record = store.officeace_account_record(account_id).ok_or_else(|| {
+        GatewayError::with_status(400, "OfficeAce 账号不存在或不可用，请重新选择")
+    })?;
     let credential = credentials::from_record(Some(&record))?;
     // 领之前记一份余额好算增量；读失败不阻断签到（只是少一个读数，不能因此判签到失败）
     let before = subscription::fetch_subscription(&credential).await.ok();

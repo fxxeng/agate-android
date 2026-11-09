@@ -82,7 +82,10 @@ pub fn build_prompt(messages: Option<&Value>) -> Result<TaskPrompt, GatewayError
     let mut system_prompt: Option<String> = None;
     let mut parts: Vec<String> = Vec::new();
     for message in items {
-        let role = message.get("role").and_then(Value::as_str).unwrap_or("user");
+        let role = message
+            .get("role")
+            .and_then(Value::as_str)
+            .unwrap_or("user");
         let text = content_text(message).unwrap_or_default();
         if role == "system" {
             if system_prompt.is_none() && !text.trim().is_empty() {
@@ -105,7 +108,10 @@ pub fn build_prompt(messages: Option<&Value>) -> Result<TaskPrompt, GatewayError
             "messages 里没有可发送的文本内容：MonkeyCode 只接收文本提示词（图片 / 文件附件不在本期范围）",
         ));
     }
-    Ok(TaskPrompt { content, system_prompt })
+    Ok(TaskPrompt {
+        content,
+        system_prompt,
+    })
 }
 
 /// 取一条消息的可读文本（content 字符串，或部件数组里的 text / input_text）。
@@ -147,8 +153,14 @@ pub fn build_body(
         Value::String(endpoints::host_id(region)),
     );
     body.insert("image_id".to_string(), Value::String(image_id.to_string()));
-    body.insert("model_id".to_string(), Value::String(target.model_id.clone()));
-    body.insert("cli_name".to_string(), Value::String(target.cli_name.clone()));
+    body.insert(
+        "model_id".to_string(),
+        Value::String(target.model_id.clone()),
+    );
+    body.insert(
+        "cli_name".to_string(),
+        Value::String(target.cli_name.clone()),
+    );
     body.insert(
         "resource".to_string(),
         json!({ "core": 1, "memory": 1073741824, "life": 3600 }),
@@ -168,7 +180,10 @@ pub fn build_body(
         .map(|text| text.trim())
         .filter(|text| !text.is_empty())
     {
-        body.insert("system_prompt".to_string(), Value::String(system.to_string()));
+        body.insert(
+            "system_prompt".to_string(),
+            Value::String(system.to_string()),
+        );
     }
     Value::Object(body)
 }
@@ -241,7 +256,11 @@ pub async fn create_task(
             target.cli_name,
             task_id,
             prompt.content.chars().count(),
-            if prompt.system_prompt.is_some() { "有" } else { "无" },
+            if prompt.system_prompt.is_some() {
+                "有"
+            } else {
+                "无"
+            },
             region.id(),
         ),
     );
@@ -335,7 +354,9 @@ fn check_business_code(payload: &Value) -> Result<(), GatewayError> {
         ),
         10811 => GatewayError::with_status(
             409,
-            format!("MonkeyCode 该账号已有正在运行的任务（code 10811），请等它结束或先停止它{suffix}"),
+            format!(
+                "MonkeyCode 该账号已有正在运行的任务（code 10811），请等它结束或先停止它{suffix}"
+            ),
         ),
         50000 => GatewayError::with_status(
             502,

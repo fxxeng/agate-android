@@ -123,7 +123,10 @@ impl GatewayError {
     pub fn payload(&self) -> Value {
         let mut error = Map::new();
         error.insert("message".to_string(), Value::String(self.message.clone()));
-        error.insert("type".to_string(), Value::String(self.error_type().to_string()));
+        error.insert(
+            "type".to_string(),
+            Value::String(self.error_type().to_string()),
+        );
         if let Some(code) = &self.code {
             error.insert("code".to_string(), Value::String(code.clone()));
         }
@@ -288,7 +291,11 @@ pub fn not_found_response(method: &str, path: &str) -> Response {
 /// 对应 Node 版各 route 模块里的 `sendJson(res, status, { success:false, error })`。
 pub fn management_error(status: i32, message: impl Into<String>) -> Response {
     let status = StatusCode::from_u16(status as u16).unwrap_or(StatusCode::BAD_REQUEST);
-    (status, Json(json!({ "success": false, "error": message.into() }))).into_response()
+    (
+        status,
+        Json(json!({ "success": false, "error": message.into() })),
+    )
+        .into_response()
 }
 
 /// 解析上游限额恢复时间：`YYYY-MM-DD HH:MM:SS UTC+8` → 毫秒时间戳。
@@ -368,7 +375,9 @@ pub fn parse_quota_reset_at(text: &str) -> i64 {
                         suffix += 1;
                     }
                     if bytes[suffix..].starts_with(b"UTC+8") {
-                        if let Some(millis) = to_utc_plus_8_millis(year, month, day, hour, minute, second) {
+                        if let Some(millis) =
+                            to_utc_plus_8_millis(year, month, day, hour, minute, second)
+                        {
                             return millis;
                         }
                     }
@@ -395,7 +404,12 @@ fn to_utc_plus_8_millis(
     let offset = chrono::FixedOffset::east_opt(8 * 3600)?;
     let naive = chrono::NaiveDate::from_ymd_opt(year as i32, month, day)?
         .and_hms_opt(hour, minute, second)?;
-    Some(offset.from_local_datetime(&naive).single()?.timestamp_millis())
+    Some(
+        offset
+            .from_local_datetime(&naive)
+            .single()?
+            .timestamp_millis(),
+    )
 }
 
 /// 恢复时间的本地化展示（对应 Node 版 `toLocaleString('zh-CN', { hour12:false })`）。
@@ -460,7 +474,10 @@ mod panel_401_cookie_tests {
         let cookies = set_cookies(&response);
         assert_eq!(cookies.len(), 1, "401 只该发一条清除头（多条会被中转拼坏）");
         assert!(cookies[0].starts_with(&format!("{}=;", access::ACCESS_COOKIE)));
-        assert!(cookies[0].contains("Path=/"), "清除要落在 access 的签发 Path 上");
+        assert!(
+            cookies[0].contains("Path=/"),
+            "清除要落在 access 的签发 Path 上"
+        );
         assert!(cookies[0].contains("Max-Age=0"));
         assert_eq!(
             response.status(),
@@ -481,7 +498,8 @@ mod panel_401_cookie_tests {
         let session = access::IssuedSession::new_session();
         let headers = with_cookie(&format!(
             "{}=not-a-live-access.{}",
-            access::ACCESS_COOKIE, session.refresh_token
+            access::ACCESS_COOKIE,
+            session.refresh_token
         ));
         // 前提：这把 refresh 确实活着（否则下面那条断言就在真空里跑）
         assert!(

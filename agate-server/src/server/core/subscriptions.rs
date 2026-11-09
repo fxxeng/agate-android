@@ -109,7 +109,11 @@ fn clean_string(value: Option<&Value>, max: usize) -> String {
 }
 
 fn text_of(value: &Value, key: &str) -> String {
-    value.get(key).and_then(Value::as_str).unwrap_or("").to_string()
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string()
 }
 
 /// 订阅链接校验：http/https 开头（mihomo 的 http provider 只认这两种）。
@@ -131,15 +135,14 @@ fn valid_url(url: &str) -> Result<(), String> {
 /// `proxies` 列表 / 列表为空 → provider 里 0 个节点；节点缺 name 或重名 →
 /// 整个 provider 加载失败（mihomo 对 provider 内的节点名有唯一性要求）。
 fn validate_local_content(content: &str) -> Result<usize, String> {
-    let parsed: serde_yaml::Value = serde_yaml::from_str(content)
-        .map_err(|error| format!("YAML 解析失败: {error}"))?;
+    let parsed: serde_yaml::Value =
+        serde_yaml::from_str(content).map_err(|error| format!("YAML 解析失败: {error}"))?;
     let Some(items) = parsed
         .get("proxies")
         .and_then(serde_yaml::Value::as_sequence)
     else {
         return Err(
-            "文件里没有找到节点列表（需要 Clash YAML 格式：顶层有非空的 proxies 列表）"
-                .to_string(),
+            "文件里没有找到节点列表（需要 Clash YAML 格式：顶层有非空的 proxies 列表）".to_string(),
         );
     };
     if items.is_empty() {

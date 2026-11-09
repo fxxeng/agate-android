@@ -67,8 +67,8 @@ use serde_json::{json, Value};
 
 use crate::server::core::auth_http::send_raw;
 use crate::server::core::endpoints::{normalize_endpoint, user_agent_for_edition};
-use crate::server::core::providers::workbuddy::region::Region;
 use crate::server::core::providers::catalog_cache;
+use crate::server::core::providers::workbuddy::region::Region;
 use crate::server::core::proxies::ResolvedProxy;
 use crate::server::logging;
 
@@ -79,7 +79,9 @@ use shape::{js_truthy, value_text};
 // 取这些名字，保持与拆分前同一条导入路径。
 // `shape_value_text` 是 `shape::value_text` 的别名导出：聚合目录要按 `name`
 // 匹配模型（对齐 `ModelCatalog::get` 的第二段），需要与这里同一套 JS 文本化。
-pub use shape::{list_item, list_response_from, model_id, suggest_from, value_text as shape_value_text};
+pub use shape::{
+    list_item, list_response_from, model_id, suggest_from, value_text as shape_value_text,
+};
 
 /// 下游可见模型白名单：/v1/models 与路由解析只暴露这些模型。
 ///
@@ -234,9 +236,8 @@ fn filter_with_meta(models: Vec<Value>, picker: Option<&[String]>) -> Vec<Value>
     //      「登录后只显示两个模型」的真正原因（能留下的只是恰好带了该字段的）。
     // 而 `data.agents[cli].models` 是**官方客户端下拉里真正展示的那批**，
     // 本身就是「哪些是对话模型」的权威答案。所以名单内的直接放行。
-    let in_picker = |id: &str| {
-        picker.is_some_and(|list| list.iter().any(|x| x.eq_ignore_ascii_case(id)))
-    };
+    let in_picker =
+        |id: &str| picker.is_some_and(|list| list.iter().any(|x| x.eq_ignore_ascii_case(id)));
     let keeps: Vec<bool> = probe
         .iter()
         .map(|item| in_picker(&model_id(item)) || is_chat_model(item))
@@ -288,8 +289,16 @@ fn initial_state(region: Region) -> CatalogState {
         };
     }
     let allowed = apply_filters(builtin_models());
-    let models = if allowed.is_empty() { allowlist_fallback() } else { allowed };
-    CatalogState { models, last_refreshed_at: 0, remote_refreshed: false }
+    let models = if allowed.is_empty() {
+        allowlist_fallback()
+    } else {
+        allowed
+    };
+    CatalogState {
+        models,
+        last_refreshed_at: 0,
+        remote_refreshed: false,
+    }
 }
 
 /// 模型目录句柄：内部一把 `RwLock`，克隆共享同一份状态。
@@ -344,7 +353,11 @@ fn picker_model_ids(payload: &Value) -> Option<Vec<String>> {
             .filter(|id| !id.is_empty())
             .map(str::to_string)
             .collect();
-        if ids.is_empty() { None } else { Some(ids) }
+        if ids.is_empty() {
+            None
+        } else {
+            Some(ids)
+        }
     };
     if let Some(rows) = agents.as_array() {
         for row in rows {
@@ -365,11 +378,13 @@ fn picker_model_ids(payload: &Value) -> Option<Vec<String>> {
     None
 }
 
-
 impl ModelCatalog {
     /// 构造目录（不刷新；刷新由启动流程与 /v1/models 触发）
     pub fn new(region: Region) -> Self {
-        Self { region, inner: Arc::new(RwLock::new(initial_state(region))) }
+        Self {
+            region,
+            inner: Arc::new(RwLock::new(initial_state(region))),
+        }
     }
 
     /// 这一份清单属于哪个地区
@@ -507,7 +522,11 @@ impl ModelCatalog {
             .collect();
         list_response_from(
             data,
-            if state.remote_refreshed { "remote" } else { "builtin" },
+            if state.remote_refreshed {
+                "remote"
+            } else {
+                "builtin"
+            },
             state.last_refreshed_at,
         )
     }
@@ -559,10 +578,7 @@ impl ModelCatalog {
                         let allowed = filter_with_meta(raw.clone(), picker.as_deref());
                         if !allowed.is_empty() {
                             self.apply_remote(allowed, "auto", false, picker.as_deref());
-                            return RefreshOutcome::refreshed(
-                                self.count(),
-                                "v3/config",
-                            );
+                            return RefreshOutcome::refreshed(self.count(), "v3/config");
                         }
                         logging::verbose(
                             "[Models]",
@@ -647,13 +663,20 @@ impl ModelCatalog {
                 };
                 object.insert("isDefault".to_string(), Value::Bool(is_auto));
                 let model_type = if enterprise {
-                    if raw_id.starts_with(custom_prefix) { "enterprise" } else { "built-in" }
+                    if raw_id.starts_with(custom_prefix) {
+                        "enterprise"
+                    } else {
+                        "built-in"
+                    }
                 } else if is_auto {
                     "auto"
                 } else {
                     "built-in"
                 };
-                object.insert("modelType".to_string(), Value::String(model_type.to_string()));
+                object.insert(
+                    "modelType".to_string(),
+                    Value::String(model_type.to_string()),
+                );
                 // ── 可见性：在不在**官方 picker 名单**里 ──
                 // 上游 `/v3/config` 有两份清单：`data.models`（60 条，带元数据）与
                 // `data.agents[cli].models`（18 条裸 id）—— 后者才是官方客户端
@@ -699,14 +722,12 @@ impl ModelCatalog {
         // 烧掉闸门标记（冷启动那条路径传 false，见 `adapter` 的补种）。
         // `official = picker`：默认启用**只认官方客户端下拉那份名单** ——
         // 桌面端看到几个，这里就默认开几个（见 `seed_workbuddy_defaults`）。
-        if let Some(summary) =
-            crate::server::core::model_rules::seed_workbuddy_defaults(
-                self.region.provider_id(),
-                &ids,
-                true,
-                picker,
-            )
-        {
+        if let Some(summary) = crate::server::core::model_rules::seed_workbuddy_defaults(
+            self.region.provider_id(),
+            &ids,
+            true,
+            picker,
+        ) {
             logging::log("[Models]", &summary);
         }
     }
@@ -748,7 +769,10 @@ impl ModelCatalog {
                 None => match auth.get_current_session().await {
                     Ok(session) => (session, None),
                     Err(error) => {
-                        logging::verbose("[Models]", &format!("模型目录刷新失败: {}", error.message));
+                        logging::verbose(
+                            "[Models]",
+                            &format!("模型目录刷新失败: {}", error.message),
+                        );
                         return RefreshOutcome::not_refreshed(error.message);
                     }
                 },
@@ -808,7 +832,10 @@ impl ModelCatalog {
         if outcome.refreshed {
             logging::log(
                 "[Models]",
-                &format!("✅ 模型目录已更新（{} 个，来源 {}）", outcome.count, outcome.source),
+                &format!(
+                    "✅ 模型目录已更新（{} 个，来源 {}）",
+                    outcome.count, outcome.source
+                ),
             );
         } else {
             logging::verbose("[Models]", &format!("模型目录未更新: {}", outcome.reason));
@@ -861,7 +888,8 @@ fn encode_uri_component(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     for byte in value.as_bytes() {
         let ch = *byte as char;
-        if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | '!' | '~' | '*' | '\'' | '(' | ')')
+        if ch.is_ascii_alphanumeric()
+            || matches!(ch, '-' | '_' | '.' | '!' | '~' | '*' | '\'' | '(' | ')')
         {
             out.push(ch);
         } else {
@@ -900,7 +928,11 @@ static WORKBUDDY_INTL_CATALOG: OnceLock<ModelCatalog> = OnceLock::new();
 /// （最坏情况是「还没被 `/v3/config` 刷新过」的内置清单，与改造前的初始态一致）。
 pub fn global_catalog(region: Region) -> ModelCatalog {
     match region {
-        Region::Cn => WORKBUDDY_CATALOG.get_or_init(|| ModelCatalog::new(region)).clone(),
-        Region::Intl => WORKBUDDY_INTL_CATALOG.get_or_init(|| ModelCatalog::new(region)).clone(),
+        Region::Cn => WORKBUDDY_CATALOG
+            .get_or_init(|| ModelCatalog::new(region))
+            .clone(),
+        Region::Intl => WORKBUDDY_INTL_CATALOG
+            .get_or_init(|| ModelCatalog::new(region))
+            .clone(),
     }
 }

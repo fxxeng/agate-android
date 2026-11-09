@@ -423,7 +423,11 @@ pub async fn pool_enable(state: &ServerState, body: &Bytes) -> Response {
 ///
 /// 只对订阅节点有事可做：manual 没有本机端口，clash 的端口在 Clash Verge 手里
 /// （那是别人家的进程，本服务能做的只是「本端别用它」）。
-fn listener_flow(state: &ServerState, id: &str, change: &proxy_pool::EnabledChange) -> &'static str {
+fn listener_flow(
+    state: &ServerState,
+    id: &str,
+    change: &proxy_pool::EnabledChange,
+) -> &'static str {
     if change.source != "subscription" {
         return "none";
     }
@@ -502,20 +506,19 @@ pub async fn pool_test(state: &ServerState, body: &Bytes) -> Response {
     // （锁只在订阅分支内拿，manual / clash 不碰内核、不排队）。
     let (result, public) = if target.source == "subscription" {
         let _guard = SUB_TEST_LOCK.lock().await;
-        let proxy = match sub_kernel::runtime::select_test_node(&target.provider_id, &target.node)
-            .await
-        {
-            Ok(port) => ResolvedProxy {
-                source: "pool".to_string(),
-                protocol: "http".to_string(),
-                host: "127.0.0.1".to_string(),
-                port: Some(port),
-                username: String::new(),
-                password: String::new(),
-                label: target.name.clone(),
-            },
-            Err(message) => return management_error(400, message),
-        };
+        let proxy =
+            match sub_kernel::runtime::select_test_node(&target.provider_id, &target.node).await {
+                Ok(port) => ResolvedProxy {
+                    source: "pool".to_string(),
+                    protocol: "http".to_string(),
+                    host: "127.0.0.1".to_string(),
+                    port: Some(port),
+                    username: String::new(),
+                    password: String::new(),
+                    label: target.name.clone(),
+                },
+                Err(message) => return management_error(400, message),
+            };
         let result = egress::test_proxy(Some(&proxy)).await;
         (result, egress::describe_public(Some(&proxy)))
     } else {
@@ -558,7 +561,10 @@ pub async fn pool_test(state: &ServerState, body: &Bytes) -> Response {
         }
         object.insert(
             "items".to_string(),
-            pool_payload(state).get("items").cloned().unwrap_or_else(|| json!([])),
+            pool_payload(state)
+                .get("items")
+                .cloned()
+                .unwrap_or_else(|| json!([])),
         );
     }
     ok_json(data)
@@ -619,8 +625,7 @@ pub async fn settings_save(body: &Bytes) -> Response {
 /// 持锁路径的边缘调用它，不想为它包一层 spawn。
 pub fn reconcile_listeners(state: &ServerState) -> bool {
     let pool_ids = state.store().referenced_pool_ids();
-    let borrowed: std::collections::HashSet<&str> =
-        pool_ids.iter().map(String::as_str).collect();
+    let borrowed: std::collections::HashSet<&str> = pool_ids.iter().map(String::as_str).collect();
     let wanted = proxy_pool::listener_node_keys(&borrowed);
     let mut missing = 0usize;
     let mut stale = 0usize;

@@ -22,8 +22,8 @@ use serde_json::Value;
 use crate::server::core::proxies::ResolvedProxy;
 use crate::server::errors::GatewayError;
 
-use super::credentials::{KukuCredentials, request_headers};
-use super::{WEB_QUERY, BASE_URL};
+use super::credentials::{request_headers, KukuCredentials};
+use super::{BASE_URL, WEB_QUERY};
 
 /// 三件套的有效期（参考实现 600 秒，同值）
 const TTL_MS: i64 = 600_000;
@@ -70,7 +70,13 @@ pub async fn ensure_tokens(
     {
         let mut guard = slots();
         let map = guard.get_or_insert_with(HashMap::new);
-        map.insert(key, TokenSlot { triple: triple.clone(), refreshed_at_ms: now });
+        map.insert(
+            key,
+            TokenSlot {
+                triple: triple.clone(),
+                refreshed_at_ms: now,
+            },
+        );
     }
     Ok(triple)
 }
@@ -115,7 +121,8 @@ async fn refresh_triple(
                     );
                     prepared.stoken = stoken;
                     let headers = request_headers(&prepared);
-                    value = super::http::get_json_value(&url, &headers, proxy, Some(30_000)).await?;
+                    value =
+                        super::http::get_json_value(&url, &headers, proxy, Some(30_000)).await?;
                     errno = value.get("errno").and_then(Value::as_i64).unwrap_or(-1);
                 }
                 Err(error) => {

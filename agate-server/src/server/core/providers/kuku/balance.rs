@@ -24,7 +24,7 @@
 //! ── 硬约束 ──────────────────────────────────────────────────
 //! release 是 `panic=abort`：本文件零 unwrap/expect/panic。
 
-use serde_json::{Map, Value, json};
+use serde_json::{json, Map, Value};
 
 use crate::server::core::account_store::AccountStore;
 use crate::server::errors::GatewayError;
@@ -49,10 +49,7 @@ pub(super) async fn query_usage(
     let value = super::http::get_json_value(&url, &headers, None, Some(BALANCE_TIMEOUT_MS)).await?;
     // 顶层包络：判据在 status.code（2026-10-07 真实凭证实测）
     let status = value.get("status").cloned().unwrap_or(Value::Null);
-    let code = status
-        .get("code")
-        .and_then(Value::as_i64)
-        .unwrap_or(-1);
+    let code = status.get("code").and_then(Value::as_i64).unwrap_or(-1);
     if code != 0 {
         let message = status
             .get("msg")

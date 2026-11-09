@@ -114,9 +114,23 @@ pub async fn report(
             let reason = "本机随机源不可用，无法生成事件 id（激活事件未上报）".to_string();
             return Err(first_error.unwrap_or(reason));
         };
-        let body = event_body(event, &event_id, user_id, device_mid, &timezone, &os_version);
-        let failure = match send_raw("POST", &url, Some(&body), &[], proxy, Some(REQUEST_TIMEOUT_MS))
-            .await
+        let body = event_body(
+            event,
+            &event_id,
+            user_id,
+            device_mid,
+            &timezone,
+            &os_version,
+        );
+        let failure = match send_raw(
+            "POST",
+            &url,
+            Some(&body),
+            &[],
+            proxy,
+            Some(REQUEST_TIMEOUT_MS),
+        )
+        .await
         {
             Ok(response) => {
                 let payload = response.payload.unwrap_or(Value::Null);
@@ -124,7 +138,10 @@ pub async fn report(
                 // 同样要求 `code == 0`）
                 let code = payload.get("code").and_then(Value::as_i64).unwrap_or(-1);
                 (code != 0).then(|| {
-                    format!("激活事件上报被上游拒绝：{}", envelope_message(&payload, code))
+                    format!(
+                        "激活事件上报被上游拒绝：{}",
+                        envelope_message(&payload, code)
+                    )
                 })
             }
             Err(error) => Some(if error.is_timeout() {

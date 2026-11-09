@@ -54,8 +54,8 @@ use std::time::Duration;
 use serde_json::{json, Map, Value};
 
 use crate::server::core::egress;
-use crate::server::core::proxies::ResolvedProxy;
 use crate::server::core::providers::catalog_cache;
+use crate::server::core::proxies::ResolvedProxy;
 
 use super::endpoints;
 
@@ -121,7 +121,14 @@ pub fn upstream_model_id(id: &str) -> String {
 /// （取到第一个非数字非点号的字符为止）要求 ≥ 3.6。
 fn tiered_flash_id(original: &str, lowered: &str) -> Option<String> {
     for suffix in [
-        "-high", "-medium", "-low", "-extra-low", "-tiered", "-preview", "-agent", "-thinking",
+        "-high",
+        "-medium",
+        "-low",
+        "-extra-low",
+        "-tiered",
+        "-preview",
+        "-agent",
+        "-thinking",
         "-image",
     ] {
         if lowered.contains(suffix) {
@@ -230,7 +237,9 @@ fn state() -> &'static Mutex<Option<CatalogState>> {
 /// 在锁内执行一段取值，并在首次访问时把落盘缓存装回内存
 fn with_state<R>(f: impl FnOnce(&mut Option<CatalogState>) -> R) -> R {
     let mutex = state();
-    let mut guard = mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut guard = mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if guard.is_none() {
         if let Some(cached) = catalog_cache::load(SCOPE) {
             *guard = Some(CatalogState {
@@ -312,7 +321,10 @@ fn map_entry(id: &str, info: &Value) -> Option<Value> {
                 .unwrap_or_else(|| fallback_is_default(id)),
         ),
     );
-    for (source, target) in [("maxTokens", "maxInputTokens"), ("maxOutputTokens", "maxOutputTokens")] {
+    for (source, target) in [
+        ("maxTokens", "maxInputTokens"),
+        ("maxOutputTokens", "maxOutputTokens"),
+    ] {
         if let Some(value) = info.get(source).and_then(Value::as_i64) {
             if value > 0 {
                 item.insert(target.to_string(), Value::from(value));

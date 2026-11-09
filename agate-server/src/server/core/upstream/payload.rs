@@ -195,19 +195,21 @@ pub(super) fn send_body<'a>(
     // 脱敏、各适配器）看到的就是统一形态 —— 适配器自己的 developer→system 映射
     // 对归一后的体是幂等的，不会二次改写。开关关着或没有 developer 消息时
     // 原体直接往下走（零拷贝），只有真要改才付出一次克隆。
-    let role_base: Cow<'a, Value> =
-        match normalize_developer_role(ctx.body, ctx.developer_role_compat) {
-            Some((next, changed)) => {
-                logging::verbose(
+    let role_base: Cow<'a, Value> = match normalize_developer_role(
+        ctx.body,
+        ctx.developer_role_compat,
+    ) {
+        Some((next, changed)) => {
+            logging::verbose(
                     "[Upstream]",
                     &format!(
                         "角色归一层：developer → system × {changed} 条 provider={provider_id}（开发者角色兼容）"
                     ),
                 );
-                Cow::Owned(next)
-            }
-            None => Cow::Borrowed(ctx.body),
-        };
+            Cow::Owned(next)
+        }
+        None => Cow::Borrowed(ctx.body),
+    };
     // ── ① 系统提示词层（网关自有提示词：透传 / 替换 / 追加）──────────────
     // 在脱敏**之前**：与参考项目同序（提示词改写 → 脱敏），于是网关提示词
     // 自己万一命中指纹也会被后一层清掉；反过来的话，「刚换上去的那段提示词」
@@ -245,7 +247,10 @@ pub(super) fn send_body<'a>(
     };
     // ── ② 指纹脱敏层（核心规则见 `core::sanitize`）─────────────────────
     let body = match ctx.sanitize_fingerprints {
-        true => match crate::server::core::sanitize::sanitize_body(after_prompt.as_ref(), ctx.sanitize_zwsp_words) {
+        true => match crate::server::core::sanitize::sanitize_body(
+            after_prompt.as_ref(),
+            ctx.sanitize_zwsp_words,
+        ) {
             Some((scrubbed, hits)) => {
                 // 命中表可能为空：`sanitize_text` 末尾的去空白也能单独构成一次
                 // 改动（预检命中、但没有任何规则真正替换）。那时不该往请求日志
@@ -296,7 +301,10 @@ pub(super) fn send_body<'a>(
         .to_string();
     if requested.is_empty() {
         // 没有 model 字段：不改写，也没有可用的冷却键（空串，与改造前一致）
-        return SendBody { body, wire_model: requested };
+        return SendBody {
+            body,
+            wire_model: requested,
+        };
     }
     // 一次解析出两个属性：该家要收的名字 + 跟着那条映射走的思考等级
     // （同源，见模块头「思考等级绑定为什么也在这一步」）
@@ -322,7 +330,10 @@ pub(super) fn send_body<'a>(
     // 注入路径已经问过一次适配器，这里再查一次注册表是两次哈希查找，可忽略。
     let upstream_reasoning = injected.or_else(|| outbound_reasoning_of(provider_id, &body));
     ctx.telemetry.note_upstream_reasoning(upstream_reasoning);
-    SendBody { body, wire_model: wire.model }
+    SendBody {
+        body,
+        wire_model: wire.model,
+    }
 }
 
 /// 承载家的 [`ProviderAdapter::outbound_reasoning`]（读发送体里随行的等级）。

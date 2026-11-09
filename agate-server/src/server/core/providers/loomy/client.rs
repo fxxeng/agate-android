@@ -61,26 +61,33 @@ pub fn upstream_message(payload: &Value) -> String {
 ///
 /// 返回上游响应体（`{code, desc, data}`）。HTTP 层失败翻译成网关错误；
 /// 业务码**不在这里判**（调用方各有各的翻译，见 `login.rs`）。
-pub async fn signed_post(
-    path: &str,
-    body: &Value,
-    what: &str,
-) -> Result<Value, GatewayError> {
+pub async fn signed_post(path: &str, body: &Value, what: &str) -> Result<Value, GatewayError> {
     let url = format!("{}{path}", endpoints::xfyun_base_url());
     let headers = sign::signed_headers("POST", path, Some(body))?;
-    let response = send_raw("POST", &url, Some(body), &headers, None, Some(REQUEST_TIMEOUT_MS))
-        .await
-        .map_err(|error| {
-            if error.is_timeout() {
-                GatewayError::with_status(504, format!("{what}超时，请稍后重试"))
-            } else {
-                GatewayError::with_status(502, format!("{what}失败：{error}"))
-            }
-        })?;
+    let response = send_raw(
+        "POST",
+        &url,
+        Some(body),
+        &headers,
+        None,
+        Some(REQUEST_TIMEOUT_MS),
+    )
+    .await
+    .map_err(|error| {
+        if error.is_timeout() {
+            GatewayError::with_status(504, format!("{what}超时，请稍后重试"))
+        } else {
+            GatewayError::with_status(502, format!("{what}失败：{error}"))
+        }
+    })?;
     if !response.ok {
         return Err(GatewayError::with_status(
             response.status as i32,
-            format!("{what}返回 HTTP {}（上游地址 {}）", response.status, endpoints::xfyun_base_url()),
+            format!(
+                "{what}返回 HTTP {}（上游地址 {}）",
+                response.status,
+                endpoints::xfyun_base_url()
+            ),
         ));
     }
     Ok(response.payload.unwrap_or(Value::Null))
@@ -122,7 +129,10 @@ pub async fn token_request(
         if response.status == 401 || response.status == 403 {
             return Err(GatewayError::with_status(
                 401,
-                format!("{what}：Loomy 登录态已失效，请重新登录（HTTP {}）", response.status),
+                format!(
+                    "{what}：Loomy 登录态已失效，请重新登录（HTTP {}）",
+                    response.status
+                ),
             ));
         }
         return Err(GatewayError::with_status(

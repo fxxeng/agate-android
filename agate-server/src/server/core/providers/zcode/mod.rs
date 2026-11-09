@@ -91,8 +91,8 @@
 use serde_json::Value;
 
 use crate::server::core::prompt::GatewayBlocks;
-pub mod adapter;
 pub mod activation;
+pub mod adapter;
 pub mod balance;
 pub mod captcha;
 pub mod claim;
@@ -203,4 +203,3 @@ pub fn plan_label(plan: &str) -> &'static str {
         _ => "编码套餐（Coding Plan）",
     }
 }
-

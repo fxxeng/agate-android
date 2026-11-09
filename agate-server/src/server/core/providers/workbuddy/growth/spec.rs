@@ -15,9 +15,9 @@
 //! ── 硬约束 ──────────────────────────────────────────────────
 //! release 是 `panic=abort`：本文件零 unwrap/expect/panic。
 
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
-use super::{GrowthAccount, bill_call, chat_call};
+use super::{bill_call, chat_call, GrowthAccount};
 
 /// 一个任务的完成定义（映射表条目）。
 pub struct TaskSpec {
@@ -39,7 +39,15 @@ pub struct TaskSpec {
 
 impl TaskSpec {
     const fn new(kind: &'static str, target: i64, src: &'static str, needs_object: bool) -> Self {
-        Self { kind, target, src, needs_object, unforgeable: false, reason: "", mp: false }
+        Self {
+            kind,
+            target,
+            src,
+            needs_object,
+            unforgeable: false,
+            reason: "",
+            mp: false,
+        }
     }
 
     const fn unforgeable(reason: &'static str) -> Self {
@@ -82,7 +90,9 @@ pub fn spec_of(code: &str) -> Option<TaskSpec> {
         // web 域 web_element_click
         "Library_read" => TaskSpec::new("library", 1, "资料库介绍点击（web 域）", false),
         // ── 小程序成长任务（growth 域 mp 口径；accept/claim 需 mp 头）──
-        "Sequential_Tasks_1" => TaskSpec::new("minichat", 1, "小程序对话（无 activityId）", false).with_mp(),
+        "Sequential_Tasks_1" => {
+            TaskSpec::new("minichat", 1, "小程序对话（无 activityId）", false).with_mp()
+        }
         "Sequential_Tasks_2" => {
             TaskSpec::new("miniexpert", 1, "小程序选中专家对话", true).with_mp()
         }
@@ -93,7 +103,13 @@ pub fn spec_of(code: &str) -> Option<TaskSpec> {
         "Sequential_Tasks_5" => {
             TaskSpec::new("miniglmchat", 1, "小程序 GLM5.2 对话", false).with_mp()
         }
-        "school_season" => TaskSpec::new("schoolseason", 1, "校园日活动（mini chat+activityId）", false).with_mp(),
+        "school_season" => TaskSpec::new(
+            "schoolseason",
+            1,
+            "校园日活动（mini chat+activityId）",
+            false,
+        )
+        .with_mp(),
         // ── 不可伪造 ──
         "Expert_Philanthropy" => TaskSpec::unforgeable("真实捐款动作"),
         _ => return None,
@@ -160,9 +176,13 @@ pub async fn ids_for(
         "miniexpert" => Ok(slice(fetch_market_experts(account, false, None).await)),
         // 无载体类型：返回空 id 占位（events.rs 构造时不需要对象）
         "chat" | "glmchat" | "cat" | "automation" | "richmeow" | "buddy5" | "library"
-        | "buddyfirst" | "minichat" | "schoolseason" | "miniautomation" | "miniglmchat" => {
-            Ok((0..need).map(|_| ObjectId { id: String::new(), meta: Value::Null }).collect())
-        }
+        | "buddyfirst" | "minichat" | "schoolseason" | "miniautomation" | "miniglmchat" => Ok((0
+            ..need)
+            .map(|_| ObjectId {
+                id: String::new(),
+                meta: Value::Null,
+            })
+            .collect()),
         other => Err(format!("未知 kind：{other}")),
     }
 }
@@ -243,7 +263,10 @@ async fn fetch_scenes(account: &GrowthAccount) -> Vec<ObjectId> {
     if out.is_empty() {
         out = DEFAULT_SCENES
             .iter()
-            .map(|(id, name)| ObjectId { id: id.to_string(), meta: json!({ "name": name }) })
+            .map(|(id, name)| ObjectId {
+                id: id.to_string(),
+                meta: json!({ "name": name }),
+            })
             .collect();
     }
     out
@@ -294,7 +317,10 @@ async fn fetch_market_experts(
             if id.is_empty() || seen.iter().any(|item| item == id) {
                 continue;
             }
-            let expert_type = expert.get("expert_type").and_then(Value::as_str).unwrap_or("agent");
+            let expert_type = expert
+                .get("expert_type")
+                .and_then(Value::as_str)
+                .unwrap_or("agent");
             if team_only && expert_type != "team" {
                 continue;
             }
@@ -327,7 +353,10 @@ async fn fetch_market_experts(
     if let Some(cos) = fetch_cos_experts().await {
         for expert in cos {
             let id = expert.get("id").and_then(Value::as_str).unwrap_or("");
-            let expert_type = expert.get("expertType").and_then(Value::as_str).unwrap_or("agent");
+            let expert_type = expert
+                .get("expertType")
+                .and_then(Value::as_str)
+                .unwrap_or("agent");
             if id.is_empty()
                 || (team_only && expert_type != "team")
                 || seen.iter().any(|item| item == id)
@@ -351,19 +380,21 @@ async fn fetch_market_experts(
         }
     }
     if out.is_empty() {
-        let fallback: &[&str] = if team_only { DEFAULT_TEAM_IDS } else { DEFAULT_EXPERT_IDS };
+        let fallback: &[&str] = if team_only {
+            DEFAULT_TEAM_IDS
+        } else {
+            DEFAULT_EXPERT_IDS
+        };
         out = fallback
             .iter()
-            .map(|id| {
-                ObjectId {
-                    id: (*id).to_string(),
-                    meta: json!({
-                        "name": "",
-                        "category": "",
-                        "expertType": if team_only { "team" } else { "agent" },
-                        "version": "",
-                    }),
-                }
+            .map(|id| ObjectId {
+                id: (*id).to_string(),
+                meta: json!({
+                    "name": "",
+                    "category": "",
+                    "expertType": if team_only { "team" } else { "agent" },
+                    "version": "",
+                }),
             })
             .collect();
     }
@@ -416,7 +447,10 @@ async fn fetch_skills(account: &GrowthAccount) -> Vec<ObjectId> {
     if out.is_empty() {
         out = DEFAULT_SKILL_IDS
             .iter()
-            .map(|(id, name)| ObjectId { id: (*id).to_string(), meta: json!({ "name": name }) })
+            .map(|(id, name)| ObjectId {
+                id: (*id).to_string(),
+                meta: json!({ "name": name }),
+            })
             .collect();
     }
     out
@@ -480,7 +514,11 @@ async fn fetch_lighthouse(account: &GrowthAccount) -> Vec<ObjectId> {
             let blob = format!(
                 "{}{}",
                 item.id.to_lowercase(),
-                item.meta.get("name").and_then(Value::as_str).unwrap_or("").to_lowercase()
+                item.meta
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_lowercase()
             );
             let agent = item
                 .meta
@@ -489,7 +527,10 @@ async fn fetch_lighthouse(account: &GrowthAccount) -> Vec<ObjectId> {
                 .unwrap_or("")
                 .to_lowercase();
             let blob = format!("{blob}{agent}");
-            if ["lighthouse", "轻量", "light", "yun"].iter().any(|needle| blob.contains(needle)) {
+            if ["lighthouse", "轻量", "light", "yun"]
+                .iter()
+                .any(|needle| blob.contains(needle))
+            {
                 out.push(item);
             }
         }
@@ -497,7 +538,10 @@ async fn fetch_lighthouse(account: &GrowthAccount) -> Vec<ObjectId> {
     if out.is_empty() {
         out = LIGHTHOUSE_FALLBACK
             .iter()
-            .map(|(id, name)| ObjectId { id: (*id).to_string(), meta: json!({ "name": name }) })
+            .map(|(id, name)| ObjectId {
+                id: (*id).to_string(),
+                meta: json!({ "name": name }),
+            })
             .collect();
     }
     out

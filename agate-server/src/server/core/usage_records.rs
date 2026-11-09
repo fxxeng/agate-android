@@ -126,12 +126,12 @@ pub fn load(account_id: &str) -> UsageRecord {
         last_success_at: 0,
         last_attempt_at: 0,
     };
-    let Some(db) = database() else { return fallback };
+    let Some(db) = database() else {
+        return fallback;
+    };
     db.with(|conn| {
         conn.query_row(
-            &format!(
-                "SELECT {RECORD_COLUMNS} FROM account_usage_records WHERE account_id = ?1"
-            ),
+            &format!("SELECT {RECORD_COLUMNS} FROM account_usage_records WHERE account_id = ?1"),
             [account_id],
             row_to_record,
         )
@@ -144,7 +144,9 @@ pub fn load(account_id: &str) -> UsageRecord {
 
 /// 全部记录（快照接口的组装原料）。库不可用时给空表 —— 上层按「没查过」降级。
 pub fn load_all() -> HashMap<String, UsageRecord> {
-    let Some(db) = database() else { return HashMap::new() };
+    let Some(db) = database() else {
+        return HashMap::new();
+    };
     db.with(|conn| {
         let Ok(mut statement) = conn.prepare(&format!(
             "SELECT account_id, {RECORD_COLUMNS} FROM account_usage_records"
@@ -155,7 +157,9 @@ pub fn load_all() -> HashMap<String, UsageRecord> {
             let account_id: String = row.get("account_id")?;
             Ok((account_id, row_to_record(row)?))
         });
-        let Ok(rows) = rows else { return HashMap::new() };
+        let Ok(rows) = rows else {
+            return HashMap::new();
+        };
         rows.filter_map(|item| item.ok()).collect::<HashMap<_, _>>()
     })
     .unwrap_or_default()
@@ -188,7 +192,10 @@ pub fn mark_attempt(account_id: &str) {
         .is_err()
     });
     if failed != Some(false) {
-        logging::verbose("[Usage]", &format!("账号 {account_id} 余额查询占位失败（库里没记上本次尝试）"));
+        logging::verbose(
+            "[Usage]",
+            &format!("账号 {account_id} 余额查询占位失败（库里没记上本次尝试）"),
+        );
     }
 }
 
@@ -201,13 +208,14 @@ pub fn write_result(account_id: &str, outcome: &UsageOutcome) {
     // 闭包返回 `(是否成功, 成功时提出的数字)`：失败分支只写原因、保留旧数值
     // （SQL 里就不碰 usage / remaining / last_success 三列），事实表按它更新。
     // `with_mut` 本身再包一层 Option（锁中毒 = None），match 前先 flatten。
-    let written = db.with_mut(|conn| -> Option<(bool, Option<f64>)> {
-        match outcome.usage.as_ref() {
-            Some(usage) => {
-                let (remaining, unlimited) = extract_remaining(usage);
-                let usage_text = serde_json::to_string(usage).ok()?;
-                conn.execute(
-                    "INSERT INTO account_usage_records
+    let written = db
+        .with_mut(|conn| -> Option<(bool, Option<f64>)> {
+            match outcome.usage.as_ref() {
+                Some(usage) => {
+                    let (remaining, unlimited) = extract_remaining(usage);
+                    let usage_text = serde_json::to_string(usage).ok()?;
+                    conn.execute(
+                        "INSERT INTO account_usage_records
                        (account_id, usage, error, code, remaining, unlimited,
                         last_success_at, last_attempt_at, updated_at)
                      VALUES (?1, ?2, NULL, NULL, ?3, ?4, ?5, ?5, ?5)
@@ -220,15 +228,18 @@ pub fn write_result(account_id: &str, outcome: &UsageOutcome) {
                        last_success_at = excluded.last_success_at,
                        last_attempt_at = excluded.last_attempt_at,
                        updated_at = excluded.updated_at",
-                    params![account_id, usage_text, remaining, unlimited as i64, now],
-                )
-                .ok()?;
-                Some((true, remaining))
-            }
-            None => {
-                let error = outcome.error.clone().unwrap_or_else(|| "查询失败".to_string());
-                conn.execute(
-                    "INSERT INTO account_usage_records
+                        params![account_id, usage_text, remaining, unlimited as i64, now],
+                    )
+                    .ok()?;
+                    Some((true, remaining))
+                }
+                None => {
+                    let error = outcome
+                        .error
+                        .clone()
+                        .unwrap_or_else(|| "查询失败".to_string());
+                    conn.execute(
+                        "INSERT INTO account_usage_records
                        (account_id, error, code, last_attempt_at, updated_at)
                      VALUES (?1, ?2, ?3, ?4, ?4)
                      ON CONFLICT(account_id) DO UPDATE SET
@@ -236,19 +247,24 @@ pub fn write_result(account_id: &str, outcome: &UsageOutcome) {
                        code = excluded.code,
                        last_attempt_at = excluded.last_attempt_at,
                        updated_at = excluded.updated_at",
-                    params![account_id, error, outcome.code, now],
-                )
-                .ok()?;
-                Some((false, None))
+                        params![account_id, error, outcome.code, now],
+                    )
+                    .ok()?;
+                    Some((false, None))
+                }
             }
-        }
-    })
-    .flatten();
+        })
+        .flatten();
     match written {
         // 成功且判出了数字 → 刷新事实
         Some((true, Some(remaining))) => {
             if let Ok(mut facts) = facts_slot().lock() {
-                facts.insert(account_id.to_string(), BalanceFact { remaining: Some(remaining) });
+                facts.insert(
+                    account_id.to_string(),
+                    BalanceFact {
+                        remaining: Some(remaining),
+                    },
+                );
             }
         }
         // 成功但判不出 → 摘除旧事实（unlimited / 形状变化后不再被旧数字挡路）
@@ -286,7 +302,9 @@ pub fn prune_orphans() {
 /// 「按字段形状探测而不是按 provider 分派」的理由与前端同一句：provider 只
 /// 决定谁去查，不决定查回来长什么样。
 pub fn extract_remaining(usage: &Value) -> (Option<f64>, bool) {
-    let Some(fields) = usage.as_object() else { return (None, false) };
+    let Some(fields) = usage.as_object() else {
+        return (None, false);
+    };
     let unlimited = fields.get("unlimited").map(js_truthy).unwrap_or(false);
     if unlimited {
         return (None, true);
@@ -328,9 +346,8 @@ const CLINE_FREE_PROVIDER: &str = crate::server::core::providers::kind_id(
 );
 
 /// CodeArts 的 provider id（缺省「不处理」，真正的缺省限制是 Token 规则，见上）。
-const CODEARTS_PROVIDER: &str = crate::server::core::providers::kind_id(
-    crate::server::core::providers::ProviderKind::CodeArts,
-);
+const CODEARTS_PROVIDER: &str =
+    crate::server::core::providers::kind_id(crate::server::core::providers::ProviderKind::CodeArts);
 
 /// 各 provider 缺省的「余额不足处理」档（记录上没有 `lowBalance` 配置时用）。
 ///
@@ -430,8 +447,8 @@ fn migrate_legacy_snapshot() {
             .optional()
             .map_err(|error| error.to_string())?;
         let Some(text) = text else { return Ok(0) };
-        let snapshot: Value = serde_json::from_str(&text)
-            .map_err(|error| format!("旧余额快照格式错误: {error}"))?;
+        let snapshot: Value =
+            serde_json::from_str(&text).map_err(|error| format!("旧余额快照格式错误: {error}"))?;
         let at = snapshot.get("at").and_then(Value::as_i64).unwrap_or(0);
         let rows = snapshot
             .get("results")
@@ -440,7 +457,9 @@ fn migrate_legacy_snapshot() {
             .unwrap_or_default();
         let mut imported = 0usize;
         for row in &rows {
-            let Some(id) = row.get("id").and_then(Value::as_str) else { continue };
+            let Some(id) = row.get("id").and_then(Value::as_str) else {
+                continue;
+            };
             if id.is_empty() {
                 continue;
             }
@@ -500,7 +519,10 @@ fn migrate_legacy_snapshot() {
     match imported {
         Some(Ok(0)) => { /* 没有旧快照（全新安装或已迁移）：无事可做 */ }
         Some(Ok(count)) => {
-            logging::log("[Usage]", &format!("已把旧版余额快照的 {count} 条结果迁入新记录表"));
+            logging::log(
+                "[Usage]",
+                &format!("已把旧版余额快照的 {count} 条结果迁入新记录表"),
+            );
         }
         other => {
             logging::verbose(
@@ -517,13 +539,17 @@ fn reload_facts() {
         .into_iter()
         .filter(|(_, record)| record.usage.is_some())
         .filter_map(|(id, record)| {
-            record
-                .remaining
-                .map(|remaining| (id, BalanceFact { remaining: Some(remaining) }))
+            record.remaining.map(|remaining| {
+                (
+                    id,
+                    BalanceFact {
+                        remaining: Some(remaining),
+                    },
+                )
+            })
         })
         .collect();
     if let Ok(mut slot) = facts_slot().lock() {
         *slot = facts;
     }
 }
-

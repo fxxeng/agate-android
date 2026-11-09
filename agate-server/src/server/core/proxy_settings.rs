@@ -82,7 +82,8 @@ fn write_raw(value: &Value) -> Result<(), String> {
     let Some(db) = DB.get().and_then(Option::as_ref) else {
         return Err("设置数据库不可用".to_string());
     };
-    let text = serde_json::to_string(value).map_err(|error| format!("编码代理设置失败: {error}"))?;
+    let text =
+        serde_json::to_string(value).map_err(|error| format!("编码代理设置失败: {error}"))?;
     db.with(|conn| {
         conn.execute(
             "INSERT INTO kv (key, value) VALUES (?1, ?2)
@@ -163,8 +164,8 @@ pub fn get() -> Value {
 pub fn save(input: &Value) -> Result<Value, String> {
     let mut next = read_raw();
     if let Some(base_value) = input.get("listenerPortBase") {
-        let base = port_of(Some(base_value))
-            .ok_or_else(|| "端口范围必须是 1-65535 的整数".to_string())?;
+        let base =
+            port_of(Some(base_value)).ok_or_else(|| "端口范围必须是 1-65535 的整数".to_string())?;
         let end = port_of(next.get("listenerPortEnd")).unwrap_or(DEFAULT_LISTENER_PORT_END);
         if base > end {
             return Err("起始端口不能大于结束端口".to_string());
@@ -172,8 +173,8 @@ pub fn save(input: &Value) -> Result<Value, String> {
         next["listenerPortBase"] = json!(base);
     }
     if let Some(end_value) = input.get("listenerPortEnd") {
-        let end = port_of(Some(end_value))
-            .ok_or_else(|| "端口范围必须是 1-65535 的整数".to_string())?;
+        let end =
+            port_of(Some(end_value)).ok_or_else(|| "端口范围必须是 1-65535 的整数".to_string())?;
         let base = port_of(next.get("listenerPortBase")).unwrap_or(DEFAULT_LISTENER_PORT_BASE);
         if base > end {
             return Err("起始端口不能大于结束端口".to_string());
@@ -182,10 +183,7 @@ pub fn save(input: &Value) -> Result<Value, String> {
     }
     if let Some(url_value) = input.get("testUrl") {
         let text = url_value.as_str().unwrap_or("").trim().to_string();
-        if !text.is_empty()
-            && !text.starts_with("http://")
-            && !text.starts_with("https://")
-        {
+        if !text.is_empty() && !text.starts_with("http://") && !text.starts_with("https://") {
             return Err("测试网址要以 http:// 或 https:// 开头".to_string());
         }
         let text: String = text.chars().take(MAX_URL_LENGTH).collect();
@@ -194,10 +192,18 @@ pub fn save(input: &Value) -> Result<Value, String> {
     write_raw(&next)?;
     crate::server::logging::log(
         "[Proxies]",
-        &format!("✅ 已更新代理设置（端口范围 {}-{}，测试网址「{}」）",
-            next.get("listenerPortBase").and_then(Value::as_u64).unwrap_or(DEFAULT_LISTENER_PORT_BASE as u64),
-            next.get("listenerPortEnd").and_then(Value::as_u64).unwrap_or(DEFAULT_LISTENER_PORT_END as u64),
-            next.get("testUrl").and_then(Value::as_str).filter(|text| !text.is_empty()).unwrap_or("默认"),
+        &format!(
+            "✅ 已更新代理设置（端口范围 {}-{}，测试网址「{}」）",
+            next.get("listenerPortBase")
+                .and_then(Value::as_u64)
+                .unwrap_or(DEFAULT_LISTENER_PORT_BASE as u64),
+            next.get("listenerPortEnd")
+                .and_then(Value::as_u64)
+                .unwrap_or(DEFAULT_LISTENER_PORT_END as u64),
+            next.get("testUrl")
+                .and_then(Value::as_str)
+                .filter(|text| !text.is_empty())
+                .unwrap_or("默认"),
         ),
     );
     Ok(get())

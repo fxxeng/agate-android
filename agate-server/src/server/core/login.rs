@@ -31,8 +31,8 @@ mod accio;
 mod autoclaw;
 mod catpaw;
 pub mod codearts;
-mod qoder;
 mod officeace;
+mod qoder;
 mod trae;
 mod zcode;
 
@@ -44,13 +44,13 @@ use serde_json::{json, Value};
 
 use crate::server::core::account_store::AccountStore;
 use crate::server::core::auth::{
-    anonymous_headers, context_for_edition, send_public_request, unwrap_public_response, urlencoding,
-    with_expires_at, AuthService, WorkBuddyAuthError, SERVER_CODE_RETRY_FETCH_TOKEN,
+    anonymous_headers, context_for_edition, send_public_request, unwrap_public_response,
+    urlencoding, with_expires_at, AuthService, WorkBuddyAuthError, SERVER_CODE_RETRY_FETCH_TOKEN,
 };
 use crate::server::core::endpoints::{resolve_edition, Context, DEFAULT_EDITION};
-use crate::server::core::providers::workbuddy::Region;
 use crate::server::core::providers::adapter::adapter_for;
 use crate::server::core::providers::raccoon::oauth;
+use crate::server::core::providers::workbuddy::Region;
 use crate::server::core::providers::{kind_from_id, kind_id, ProviderKind};
 use crate::server::errors::GatewayError;
 use crate::server::logging;
@@ -160,7 +160,10 @@ struct TaskTable {
 impl LoginTasks {
     pub fn new() -> Self {
         Self {
-            inner: Arc::new(Mutex::new(TaskTable { by_state: HashMap::new(), next_ticket: 1 })),
+            inner: Arc::new(Mutex::new(TaskTable {
+                by_state: HashMap::new(),
+                next_ticket: 1,
+            })),
         }
     }
 
@@ -176,10 +179,12 @@ impl LoginTasks {
     /// 下次任何一次取任务都会把它扫掉。
     fn sweep(table: &mut TaskTable) {
         let now = logging::now_ms();
-        table.by_state.retain(|_, handle| match handle.lock().finished_at {
-            Some(finished) => now - finished < TASK_RETENTION_MS,
-            None => true,
-        });
+        table
+            .by_state
+            .retain(|_, handle| match handle.lock().finished_at {
+                Some(finished) => now - finished < TASK_RETENTION_MS,
+                None => true,
+            });
     }
 
     pub fn get(&self, state: &str) -> Option<LoginTaskHandle> {
@@ -229,9 +234,7 @@ impl LoginTasks {
             let mut table = self.lock();
             // 按 state 或按句柄（state 未入表时用 ticket 兜底，两者必居其一）
             let ticket = handle.ticket();
-            table
-                .by_state
-                .retain(|_, item| item.ticket() != ticket);
+            table.by_state.retain(|_, item| item.ticket() != ticket);
         }
         logging::log("[Login]", "登录任务已取消（用户放弃等待）");
         true
@@ -274,7 +277,8 @@ pub struct LoginService {
     /// 它的值是**活对象**（持有本机回调监听器），既不能序列化给 `/wait`，
     /// 也不该让别的 provider 每次轮询都陪着带一份别人用不到的东西。
     /// 表里同一时刻最多一条（见 `login/trae.rs` 模块头）。
-    trae_login: Arc<Mutex<HashMap<String, Arc<crate::server::core::providers::trae::login::Session>>>>,
+    trae_login:
+        Arc<Mutex<HashMap<String, Arc<crate::server::core::providers::trae::login::Session>>>>,
 }
 
 impl LoginService {
@@ -293,7 +297,10 @@ impl LoginService {
     }
 
     /// Trae 登录的待办表（`login/trae.rs` 用它挂这一轮的回调监听器）。
-    pub(crate) fn trae_login(&self) -> &Arc<Mutex<HashMap<String, Arc<crate::server::core::providers::trae::login::Session>>>> {
+    pub(crate) fn trae_login(
+        &self,
+    ) -> &Arc<Mutex<HashMap<String, Arc<crate::server::core::providers::trae::login::Session>>>>
+    {
         &self.trae_login
     }
 
@@ -407,7 +414,10 @@ impl LoginService {
             task.auth_url = Some(auth_url);
         });
         self.tasks.register(&state, handle.clone());
-        logging::log("[Login]", &format!("发起{label}网页登录（等待浏览器回调…）"));
+        logging::log(
+            "[Login]",
+            &format!("发起{label}网页登录（等待浏览器回调…）"),
+        );
         Ok(handle)
     }
 
@@ -439,10 +449,9 @@ impl LoginService {
             callback_base,
             &state,
         );
-        let auth_url =
-            crate::server::core::providers::raccoon::oauth::build_browser_authorize_url(
-                &state, &redirect,
-            );
+        let auth_url = crate::server::core::providers::raccoon::oauth::build_browser_authorize_url(
+            &state, &redirect,
+        );
         let info = resolve_edition(Some(DEFAULT_EDITION));
         let handle = self.new_handle_for_provider(info, kind_id(kind));
         handle.update(|task| {
@@ -475,7 +484,10 @@ impl LoginService {
     ) -> Result<String, GatewayError> {
         let state = state.trim();
         if state.is_empty() {
-            return Err(GatewayError::with_status(400, "缺少 state，无法确认这次回调归属"));
+            return Err(GatewayError::with_status(
+                400,
+                "缺少 state，无法确认这次回调归属",
+            ));
         }
         let Some(handle) = self.tasks.get(state) else {
             return Err(GatewayError::with_status(
@@ -491,7 +503,11 @@ impl LoginService {
             // 幂等：同一个回调被送来两次（脚本重入 + 页面重载各触发一次）不是错误
             return Ok(String::new());
         }
-        if task.provider != crate::server::core::providers::kind_id(crate::server::core::providers::ProviderKind::Kuku) {
+        if task.provider
+            != crate::server::core::providers::kind_id(
+                crate::server::core::providers::ProviderKind::Kuku,
+            )
+        {
             return Err(GatewayError::with_status(
                 400,
                 "该登录任务不属于 KukuAI，请重新发起",
@@ -543,7 +559,10 @@ impl LoginService {
     ) -> Result<String, GatewayError> {
         let state = state.trim();
         if state.is_empty() {
-            return Err(GatewayError::with_status(400, "缺少 state，无法确认这次回调归属"));
+            return Err(GatewayError::with_status(
+                400,
+                "缺少 state，无法确认这次回调归属",
+            ));
         }
         let Some(handle) = self.tasks.get(state) else {
             return Err(GatewayError::with_status(
@@ -559,7 +578,10 @@ impl LoginService {
             // 幂等：同一个登录态被送来两次（Cookie 检测每拍触发）不是错误
             return Ok(String::new());
         }
-        if task.provider != crate::server::core::providers::kind_id(crate::server::core::providers::ProviderKind::OrcaTerm)
+        if task.provider
+            != crate::server::core::providers::kind_id(
+                crate::server::core::providers::ProviderKind::OrcaTerm,
+            )
         {
             return Err(GatewayError::with_status(
                 400,
@@ -582,7 +604,10 @@ impl LoginService {
             .and_then(Value::as_str)
             .unwrap_or("OrcaTerm 账号")
             .to_string();
-        finish_task(&handle, &json!({ "account": account, "edition": task.edition }));
+        finish_task(
+            &handle,
+            &json!({ "account": account, "edition": task.edition }),
+        );
         logging::log("[Login]", &format!("✅ OrcaTerm 网页登录成功: {label}"));
         Ok(account_id)
     }
@@ -798,7 +823,10 @@ impl LoginService {
     ) -> Result<LoginCallbackSubmission, GatewayError> {
         let state = state.trim();
         if state.is_empty() {
-            return Err(GatewayError::with_status(400, "缺少 state，无法确认这次回调归属"));
+            return Err(GatewayError::with_status(
+                400,
+                "缺少 state，无法确认这次回调归属",
+            ));
         }
         let Some(handle) = self.tasks.get(state) else {
             return Err(GatewayError::with_status(
@@ -838,10 +866,12 @@ impl LoginService {
                 .unwrap_or_default();
             return match self.finish_codearts_login(&params).await {
                 codearts::Callback::ContinueTo(url) => Ok(LoginCallbackSubmission::ContinueTo(url)),
-                codearts::Callback::Accepted(account_id, _) => {
-                    Ok(LoginCallbackSubmission::Completed(account_id.unwrap_or_default()))
+                codearts::Callback::Accepted(account_id, _) => Ok(
+                    LoginCallbackSubmission::Completed(account_id.unwrap_or_default()),
+                ),
+                codearts::Callback::Failed(status, message) => {
+                    Err(GatewayError::with_status(i32::from(status), message))
                 }
-                codearts::Callback::Failed(status, message) => Err(GatewayError::with_status(i32::from(status), message)),
             };
         }
         // Trae 的上游回调地址带随机 loopback 端口，远程浏览器无法直接访问
@@ -849,9 +879,8 @@ impl LoginService {
         // 由原有 `Session::complete` 继续完成换证与落账号，避免复制另一套
         // Trae 登录逻辑。
         if kind == ProviderKind::Trae {
-            let parsed = url::Url::parse(callback_url).map_err(|_| {
-                GatewayError::with_status(400, "Trae 登录回调地址无效")
-            })?;
+            let parsed = url::Url::parse(callback_url)
+                .map_err(|_| GatewayError::with_status(400, "Trae 登录回调地址无效"))?;
             if parsed.path() != crate::server::core::providers::trae::oauth::CALLBACK_PATH {
                 return Err(GatewayError::with_status(400, "Trae 登录回调地址无效"));
             }
@@ -862,7 +891,9 @@ impl LoginService {
                 .unwrap_or_else(|error| error.into_inner())
                 .get(state)
                 .cloned()
-                .ok_or_else(|| GatewayError::with_status(404, "Trae 登录上下文已结束，请重新发起"))?;
+                .ok_or_else(|| {
+                    GatewayError::with_status(404, "Trae 登录上下文已结束，请重新发起")
+                })?;
             session
                 .submit_callback(query)
                 .map_err(|message| GatewayError::with_status(400, message))?;
@@ -871,9 +902,8 @@ impl LoginService {
         // Accio 的回调是标准 `code/state` 查询串。与 public callback 路由
         // 共用同一收尾函数，保证 PKCE pending、一次性消费和幂等语义一致。
         if matches!(kind, ProviderKind::Accio | ProviderKind::AccioCn) {
-            let parsed = url::Url::parse(callback_url).map_err(|_| {
-                GatewayError::with_status(400, "Accio 登录回调地址无效")
-            })?;
+            let parsed = url::Url::parse(callback_url)
+                .map_err(|_| GatewayError::with_status(400, "Accio 登录回调地址无效"))?;
             let params: std::collections::HashMap<String, String> = parsed
                 .query_pairs()
                 .map(|(key, value)| (key.into_owned(), value.into_owned()))
@@ -881,10 +911,16 @@ impl LoginService {
             let code = params.get("code").map(String::as_str).unwrap_or("");
             let callback_state = params.get("state").map(String::as_str).unwrap_or("");
             if let Some(error) = params.get("error").filter(|value| !value.trim().is_empty()) {
-                return Err(GatewayError::with_status(400, format!("授权被拒绝（{error}）")));
+                return Err(GatewayError::with_status(
+                    400,
+                    format!("授权被拒绝（{error}）"),
+                ));
             }
             if callback_state.trim() != state {
-                return Err(GatewayError::with_status(400, "回调地址与当前 Accio 登录任务不匹配"));
+                return Err(GatewayError::with_status(
+                    400,
+                    "回调地址与当前 Accio 登录任务不匹配",
+                ));
             }
             let result = self.finish_accio_login(code, callback_state).await;
             if result.is_err() {
@@ -900,20 +936,25 @@ impl LoginService {
         //      到不了容器内的 loopback 端口时）。
         // 两条入口的收尾完全一致：state 与任务逐字比对 → 适配器换码落账号。
         if kind == ProviderKind::Antigravity {
-            let parsed = url::Url::parse(callback_url).map_err(|_| {
-                GatewayError::with_status(400, "Antigravity 登录回调地址无效")
-            })?;
+            let parsed = url::Url::parse(callback_url)
+                .map_err(|_| GatewayError::with_status(400, "Antigravity 登录回调地址无效"))?;
             let params: std::collections::HashMap<String, String> = parsed
                 .query_pairs()
                 .map(|(key, value)| (key.into_owned(), value.into_owned()))
                 .collect();
             if let Some(error) = params.get("error").filter(|value| !value.trim().is_empty()) {
-                return Err(GatewayError::with_status(400, format!("授权被拒绝（{error}）")));
+                return Err(GatewayError::with_status(
+                    400,
+                    format!("授权被拒绝（{error}）"),
+                ));
             }
             let callback_state = params.get("state").map(String::as_str).unwrap_or("");
             let code = params.get("code").map(String::as_str).unwrap_or("");
             if callback_state.trim() != state {
-                return Err(GatewayError::with_status(400, "回调地址与当前 Antigravity 登录任务不匹配"));
+                return Err(GatewayError::with_status(
+                    400,
+                    "回调地址与当前 Antigravity 登录任务不匹配",
+                ));
             }
             return match adapter_for(kind)
                 .exchange_login_code(&self.store, code, state)
@@ -947,32 +988,42 @@ impl LoginService {
         }
         // AutoClaw OAuth 回调 URL 里没有网关自己的 task state，手工提交时由
         // 请求体的 state 先锁定这次任务，再按回调路径识别 Zai / Google。
-        if crate::server::core::providers::autoclaw::Region::from_provider_id(&task.provider).is_some() {
-            let parsed = url::Url::parse(callback_url).map_err(|_| {
-                GatewayError::with_status(400, "AutoClaw 登录回调地址无效")
-            })?;
-            let Some(vendor_id) = parsed
-                .path()
-                .strip_prefix(crate::server::core::providers::autoclaw::oauth::CALLBACK_PATH_PREFIX)
-            else {
+        if crate::server::core::providers::autoclaw::Region::from_provider_id(&task.provider)
+            .is_some()
+        {
+            let parsed = url::Url::parse(callback_url)
+                .map_err(|_| GatewayError::with_status(400, "AutoClaw 登录回调地址无效"))?;
+            let Some(vendor_id) = parsed.path().strip_prefix(
+                crate::server::core::providers::autoclaw::oauth::CALLBACK_PATH_PREFIX,
+            ) else {
                 return Err(GatewayError::with_status(400, "AutoClaw 登录回调地址无效"));
             };
-            let vendor = crate::server::core::providers::autoclaw::oauth::Vendor::from_id(vendor_id)
-                .ok_or_else(|| GatewayError::with_status(400, "无法识别 AutoClaw 登录方式"))?;
+            let vendor =
+                crate::server::core::providers::autoclaw::oauth::Vendor::from_id(vendor_id)
+                    .ok_or_else(|| GatewayError::with_status(400, "无法识别 AutoClaw 登录方式"))?;
             let params: std::collections::HashMap<String, String> = parsed
                 .query_pairs()
                 .map(|(key, value)| (key.into_owned(), value.into_owned()))
                 .collect();
             if let Some(error) = params.get("error").filter(|value| !value.trim().is_empty()) {
-                return Err(GatewayError::with_status(400, format!("授权被拒绝（{error}）")));
+                return Err(GatewayError::with_status(
+                    400,
+                    format!("授权被拒绝（{error}）"),
+                ));
             }
             let upstream_state = params.get("state").map(String::as_str).unwrap_or("");
             let code = params.get("code").map(String::as_str).unwrap_or("");
             let Some((pending_state, _)) = self.find_autoclaw_pending_for_vendor(vendor) else {
-                return Err(GatewayError::with_status(404, "AutoClaw 登录上下文已结束，请重新发起"));
+                return Err(GatewayError::with_status(
+                    404,
+                    "AutoClaw 登录上下文已结束，请重新发起",
+                ));
             };
             if pending_state != state {
-                return Err(GatewayError::with_status(400, "回调地址与当前 AutoClaw 登录任务不匹配"));
+                return Err(GatewayError::with_status(
+                    400,
+                    "回调地址与当前 AutoClaw 登录任务不匹配",
+                ));
             }
             return self
                 .finish_autoclaw_oauth_callback(vendor, upstream_state, code)
@@ -982,19 +1033,26 @@ impl LoginService {
         // CatPaw 正常情况下由服务端 poll-token 兜底完成；若上游仍把 token
         // 放进可复制的查询串，这里也复用 public callback 的收尾逻辑。
         if kind == ProviderKind::CatPaw {
-            let parsed = url::Url::parse(callback_url).map_err(|_| {
-                GatewayError::with_status(400, "CatPaw 登录回调地址无效")
-            })?;
+            let parsed = url::Url::parse(callback_url)
+                .map_err(|_| GatewayError::with_status(400, "CatPaw 登录回调地址无效"))?;
             let params: std::collections::HashMap<String, String> = parsed
                 .query_pairs()
                 .map(|(key, value)| (key.into_owned(), value.into_owned()))
                 .collect();
             let token = params.get("token").map(String::as_str).unwrap_or("");
             let callback_state = params.get("state").map(String::as_str).unwrap_or(state);
-            if !params.get("state").map(String::as_str).unwrap_or("").trim().is_empty()
+            if !params
+                .get("state")
+                .map(String::as_str)
+                .unwrap_or("")
+                .trim()
+                .is_empty()
                 && callback_state.trim() != state
             {
-                return Err(GatewayError::with_status(400, "回调地址与当前 CatPaw 登录任务不匹配"));
+                return Err(GatewayError::with_status(
+                    400,
+                    "回调地址与当前 CatPaw 登录任务不匹配",
+                ));
             }
             self.finish_catpaw_login(token, callback_state)
                 .await
@@ -1009,11 +1067,17 @@ impl LoginService {
                 Err(error) => {
                     // 校验失败也要落定任务：否则前端会一直等到 5 分钟超时
                     finish_task_error(&handle, &error.message);
-                    logging::log("[Login]", &format!("❌ 网页登录回调校验失败: {}", error.message));
+                    logging::log(
+                        "[Login]",
+                        &format!("❌ 网页登录回调校验失败: {}", error.message),
+                    );
                     return Err(error);
                 }
             };
-            match adapter_for(kind).exchange_login_code(&self.store, &code, state).await {
+            match adapter_for(kind)
+                .exchange_login_code(&self.store, &code, state)
+                .await
+            {
                 Ok(account_id) => {
                     let session = json!({
                         "accountUid": account_id,
@@ -1030,7 +1094,10 @@ impl LoginService {
                 }
                 Err(error) => {
                     finish_task_error(&handle, &error.message);
-                    logging::log("[Login]", &format!("❌ 网页登录换取凭证失败: {}", error.message));
+                    logging::log(
+                        "[Login]",
+                        &format!("❌ 网页登录换取凭证失败: {}", error.message),
+                    );
                     Err(error)
                 }
             }
@@ -1098,10 +1165,8 @@ impl LoginService {
     ) -> Result<Value, WorkBuddyAuthError> {
         // 端点覆盖按本地区取（staging / 自建反向代理用户的落点，见
         // `Region::env_endpoint_override`）
-        let context: Context = context_for_edition(
-            Some(region.id()),
-            region.env_endpoint_override().as_deref(),
-        );
+        let context: Context =
+            context_for_edition(Some(region.id()), region.env_endpoint_override().as_deref());
         let headers = anonymous_headers();
         let url = context.auth_url(&format!(
             "/auth/state?platform={}",

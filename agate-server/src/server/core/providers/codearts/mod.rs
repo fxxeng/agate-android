@@ -14,12 +14,11 @@
 
 pub mod balance;
 pub mod chat;
-pub mod onboarding;
-pub mod welfare;
 pub mod credentials;
 pub mod dpop;
 pub mod models;
 pub mod oauth;
+pub mod onboarding;
 pub mod redact;
 pub mod refresh;
 pub mod session;
@@ -27,6 +26,7 @@ pub mod signer;
 pub mod size_gate;
 pub mod stream_fault;
 pub mod tool_names;
+pub mod welfare;
 
 use std::pin::Pin;
 
@@ -34,8 +34,8 @@ use axum::http::HeaderMap;
 use serde_json::Value;
 
 use crate::server::core::account_store::AccountStore;
-use crate::server::core::upstream::ForwardOutcome;
 use crate::server::core::upstream::usage::RequestTelemetry;
+use crate::server::core::upstream::ForwardOutcome;
 use crate::server::errors::GatewayError;
 use crate::server::logging;
 
@@ -54,7 +54,8 @@ pub static CODEARTS_ADAPTER: CodeArtsAdapter = CodeArtsAdapter;
 impl CodeArtsAdapter {
     /// 从账号记录读回凭据（账号存储写的就是 `Credential` 的字段名）。
     pub fn credential(record: &Value) -> Result<credentials::Credential, GatewayError> {
-        credentials::Credential::from_payload(record).map_err(|reason| GatewayError::with_status(503, reason))
+        credentials::Credential::from_payload(record)
+            .map_err(|reason| GatewayError::with_status(503, reason))
     }
 }
 
@@ -88,7 +89,9 @@ fn benefit_cooldown_group(catalog: &models::Catalog, wire_model: &str) -> Vec<St
     if !is_benefit {
         return vec![wire_model.to_string()];
     }
-    let mut names: Vec<String> = catalog.models.iter()
+    let mut names: Vec<String> = catalog
+        .models
+        .iter()
         .filter(|model| model.source == models::ModelSource::Benefit)
         .map(|model| model.id.clone())
         .collect();
@@ -143,20 +146,31 @@ impl ProviderAdapter for CodeArtsAdapter {
         proxy: Option<crate::server::core::proxies::ResolvedProxy>,
         stream: bool,
         telemetry: &'a std::sync::Arc<RequestTelemetry>,
-    ) -> Pin<Box<dyn std::future::Future<Output = Result<ForwardOutcome, GatewayError>> + Send + 'a>> {
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<ForwardOutcome, GatewayError>> + Send + 'a>>
+    {
         Box::pin(async move {
             // ① 凭据（含临期主动续期与写回）；代理沿用编排层为本账号解析出的那份
-            let credential = refresh::ensure_fresh(store, account_id, false, proxy.as_ref()).await?;
+            let credential =
+                refresh::ensure_fresh(store, account_id, false, proxy.as_ref()).await?;
             if !credential.valid() {
-                return Err(GatewayError::with_status(503, "CodeArts 账号缺少可用的临时凭据，请重新登录"));
+                return Err(GatewayError::with_status(
+                    503,
+                    "CodeArts 账号缺少可用的临时凭据，请重新登录",
+                ));
             }
 
             // ② 模型名归一：客户端习惯小写，上游要真名；福利模型要带 maas_type
-            let requested = body.get("model").and_then(Value::as_str).unwrap_or("").trim();
-            let catalog = models::cached_catalog().ok_or_else(|| GatewayError::with_status(
-                503,
-                "CodeArts 模型目录还没拉取过：请先在模型页对该账号执行一次「获取模型」",
-            ))?;
+            let requested = body
+                .get("model")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim();
+            let catalog = models::cached_catalog().ok_or_else(|| {
+                GatewayError::with_status(
+                    503,
+                    "CodeArts 模型目录还没拉取过：请先在模型页对该账号执行一次「获取模型」",
+                )
+            })?;
             let Some(model) = catalog.resolve(requested) else {
                 return Err(models::unknown_model_error(requested, &catalog));
             };
@@ -198,11 +212,12 @@ impl ProviderAdapter for CodeArtsAdapter {
             // ③ 本地准入（满员回 409，不冷却账号）。
             // 身份优先用凭据里的 domain+user；两个都取不到时退到**账号行 id**
             // （不是 AK —— 它每次续期都换，用它当键等于每刷一次期就把并发上限清零）。
-            let gate_identity = if credential.domain_id.trim().is_empty() && credential.user_id.trim().is_empty() {
-                format!("account:{account_id}")
-            } else {
-                credential.identity()
-            };
+            let gate_identity =
+                if credential.domain_id.trim().is_empty() && credential.user_id.trim().is_empty() {
+                    format!("account:{account_id}")
+                } else {
+                    credential.identity()
+                };
             // 面板那颗「并发上限」旋钮写的是账号上的 `maxConcurrent`，这里必须读它：
             // 只按硬编码默认值准入的话，那个数字对本家就只是装饰（口径与
             // `session::SessionGate::limit_for` 里写的「0 = 继承默认」一致）。
@@ -287,7 +302,10 @@ impl ProviderAdapter for CodeArtsAdapter {
                     drop(permit);
                     return Err(GatewayError::with_status(
                         502,
-                        format!("CodeArts 对话请求失败：{}", crate::server::core::egress::describe_error_detail(&error)),
+                        format!(
+                            "CodeArts 对话请求失败：{}",
+                            crate::server::core::egress::describe_error_detail(&error)
+                        ),
                     ));
                 }
             };
@@ -315,7 +333,12 @@ impl ProviderAdapter for CodeArtsAdapter {
                 session.stop().await;
                 drop(permit);
                 telemetry.note_attempt_body_bytes(wire_bytes);
-                return Err(chat::upstream_http_error(status, &error_body, &credential, truncated));
+                return Err(chat::upstream_http_error(
+                    status,
+                    &error_body,
+                    &credential,
+                    truncated,
+                ));
             }
 
             // 发出量落账（成功与失败都记：这条要回答的是「这类会话到底多大」，
@@ -362,7 +385,10 @@ impl ProviderAdapter for CodeArtsAdapter {
                 session.stop().await;
                 drop(permit);
                 if let Some(error) = read_error {
-                    return Err(GatewayError::with_status(502, format!("CodeArts 上游流中断：{error}")));
+                    return Err(GatewayError::with_status(
+                        502,
+                        format!("CodeArts 上游流中断：{error}"),
+                    ));
                 }
                 // 折叠前用完整体再判一次（第一帧没中时兜住；同扇门内重复登记不会再打日志）
                 note_size_gate(
@@ -383,7 +409,8 @@ impl ProviderAdapter for CodeArtsAdapter {
             }
 
             // ⑧ 流式：透传（上游已是 OpenAI chunk 形状），结束时释放会话与许可
-            let (sender, receiver) = tokio::sync::mpsc::channel::<Result<bytes::Bytes, std::io::Error>>(64);
+            let (sender, receiver) =
+                tokio::sync::mpsc::channel::<Result<bytes::Bytes, std::io::Error>>(64);
             // usage 嗅探要活到这个任务里，而本函数是借用签名 —— 克隆一份 Arc
             // （不是所有权转移：编排层那一份还要在收尾时读同一槽位）
             let sniff_telemetry = telemetry.clone();
@@ -494,8 +521,8 @@ impl ProviderAdapter for CodeArtsAdapter {
     /// 401 故意**不**交 TokenExpired：会话式路径没有「刷凭证后同账号重试」
     /// 的编排，透传让调用方顺延下一个账号（跟现状一致）。
     fn classify_conversation_error(&self, error: &GatewayError) -> UpstreamErrorClass {
-        let quota_403 = error.status_code == 403
-            && error.message.to_lowercase().contains("insufficient quota");
+        let quota_403 =
+            error.status_code == 403 && error.message.to_lowercase().contains("insufficient quota");
         match error.status_code {
             429 => UpstreamErrorClass::QuotaLimited {
                 // 429 是分钟级限流，与「今天没额度」是两回事 —— 给它零点会把一个
@@ -551,12 +578,16 @@ impl ProviderAdapter for CodeArtsAdapter {
         &'a self,
         store: &'a AccountStore,
         account_id: &'a str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, GatewayError>> + Send + 'a>> {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<String, GatewayError>> + Send + 'a>,
+    > {
         Box::pin(async move {
             let proxy = record_proxy(store, account_id)?;
-            Ok(refresh::ensure_fresh(store, account_id, false, proxy.as_ref())
-                .await?
-                .access_key_id)
+            Ok(
+                refresh::ensure_fresh(store, account_id, false, proxy.as_ref())
+                    .await?
+                    .access_key_id,
+            )
         })
     }
 
@@ -575,9 +606,11 @@ impl ProviderAdapter for CodeArtsAdapter {
     > {
         Box::pin(async move {
             let proxy = record_proxy(store, account_id)?;
-            Ok(refresh::ensure_fresh(store, account_id, true, proxy.as_ref())
-                .await?
-                .access_key_id)
+            Ok(
+                refresh::ensure_fresh(store, account_id, true, proxy.as_ref())
+                    .await?
+                    .access_key_id,
+            )
         })
     }
 
@@ -588,7 +621,11 @@ impl ProviderAdapter for CodeArtsAdapter {
         store
             .codearts_account_record(account_id)
             .and_then(|record| credentials::Credential::from_payload(&record).ok())
-            .is_some_and(|credential| credential.can_refresh() && credential.needs_refresh(refresh::REFRESH_LEAD_MS, crate::server::logging::now_ms()))
+            .is_some_and(|credential| {
+                credential.can_refresh()
+                    && credential
+                        .needs_refresh(refresh::REFRESH_LEAD_MS, crate::server::logging::now_ms())
+            })
     }
 
     /// 余额可查（两份账，见 `balance.rs` 模块头：订阅统计 + 福利网关）。
@@ -606,7 +643,8 @@ impl ProviderAdapter for CodeArtsAdapter {
         &'a self,
         store: &'a AccountStore,
         account_id: &'a str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value, GatewayError>> + Send + 'a>> {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value, GatewayError>> + Send + 'a>>
+    {
         Box::pin(async move {
             let credential = welfare::current_credential(store, account_id).await?;
             let (statistics, benefit) = balance::fetch_both(
@@ -626,7 +664,8 @@ impl ProviderAdapter for CodeArtsAdapter {
             // 去抖：注册是写语义的幂等调用，没必要每分钟补一发（10 分钟一次足够）。
             let mut benefit = benefit;
             if matches!(&benefit, Ok(None)) && benefit_claim_due(account_id) {
-                match balance::claim_benefit(models::DEFAULT_BENEFIT_GATEWAY_URL, &credential).await {
+                match balance::claim_benefit(models::DEFAULT_BENEFIT_GATEWAY_URL, &credential).await
+                {
                     Ok(_) => {
                         benefit = balance::fetch_benefit_balance(
                             models::DEFAULT_BENEFIT_GATEWAY_URL,
@@ -639,7 +678,10 @@ impl ProviderAdapter for CodeArtsAdapter {
                         // 下一轮余额查询会再试（去抖窗过后）。原样保留 absent 结果。
                         crate::server::logging::verbose(
                             "[CodeArts]",
-                            &format!("benefit 自动注册失败（账号 {account_id}）：{}", error.message),
+                            &format!(
+                                "benefit 自动注册失败（账号 {account_id}）：{}",
+                                error.message
+                            ),
                         );
                     }
                 }
@@ -724,7 +766,9 @@ impl ProviderAdapter for CodeArtsAdapter {
         store: &'a AccountStore,
         account_id: &'a str,
         _force: bool,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = super::adapter::ModelRefreshOutcome> + Send + 'a>> {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = super::adapter::ModelRefreshOutcome> + Send + 'a>,
+    > {
         Box::pin(async move {
             // 空 id = 队首可用账号（自动路径的默认）；非空 = 用户在弹窗里点名的
             // 那条。**「没有账号」不是失败**：自动路径每轮（启动、定时、被动拉
@@ -736,11 +780,16 @@ impl ProviderAdapter for CodeArtsAdapter {
             // 与 accio / qoder 逐字同口径：自动路径 `unchanged()`（没刷，
             // 不是失败），点名取不到才 `failed()`。
             if store.codearts_account_record(account_id).is_none() {
-                crate::server::logging::verbose("[Models]", "CodeArts 模型目录刷新跳过：尚未添加 CodeArts 账号");
+                crate::server::logging::verbose(
+                    "[Models]",
+                    "CodeArts 模型目录刷新跳过：尚未添加 CodeArts 账号",
+                );
                 if account_id.trim().is_empty() {
                     return super::adapter::ModelRefreshOutcome::unchanged();
                 }
-                return super::adapter::ModelRefreshOutcome::failed("指定的 CodeArts 账号不存在或不可用，请重新选择");
+                return super::adapter::ModelRefreshOutcome::failed(
+                    "指定的 CodeArts 账号不存在或不可用，请重新选择",
+                );
             };
             let credential = match proxy_and_fresh(store, account_id).await {
                 Ok(credential) => credential,
@@ -755,7 +804,11 @@ impl ProviderAdapter for CodeArtsAdapter {
             let catalog = models::discover(&endpoints, &credential).await;
             if catalog.models.is_empty() {
                 return super::adapter::ModelRefreshOutcome::failed(
-                    catalog.warnings.first().cloned().unwrap_or_else(|| "该账号没有返回任何可用模型".to_string()),
+                    catalog
+                        .warnings
+                        .first()
+                        .cloned()
+                        .unwrap_or_else(|| "该账号没有返回任何可用模型".to_string()),
                 );
             }
             let count = catalog.models.len();
@@ -772,9 +825,9 @@ fn record_proxy(
     store: &AccountStore,
     account_id: &str,
 ) -> Result<Option<crate::server::core::proxies::ResolvedProxy>, GatewayError> {
-    let record = store
-        .codearts_account_record(account_id)
-        .ok_or_else(|| GatewayError::with_status(503, "没有可用的 CodeArts 账号：请在账号页添加并启用账号"))?;
+    let record = store.codearts_account_record(account_id).ok_or_else(|| {
+        GatewayError::with_status(503, "没有可用的 CodeArts 账号：请在账号页添加并启用账号")
+    })?;
     use crate::server::core::proxies::ProxyResolution;
     match crate::server::core::proxies::resolve_account_proxy(record.get("proxy")) {
         Some(ProxyResolution::Resolved(proxy)) => Ok(Some(proxy)),
@@ -784,7 +837,10 @@ fn record_proxy(
 }
 
 /// 没有编排层代理解析的那两条钩子（面板点刷新 / 目录刷新）用的组合。
-async fn proxy_and_fresh(store: &AccountStore, account_id: &str) -> Result<credentials::Credential, GatewayError> {
+async fn proxy_and_fresh(
+    store: &AccountStore,
+    account_id: &str,
+) -> Result<credentials::Credential, GatewayError> {
     let proxy = record_proxy(store, account_id)?;
     refresh::ensure_fresh(store, account_id, false, proxy.as_ref()).await
 }
@@ -806,7 +862,10 @@ fn benefit_claim_due(account_id: &str) -> bool {
         Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(),
     };
-    if guard.get(account_id).is_some_and(|at| at.elapsed() < WINDOW) {
+    if guard
+        .get(account_id)
+        .is_some_and(|at| at.elapsed() < WINDOW)
+    {
         return false;
     }
     guard.insert(account_id.to_string(), Instant::now());
@@ -862,11 +921,13 @@ mod store_hooks {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use crate::server::core::account_store::AccountStore;
-    use crate::server::core::providers::codearts::credentials::{OAuthContext, PkcePair, Credential};
+    use crate::server::core::providers::codearts::credentials::{
+        Credential, OAuthContext, PkcePair,
+    };
     use crate::server::db::Db;
 
     use super::{benefit_cooldown_group, daily_pool_reset_at, models};
-    use super::{CODEARTS_ADAPTER, CodeArtsAdapter, ProviderAdapter};
+    use super::{CodeArtsAdapter, ProviderAdapter, CODEARTS_ADAPTER};
 
     static SEQ: AtomicUsize = AtomicUsize::new(0);
 
@@ -874,7 +935,9 @@ mod store_hooks {
         let id = SEQ.fetch_add(1, Ordering::SeqCst);
         let dir = std::env::temp_dir().join(format!("codearts-hooks-{}-{id}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        AccountStore::with_db(Some(Db::open(&dir.join("agate.db")).expect("临时库应当能建起来")))
+        AccountStore::with_db(Some(
+            Db::open(&dir.join("agate.db")).expect("临时库应当能建起来"),
+        ))
     }
 
     /// `minutes` 之后到期（负数即已过期）。
@@ -890,9 +953,16 @@ mod store_hooks {
             expires_at: expiry(minutes),
             domain_id: "dom".to_string(),
             user_id: user.to_string(),
-            refresh_token: if refreshable { "jwt".to_string() } else { String::new() },
+            refresh_token: if refreshable {
+                "jwt".to_string()
+            } else {
+                String::new()
+            },
             oauth_context: refreshable.then(|| OAuthContext {
-                pkce_pair: PkcePair { code_verifier: "verifier".to_string(), ..Default::default() },
+                pkce_pair: PkcePair {
+                    code_verifier: "verifier".to_string(),
+                    ..Default::default()
+                },
                 ..Default::default()
             }),
             ..Credential::default()
@@ -903,9 +973,15 @@ mod store_hooks {
     fn expiring_follows_the_lead_window_and_a_usable_refresh_chain() {
         let store = store();
         // 三条各代表一种「后台维护该不该动手」：远端到期 / 只剩五分钟 / 临期但刷不了
-        store.add_codearts_account(&credential("AK_FAR", "far", 120, true), None, "manual").unwrap();
-        store.add_codearts_account(&credential("AK_NEAR", "near", 5, true), None, "manual").unwrap();
-        store.add_codearts_account(&credential("AK_BARE", "bare", 5, false), None, "manual").unwrap();
+        store
+            .add_codearts_account(&credential("AK_FAR", "far", 120, true), None, "manual")
+            .unwrap();
+        store
+            .add_codearts_account(&credential("AK_NEAR", "near", 5, true), None, "manual")
+            .unwrap();
+        store
+            .add_codearts_account(&credential("AK_BARE", "bare", 5, false), None, "manual")
+            .unwrap();
         let id_of = |user: &str| {
             store
                 .list_accounts()["accounts"]
@@ -921,20 +997,40 @@ mod store_hooks {
             .to_string()
         };
         // 「刷不了」不该变成「每轮都失败」：没有续期链的账号直接排除在维护之外
-        assert!(CODEARTS_ADAPTER.supports_refresh(), "写回通路已就绪，这条必须开着，否则临期凭据没人管");
-        assert!(!CODEARTS_ADAPTER.credentials_expiring(&store, &id_of("far")), "离到期两小时不该动手");
-        assert!(CODEARTS_ADAPTER.credentials_expiring(&store, &id_of("near")), "只剩十五分钟窗口内就该动手");
-        assert!(!CODEARTS_ADAPTER.credentials_expiring(&store, &id_of("bare")), "没有续期链就别让它进维护队列（每轮刷一次失败日志）");
+        assert!(
+            CODEARTS_ADAPTER.supports_refresh(),
+            "写回通路已就绪，这条必须开着，否则临期凭据没人管"
+        );
+        assert!(
+            !CODEARTS_ADAPTER.credentials_expiring(&store, &id_of("far")),
+            "离到期两小时不该动手"
+        );
+        assert!(
+            CODEARTS_ADAPTER.credentials_expiring(&store, &id_of("near")),
+            "只剩十五分钟窗口内就该动手"
+        );
+        assert!(
+            !CODEARTS_ADAPTER.credentials_expiring(&store, &id_of("bare")),
+            "没有续期链就别让它进维护队列（每轮刷一次失败日志）"
+        );
     }
 
     #[tokio::test]
     async fn force_refresh_is_the_override_not_the_default_no_op() {
         let store = store();
-        store.add_codearts_account(&credential("AK_BARE", "bare", 120, false), None, "manual").unwrap();
-        let id = store.codearts_account_record("").expect("账号应当可读")["id"].as_str().unwrap().to_string();
+        store
+            .add_codearts_account(&credential("AK_BARE", "bare", 120, false), None, "manual")
+            .unwrap();
+        let id = store.codearts_account_record("").expect("账号应当可读")["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
 
         // 非强制那条：没临期就原样返回，**不发网络请求**（临时库里是假串，真刷必炸）
-        let token = CODEARTS_ADAPTER.ensure_access_token(&store, &id).await.expect("未临期应当直接用盘上这份");
+        let token = CODEARTS_ADAPTER
+            .ensure_access_token(&store, &id)
+            .await
+            .expect("未临期应当直接用盘上这份");
         assert_eq!("AK_BARE", token);
 
         // 强制那条必须真的走 store 路径：续期链不全时**本地就报错**，
@@ -943,8 +1039,15 @@ mod store_hooks {
             Ok(_) => panic!("刷新落到了默认实现（空动作）：覆盖被删掉了？"),
             Err(error) => error,
         };
-        assert_eq!(400, error.status_code, "缺续期链是用户可修的本地错误，不是上游错误");
-        assert!(error.message.contains("refresh token"), "文案要点名缺什么：{}", error.message);
+        assert_eq!(
+            400, error.status_code,
+            "缺续期链是用户可修的本地错误，不是上游错误"
+        );
+        assert!(
+            error.message.contains("refresh token"),
+            "文案要点名缺什么：{}",
+            error.message
+        );
     }
 
     /// 会话式分类：429 与「认得出额度」的 403 交回 QuotaLimited（都要落冷却，
@@ -954,8 +1057,8 @@ mod store_hooks {
     /// 错误吞进一条根本不存在的重试链里。
     #[test]
     fn conversation_classification_marks_quota_only_for_403_and_429() {
-        use crate::server::errors::GatewayError;
         use super::UpstreamErrorClass;
+        use crate::server::errors::GatewayError;
         let class = |status: i32, message: &str| {
             CODEARTS_ADAPTER
                 .classify_conversation_error(&GatewayError::with_status(status, message))
@@ -965,12 +1068,22 @@ mod store_hooks {
         // 日池当天不会回来，于是直到次日零点前每 10 分钟白撞一次这个账号。
         assert!(matches!(
             class(403, "上游报告 InferHub.4291.200：insufficient quota"),
-            UpstreamErrorClass::QuotaLimited { status: 403, reset_at: Some(_), .. }
+            UpstreamErrorClass::QuotaLimited {
+                status: 403,
+                reset_at: Some(_),
+                ..
+            }
         ));
         // HTTP 403、诊断体里带额度原文 → 也认（同一判据，文案里有 quota 原文）
         assert!(matches!(
-            class(403, "CodeArts 上游返回 HTTP 403：{error_msg: insufficient quota}"),
-            UpstreamErrorClass::QuotaLimited { reset_at: Some(_), .. }
+            class(
+                403,
+                "CodeArts 上游返回 HTTP 403：{error_msg: insufficient quota}"
+            ),
+            UpstreamErrorClass::QuotaLimited {
+                reset_at: Some(_),
+                ..
+            }
         ));
         // 认不出额度的 403 → 透传，不罚账号
         assert!(matches!(
@@ -981,10 +1094,20 @@ mod store_hooks {
         // 一个只是暂时繁忙的账号打死
         assert!(matches!(
             class(429, "too many requests"),
-            UpstreamErrorClass::QuotaLimited { status: 429, reset_at: None, .. }
+            UpstreamErrorClass::QuotaLimited {
+                status: 429,
+                reset_at: None,
+                ..
+            }
         ));
-        assert!(matches!(class(401, "x"), UpstreamErrorClass::Fatal { status: 401, .. }));
-        assert!(matches!(class(502, "x"), UpstreamErrorClass::Fatal { status: 502, .. }));
+        assert!(matches!(
+            class(401, "x"),
+            UpstreamErrorClass::Fatal { status: 401, .. }
+        ));
+        assert!(matches!(
+            class(502, "x"),
+            UpstreamErrorClass::Fatal { status: 502, .. }
+        ));
         // 其它家的默认实现必须还是 Fatal（CatPaw 的行为逐字不变）
         use crate::server::core::providers::catpaw::adapter::CATPAW_ADAPTER;
         assert!(matches!(
@@ -1018,17 +1141,34 @@ mod store_hooks {
         let catalog = local_catalog();
         let group = benefit_cooldown_group(&catalog, "glm-5.3-flash");
         assert_eq!(4, group.len(), "整组福利模型：{group:?}");
-        for expected in ["deepseek-v4-flash-0731", "glm-5.3-flash", "deepseek-v4-pro-0813", "deepseek-v4.1-flash"] {
-            assert!(group.iter().any(|name| name == expected), "缺 {expected}：{group:?}");
+        for expected in [
+            "deepseek-v4-flash-0731",
+            "glm-5.3-flash",
+            "deepseek-v4-pro-0813",
+            "deepseek-v4.1-flash",
+        ] {
+            assert!(
+                group.iter().any(|name| name == expected),
+                "缺 {expected}：{group:?}"
+            );
         }
         // 大小写变体也算福利：整组照记，并补上本次发送名原文的键（判定侧对
         // 解析不出映射的请求读的是请求原文键，见 benefit_cooldown_group 注释）
         let variant = benefit_cooldown_group(&catalog, "GLM-5.3-Flash");
         assert_eq!(5, variant.len(), "整组 4 条 + 变体原文 1 条：{variant:?}");
-        assert!(variant.iter().any(|name| name == "GLM-5.3-Flash"), "缺变体原文键：{variant:?}");
+        assert!(
+            variant.iter().any(|name| name == "GLM-5.3-Flash"),
+            "缺变体原文键：{variant:?}"
+        );
         // 非福利源（agent/builtin）与不在目录里的名字只记自己 —— 不波及别人
-        assert_eq!(vec!["GLM-5.2".to_string()], benefit_cooldown_group(&catalog, "GLM-5.2"));
-        assert_eq!(vec!["ghost".to_string()], benefit_cooldown_group(&catalog, "ghost"));
+        assert_eq!(
+            vec!["GLM-5.2".to_string()],
+            benefit_cooldown_group(&catalog, "GLM-5.2")
+        );
+        assert_eq!(
+            vec!["ghost".to_string()],
+            benefit_cooldown_group(&catalog, "ghost")
+        );
     }
 
     /// 端到端语义（不联网、不发请求）：福利模型撞限额后按**整组**落冷却，
@@ -1044,8 +1184,13 @@ mod store_hooks {
         let catalog = local_catalog();
 
         let store = store();
-        store.add_codearts_account(&credential("AK_BARE", "bare", 120, false), None, "manual").unwrap();
-        let id = store.codearts_account_record("").expect("账号应当可读")["id"].as_str().unwrap().to_string();
+        store
+            .add_codearts_account(&credential("AK_BARE", "bare", 120, false), None, "manual")
+            .unwrap();
+        let id = store.codearts_account_record("").expect("账号应当可读")["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
 
         // 与 provider_loop 会话式分支同一动作：按整组名单逐个记账，恢复时刻也走
         // 同一判据（认得出日池 ⇒ 下一个北京零点，见 `daily_pool_reset_at`）。
@@ -1071,10 +1216,23 @@ mod store_hooks {
         let limits = limits.as_object().expect("rateLimits 应当是对象");
         // 别的福利模型名（本次没撞的那个）也必须有自己的冷却记录，且恢复时刻
         // 是日池重置点而不是 10 分钟兜底
-        for expected in ["deepseek-v4-flash-0731", "glm-5.3-flash", "deepseek-v4-pro-0813", "deepseek-v4.1-flash"] {
-            let entry = limits.get(expected).unwrap_or_else(|| panic!("缺整组键 {expected}：{:?}", limits.keys().collect::<Vec<_>>()));
+        for expected in [
+            "deepseek-v4-flash-0731",
+            "glm-5.3-flash",
+            "deepseek-v4-pro-0813",
+            "deepseek-v4.1-flash",
+        ] {
+            let entry = limits.get(expected).unwrap_or_else(|| {
+                panic!(
+                    "缺整组键 {expected}：{:?}",
+                    limits.keys().collect::<Vec<_>>()
+                )
+            });
             let reset = entry["resetAt"].as_f64().unwrap_or(0.0);
-            assert!(reset > now as f64, "{expected} 的 resetAt 应当在未来，实际 {reset}");
+            assert!(
+                reset > now as f64,
+                "{expected} 的 resetAt 应当在未来，实际 {reset}"
+            );
             assert!(
                 (reset - reset_at as f64).abs() <= 2.0,
                 "{expected} 的 resetAt 应当是日池重置点 {reset_at}，实际 {reset}"
@@ -1117,7 +1275,11 @@ mod store_hooks {
             "上游返回 403: content policy blocked",
             "",
         ] {
-            assert_eq!(None, daily_pool_reset_at(now, text), "认不出日池就不许冷却一整天：{text}");
+            assert_eq!(
+                None,
+                daily_pool_reset_at(now, text),
+                "认不出日池就不许冷却一整天：{text}"
+            );
         }
     }
 }

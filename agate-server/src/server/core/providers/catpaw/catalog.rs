@@ -34,8 +34,8 @@ use std::sync::{OnceLock, RwLock};
 
 use serde_json::{json, Value};
 
-use crate::server::core::proxies::ResolvedProxy;
 use crate::server::core::providers::catalog_cache;
+use crate::server::core::proxies::ResolvedProxy;
 use crate::server::logging;
 
 use super::models::MODELS;
@@ -83,7 +83,10 @@ fn catalog() -> &'static RwLock<CatalogState> {
 /// 「搬回来」：不重新归一 —— 两处各写一份映射迟早分叉。
 fn restored_state() -> CatalogState {
     match catalog_cache::load(catalog_cache::SCOPE_CATPAW) {
-        Some(cached) => CatalogState { models: cached.models, fetched_at: cached.fetched_at },
+        Some(cached) => CatalogState {
+            models: cached.models,
+            fetched_at: cached.fetched_at,
+        },
         None => CatalogState::default(),
     }
 }
@@ -215,9 +218,11 @@ fn normalize_entry(item: &Value) -> Option<Value> {
         None => item
             .get("parameterDefinitions")
             .and_then(Value::as_array)
-            .map(|definitions| definitions.iter().any(|definition| {
-                definition.get("id").and_then(Value::as_str) == Some("effort")
-            }))
+            .map(|definitions| {
+                definitions.iter().any(|definition| {
+                    definition.get("id").and_then(Value::as_str) == Some("effort")
+                })
+            })
             .unwrap_or(false),
     };
     let mut entry = json!({
@@ -244,7 +249,10 @@ fn normalize_entry(item: &Value) -> Option<Value> {
             object.insert("maxInputTokens".to_string(), Value::from(max_window));
         }
         if let Some(default_window) = enum_default(definitions, "context") {
-            object.insert("defaultContextWindow".to_string(), Value::String(default_window));
+            object.insert(
+                "defaultContextWindow".to_string(),
+                Value::String(default_window),
+            );
         }
     }
     Some(entry)
@@ -378,7 +386,10 @@ pub async fn refresh(
         Ok(mut guard) => *guard = state,
         Err(poisoned) => *poisoned.into_inner() = state,
     }
-    logging::log("[Models]", &format!("✅ CatPaw 模型目录已更新（{count} 个）"));
+    logging::log(
+        "[Models]",
+        &format!("✅ CatPaw 模型目录已更新（{count} 个）"),
+    );
     ModelRefreshOutcome::refreshed(count)
 }
 
@@ -476,9 +487,9 @@ fn static_list() -> Vec<Value> {
 /// 静态表里按 id 找条目（大小写/分隔符宽容，见 `models::find_model_entry`）
 fn spec_of(id: &str) -> Option<&'static super::models::ModelSpec> {
     let wanted = normalize(id);
-    MODELS.iter().find(|entry| {
-        normalize(entry.id) == wanted || normalize(entry.name) == wanted
-    })
+    MODELS
+        .iter()
+        .find(|entry| normalize(entry.id) == wanted || normalize(entry.name) == wanted)
 }
 
 /// 与 `models::normalize_model_name` 同口径（小写 + 空白/下划线/点 → 连字符）

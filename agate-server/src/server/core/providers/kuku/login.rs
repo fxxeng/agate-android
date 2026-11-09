@@ -35,7 +35,7 @@
 
 use crate::server::errors::GatewayError;
 
-use super::credentials::{KukuCredentials, enrich_identity, parse_cookie_parts};
+use super::credentials::{enrich_identity, parse_cookie_parts, KukuCredentials};
 
 /// 生成登录任务 state（不可预测的随机串；与 `random_gid` 同源）。
 pub fn new_login_state() -> String {
@@ -96,15 +96,15 @@ pub async fn complete_login(cookie: &str) -> Result<CompleteOutcome, GatewayErro
     match enrich_identity(&credentials, None, true).await {
         Ok(enriched) => Ok((enriched, None)),
         Err(error) => {
-                crate::server::logging::log(
-                    "[Login]",
-                    &format!(
-                        "⚠️ KukuAI 登录态已交回但复核未通过（{}）；先按有效凭证落库，\
+            crate::server::logging::log(
+                "[Login]",
+                &format!(
+                    "⚠️ KukuAI 登录态已交回但复核未通过（{}）；先按有效凭证落库，\
                          uid 留空待后续刷新补齐（复核包含换发业务会话令牌，\
                          需要本机客户端引擎与 Cookie 里的 PTOKEN）",
-                        error.message
-                    ),
-                );
+                    error.message
+                ),
+            );
             Ok((
                 credentials,
                 Some(

@@ -37,7 +37,7 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use futures::StreamExt;
-use serde_json::{Map, Value, json};
+use serde_json::{json, Map, Value};
 use tokio_stream::wrappers::ReceiverStream;
 
 use crate::server::core::account_store::AccountStore;
@@ -48,7 +48,7 @@ use crate::server::errors::GatewayError;
 
 use super::credentials::{self, OrcatermCredentials};
 use super::http::{post_json_value, sse_post};
-use super::{ASSISTANT_QUERY, LIGHTAI_BASE, models};
+use super::{models, ASSISTANT_QUERY, LIGHTAI_BASE};
 
 /// 上游流空闲兜底（本项目编排层对出站流有统一 idle_guard；这里是兜底值）
 const STREAM_IDLE_MS: u64 = 120_000;
@@ -93,7 +93,15 @@ pub async fn run_chat(
     let conversation = conversation?;
 
     // ── SSE 对话流（同样 401 自愈）────────────────────────────
-    let response = match open_chat_stream(&credentials, &conversation, &model, &prompt, proxy.as_ref()).await {
+    let response = match open_chat_stream(
+        &credentials,
+        &conversation,
+        &model,
+        &prompt,
+        proxy.as_ref(),
+    )
+    .await
+    {
         Ok(response) => response,
         Err(error) => {
             let retried = error.status_code == 401
@@ -185,7 +193,10 @@ async fn create_conversation(
     .await?;
     let code = value.get("code").and_then(Value::as_i64).unwrap_or(-1);
     if code != 0 {
-        let message = value.get("message").and_then(Value::as_str).unwrap_or("未知错误");
+        let message = value
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("未知错误");
         return Err(GatewayError::with_status(
             502,
             format!("OrcaTerm 建会话失败（code={code}：{message}）"),
@@ -251,7 +262,11 @@ pub fn build_prompt(messages: Option<&Value>) -> String {
     };
     let usable: Vec<&Value> = items
         .iter()
-        .filter(|message| content_text(message).map(|text| !text.trim().is_empty()).unwrap_or(false))
+        .filter(|message| {
+            content_text(message)
+                .map(|text| !text.trim().is_empty())
+                .unwrap_or(false)
+        })
         .collect();
     if usable.is_empty() {
         return "你好".to_string();
@@ -262,8 +277,13 @@ pub fn build_prompt(messages: Option<&Value>) -> String {
     let mut lines: Vec<String> = Vec::new();
     lines.push("[以下是本轮之前的对话记录，供你了解上下文]".to_string());
     for message in usable {
-        let role = message.get("role").and_then(Value::as_str).unwrap_or("user");
-        let Some(text) = content_text(message) else { continue };
+        let role = message
+            .get("role")
+            .and_then(Value::as_str)
+            .unwrap_or("user");
+        let Some(text) = content_text(message) else {
+            continue;
+        };
         match role {
             "system" => lines.push(format!("[系统指令] {text}")),
             "assistant" => lines.push(format!("[助手] {text}")),
@@ -323,7 +343,9 @@ impl SseScanner {
         while let Some(split_at) = self.buffer.find("\n\n") {
             let raw = self.buffer.drain(..=split_at + 1).collect::<String>();
             for line in raw.split('\n') {
-                let Some(payload) = line.strip_prefix("data:") else { continue };
+                let Some(payload) = line.strip_prefix("data:") else {
+                    continue;
+                };
                 let payload = payload.trim_start();
                 if payload.is_empty() {
                     continue;
@@ -347,7 +369,11 @@ impl SseScanner {
                     .get("reasoningContent")
                     .and_then(Value::as_str)
                     .unwrap_or("");
-                if parsed.get("reasoning").and_then(Value::as_bool).unwrap_or(false) {
+                if parsed
+                    .get("reasoning")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+                {
                     if !reasoning.is_empty() {
                         events.push(OrcaEvent::Reasoning(reasoning.to_string()));
                     }
@@ -416,7 +442,10 @@ struct OrcaStream {
 impl OrcaStream {
     fn new(model: &str) -> Self {
         Self {
-            id: format!("chatcmpl-{}", crate::server::logging::now_ms() * 1000 % 1_000_000_000_000_000),
+            id: format!(
+                "chatcmpl-{}",
+                crate::server::logging::now_ms() * 1000 % 1_000_000_000_000_000
+            ),
             created: crate::server::logging::now_ms() / 1000,
             model: model.to_string(),
             scanner: SseScanner::default(),
@@ -548,7 +577,10 @@ impl OrcaStream {
         chunk.insert("object".to_string(), json!("chat.completion.chunk"));
         chunk.insert("created".to_string(), json!(self.created));
         chunk.insert("model".to_string(), json!(self.model));
-        chunk.insert("choices".to_string(), Value::Array(vec![Value::Object(choice)]));
+        chunk.insert(
+            "choices".to_string(),
+            Value::Array(vec![Value::Object(choice)]),
+        );
         Frame::Chunk(Value::Object(chunk))
     }
 }
@@ -591,9 +623,11 @@ async fn drive_stream(
     model: &str,
     sender: &tokio::sync::mpsc::Sender<Result<Bytes, std::io::Error>>,
 ) -> Result<(), GatewayError> {
-    let source = response
-        .bytes_stream()
-        .map(|item| item.map_err(|error| std::io::Error::other(crate::server::core::egress::describe_error_detail(&error))));
+    let source = response.bytes_stream().map(|item| {
+        item.map_err(|error| {
+            std::io::Error::other(crate::server::core::egress::describe_error_detail(&error))
+        })
+    });
     let mut source = crate::server::core::upstream::stall::idle_guard(
         Box::pin(source),
         std::time::Duration::from_millis(STREAM_IDLE_MS),
@@ -621,14 +655,21 @@ async fn send_frame(
     sender
         .send(Ok(Bytes::from(frame.wire())))
         .await
-        .map_err(|error| GatewayError::with_status(502, format!("OrcaTerm 对话流下发失败：{error}")))
+        .map_err(|error| {
+            GatewayError::with_status(502, format!("OrcaTerm 对话流下发失败：{error}"))
+        })
 }
 
 /// 非流式：遍历同样的上游流，聚合为完整 JSON。
-async fn aggregate(response: reqwest::Response, client_model: &str) -> Result<ForwardOutcome, GatewayError> {
-    let source = response
-        .bytes_stream()
-        .map(|item| item.map_err(|error| std::io::Error::other(crate::server::core::egress::describe_error_detail(&error))));
+async fn aggregate(
+    response: reqwest::Response,
+    client_model: &str,
+) -> Result<ForwardOutcome, GatewayError> {
+    let source = response.bytes_stream().map(|item| {
+        item.map_err(|error| {
+            std::io::Error::other(crate::server::core::egress::describe_error_detail(&error))
+        })
+    });
     let mut source = crate::server::core::upstream::stall::idle_guard(
         Box::pin(source),
         std::time::Duration::from_millis(STREAM_IDLE_MS),
@@ -646,7 +687,10 @@ async fn aggregate(response: reqwest::Response, client_model: &str) -> Result<Fo
     // 的 200 诚实 —— 客户端能看到「模型不可用」而不是一次假成功）
     if stream.content.is_empty() {
         if let Some(message) = &stream.last_error {
-            return Err(GatewayError::with_status(502, format!("OrcaTerm 上游错误：{message}")));
+            return Err(GatewayError::with_status(
+                502,
+                format!("OrcaTerm 上游错误：{message}"),
+            ));
         }
     }
     // 信封解包与非流式同口径：completion/ask/default 信封抽正文，其余原样
@@ -669,8 +713,13 @@ async fn aggregate(response: reqwest::Response, client_model: &str) -> Result<Fo
     body.insert("object".to_string(), json!("chat.completion"));
     body.insert("created".to_string(), json!(created));
     body.insert("model".to_string(), json!(model));
-    body.insert("choices".to_string(), Value::Array(vec![Value::Object(choice)]));
-    Ok(ForwardOutcome::Completion { body: Value::Object(body) })
+    body.insert(
+        "choices".to_string(),
+        Value::Array(vec![Value::Object(choice)]),
+    );
+    Ok(ForwardOutcome::Completion {
+        body: Value::Object(body),
+    })
 }
 
 // ─── 随机串 ──────────────────────────────────────────────────

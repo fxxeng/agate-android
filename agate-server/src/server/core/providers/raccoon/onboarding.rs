@@ -283,12 +283,18 @@ pub async fn claim_all(store: &AccountStore, account_id: &str) -> Result<Value, 
                 if granted {
                     crate::server::logging::log(
                         "[Onboarding]",
-                        &format!("小浣熊账号 {account_id}：「{}」已发放（+{points}）", task.title),
+                        &format!(
+                            "小浣熊账号 {account_id}：「{}」已发放（+{points}）",
+                            task.title
+                        ),
                     );
                 } else {
                     crate::server::logging::log(
                         "[Onboarding]",
-                        &format!("小浣熊账号 {account_id}：「{}」此前已发放，跳过重复加分", task.title),
+                        &format!(
+                            "小浣熊账号 {account_id}：「{}」此前已发放，跳过重复加分",
+                            task.title
+                        ),
                     );
                 }
             }
@@ -299,7 +305,10 @@ pub async fn claim_all(store: &AccountStore, account_id: &str) -> Result<Value, 
                 failed += 1;
                 crate::server::logging::verbose(
                     "[Onboarding]",
-                    &format!("小浣熊账号 {account_id}：「{}」领取失败: {}", task.title, error.message),
+                    &format!(
+                        "小浣熊账号 {account_id}：「{}」领取失败: {}",
+                        task.title, error.message
+                    ),
                 );
                 rows.push(json!({
                     "key": task.key,
@@ -323,7 +332,10 @@ pub async fn claim_all(store: &AccountStore, account_id: &str) -> Result<Value, 
     // 响应里的任务行 = 台账旧状态 ∪ 本次增量（落库失败也按已结算播报 ——
     // 上游已经结清，界面不该再显示「待领取」引着用户去点一颗注定幂等的按钮）
     let mut merged = record.clone();
-    if let Some(ledger) = merged.get_mut("onboardingGrants").and_then(Value::as_object_mut) {
+    if let Some(ledger) = merged
+        .get_mut("onboardingGrants")
+        .and_then(Value::as_object_mut)
+    {
         for (key, at) in settled.iter() {
             ledger.insert(key.clone(), at.clone());
         }

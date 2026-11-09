@@ -80,7 +80,10 @@ pub struct CooldownKeys<'a> {
 
 impl<'a> CooldownKeys<'a> {
     pub fn new(requested: &'a str) -> Self {
-        Self { requested, resolved: Mutex::new(HashMap::new()) }
+        Self {
+            requested,
+            resolved: Mutex::new(HashMap::new()),
+        }
     }
 
     /// 请求名原文（轮转游标按它分键：不同模型的候选集合不同，各轮各的）
@@ -116,20 +119,19 @@ impl<'a> CooldownKeys<'a> {
         // `custom_providers::wire_model_for`）。跳过这一步会让 alias 请求的
         // 冷却写在请求名上：正是本模块头描述的那类「判定漏命中、已限额账号
         // 被反复选中」的事故形态，所以这里必须按家分派。
-        let wire =
-            if crate::server::core::custom_providers::is_custom_provider_id(provider_id) {
-                crate::server::core::providers::custom::forward::cooldown_model(
-                    provider_id,
-                    self.requested,
-                )
-            } else {
-                crate::server::core::providers::catalog::wire_target_for_provider(
-                    self.requested,
-                    provider_id,
-                    None,
-                )
-                .model
-            };
+        let wire = if crate::server::core::custom_providers::is_custom_provider_id(provider_id) {
+            crate::server::core::providers::custom::forward::cooldown_model(
+                provider_id,
+                self.requested,
+            )
+        } else {
+            crate::server::core::providers::catalog::wire_target_for_provider(
+                self.requested,
+                provider_id,
+                None,
+            )
+            .model
+        };
         if let Ok(mut cache) = self.resolved.lock() {
             cache.insert(provider_id.to_string(), wire.clone());
         }
@@ -166,10 +168,7 @@ pub fn rate_limit_reset_at(account: &Value, keys: &CooldownKeys<'_>, now: i64) -
     else {
         return 0;
     };
-    let reset_at = limit
-        .get("resetAt")
-        .and_then(js_number)
-        .unwrap_or(0.0);
+    let reset_at = limit.get("resetAt").and_then(js_number).unwrap_or(0.0);
     if reset_at > now as f64 {
         reset_at as i64
     } else {
@@ -183,12 +182,21 @@ pub fn account_usability(account: &Value, keys: &CooldownKeys<'_>, now: i64) -> 
     // Node: `account?.enabled === false` —— 只有显式 false 才算禁用，
     // 缺失/字符串 "false"/0 都视为启用（与 account-store 的 enabled() 同口径）
     if matches!(account.get("enabled"), Some(Value::Bool(false))) {
-        return AccountUsability { usable: false, reason: Some("disabled") };
+        return AccountUsability {
+            usable: false,
+            reason: Some("disabled"),
+        };
     }
     if is_rate_limited(account, keys, now) {
-        return AccountUsability { usable: false, reason: Some("rate-limited") };
+        return AccountUsability {
+            usable: false,
+            reason: Some("rate-limited"),
+        };
     }
-    AccountUsability { usable: true, reason: None }
+    AccountUsability {
+        usable: true,
+        reason: None,
+    }
 }
 
 /// `account_usability` 的结果
@@ -307,7 +315,8 @@ pub fn pick_for_model(
     let candidates: Vec<Value> = accounts
         .iter()
         .filter(|account| {
-            if !providers.is_empty() && !providers.iter().any(|known| *known == provider_of(account))
+            if !providers.is_empty()
+                && !providers.iter().any(|known| *known == provider_of(account))
             {
                 return false;
             }
@@ -345,10 +354,13 @@ pub fn account_name(account: &Value, id: &str) -> String {
         .and_then(Value::as_str)
         .map(str::to_string)
         .or_else(|| {
-            account.get("name").filter(|value| js_truthy(value)).and_then(|value| match value {
-                Value::String(text) => Some(text.to_string()),
-                other => Some(other.to_string()),
-            })
+            account
+                .get("name")
+                .filter(|value| js_truthy(value))
+                .and_then(|value| match value {
+                    Value::String(text) => Some(text.to_string()),
+                    other => Some(other.to_string()),
+                })
         })
         .unwrap_or_else(|| id.to_string())
 }
@@ -369,7 +381,10 @@ pub fn accounts_of(snapshot: &Value) -> Vec<Value> {
 fn compare_by_priority(a: &Value, b: &Value) -> std::cmp::Ordering {
     let key = |account: &Value| {
         (
-            normalize_priority(account.get("priority"), crate::server::core::account_store::priority::DEFAULT_PRIORITY),
+            normalize_priority(
+                account.get("priority"),
+                crate::server::core::account_store::priority::DEFAULT_PRIORITY,
+            ),
             js_number(account.get("addedAt").unwrap_or(&Value::Null)).unwrap_or(0.0),
         )
     };
@@ -388,7 +403,10 @@ fn js_number(value: &Value) -> Option<f64> {
                 // JS: Number('') === 0（与 Number('abc') 的 NaN 不同）
                 Some(0.0)
             } else {
-                trimmed.parse::<f64>().ok().filter(|value| value.is_finite())
+                trimmed
+                    .parse::<f64>()
+                    .ok()
+                    .filter(|value| value.is_finite())
             }
         }
         // Boolean / null / 对象 / 数组：Number(true)=1、Number(null)=0、
@@ -580,7 +598,9 @@ pub fn plan_route(
     let mut ordered: Vec<Value> = Vec::new();
     let mut blocked: Vec<PlanEntry> = Vec::new();
     for account in accounts {
-        let Some(id) = account_id(account) else { continue };
+        let Some(id) = account_id(account) else {
+            continue;
+        };
         let id = id.to_string();
         let name = account_name(account, &id);
         let provider = provider_of(account).to_string();
@@ -630,7 +650,10 @@ pub fn plan_route(
             continue;
         }
         if matches!(account.get("hasCredentials"), Some(Value::Bool(false))) {
-            blocked.push(entry("no-credentials", "没有可用凭证，登录后才能接请求".to_string()));
+            blocked.push(entry(
+                "no-credentials",
+                "没有可用凭证，登录后才能接请求".to_string(),
+            ));
             continue;
         }
         ordered.push(account.clone());
@@ -908,10 +931,22 @@ mod tests {
         let order: Vec<&str> = plan.ordered.iter().map(|entry| entry.id.as_str()).collect();
         assert_eq!(order, vec!["a1", "a2", "b1"]);
         // 第 2 位是同家的 a2
-        assert!(plan.ordered[1].reason.contains("同一家内轮流"), "{}", plan.ordered[1].reason);
-        assert!(!plan.ordered[1].reason.contains("优先级更高的家"), "{}", plan.ordered[1].reason);
+        assert!(
+            plan.ordered[1].reason.contains("同一家内轮流"),
+            "{}",
+            plan.ordered[1].reason
+        );
+        assert!(
+            !plan.ordered[1].reason.contains("优先级更高的家"),
+            "{}",
+            plan.ordered[1].reason
+        );
         // 第 3 位的 b1 前面确实有 A 家，仍按「优先级更高的家」解释
-        assert!(plan.ordered[2].reason.contains("优先级更高的家"), "{}", plan.ordered[2].reason);
+        assert!(
+            plan.ordered[2].reason.contains("优先级更高的家"),
+            "{}",
+            plan.ordered[2].reason
+        );
     }
 
     /// 粘性命中的账号必须真的排到第 1 位 —— 即使它的优先级最低。
@@ -1013,7 +1048,10 @@ mod tests {
         let order: Vec<&str> = plan.ordered.iter().map(|entry| entry.id.as_str()).collect();
         // 垫底的 a2 被推回第 2 位（粘性置顶让位于垫底 —— 这正是要如实展示的事实）
         assert_eq!(order, vec!["a1", "a2"]);
-        assert!(plan.sticky_hit, "命中过就该记着（sticky_hit 表示「查到过」）");
+        assert!(
+            plan.sticky_hit,
+            "命中过就该记着（sticky_hit 表示「查到过」）"
+        );
         // 原因句必须如实：说它在第几位，而不是「本轮继续用它」
         let a2 = &plan.ordered[1];
         assert!(
@@ -1097,5 +1135,3 @@ mod tests {
         assert_eq!(order, vec!["a1", "a2", "b1", "b2"]);
     }
 }
-
-

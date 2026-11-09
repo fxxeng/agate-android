@@ -285,10 +285,19 @@ fn insert_checked(entry: Entry<'_>) -> Result<(), String> {
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
              ON CONFLICT(run_id, account_id) WHERE run_id IS NOT NULL DO NOTHING",
             params![
-                ts, date, entry.source, entry.reason, entry.account_id,
-                entry.account_name, entry.provider, entry.outcome,
-                entry.ok as i64, entry.message, entry.error,
-                entry.kept_active as i64, entry.run_id,
+                ts,
+                date,
+                entry.source,
+                entry.reason,
+                entry.account_id,
+                entry.account_name,
+                entry.provider,
+                entry.outcome,
+                entry.ok as i64,
+                entry.message,
+                entry.error,
+                entry.kept_active as i64,
+                entry.run_id,
             ],
         )?;
         Ok(())
@@ -310,8 +319,7 @@ pub fn record_reconciliation_for_run_at(
     evidence_id: i64,
     recorded_at: i64,
 ) -> Result<(), String> {
-    let date = beijing::date_key_of_ms(recorded_at)
-        .unwrap_or_else(beijing::today_key);
+    let date = beijing::date_key_of_ms(recorded_at).unwrap_or_else(beijing::today_key);
     db.with_mut(|conn| -> Result<(), rusqlite::Error> {
         let tx = conn.transaction()?;
         let evidence_valid: bool = tx.query_row(
@@ -332,7 +340,15 @@ pub fn record_reconciliation_for_run_at(
                      'already', 1, '上游状态确认当日已完成；此记录为恢复核实，不代表本次请求响应',
                      NULL, 0, ?6, ?7)
              ON CONFLICT(run_id, account_id) WHERE run_id IS NOT NULL DO NOTHING",
-            params![recorded_at, date, account_id, account_name, provider, run_id, evidence_id],
+            params![
+                recorded_at,
+                date,
+                account_id,
+                account_name,
+                provider,
+                run_id,
+                evidence_id
+            ],
         )?;
         let stored: Option<i64> = tx
             .query_row(
@@ -376,7 +392,10 @@ impl Query {
     /// 是否带了任一筛选条件（DELETE 的护栏判据：一个都没带 = 全清）
     pub fn has_filters(&self) -> bool {
         self.outcome.as_deref().is_some_and(|text| !text.is_empty())
-            || self.provider.as_deref().is_some_and(|text| !text.is_empty())
+            || self
+                .provider
+                .as_deref()
+                .is_some_and(|text| !text.is_empty())
             || self.keyword.as_deref().is_some_and(|text| !text.is_empty())
             || self.start.is_some()
             || self.end.is_some()
@@ -488,12 +507,14 @@ pub fn clear_where(query: &Query) -> Option<usize> {
     let db = database()?;
     let (where_clause, filter_params) = query.clause();
     let sql = format!("DELETE FROM checkin_records{where_clause}");
-    let params_from_json = |values: &[Value]| -> Vec<String> {
-        values.iter().map(value_to_text).collect()
-    };
+    let params_from_json =
+        |values: &[Value]| -> Vec<String> { values.iter().map(value_to_text).collect() };
     db.with_mut(|conn| {
-        conn.execute(&sql, rusqlite::params_from_iter(params_from_json(&filter_params)))
-            .ok()
+        conn.execute(
+            &sql,
+            rusqlite::params_from_iter(params_from_json(&filter_params)),
+        )
+        .ok()
     })
     .flatten()
 }
@@ -501,7 +522,8 @@ pub fn clear_where(query: &Query) -> Option<usize> {
 /// 清空全部（API 层护栏已过）。返回删除条数。
 pub fn clear_all() -> Option<usize> {
     let db = database()?;
-    db.with_mut(|conn| conn.execute("DELETE FROM checkin_records", []).ok()).flatten()
+    db.with_mut(|conn| conn.execute("DELETE FROM checkin_records", []).ok())
+        .flatten()
 }
 
 /// rusqlite 的参数都是 ToSql：这里统一转文本（数字 / 字符串都安全）
@@ -511,7 +533,6 @@ fn value_to_text(value: &Value) -> String {
         other => other.to_string(),
     }
 }
-
 
 #[cfg(test)]
 mod reconciliation_tests {
@@ -530,24 +551,41 @@ mod reconciliation_tests {
                 [now],
             )
         }).expect("database available").expect("seed confirmed evidence");
-        record_reconciliation_for_run_at(
-            &db, "run-1", "account-1", "Qoder", "qoder", 41, now,
-        ).expect("first reconciliation history insert");
-        record_reconciliation_for_run_at(
-            &db, "run-1", "account-1", "Qoder", "qoder", 41, now + 1,
-        ).expect("same evidence replay is idempotent");
-        assert!(record_reconciliation_for_run_at(
-            &db, "run-1", "account-1", "Qoder", "qoder", 42, now + 2,
-        ).is_err(), "a different evidence id must not replace the first history row");
-        let row = db.with(|conn| {
-            conn.query_row(
-                "SELECT source, outcome, reconciliation_evidence_id, ts
-                 FROM checkin_records WHERE run_id = 'run-1' AND account_id = 'account-1'",
-                [],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?,
-                        row.get::<_, i64>(2)?, row.get::<_, i64>(3)?)),
+        record_reconciliation_for_run_at(&db, "run-1", "account-1", "Qoder", "qoder", 41, now)
+            .expect("first reconciliation history insert");
+        record_reconciliation_for_run_at(&db, "run-1", "account-1", "Qoder", "qoder", 41, now + 1)
+            .expect("same evidence replay is idempotent");
+        assert!(
+            record_reconciliation_for_run_at(
+                &db,
+                "run-1",
+                "account-1",
+                "Qoder",
+                "qoder",
+                42,
+                now + 2,
             )
-        }).expect("database available").expect("projected row");
+            .is_err(),
+            "a different evidence id must not replace the first history row"
+        );
+        let row = db
+            .with(|conn| {
+                conn.query_row(
+                    "SELECT source, outcome, reconciliation_evidence_id, ts
+                 FROM checkin_records WHERE run_id = 'run-1' AND account_id = 'account-1'",
+                    [],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, i64>(2)?,
+                            row.get::<_, i64>(3)?,
+                        ))
+                    },
+                )
+            })
+            .expect("database available")
+            .expect("projected row");
         assert_eq!(row.0, "reconciliation");
         assert_eq!(row.1, "already");
         assert_eq!(row.2, 41);

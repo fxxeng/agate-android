@@ -71,7 +71,10 @@ pub async fn exchange_genflowpro_stoken(bduss: &str, ptoken: &str) -> Result<Str
     let client = egress::client_for(None);
     let response = client
         .post(PASSPORT_AUTH_URL)
-        .header("Content-Type", "application/x-www-form-urlencoded;charset=UTF-8")
+        .header(
+            "Content-Type",
+            "application/x-www-form-urlencoded;charset=UTF-8",
+        )
         .header("Referer", format!("{}/genflowpro", super::BASE_URL))
         .header("Origin", super::BASE_URL)
         .header("User-Agent", USER_AGENT)

@@ -146,7 +146,10 @@ pub fn ws_headers(region: Region, session: &str) -> Vec<(String, String)> {
     let origin = region.site_origin();
     vec![
         ("User-Agent".to_string(), USER_AGENT.to_string()),
-        ("Accept-Language".to_string(), "zh-CN,zh;q=0.9,en;q=0.8".to_string()),
+        (
+            "Accept-Language".to_string(),
+            "zh-CN,zh;q=0.9,en;q=0.8".to_string(),
+        ),
         ("Cache-Control".to_string(), "no-cache".to_string()),
         ("Pragma".to_string(), "no-cache".to_string()),
         ("Origin".to_string(), origin.to_string()),

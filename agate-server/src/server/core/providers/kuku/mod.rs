@@ -49,8 +49,8 @@
 
 pub mod adapter;
 pub mod balance;
-pub mod checkin;
 pub mod chat;
+pub mod checkin;
 pub mod credentials;
 pub mod engine;
 pub mod http;

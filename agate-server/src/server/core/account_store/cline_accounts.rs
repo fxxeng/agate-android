@@ -114,9 +114,8 @@ fn read_desktop_settings_text() -> Result<String, AccountStoreError> {
             400,
         ));
     }
-    std::fs::read_to_string(&path).map_err(|error| {
-        AccountStoreError::new(format!("读取本机 Cline 登录态失败: {error}"), 500)
-    })
+    std::fs::read_to_string(&path)
+        .map_err(|error| AccountStoreError::new(format!("读取本机 Cline 登录态失败: {error}"), 500))
 }
 
 impl AccountStore {
@@ -354,7 +353,11 @@ impl AccountStore {
             "name".to_string(),
             Value::String(truncate_chars(&record_name, MAX_NAME_LENGTH)),
         );
-        mark_name_custom(&mut fields, name.is_some_and(|value| !value.trim().is_empty()), existing.as_ref());
+        mark_name_custom(
+            &mut fields,
+            name.is_some_and(|value| !value.trim().is_empty()),
+            existing.as_ref(),
+        );
         if !account.is_empty() {
             fields.insert(
                 "account".to_string(),
@@ -390,7 +393,12 @@ impl AccountStore {
         fields.insert("priority".to_string(), Value::from(priority));
         fields.insert(
             "enabled".to_string(),
-            Value::Bool(existing.as_ref().map(StoredAccount::enabled).unwrap_or(true)),
+            Value::Bool(
+                existing
+                    .as_ref()
+                    .map(StoredAccount::enabled)
+                    .unwrap_or(true),
+            ),
         );
         fields.insert("desktop".to_string(), Value::Bool(false));
         fields.insert(
@@ -414,7 +422,14 @@ impl AccountStore {
         );
         fields.insert("updatedAt".to_string(), Value::from(now));
         // 清掉可能来自别家的残留字段（同一个 id 曾被别家占用过时）
-        for key in ["edition", "endpoint", "prefixPath", "platform", "uid", "deviceId"] {
+        for key in [
+            "edition",
+            "endpoint",
+            "prefixPath",
+            "platform",
+            "uid",
+            "deviceId",
+        ] {
             fields.remove(key);
         }
         let saved = StoredAccount::from_map(fields);
@@ -483,10 +498,7 @@ impl AccountStore {
             );
         }
         if !credentials.account.is_empty() {
-            payload.insert(
-                "account".to_string(),
-                Value::String(credentials.account),
-            );
+            payload.insert("account".to_string(), Value::String(credentials.account));
         }
         self.add_cline_account(provider, &Value::Object(payload), name)
     }
@@ -573,7 +585,11 @@ impl AccountStore {
             "name".to_string(),
             Value::String(truncate_chars(&record_name, MAX_NAME_LENGTH)),
         );
-        mark_name_custom(&mut fields, name.is_some_and(|value| !value.trim().is_empty()), existing.as_ref());
+        mark_name_custom(
+            &mut fields,
+            name.is_some_and(|value| !value.trim().is_empty()),
+            existing.as_ref(),
+        );
         if !credentials.account.is_empty() {
             fields.insert(
                 "account".to_string(),
@@ -607,7 +623,12 @@ impl AccountStore {
         fields.insert("priority".to_string(), Value::from(priority));
         fields.insert(
             "enabled".to_string(),
-            Value::Bool(existing.as_ref().map(StoredAccount::enabled).unwrap_or(true)),
+            Value::Bool(
+                existing
+                    .as_ref()
+                    .map(StoredAccount::enabled)
+                    .unwrap_or(true),
+            ),
         );
         fields.insert("desktop".to_string(), Value::Bool(true));
         fields.insert("source".to_string(), Value::String("imported".to_string()));
@@ -724,10 +745,7 @@ impl AccountStore {
         out.insert("id".to_string(), Value::String(record.id().to_string()));
         // provider 取**记录自己的**（不是某个写死的值）：两个池共用这一份
         // 公开形态，回错池会让账号显示在另一个分组里
-        out.insert(
-            "provider".to_string(),
-            Value::String(record.provider()),
-        );
+        out.insert("provider".to_string(), Value::String(record.provider()));
         let account = value
             .get("account")
             .and_then(Value::as_str)
@@ -839,9 +857,12 @@ impl AccountStore {
         } else {
             None
         };
-        let expires = live_expires
-            .map(Value::from)
-            .or_else(|| value.get("expiresAt").filter(|value| !value.is_null()).cloned());
+        let expires = live_expires.map(Value::from).or_else(|| {
+            value
+                .get("expiresAt")
+                .filter(|value| !value.is_null())
+                .cloned()
+        });
         if let Some(expires) = expires {
             out.insert("expiresAt".to_string(), expires);
         }
@@ -936,9 +957,8 @@ mod tests {
     #[test]
     fn public_shape_carries_account_proxy() {
         let (store, _db) = store("proxy-set");
-        let public = store.to_cline_public_account(&record(
-            json!({"source": "pool", "proxyId": "px_test_1"}),
-        ));
+        let public = store
+            .to_cline_public_account(&record(json!({"source": "pool", "proxyId": "px_test_1"})));
         // 池条目在本测试的配置里不存在 → 解析失败是预期的，但 `config`
         // 里必须原样带着 proxyId（前端靠它匹配下拉选项）
         assert_eq!(public["proxy"]["source"], "pool");

@@ -78,7 +78,10 @@ pub async fn put_routing(State(_state): State<ServerState>, body: Bytes) -> Resp
         if !known.contains(&text) {
             return errors::management_error(
                 400,
-                format!("未知的会话粘性档位「{text}」（只支持 {}）", known.join(" / ")),
+                format!(
+                    "未知的会话粘性档位「{text}」（只支持 {}）",
+                    known.join(" / ")
+                ),
             );
         }
         patch.sticky = Some(config::StickyMode::from_id(text));
@@ -200,9 +203,7 @@ impl PlanFacts {
             .iter()
             .filter(|account| {
                 crate::server::core::usage_records::balance_blocked(account, &balance)
-                    || crate::server::core::limiter::token_skip_blocked(
-                        account, &token_facts, now,
-                    )
+                    || crate::server::core::limiter::token_skip_blocked(account, &token_facts, now)
             })
             .filter_map(|account| routing::account_id(account).map(str::to_string))
             .collect();
@@ -270,10 +271,7 @@ impl PlanFacts {
 /// 每个模型一次 `plan_route`（会 clone 一遍候选账号）。全部模型全算一遍在
 /// 几十上百个模型时是明显浪费，而界面一次最多也只铺 40 个胶囊。所以由调用方
 /// 点名，且设上限 [AVAILABILITY_MAX_MODELS]。
-pub async fn post_routing_availability(
-    State(state): State<ServerState>,
-    body: Bytes,
-) -> Response {
+pub async fn post_routing_availability(State(state): State<ServerState>, body: Bytes) -> Response {
     let payload = match parse_body(&body) {
         Ok(value) => value,
         Err(error) => return errors::management_error(400, error.message),
@@ -297,7 +295,10 @@ pub async fn post_routing_availability(
     if models.len() > AVAILABILITY_MAX_MODELS {
         return errors::management_error(
             400,
-            format!("一次最多问 {AVAILABILITY_MAX_MODELS} 个模型（收到 {}）", models.len()),
+            format!(
+                "一次最多问 {AVAILABILITY_MAX_MODELS} 个模型（收到 {}）",
+                models.len()
+            ),
         );
     }
     let facts = PlanFacts::collect(&state);

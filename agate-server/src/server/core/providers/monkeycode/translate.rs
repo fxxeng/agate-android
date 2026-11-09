@@ -180,7 +180,10 @@ impl Translator {
         let index = self.tools.len();
         // id 用任务 id（去掉 `chatcmpl-` 前缀）拼 idx：ACP 的 tool_call 事件
         // 没有携带 id，客户端做 tool_use/tool_result 配对时需要稳定且唯一的值。
-        let task = self.chat_id.strip_prefix("chatcmpl-").unwrap_or(&self.chat_id);
+        let task = self
+            .chat_id
+            .strip_prefix("chatcmpl-")
+            .unwrap_or(&self.chat_id);
         let id = format!("call_{index}_{task}");
         self.tools.push(ToolCallState {
             id: id.clone(),
@@ -210,9 +213,7 @@ impl Translator {
         let index = if tool_name.is_empty() {
             self.last_tool_index?
         } else {
-            self.tools
-                .iter()
-                .rposition(|tool| tool.name == tool_name)?
+            self.tools.iter().rposition(|tool| tool.name == tool_name)?
         };
         let tool = self.tools.get_mut(index)?;
         tool.arguments.push_str(delta);
@@ -364,10 +365,7 @@ pub(super) fn handle_message(translator: &mut Translator, raw: &str) -> Handled 
             }
         }
         other => {
-            logging::verbose(
-                "[MonkeyCode]",
-                &format!("忽略任务流消息类型：{other}"),
-            );
+            logging::verbose("[MonkeyCode]", &format!("忽略任务流消息类型：{other}"));
             Handled::default()
         }
     }
@@ -401,10 +399,7 @@ fn handle_running(translator: &mut Translator, message: &Value) -> Handled {
             }
         }
         other => {
-            logging::verbose(
-                "[MonkeyCode]",
-                &format!("忽略 task-running kind={other}"),
-            );
+            logging::verbose("[MonkeyCode]", &format!("忽略 task-running kind={other}"));
             Handled::default()
         }
     }
@@ -567,7 +562,9 @@ fn parse_question(raw: &str) -> Option<Value> {
         return Some(value);
     }
     use base64::Engine;
-    let decoded = base64::engine::general_purpose::STANDARD.decode(text).ok()?;
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(text)
+        .ok()?;
     let text = String::from_utf8(decoded).ok()?;
     serde_json::from_str::<Value>(&text).ok()
 }

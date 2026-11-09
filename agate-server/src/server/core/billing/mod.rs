@@ -31,8 +31,8 @@
 //!   request.rs   端点表、调用选项、请求头、JS 语义工具
 //!   commodity.rs 积分包商品码与套餐分类
 
-pub mod checkin;
 mod activity;
+pub mod checkin;
 pub mod commodity;
 pub mod keepalive;
 mod request;
@@ -48,13 +48,13 @@ use crate::server::core::proxies::ResolvedProxy;
 use crate::server::logging;
 
 // 请求构造素材对同层子模块可见（`super::X`），对外仍是模块私有
+use activity::normalize_activity_status;
+pub use activity::WorkbuddyActivity;
 use request::{
     build_headers, whitelist_headers, BillingCall, BillingSpec, CallOptions,
     BILLING_ACTIVITY_CHECKIN_STATUS, BILLING_CHECKIN_STATUS, BILLING_CLAIM_COMPENSATION,
     BILLING_CLAIM_GIFT, BILLING_DAILY_CHECKIN,
 };
-use activity::normalize_activity_status;
-pub use activity::WorkbuddyActivity;
 // 账号页那条链要**一次**查询同时拿到积分简报与逐份明细（见
 // `providers::workbuddy::adapter` 的 `query_usage`）：简报的摊平逻辑与在本模块里，
 // 明细的行形状也定义在本模块（`get_personal_usage` 组装的 resources），
@@ -78,7 +78,11 @@ pub struct BillingError {
 
 impl BillingError {
     pub fn new(message: impl Into<String>, status_code: i32) -> Self {
-        Self { message: message.into(), status_code, upstream_code: None }
+        Self {
+            message: message.into(),
+            status_code,
+            upstream_code: None,
+        }
     }
 
     pub fn with_code(
@@ -86,7 +90,11 @@ impl BillingError {
         status_code: i32,
         upstream_code: Option<i64>,
     ) -> Self {
-        Self { message: message.into(), status_code, upstream_code }
+        Self {
+            message: message.into(),
+            status_code,
+            upstream_code,
+        }
     }
 
     /// 转成统一的网关错误。
@@ -163,7 +171,10 @@ impl BillingService {
         })?;
         match session {
             Some(session) if has_access_token(&session) => Ok(session),
-            _ => Err(BillingError::new("当前没有可用登录态：请先在桌面端完成登录", 401)),
+            _ => Err(BillingError::new(
+                "当前没有可用登录态：请先在桌面端完成登录",
+                401,
+            )),
         }
     }
 
@@ -223,7 +234,10 @@ impl BillingService {
 
         let mut extra: Vec<(String, String)> = Vec::new();
         if let Some(locale) = options.locale {
-            extra.push(("Accept-Language".to_string(), Self::accept_language(Some(locale))));
+            extra.push((
+                "Accept-Language".to_string(),
+                Self::accept_language(Some(locale)),
+            ));
         }
         if spec.whitelist_headers {
             extra.extend(whitelist_headers(&session));
@@ -342,9 +356,18 @@ impl BillingService {
                 if is_duplicate_claim(response.status, detail) {
                     logging::verbose(
                         "[Billing]",
-                        &format!("签到重复领取（HTTP {}），按「今日已完成」处理: {detail}", response.status),
+                        &format!(
+                            "签到重复领取（HTTP {}），按「今日已完成」处理: {detail}",
+                            response.status
+                        ),
                     );
-                    return Ok(BillingCall { code, msg, request_id, data: Value::Null, raw: payload });
+                    return Ok(BillingCall {
+                        code,
+                        msg,
+                        request_id,
+                        data: Value::Null,
+                        raw: payload,
+                    });
                 }
                 // 开了容错却**没**命中：最可能是上游改了文案（判据是文案匹配，
                 // 见 `is_duplicate_claim`）。留一条现场 —— 否则「面板又不像 #137
@@ -363,7 +386,11 @@ impl BillingService {
             } else {
                 format!("计费接口返回 HTTP {}: {detail}", response.status)
             };
-            return Err(BillingError::with_code(message, response.status as i32, code));
+            return Err(BillingError::with_code(
+                message,
+                response.status as i32,
+                code,
+            ));
         }
         if let Some(code_value) = code {
             if code_value != RESPONSE_CODE_OK && options.expect_code_ok {
@@ -385,7 +412,13 @@ impl BillingService {
             .and_then(|value| value.get("data"))
             .cloned()
             .unwrap_or(Value::Null);
-        Ok(BillingCall { code, msg, request_id, data, raw: payload })
+        Ok(BillingCall {
+            code,
+            msg,
+            request_id,
+            data,
+            raw: payload,
+        })
     }
 
     // ─── 签到 ───────────────────────────────────────────────
@@ -418,7 +451,11 @@ impl BillingService {
         let result = self
             .call_billing(
                 BILLING_CHECKIN_STATUS,
-                CallOptions { session: Some(&active), expect_code_ok: false, ..Default::default() },
+                CallOptions {
+                    session: Some(&active),
+                    expect_code_ok: false,
+                    ..Default::default()
+                },
             )
             .await?;
         if result.code != Some(RESPONSE_CODE_OK) || result.data.is_null() {
@@ -436,13 +473,18 @@ impl BillingService {
     /// （`workbuddy_daily_activity`，见 `activity.rs`），并把领取结果、活动
     /// 状态与保活读数一并装进 claim 返回 —— 组合入口与签到链两条路都从这进，
     /// 一次调用不重复打上游。
-    pub async fn claim_daily_checkin(&self, session: Option<&Value>) -> Result<Value, BillingError> {
+    pub async fn claim_daily_checkin(
+        &self,
+        session: Option<&Value>,
+    ) -> Result<Value, BillingError> {
         let active = match session {
             Some(session) => session.clone(),
             None => self.require_session().await?,
         };
         if is_international(&active) {
-            let activity = self.workbuddy_daily_activity(&active, WorkbuddyActivity::Full).await;
+            let activity = self
+                .workbuddy_daily_activity(&active, WorkbuddyActivity::Full)
+                .await;
             let mut claim = activity.get("claim").cloned().unwrap_or_else(|| {
                 json!({
                     "success": false,
@@ -513,12 +555,14 @@ impl BillingService {
 
     /// 领取活动补偿（如 2026-10 的 DeepSeek 故障补偿 500 积分）
     pub async fn claim_compensation(&self, session: &Value) -> Result<Value, BillingError> {
-        self.claim_reward(BILLING_CLAIM_COMPENSATION, "活动补偿", session).await
+        self.claim_reward(BILLING_CLAIM_COMPENSATION, "活动补偿", session)
+            .await
     }
 
     /// 领取新手礼包（一次性新用户积分包，没领过的账号才有）
     pub async fn claim_gift(&self, session: &Value) -> Result<Value, BillingError> {
-        self.claim_reward(BILLING_CLAIM_GIFT, "新手礼包", session).await
+        self.claim_reward(BILLING_CLAIM_GIFT, "新手礼包", session)
+            .await
     }
 
     /// 默认语言下的积分简报（路由层入口，对照 server.mjs
@@ -669,7 +713,10 @@ mod tests {
     fn only_400_and_409_are_tolerated() {
         // 500/502/504 是真故障：放行会把「今天一次都没签上」记成已签到
         for status in [500, 502, 503, 504, 429, 404] {
-            assert!(!is_duplicate_claim(status, REAL_DUPLICATE), "status={status} 不该被放行");
+            assert!(
+                !is_duplicate_claim(status, REAL_DUPLICATE),
+                "status={status} 不该被放行"
+            );
         }
     }
 
@@ -677,7 +724,10 @@ mod tests {
     fn non_duplicate_message_still_fails() {
         // 同为 400，但文案与「重复领取」无关 —— 必须照旧报错
         for detail in ["参数错误", "请求内容不是有效 JSON", "活动已结束", ""] {
-            assert!(!is_duplicate_claim(400, detail), "detail={detail:?} 不该被放行");
+            assert!(
+                !is_duplicate_claim(400, detail),
+                "detail={detail:?} 不该被放行"
+            );
         }
     }
 

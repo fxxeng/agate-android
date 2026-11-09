@@ -44,14 +44,15 @@ use std::collections::HashMap;
 use serde_json::{json, Value};
 
 use crate::server::config;
-use crate::server::core::proxies::ResolvedProxy;
 use crate::server::core::providers::readiness;
+use crate::server::core::proxies::ResolvedProxy;
 use crate::server::core::routing;
 use crate::server::errors::{self, GatewayError};
 use crate::server::logging;
 
-use super::{account_display, format_reset_text, has_access_token, priority_of, RouteTarget,
-            UpstreamService};
+use super::{
+    account_display, format_reset_text, has_access_token, priority_of, RouteTarget, UpstreamService,
+};
 
 /// 取指定账号的会话；`account_id` 为 None 时回落到**该 provider 的**默认登录态。
 ///
@@ -173,14 +174,15 @@ pub(super) async fn select_target_account(
     // 无凭证）之后的实际成员数。推进与环绕必须用同一把尺子：2026-10-14 之前
     // 这里按未过滤人数取模，两个模数一旦不等，家内就会出现「同一个账号连续
     // 被选中两次」的不均匀。
-    let provider_cursors = if may_rotate && settings.strategy == config::RouteStrategy::Provider {
-        Some(service.route.rotate_take_per_provider(
-            keys.request_model(),
-            &routing::provider_sizes(&candidates),
-        ))
-    } else {
-        None
-    };
+    let provider_cursors =
+        if may_rotate && settings.strategy == config::RouteStrategy::Provider {
+            Some(service.route.rotate_take_per_provider(
+                keys.request_model(),
+                &routing::provider_sizes(&candidates),
+            ))
+        } else {
+            None
+        };
     let meta = routing::PlanMeta {
         strategy: settings.strategy,
         sunk: &snap.sunk,
@@ -264,7 +266,11 @@ pub(super) async fn select_target_account(
             continue;
         }
         let reset = routing::rate_limit_reset_at(account, keys, now);
-        let reset = if reset > 0 { reset as f64 } else { f64::INFINITY };
+        let reset = if reset > 0 {
+            reset as f64
+        } else {
+            f64::INFINITY
+        };
         if reset < best_reset {
             best_reset = reset;
             best_effort = Some(account.clone());
@@ -445,7 +451,11 @@ pub(super) fn mark_account_limited(
         model,
         status as i64,
         upstream_code,
-        if parsed > 0 { Some(parsed as f64) } else { None },
+        if parsed > 0 {
+            Some(parsed as f64)
+        } else {
+            None
+        },
         message,
     );
     match entry {
@@ -461,7 +471,11 @@ pub(super) fn mark_account_limited(
 /// 与 Node 的 `limitEntry?.resetAt` 同源（都从账号记录里现读）。
 ///
 /// `model` 是上游真名（见 `mark_account_limited` 的说明），与写入侧同一个键。
-pub(super) fn account_limit_reset_at(service: &UpstreamService, account_id: &str, model: &str) -> i64 {
+pub(super) fn account_limit_reset_at(
+    service: &UpstreamService,
+    account_id: &str,
+    model: &str,
+) -> i64 {
     let snapshot = service.store.list_accounts();
     let accounts = routing::accounts_of(&snapshot);
     accounts
@@ -513,7 +527,11 @@ fn squeeze_by_headroom(
         let limit = routing::max_concurrent_of(account) as i64;
         let headroom = if limit > 0 { limit - count } else { i64::MAX };
         let reset = routing::rate_limit_reset_at(account, keys, now);
-        let reset = if reset > 0 { reset as f64 } else { f64::INFINITY };
+        let reset = if reset > 0 {
+            reset as f64
+        } else {
+            f64::INFINITY
+        };
         if headroom > best_headroom || (headroom == best_headroom && reset < best_reset) {
             best_headroom = headroom;
             best_reset = reset;
@@ -589,11 +607,7 @@ pub(super) fn pick_next_account(
 ///
 /// 有界：排序清单与被跳过者各最多带 12 条 —— 账号几十个时全部带上只会
 /// 让每条请求日志膨胀，而前 12 位已足以回答「为什么是它、为什么不是那个」。
-fn decision_json(
-    plan: &routing::RoutePlan,
-    settings: &config::RoutingSettings,
-    now: i64,
-) -> Value {
+fn decision_json(plan: &routing::RoutePlan, settings: &config::RoutingSettings, now: i64) -> Value {
     let _ = now;
     let entry_json = |entry: &routing::PlanEntry| {
         json!({

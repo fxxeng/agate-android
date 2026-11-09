@@ -142,16 +142,29 @@ impl AccountStore {
         record.insert("loginName".to_string(), Value::String(nickname));
         let cookie = credentials.cookie_header();
         record.insert("accessToken".to_string(), Value::String(cookie.clone()));
-        record.insert("tokenTail".to_string(), Value::String(token_tail_of(&cookie)));
+        record.insert(
+            "tokenTail".to_string(),
+            Value::String(token_tail_of(&cookie)),
+        );
         record.insert("source".to_string(), Value::String(source.to_string()));
         record.insert("priority".to_string(), Value::from(priority));
         record.insert(
             "enabled".to_string(),
-            Value::Bool(existing.as_ref().map(StoredAccount::enabled).unwrap_or(true)),
+            Value::Bool(
+                existing
+                    .as_ref()
+                    .map(StoredAccount::enabled)
+                    .unwrap_or(true),
+            ),
         );
         record.insert(
             "addedAt".to_string(),
-            Value::from(existing.as_ref().map(StoredAccount::added_at).unwrap_or(now)),
+            Value::from(
+                existing
+                    .as_ref()
+                    .map(StoredAccount::added_at)
+                    .unwrap_or(now),
+            ),
         );
         record.insert("updatedAt".to_string(), Value::from(now));
         let mut merged = record;
@@ -179,15 +192,33 @@ impl AccountStore {
         public.insert("name".to_string(), Value::String(record.name()));
         public.insert(
             "uid".to_string(),
-            Value::String(record.get("uid").and_then(Value::as_str).unwrap_or("").to_string()),
+            Value::String(
+                record
+                    .get("uid")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
+            ),
         );
         public.insert(
             "loginName".to_string(),
-            Value::String(record.get("loginName").and_then(Value::as_str).unwrap_or("").to_string()),
+            Value::String(
+                record
+                    .get("loginName")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
+            ),
         );
         public.insert(
             "tokenTail".to_string(),
-            Value::String(record.get("tokenTail").and_then(Value::as_str).unwrap_or("").to_string()),
+            Value::String(
+                record
+                    .get("tokenTail")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
+            ),
         );
         public.insert("desktop".to_string(), Value::Bool(record.is_desktop()));
         public.insert("source".to_string(), Value::String(record.source()));
@@ -198,7 +229,10 @@ impl AccountStore {
         public.insert("proxy".to_string(), proxy);
         public.insert(
             "rateLimits".to_string(),
-            record.get("rateLimits").cloned().unwrap_or_else(|| Value::Object(Map::new())),
+            record
+                .get("rateLimits")
+                .cloned()
+                .unwrap_or_else(|| Value::Object(Map::new())),
         );
         public.insert("available".to_string(), Value::Bool(true));
         Value::Object(public)

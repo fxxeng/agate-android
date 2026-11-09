@@ -174,9 +174,8 @@ pub(crate) fn max_concurrent_public(value: Option<&Value>) -> u64 {
 pub(crate) fn max_concurrent_public_for(provider: &str, value: Option<&Value>) -> u64 {
     let configured = max_concurrent_public(value);
     if provider == super::codearts_accounts::CODEARTS_PROVIDER_ID {
-        configured.max(
-            crate::server::core::providers::codearts::session::DEFAULT_SESSION_LIMIT as u64,
-        )
+        configured
+            .max(crate::server::core::providers::codearts::session::DEFAULT_SESSION_LIMIT as u64)
     } else {
         configured
     }

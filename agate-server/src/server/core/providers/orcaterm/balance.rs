@@ -21,7 +21,7 @@
 //! ── 硬约束 ──────────────────────────────────────────────────
 //! release 是 `panic=abort`：本文件零 unwrap/expect/panic。
 
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use crate::server::core::account_store::AccountStore;
 use crate::server::errors::GatewayError;
@@ -32,22 +32,29 @@ use super::credentials;
 const HUNYUAN_FEATURE: &str = "hunyuan_ai";
 
 /// 查询某账号的 AI 配额。
-pub async fn query_usage(
-    store: &AccountStore,
-    account_id: &str,
-) -> Result<Value, GatewayError> {
+pub async fn query_usage(store: &AccountStore, account_id: &str) -> Result<Value, GatewayError> {
     let mut credentials = credentials::snapshot_for(store, account_id)?;
     credentials = credentials::refresh(store, &credentials, account_id, false).await?;
-    let response = credentials::cgi_action(&credentials, "DescribeUserBillingStatus", json!({}), None).await?;
+    let response =
+        credentials::cgi_action(&credentials, "DescribeUserBillingStatus", json!({}), None).await?;
     if let Some(error) = response.get("Error") {
-        let code = error.get("Code").and_then(Value::as_str).unwrap_or("UNKNOWN");
-        let message = error.get("Message").and_then(Value::as_str).unwrap_or("上游错误");
+        let code = error
+            .get("Code")
+            .and_then(Value::as_str)
+            .unwrap_or("UNKNOWN");
+        let message = error
+            .get("Message")
+            .and_then(Value::as_str)
+            .unwrap_or("上游错误");
         return Err(GatewayError::with_status(
             401,
             format!("OrcaTerm 余额查询被上游拒绝（{code}：{message}）"),
         ));
     }
-    let role_type = response.get("roleType").and_then(Value::as_str).unwrap_or("");
+    let role_type = response
+        .get("roleType")
+        .and_then(Value::as_str)
+        .unwrap_or("");
     let stats = response
         .get("usageStats")
         .and_then(Value::as_array)

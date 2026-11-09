@@ -41,8 +41,8 @@ use crate::server::core::account_store::store::live_desktop_credentials;
 use crate::server::core::account_store::store::{AccountStore, AccountStoreError};
 use crate::server::core::account_store::store_util::{pick_token, token_tail_of, truncate_chars};
 use crate::server::core::account_store::{CredentialWrite, MAX_TOKEN_LENGTH};
-use crate::server::core::providers::raccoon::{credentials, jwt};
 use crate::server::core::providers::kind_id;
+use crate::server::core::providers::raccoon::{credentials, jwt};
 use crate::server::core::providers::ProviderKind;
 use crate::server::logging;
 
@@ -217,7 +217,10 @@ impl AccountStore {
         let now = logging::now_ms();
         let mut record = Map::new();
         record.insert("id".to_string(), Value::String(id.clone()));
-        record.insert("provider".to_string(), Value::String(raccoon_id().to_string()));
+        record.insert(
+            "provider".to_string(),
+            Value::String(raccoon_id().to_string()),
+        );
         record.insert("name".to_string(), Value::String(record_name.clone()));
         mark_name_custom(&mut record, explicit, existing.as_ref());
         record.insert("userId".to_string(), Value::String(user_id.clone()));
@@ -244,9 +247,18 @@ impl AccountStore {
                 .unwrap_or(Value::Null),
         );
         for (key, value) in [
-            ("officeIdentity", merged_identity(office_identity, "officeIdentity")),
-            ("officeOrgName", merged_identity(office_org_name, "officeOrgName")),
-            ("officeOrgRole", merged_identity(office_org_role, "officeOrgRole")),
+            (
+                "officeIdentity",
+                merged_identity(office_identity, "officeIdentity"),
+            ),
+            (
+                "officeOrgName",
+                merged_identity(office_org_name, "officeOrgName"),
+            ),
+            (
+                "officeOrgRole",
+                merged_identity(office_org_role, "officeOrgRole"),
+            ),
         ] {
             if !value.is_empty() {
                 record.insert(key.to_string(), Value::String(value));
@@ -288,9 +300,7 @@ impl AccountStore {
         self.with_conn(&_guard, |conn| sql::put(conn, &saved))?;
         logging::log(
             "[Accounts]",
-            &format!(
-                "✅ 小浣熊账号已保存: {record_name}（{user_id}，优先级 {priority}）"
-            ),
+            &format!("✅ 小浣熊账号已保存: {record_name}（{user_id}，优先级 {priority}）"),
         );
         Ok(self.public_account(&saved))
     }
@@ -305,8 +315,8 @@ impl AccountStore {
     /// 读不到登录态时报 400 并把原因说清楚（「请先在小浣熊客户端登录」）——
     /// 这是用户点按钮时的即时反馈，静默建一条空记录只会让人以为成功了。
     pub fn import_raccoon_desktop_account(&self, source: &str) -> Result<Value, AccountStoreError> {
-        let summary = credentials::desktop_summary()
-            .map_err(|reason| AccountStoreError::new(reason, 400))?;
+        let summary =
+            credentials::desktop_summary().map_err(|reason| AccountStoreError::new(reason, 400))?;
         let user_id = summary
             .get("userId")
             .and_then(Value::as_str)
@@ -338,7 +348,10 @@ impl AccountStore {
         let now = logging::now_ms();
         let mut record = Map::new();
         record.insert("id".to_string(), Value::String(id.clone()));
-        record.insert("provider".to_string(), Value::String(raccoon_id().to_string()));
+        record.insert(
+            "provider".to_string(),
+            Value::String(raccoon_id().to_string()),
+        );
         record.insert("name".to_string(), Value::String(record_name.clone()));
         record.insert("userId".to_string(), Value::String(user_id.clone()));
         record.insert("desktop".to_string(), Value::Bool(true));
@@ -356,7 +369,12 @@ impl AccountStore {
         record.insert("priority".to_string(), Value::from(priority));
         record.insert(
             "enabled".to_string(),
-            Value::Bool(existing.as_ref().map(StoredAccount::enabled).unwrap_or(true)),
+            Value::Bool(
+                existing
+                    .as_ref()
+                    .map(StoredAccount::enabled)
+                    .unwrap_or(true),
+            ),
         );
         let is_new = existing.is_none();
         record.insert(
@@ -561,9 +579,7 @@ impl AccountStore {
     /// 字段变空，而不是整条记录消失。
     /// `tokenExpiresAt` 还兼容旧数据直接搬过来的 `tokenExpiresAt` 键名。
     pub fn to_raccoon_public_account(&self, record: &StoredAccount) -> Value {
-        let proxy = crate::server::core::proxies::describe_account_proxy(Some(
-            &record.proxy(),
-        ));
+        let proxy = crate::server::core::proxies::describe_account_proxy(Some(&record.proxy()));
         let stored_tail = record
             .get("tokenTail")
             .and_then(Value::as_str)
@@ -577,7 +593,11 @@ impl AccountStore {
                 } else {
                     token_tail_of(&token)
                 },
-                if expires_at > 0.0 { Some(expires_at) } else { stored_expires },
+                if expires_at > 0.0 {
+                    Some(expires_at)
+                } else {
+                    stored_expires
+                },
                 !refresh_token.is_empty(),
             ),
             None => (
@@ -588,10 +608,7 @@ impl AccountStore {
         };
         let mut public = Map::new();
         public.insert("id".to_string(), Value::String(record.id().to_string()));
-        public.insert(
-            "provider".to_string(),
-            Value::String(record.provider()),
-        );
+        public.insert("provider".to_string(), Value::String(record.provider()));
         public.insert("name".to_string(), Value::String(record.name()));
         public.insert("userId".to_string(), Value::String(record.user_id()));
         public.insert("tokenTail".to_string(), Value::String(token_tail));
@@ -617,11 +634,13 @@ impl AccountStore {
         // 默认给 `{}`（与 workbuddy 的公开形态同一兜底口径）。
         public.insert(
             "rateLimits".to_string(),
-            record.get("rateLimits").cloned().unwrap_or_else(|| Value::Object(Map::new())),
+            record
+                .get("rateLimits")
+                .cloned()
+                .unwrap_or_else(|| Value::Object(Map::new())),
         );
         // 与 workbuddy 的公开形态同口径：本切片所有账号都视为可用
         public.insert("available".to_string(), Value::Bool(true));
         Value::Object(public)
     }
-
 }

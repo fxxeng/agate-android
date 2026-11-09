@@ -19,9 +19,9 @@ use crate::server::core::upstream::request::new_request_id;
 use crate::server::logging;
 
 use super::request::{
-    BillingCall, CallOptions, ACTIVITY_AMBASSADOR, ACTIVITY_BANNER,
+    js_truthy, BillingCall, CallOptions, ACTIVITY_AMBASSADOR, ACTIVITY_BANNER,
     BILLING_ACTIVITY_CHECKIN_STATUS, BILLING_DAILY_CHECKIN, BILLING_REPORT_ACTIVITY,
-    GROWTH_STREAK_STATUS, js_truthy,
+    GROWTH_STREAK_STATUS,
 };
 use super::{assert_checkin_supported, BillingError, BillingService};
 
@@ -81,7 +81,11 @@ impl BillingService {
         let result = match self
             .call_billing(
                 ACTIVITY_BANNER,
-                CallOptions { session: active.as_ref(), expect_code_ok: false, ..Default::default() },
+                CallOptions {
+                    session: active.as_ref(),
+                    expect_code_ok: false,
+                    ..Default::default()
+                },
             )
             .await
         {
@@ -132,7 +136,9 @@ impl BillingService {
         banner.insert(
             "active".to_string(),
             Value::Bool(
-                raw.get("activity_online_status").map(js_truthy).unwrap_or(false)
+                raw.get("activity_online_status")
+                    .map(js_truthy)
+                    .unwrap_or(false)
                     && raw.get("status").and_then(Value::as_str) == Some("None"),
             ),
         );
@@ -183,7 +189,11 @@ impl BillingService {
         let result = match self
             .call_billing(
                 ACTIVITY_AMBASSADOR,
-                CallOptions { session: active.as_ref(), expect_code_ok: false, ..Default::default() },
+                CallOptions {
+                    session: active.as_ref(),
+                    expect_code_ok: false,
+                    ..Default::default()
+                },
             )
             .await
         {
@@ -235,7 +245,9 @@ impl BillingService {
         // WorkBuddy 国际版没有国内版的普通签到接口；组合入口沿用同一条活跃任务
         // 链路，并把探测/领取/保活结果一起返回，避免重复打上游。
         if super::is_international(&active) {
-            let activity = self.workbuddy_daily_activity(&active, WorkbuddyActivity::Full).await;
+            let activity = self
+                .workbuddy_daily_activity(&active, WorkbuddyActivity::Full)
+                .await;
             let usage = match self.query_credits_summary(Some(&active), locale).await {
                 Ok(value) => value,
                 Err(error) => json!({ "error": error.message }),
@@ -258,7 +270,11 @@ impl BillingService {
             Err(error) => json!({ "success": false, "code": -1, "msg": error.message }),
         };
         // 额度可能因签到变化，稍等一下再查（对照 Node 的 sleep(500)）
-        if claim.get("success").and_then(Value::as_bool).unwrap_or(false) {
+        if claim
+            .get("success")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         }
         let usage = match self.query_credits_summary(Some(&active), locale).await {
@@ -293,7 +309,11 @@ impl BillingService {
     /// 保活的模型链来自 `keepalive::models()`（签到中心可自定义，空回落缺省链），
     /// 逐个尝试、第一个成功的收口（见 `poke_daily_activity` 与
     /// `create_web_conversation`）。
-    pub async fn workbuddy_daily_activity(&self, session: &Value, mode: WorkbuddyActivity) -> Value {
+    pub async fn workbuddy_daily_activity(
+        &self,
+        session: &Value,
+        mode: WorkbuddyActivity,
+    ) -> Value {
         // 只保活：跳过探测与领取。活动状态没查过，读数给 **null** 而不是 false
         // —— 「没查」与「查了说没开」是两回事；前端只认 `pokeSucceeded`。
         // 保活三件事：活跃上报（点亮连登的那条 /v2/report 通道）、桌面端
@@ -305,7 +325,10 @@ impl BillingService {
             let web = self.create_web_conversation(session).await;
             let web_ok = web.get("succeeded").and_then(Value::as_bool) == Some(true);
             if !poke_succeeded && !web_ok {
-                logging::verbose("[Checkin]", "WorkBuddy 国际版免费模型与网页会话保活均未成功");
+                logging::verbose(
+                    "[Checkin]",
+                    "WorkBuddy 国际版免费模型与网页会话保活均未成功",
+                );
             }
             // msg 交代两发保活各自的走向：网页会话才是「当日活跃」的判定
             // 通道，桌面端那发失败不致命，网页会话失败要给出原因。
@@ -608,7 +631,10 @@ impl BillingService {
                 Err(error) => {
                     logging::verbose(
                         "[Checkin]",
-                        &format!("WorkBuddy 国际版连登回读失败（上报本身已成功）: {}", error.message),
+                        &format!(
+                            "WorkBuddy 国际版连登回读失败（上报本身已成功）: {}",
+                            error.message
+                        ),
                     );
                     None
                 }
@@ -830,12 +856,13 @@ impl BillingService {
                 .and_then(Value::as_str)
                 .unwrap_or("");
             if !code_ok || conversation_id.is_empty() {
-                let msg = payload.get("msg").and_then(Value::as_str).unwrap_or("未知原因");
+                let msg = payload
+                    .get("msg")
+                    .and_then(Value::as_str)
+                    .unwrap_or("未知原因");
                 logging::verbose(
                     "[Checkin]",
-                    &format!(
-                        "WorkBuddy 国际版网页会话（{model}）未建成: msg={msg}"
-                    ),
+                    &format!("WorkBuddy 国际版网页会话（{model}）未建成: msg={msg}"),
                 );
                 continue;
             }
@@ -895,7 +922,9 @@ async fn consume_activity_response(
     response: reqwest::Response,
     max_bytes: usize,
 ) -> Result<bool, ()> {
-    consume_response_bytes(response, max_bytes).await.map(|_| true)
+    consume_response_bytes(response, max_bytes)
+        .await
+        .map(|_| true)
 }
 
 /// 有界读体：最多读 `max_bytes`（超出即截断返回），网络层断流返回 Err。

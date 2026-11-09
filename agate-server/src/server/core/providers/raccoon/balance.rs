@@ -133,11 +133,16 @@ pub(super) async fn query_usage(
         .collect();
 
     // 订阅失败只记原因，不阻断余额展示（见上）
-    let (subscription, subscription_error) =
-        match request_json(&origin, "/api/web/auth/v1/entitlement_info", &credentials.token).await {
-            Ok(data) => (normalize_subscription(&data), Value::Null),
-            Err(error) => (Value::Null, Value::String(error.message)),
-        };
+    let (subscription, subscription_error) = match request_json(
+        &origin,
+        "/api/web/auth/v1/entitlement_info",
+        &credentials.token,
+    )
+    .await
+    {
+        Ok(data) => (normalize_subscription(&data), Value::Null),
+        Err(error) => (Value::Null, Value::String(error.message)),
+    };
 
     let mut raw = Map::new();
     raw.insert("points".to_string(), points);
@@ -203,8 +208,9 @@ pub(super) async fn request_json_ex(
     ];
     headers.extend(extra_headers.iter().cloned());
     // 直连（源实现这条链路是裸 fetch，见模块头）
-    let response =
-        send_raw(method, &url, None, &headers, None, Some(timeout_ms)).await.map_err(|error| {
+    let response = send_raw(method, &url, None, &headers, None, Some(timeout_ms))
+        .await
+        .map_err(|error| {
             if error.is_timeout() {
                 GatewayError::with_status(504, "积分查询超时")
             } else {
@@ -212,10 +218,7 @@ pub(super) async fn request_json_ex(
             }
         })?;
     if response.status == 401 {
-        return Err(GatewayError::with_status(
-            401,
-            "登录态已过期，无法查询积分",
-        ));
+        return Err(GatewayError::with_status(401, "登录态已过期，无法查询积分"));
     }
     if !response.ok {
         return Err(GatewayError::with_status(
@@ -278,8 +281,7 @@ fn normalize_subscription(data: &Value) -> Value {
         .unwrap_or(Value::Null);
     let expired_at = pick("pro_expired_time")
         .or_else(|| {
-            pick("active_plan")
-                .and_then(|plan| plan.get("subscription_expired_at").cloned())
+            pick("active_plan").and_then(|plan| plan.get("subscription_expired_at").cloned())
         })
         .unwrap_or(Value::Null);
     json!({
@@ -333,7 +335,10 @@ const GRANT_CHECK_TIMEOUT_MS: u64 = 25_000;
 /// 每日签到（setting_info）与新手任务的首次登录奖励（`onboarding.rs`）共用。
 pub(super) fn desktop_client_headers() -> Vec<(String, String)> {
     vec![
-        ("X-Client-Platform".to_string(), "desktop-windows".to_string()),
+        (
+            "X-Client-Platform".to_string(),
+            "desktop-windows".to_string(),
+        ),
         ("X-Client-Version".to_string(), "v1.0.0".to_string()),
     ]
 }
@@ -396,7 +401,9 @@ pub async fn claim_daily_grant(
                 "toast": data.get("point_grant_toast").cloned().unwrap_or(Value::Null),
             })
         }
-        Err(error) => json!({ "popups": Value::Null, "toast": Value::Null, "error": error.message }),
+        Err(error) => {
+            json!({ "popups": Value::Null, "toast": Value::Null, "error": error.message })
+        }
     };
 
     // ② 账单核对今日入账（慢接口独立超时；失败降级为 grantsError）。
@@ -404,9 +411,8 @@ pub async fn claim_daily_grant(
     // 不跟机器时区：海外 / 容器部署下跟本地时区走会把 16 小时的账单认成昨天，
     // 让「今日积分 +N」与「今天已领过」的判定整体错位（issue #138）。
     let today = beijing::today_key();
-    let bills_path = format!(
-        "/api/web/points/v1/bills?paging.limit={GRANT_CHECK_LIMIT}&paging.offset=0"
-    );
+    let bills_path =
+        format!("/api/web/points/v1/bills?paging.limit={GRANT_CHECK_LIMIT}&paging.offset=0");
     let (grants, grants_error) = match request_json_ex(
         &origin,
         "GET",
@@ -449,7 +455,10 @@ pub async fn claim_daily_grant(
         Err(error) => (Vec::new(), Some(error.message)),
     };
 
-    let granted_today = grants.iter().map(|item| to_int(item.get("points")).unwrap_or(0)).sum::<i64>();
+    let granted_today = grants
+        .iter()
+        .map(|item| to_int(item.get("points")).unwrap_or(0))
+        .sum::<i64>();
     let mut msg_parts: Vec<String> = Vec::new();
     if granted_today > 0 {
         msg_parts.push(format!("今日积分 +{granted_today}"));

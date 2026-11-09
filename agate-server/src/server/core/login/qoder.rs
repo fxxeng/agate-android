@@ -32,7 +32,10 @@ impl LoginService {
         crate::spawn_task(async move {
             service.run_qoder_login(task, region, flow).await;
         });
-        logging::log("[Login]", &format!("发起 Qoder {}网页登录（等待授权…）", region.label()));
+        logging::log(
+            "[Login]",
+            &format!("发起 Qoder {}网页登录（等待授权…）", region.label()),
+        );
         Ok(handle)
     }
 
@@ -73,7 +76,10 @@ impl LoginService {
                     if task.done || task.canceled {
                         return;
                     }
-                    match self.store.add_qoder_account(region, &credentials, None, "web") {
+                    match self
+                        .store
+                        .add_qoder_account(region, &credentials, None, "web")
+                    {
                         Ok(account) => {
                             // edition 取凭证自己记着的地区（不代表用户这次的界面选择）：
                             // 落账号时 `add_qoder_account` 已按 region 去重与生成 id，
@@ -84,8 +90,13 @@ impl LoginService {
                                 "edition": credentials.region.edition(),
                                 "provider": region.provider_id(),
                             }));
-                            logging::log("[Login]", &format!(
-                                "✅ Qoder {}网页登录完成，账号已加入列表", credentials.region.label()));
+                            logging::log(
+                                "[Login]",
+                                &format!(
+                                    "✅ Qoder {}网页登录完成，账号已加入列表",
+                                    credentials.region.label()
+                                ),
+                            );
                         }
                         Err(error) => task.error = Some(error.message),
                     }

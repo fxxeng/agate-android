@@ -62,7 +62,13 @@ fn record_inner(summary: &Value, reason: &str, run_id: Option<&str>) -> bool {
     let failures: Vec<String> = summary
         .get("failed")
         .and_then(Value::as_array)
-        .map(|items| items.iter().filter_map(Value::as_str).map(str::to_string).collect())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
         .unwrap_or_else(|| {
             summary
                 .get("results")

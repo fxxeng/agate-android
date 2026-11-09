@@ -69,7 +69,11 @@ pub async fn get_custom_providers(State(_state): State<ServerState>) -> Response
                     .map(|(id, name)| format!(
                         "{}=>{}",
                         id,
-                        if name.is_empty() { "（空名）" } else { name }
+                        if name.is_empty() {
+                            "（空名）"
+                        } else {
+                            name
+                        }
                     ))
                     .collect::<Vec<_>>()
                     .join(", ")
@@ -178,10 +182,7 @@ pub async fn update_custom_provider(State(_state): State<ServerState>, body: Byt
         Err(message) => return errors::management_error(400, message),
     };
     let changes = describe_changes(before.as_ref(), &updated);
-    let label = updated
-        .get("name")
-        .and_then(Value::as_str)
-        .unwrap_or(&id);
+    let label = updated.get("name").and_then(Value::as_str).unwrap_or(&id);
     logging::log(
         "[CustomProvider]",
         &format!("✏️  自定义提供商「{label}」已更新（{changes}）"),
@@ -264,7 +265,11 @@ pub async fn remove_custom_provider(State(state): State<ServerState>, body: Byte
             .iter()
             .map(|entry| {
                 let name = entry.name.trim();
-                if name.is_empty() { entry.id.clone() } else { format!("{}（{}）", name, entry.id) }
+                if name.is_empty() {
+                    entry.id.clone()
+                } else {
+                    format!("{}（{}）", name, entry.id)
+                }
             })
             .collect();
         note.push_str(&format!(

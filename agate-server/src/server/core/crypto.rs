@@ -250,7 +250,8 @@ fn create_key_file(path: &std::path::Path) -> Result<[u8; KEY_LEN], String> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|error| format!("创建配置目录失败: {error}"))?;
     }
-    std::fs::write(path, key).map_err(|error| format!("写入密钥文件 {} 失败: {error}", path.display()))?;
+    std::fs::write(path, key)
+        .map_err(|error| format!("写入密钥文件 {} 失败: {error}", path.display()))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
@@ -331,8 +332,8 @@ pub fn seal(plaintext: &[u8], scope: SecretScope) -> Result<String, String> {
         Aes256Gcm::new_from_slice(&key).map_err(|_| "密钥长度不受 AES-256 支持".to_string())?;
     let mut nonce_bytes = [0u8; NONCE_LEN];
     getrandom::getrandom(&mut nonce_bytes).map_err(|error| format!("系统随机源不可用: {error}"))?;
-    let nonce =
-        Nonce::<U12>::try_from(nonce_bytes.as_slice()).map_err(|_| "生成 nonce 失败".to_string())?;
+    let nonce = Nonce::<U12>::try_from(nonce_bytes.as_slice())
+        .map_err(|_| "生成 nonce 失败".to_string())?;
     let ciphertext = cipher
         .encrypt(&nonce, plaintext)
         .map_err(|_| "AES-GCM 加密失败".to_string())?;

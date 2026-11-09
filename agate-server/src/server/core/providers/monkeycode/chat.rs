@@ -91,9 +91,7 @@ pub async fn run_chat(
     let target = models::resolve_task_model(region, &requested).ok_or_else(|| {
         GatewayError::with_status(
             503,
-            format!(
-                "MonkeyCode 模型目录里找不到模型「{requested}」：请在模型管理页刷新清单后重试"
-            ),
+            format!("MonkeyCode 模型目录里找不到模型「{requested}」：请在模型管理页刷新清单后重试"),
         )
     })?;
     let prompt = task::build_prompt(body.get("messages"))?;
@@ -105,7 +103,11 @@ pub async fn run_chat(
             target.model,
             target.cli_name,
             stream_requested,
-            if account_id.is_empty() { "(队首账号)" } else { account_id },
+            if account_id.is_empty() {
+                "(队首账号)"
+            } else {
+                account_id
+            },
             region.id(),
         ),
     );
@@ -130,8 +132,7 @@ pub async fn run_chat(
     if stream_requested {
         // 流式：后台任务喂 mpsc，主路径返回 ReceiverStream（与 CatPaw / Kuku 同结构）。
         // 客户端断开 → 发送失败 → 后台任务停止消费并关闭 WS。
-        let (sender, receiver) =
-            tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(64);
+        let (sender, receiver) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(64);
         let telemetry = telemetry.clone();
         crate::spawn_task(async move {
             stream::drive_stream(connection, translator, sender, &telemetry).await;

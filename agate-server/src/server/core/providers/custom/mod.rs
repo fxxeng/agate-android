@@ -33,19 +33,32 @@ pub mod sensenova_auth;
 /// 现在零模型的家照旧在表里（模型列表为空）：调用方按「这家有哪些模型」
 /// 取用，空列表就是空列表 —— 语义诚实，且不影响任何按名字取模型的路径。
 pub(crate) fn catalog_providers(store: &AccountStore) -> Vec<(String, Vec<Value>)> {
-    custom_providers::list().into_iter().filter_map(|provider| {
-        let id = provider.get("id")?.as_str()?.to_string();
-        if store.accounts_for_provider(&id).is_empty() { return None; }
-        let models = custom_providers::public_models(&provider);
-        Some((id, models))
-    }).collect()
+    custom_providers::list()
+        .into_iter()
+        .filter_map(|provider| {
+            let id = provider.get("id")?.as_str()?.to_string();
+            if store.accounts_for_provider(&id).is_empty() {
+                return None;
+            }
+            let models = custom_providers::public_models(&provider);
+            Some((id, models))
+        })
+        .collect()
 }
 
-pub fn append_models_response(store: &AccountStore, scope: Option<&KeyScope>, data: &mut Vec<Value>) {
-    let mut claimed: std::collections::HashSet<_> = data.iter()
-        .map(|item| model_id(item).to_lowercase()).collect();
+pub fn append_models_response(
+    store: &AccountStore,
+    scope: Option<&KeyScope>,
+    data: &mut Vec<Value>,
+) {
+    let mut claimed: std::collections::HashSet<_> = data
+        .iter()
+        .map(|item| model_id(item).to_lowercase())
+        .collect();
     for (provider, models) in catalog_providers(store) {
-        if !key_scope::allows_provider(scope, &provider) { continue; }
+        if !key_scope::allows_provider(scope, &provider) {
+            continue;
+        }
         for model in models {
             let id = model_id(&model);
             if key_scope::allows_model(scope, &id) && claimed.insert(id.to_lowercase()) {

@@ -149,7 +149,10 @@ pub async fn send_code(phone: &str) -> Result<Value, GatewayError> {
     let code = client::business_code(&payload);
     if code != client::SUCCESS_CODE {
         let message = describe_login_error(&code, &client::upstream_message(&payload));
-        logging::log("[Login]", &format!("❌ Loomy 验证码发送失败（{code}）: {message}"));
+        logging::log(
+            "[Login]",
+            &format!("❌ Loomy 验证码发送失败（{code}）: {message}"),
+        );
         return Err(GatewayError::with_status(400, message));
     }
     let msgid = extract_msgid(&payload);
@@ -163,7 +166,10 @@ pub async fn send_code(phone: &str) -> Result<Value, GatewayError> {
     // 不打手机号（它是个人信息）：只留「发给了尾号」的可核对痕迹
     logging::log(
         "[Login]",
-        &format!("📱 Loomy 验证码已发送（{}）", credentials::mask_phone(&phone)),
+        &format!(
+            "📱 Loomy 验证码已发送（{}）",
+            credentials::mask_phone(&phone)
+        ),
     );
     Ok(json!({ "msgid": msgid }))
 }
@@ -202,7 +208,9 @@ pub async fn login_with_code(
         let message = describe_login_error(&status, &upstream_msg);
         logging::log(
             "[Login]",
-            &format!("❌ Loomy 验证码登录失败（code={status}，上游原文「{upstream_msg}」）: {message}"),
+            &format!(
+                "❌ Loomy 验证码登录失败（code={status}，上游原文「{upstream_msg}」）: {message}"
+            ),
         );
         return Err(GatewayError::with_status(400, message));
     }

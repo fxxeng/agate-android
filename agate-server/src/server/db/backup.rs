@@ -67,7 +67,7 @@ use std::sync::Mutex;
 
 use chrono::Local;
 use rusqlite::backup::{Backup, StepResult};
-use rusqlite::hooks::{AuthAction, Authorization, AuthContext};
+use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
 use rusqlite::{Connection, OpenFlags};
 use serde_json::{json, Value};
 
@@ -171,9 +171,7 @@ fn snapshot_to_memory(db: &Db) -> Result<Connection, String> {
 /// SQLite Backup 的收尾：`step(-1)` 必须以 Done 结束，Busy/Locked/More 都是
 /// 「没拷完」—— 当成功返回会留下半截库，比直接报错严重得多。
 fn complete_backup(backup: &Backup<'_, '_>, context: &str) -> Result<(), String> {
-    let result = backup
-        .step(-1)
-        .map_err(|e| format!("{context}失败: {e}"))?;
+    let result = backup.step(-1).map_err(|e| format!("{context}失败: {e}"))?;
     match result {
         StepResult::Done => Ok(()),
         other => Err(format!("{context}未完成: SQLite Backup 返回 {other:?}")),
@@ -290,10 +288,15 @@ fn dump_table_rows(conn: &Connection, table: &str, output: &mut String) -> Resul
 
     let mut pending_rows = 0usize;
     let mut batch = String::new();
-    while let Some(row) = rows.next().map_err(|e| format!("读取表 {table} 失败: {e}"))? {
+    while let Some(row) = rows
+        .next()
+        .map_err(|e| format!("读取表 {table} 失败: {e}"))?
+    {
         let mut values = Vec::with_capacity(columns.len());
         for idx in 0..columns.len() {
-            let value = row.get_ref(idx).map_err(|e| format!("读取表 {table} 失败: {e}"))?;
+            let value = row
+                .get_ref(idx)
+                .map_err(|e| format!("读取表 {table} 失败: {e}"))?;
             values.push(format_sql_value(value)?);
         }
 
@@ -341,7 +344,9 @@ fn dump_sqlite_sequences(
         .prepare("SELECT name, seq FROM sqlite_sequence ORDER BY name")
         .map_err(|e| format!("读取自增序列失败: {e}"))?;
     let rows = stmt
-        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })
         .map_err(|e| format!("读取自增序列失败: {e}"))?;
     let mut values = Vec::new();
     for row in rows {
@@ -401,9 +406,7 @@ fn format_sql_value(value: rusqlite::types::ValueRef<'_>) -> Result<String, Stri
         rusqlite::types::ValueRef::Integer(i) => Ok(i.to_string()),
         rusqlite::types::ValueRef::Real(f) => Ok(format_sql_real(f)),
         rusqlite::types::ValueRef::Text(t) => match std::str::from_utf8(t) {
-            Ok(text) if !text.contains('\0') => {
-                Ok(format!("'{}'", text.replace('\'', "''")))
-            }
+            Ok(text) if !text.contains('\0') => Ok(format!("'{}'", text.replace('\'', "''"))),
             _ => Ok(format!("CAST({} AS TEXT)", format_sql_blob(t))),
         },
         rusqlite::types::ValueRef::Blob(bytes) => Ok(format_sql_blob(bytes)),
@@ -443,13 +446,26 @@ fn format_sql_blob(bytes: &[u8]) -> String {
 
 /// 快照里各业务表的行数（导出统计；只数被导出的表）。
 fn table_row_counts(conn: &Connection, skip: &[&str]) -> Vec<Value> {
-    let known = ["kv", "accounts", "logs", "requests", "request_daily", "debug_traffic", "request_raw", "account_usage_records"];
+    let known = [
+        "kv",
+        "accounts",
+        "logs",
+        "requests",
+        "request_daily",
+        "debug_traffic",
+        "request_raw",
+        "account_usage_records",
+    ];
     known
         .iter()
         .filter(|table| !skip.contains(table))
         .filter_map(|table| {
             let count: i64 = conn
-                .query_row(&format!("SELECT COUNT(*) FROM {}", quote_identifier(table)), [], |row| row.get(0))
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM {}", quote_identifier(table)),
+                    [],
+                    |row| row.get(0),
+                )
                 .ok()?;
             Some(json!({ "table": table, "rows": count }))
         })
@@ -521,13 +537,10 @@ fn account_key_warning(backup_marker: Option<String>) -> Option<String> {
 /// （见模块头「替换后要重装哪些内存状态」）。`warning` 只在密钥指纹对不上时出现
 /// ——**不阻断导入**，只是把「账号为什么解不开」明确说出来（见 `account_key_warning`）。
 pub fn import_from_file(db: &Db, source: &Path, config_dir: &Path) -> Result<Value, String> {
-    let sql_raw = std::fs::read_to_string(source)
-        .map_err(|e| format!("读取备份文件失败: {e}"))?;
+    let sql_raw = std::fs::read_to_string(source).map_err(|e| format!("读取备份文件失败: {e}"))?;
     let sql_content = sql_raw.trim_start_matches('\u{feff}');
     if !sql_content.trim_start().starts_with(BACKUP_SQL_HEADER) {
-        return Err(
-            "仅支持导入由 Agate 导出的整库备份文件（缺少文件头标记）".to_string(),
-        );
+        return Err("仅支持导入由 Agate 导出的整库备份文件（缺少文件头标记）".to_string());
     }
     // 密钥指纹比对：在重活之前先算好文案，最后随结果一起返回。这里只看头部注释，
     // 不碰暂存库；比对结果**不影响**导入流程（见 account_key_warning 的注释）。
@@ -578,11 +591,13 @@ pub fn import_from_file(db: &Db, source: &Path, config_dir: &Path) -> Result<Val
         Err(poisoned) => poisoned.into_inner(),
     };
     let safety = db
-        .with_mut(|main| safety_backup(main, config_dir).and_then(|safety| {
-            let backup = Backup::new(conn, main).map_err(|e| format!("初始化恢复失败: {e}"))?;
-            complete_backup(&backup, "恢复主数据库")?;
-            Ok(safety)
-        }))
+        .with_mut(|main| {
+            safety_backup(main, config_dir).and_then(|safety| {
+                let backup = Backup::new(conn, main).map_err(|e| format!("初始化恢复失败: {e}"))?;
+                complete_backup(&backup, "恢复主数据库")?;
+                Ok(safety)
+            })
+        })
         .unwrap_or_else(|| Err("数据库连接不可用，恢复未执行".to_string()));
     let safety = safety?;
 
@@ -704,11 +719,8 @@ impl TempRestoreDb {
         for suffix in ["", "-wal", "-shm"] {
             let _ = std::fs::remove_file(format!("{}{}", path.display(), suffix));
         }
-        let conn = Connection::open_with_flags(
-            &path,
-            OpenFlags::SQLITE_OPEN_READ_WRITE,
-        )
-        .map_err(|e| format!("创建暂存库失败: {e}"))?;
+        let conn = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_WRITE)
+            .map_err(|e| format!("创建暂存库失败: {e}"))?;
         Ok(Self { path, conn })
     }
 }

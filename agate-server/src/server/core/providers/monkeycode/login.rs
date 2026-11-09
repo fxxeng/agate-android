@@ -119,10 +119,16 @@ pub async fn verify_session(
 ) -> Result<Value, GatewayError> {
     let session = normalize_session(raw_session);
     if session.is_empty() {
-        return Err(GatewayError::with_status(400, "请粘贴 MonkeyCode 的 session cookie"));
+        return Err(GatewayError::with_status(
+            400,
+            "请粘贴 MonkeyCode 的 session cookie",
+        ));
     }
     if session.chars().count() > MAX_SESSION_LENGTH {
-        return Err(GatewayError::with_status(400, "session 过长，请确认粘贴的是 cookie 值"));
+        return Err(GatewayError::with_status(
+            400,
+            "session 过长，请确认粘贴的是 cookie 值",
+        ));
     }
     let payload = client::request(
         "GET",
@@ -136,7 +142,8 @@ pub async fn verify_session(
     if client::business_code(&payload) != Some(client::SUCCESS_CODE) {
         let upstream = client::upstream_message(&payload);
         let message = if upstream.is_empty() {
-            "MonkeyCode 登录态校验失败：请确认 session 有效且站点选对（国内 .com / 国际 .net）".to_string()
+            "MonkeyCode 登录态校验失败：请确认 session 有效且站点选对（国内 .com / 国际 .net）"
+                .to_string()
         } else {
             format!("MonkeyCode 登录态校验失败：{upstream}")
         };
@@ -159,15 +166,25 @@ pub async fn verify_session(
         .filter(|value| !value.is_empty());
     let image_id = match provided {
         Some(value) => value.to_string(),
-        None => discover_image_id(region, &session).await.unwrap_or_default(),
+        None => discover_image_id(region, &session)
+            .await
+            .unwrap_or_default(),
     };
     logging::log(
         "[Login]",
         &format!(
             "✅ MonkeyCode {} 登录态校验通过（user {}，image_id {}）",
             region.label(),
-            if user_id.is_empty() { "缺失" } else { &user_id },
-            if image_id.is_empty() { "未发现（需手动填）" } else { "已就绪" }
+            if user_id.is_empty() {
+                "缺失"
+            } else {
+                &user_id
+            },
+            if image_id.is_empty() {
+                "未发现（需手动填）"
+            } else {
+                "已就绪"
+            }
         ),
     );
     Ok(json!({

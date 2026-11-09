@@ -78,7 +78,10 @@ pub async fn put_cline_headers(State(_state): State<ServerState>, body: Bytes) -
     if !config::set_cline_upstream_headers(overrides) {
         logging::log("[Config]", "⚠️  Cline 伪装头写入失败，本次运行内仍生效");
     }
-    logging::log("[Config]", "Cline 伪装头覆盖表已更新（下一个 Cline 请求生效）");
+    logging::log(
+        "[Config]",
+        "Cline 伪装头覆盖表已更新（下一个 Cline 请求生效）",
+    );
     ok_json(headers_json())
 }
 
@@ -107,7 +110,10 @@ fn validated_overrides(entries: &Map<String, Value>) -> Result<BTreeMap<String, 
                 "头名含非法字符（只能是字母、数字与 !#$%&'*+-.^_`|~）: {key:?}"
             ));
         }
-        if FIXED_HEADERS.iter().any(|name| name.eq_ignore_ascii_case(key)) {
+        if FIXED_HEADERS
+            .iter()
+            .any(|name| name.eq_ignore_ascii_case(key))
+        {
             return Err(format!("{key} 是网关固定头，不能覆盖"));
         }
         let Some(text) = value.as_str() else {
@@ -129,7 +135,8 @@ fn validated_overrides(entries: &Map<String, Value>) -> Result<BTreeMap<String, 
 /// `defaults` 一并给出：界面要把「用户把值改回了默认」与「本来就没改」区分开
 /// （前者是一份覆盖、后者不该出现在覆盖表里），没有默认值就做不到这个判断。
 fn headers_json() -> Value {
-    let overrides: BTreeMap<String, String> = config::cline_upstream_overrides().into_iter().collect();
+    let overrides: BTreeMap<String, String> =
+        config::cline_upstream_overrides().into_iter().collect();
     let defaults: Map<String, Value> = headers::DEFAULT_HEADERS
         .iter()
         .map(|(key, value)| ((*key).to_string(), Value::String((*value).to_string())))
@@ -207,7 +214,10 @@ mod tests {
         ]))
         .expect("合法表应当通过");
         // 头名去首尾空白；空串（= 不发这个头）与自定义头原样保留
-        assert_eq!(overrides.get("X-Title").map(String::as_str), Some("My Cline"));
+        assert_eq!(
+            overrides.get("X-Title").map(String::as_str),
+            Some("My Cline")
+        );
         assert_eq!(overrides.get("X-PLATFORM").map(String::as_str), Some(""));
         assert_eq!(
             overrides.get("X-Custom-Trace").map(String::as_str),

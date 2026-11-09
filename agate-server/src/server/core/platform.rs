@@ -16,9 +16,7 @@ pub fn should_reject_desktop_import(
     import_desktop: bool,
     explicit_file_import: bool,
 ) -> bool {
-    import_desktop
-        && !explicit_file_import
-        && !desktop_import_platform_supported_for(os)
+    import_desktop && !explicit_file_import && !desktop_import_platform_supported_for(os)
 }
 
 #[cfg(test)]

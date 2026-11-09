@@ -70,7 +70,10 @@ pub fn set_config_dir_override(path: impl Into<PathBuf>) -> Result<(), String> {
         Err(_) if CONFIG_DIR_OVERRIDE.get() == Some(&path) => Ok(()),
         Err(_) => Err(format!(
             "配置目录已初始化为 {}，不能切换到 {}",
-            CONFIG_DIR_OVERRIDE.get().map(|value| value.display().to_string()).unwrap_or_default(),
+            CONFIG_DIR_OVERRIDE
+                .get()
+                .map(|value| value.display().to_string())
+                .unwrap_or_default(),
             path.display(),
         )),
     }
@@ -182,8 +185,8 @@ pub fn legacy_desktop_settings_file() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::{
-        default_config_dir_from_home, legacy_config_dir_from_home,
-        resolve_config_dir_override, resolve_user_home, validate_config_dir_path,
+        default_config_dir_from_home, legacy_config_dir_from_home, resolve_config_dir_override,
+        resolve_user_home, validate_config_dir_path,
     };
     use std::path::{Path, PathBuf};
 

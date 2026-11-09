@@ -22,11 +22,11 @@
 //! ── 硬约束 ──────────────────────────────────────────────────
 //! release 是 `panic=abort`：本文件零 unwrap/expect/panic。
 
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
-use super::{GrowthAccount, chat_call};
+use super::{chat_call, GrowthAccount};
 
 /// 派出地点固定 4（古镇客栈）：4 个地点的收益/时长区间完全相同，无最优解。
 const TRAVEL_LOCATION_ID: i64 = 4;
@@ -60,7 +60,10 @@ impl TravelState {
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
             record_id: data.get("record_id").and_then(Value::as_i64).unwrap_or(0),
-            reward_credit: data.get("reward_credit").and_then(Value::as_i64).unwrap_or(0),
+            reward_credit: data
+                .get("reward_credit")
+                .and_then(Value::as_i64)
+                .unwrap_or(0),
         }
     }
 }
@@ -75,7 +78,11 @@ pub struct Buddy {
 pub async fn buddy_info(account: &GrowthAccount) -> Result<Option<Buddy>, String> {
     let call = chat_call(account, "GET", "/activity/growth/buddy/info", None, &[]).await?;
     if !call.ok() {
-        return Err(format!("猫档案查询失败（HTTP {} code={:?}）", call.status, call.code()));
+        return Err(format!(
+            "猫档案查询失败（HTTP {} code={:?}）",
+            call.status,
+            call.code()
+        ));
     }
     let buddy = call.data().get("buddy").cloned().unwrap_or(Value::Null);
     if buddy.is_null() {
@@ -99,9 +106,20 @@ pub async fn buddy_info(account: &GrowthAccount) -> Result<Option<Buddy>, String
 
 /// 查旅行状态（GET /activity/growth/buddy/travel/status）。
 pub async fn travel_status(account: &GrowthAccount) -> Result<TravelState, String> {
-    let call = chat_call(account, "GET", "/activity/growth/buddy/travel/status", None, &[]).await?;
+    let call = chat_call(
+        account,
+        "GET",
+        "/activity/growth/buddy/travel/status",
+        None,
+        &[],
+    )
+    .await?;
     if !call.ok() {
-        return Err(format!("旅行状态查询失败（HTTP {} code={:?}）", call.status, call.code()));
+        return Err(format!(
+            "旅行状态查询失败（HTTP {} code={:?}）",
+            call.status,
+            call.code()
+        ));
     }
     Ok(TravelState::from_value(call.data()))
 }
@@ -119,7 +137,12 @@ pub async fn travel_depart(account: &GrowthAccount) -> Result<(), String> {
     if call.ok() {
         Ok(())
     } else {
-        Err(format!("派出失败（HTTP {} code={:?} {}）", call.status, call.code(), call.msg()))
+        Err(format!(
+            "派出失败（HTTP {} code={:?} {}）",
+            call.status,
+            call.code(),
+            call.msg()
+        ))
     }
 }
 
@@ -134,9 +157,18 @@ pub async fn travel_claim(account: &GrowthAccount, record_id: i64) -> Result<i64
     )
     .await?;
     if !call.ok() {
-        return Err(format!("领奖失败（HTTP {} code={:?} {}）", call.status, call.code(), call.msg()));
+        return Err(format!(
+            "领奖失败（HTTP {} code={:?} {}）",
+            call.status,
+            call.code(),
+            call.msg()
+        ));
     }
-    Ok(call.data().get("reward_credit").and_then(Value::as_i64).unwrap_or(0))
+    Ok(call
+        .data()
+        .get("reward_credit")
+        .and_then(Value::as_i64)
+        .unwrap_or(0))
 }
 
 /// 领养（同意协议 → buddy/first；见 growth::adopt_buddy）。这里只做「门槛未达」
@@ -146,7 +178,9 @@ async fn adopt(account: &GrowthAccount) -> (bool, bool, String) {
     // 门槛未达的判据：adopt_buddy 把它翻成中文文案；英文 marker 兜底
     // （上游文案若变化，仍按关键词识别，避免把预期正常态报成失败）
     let threshold_short = message.contains("门槛未达")
-        || message.to_lowercase().contains(BUDDY_TASK_INCOMPLETE_MARKER);
+        || message
+            .to_lowercase()
+            .contains(BUDDY_TASK_INCOMPLETE_MARKER);
     (ok, threshold_short, message)
 }
 
@@ -192,7 +226,11 @@ pub async fn run_once(account: &GrowthAccount) -> TravelReport {
     let buddy = match buddy_info(account).await {
         Ok(buddy) => buddy,
         Err(error) => {
-            return TravelReport { outcome: "failed", message: error, credit: 0 };
+            return TravelReport {
+                outcome: "failed",
+                message: error,
+                credit: 0,
+            };
         }
     };
     let Some(buddy) = buddy else {
@@ -206,19 +244,35 @@ pub async fn run_once(account: &GrowthAccount) -> TravelReport {
         }
         let (ok, threshold_short, message) = adopt(account).await;
         if ok {
-            return TravelReport { outcome: "adopt", message, credit: 300 };
+            return TravelReport {
+                outcome: "adopt",
+                message,
+                credit: 300,
+            };
         }
         if threshold_short {
             mark_adopt_tried(&account.uid);
-            return TravelReport { outcome: "skip", message, credit: 0 };
+            return TravelReport {
+                outcome: "skip",
+                message,
+                credit: 0,
+            };
         }
-        return TravelReport { outcome: "failed", message, credit: 0 };
+        return TravelReport {
+            outcome: "failed",
+            message,
+            credit: 0,
+        };
     };
 
     let status = match travel_status(account).await {
         Ok(status) => status,
         Err(error) => {
-            return TravelReport { outcome: "failed", message: error, credit: 0 };
+            return TravelReport {
+                outcome: "failed",
+                message: error,
+                credit: 0,
+            };
         }
     };
     match status.state.as_str() {
@@ -236,7 +290,11 @@ pub async fn run_once(account: &GrowthAccount) -> TravelReport {
                     message: format!("到站领奖成功，积分 +{reward}（猫：{}）", buddy.name),
                     credit: reward,
                 },
-                Err(error) => TravelReport { outcome: "failed", message: error, credit: 0 },
+                Err(error) => TravelReport {
+                    outcome: "failed",
+                    message: error,
+                    credit: 0,
+                },
             }
         }
         "idle" => {
@@ -253,7 +311,11 @@ pub async fn run_once(account: &GrowthAccount) -> TravelReport {
                     message: format!("已派出旅行（猫：{}，地点：古镇客栈）", buddy.name),
                     credit: 0,
                 },
-                Err(error) => TravelReport { outcome: "failed", message: error, credit: 0 },
+                Err(error) => TravelReport {
+                    outcome: "failed",
+                    message: error,
+                    credit: 0,
+                },
             }
         }
         "traveling" => TravelReport {

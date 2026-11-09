@@ -59,10 +59,7 @@ fn pick(payload: &Value, keys: &[&str]) -> String {
 fn anonymous_account_id(region: Region) -> Result<String, AccountStoreError> {
     let mut bytes = [0u8; 6];
     getrandom::getrandom(&mut bytes).map_err(|_| {
-        AccountStoreError::new(
-            "无法生成安全的随机账号 id（系统随机源不可用），请重试",
-            500,
-        )
+        AccountStoreError::new("无法生成安全的随机账号 id（系统随机源不可用），请重试", 500)
     })?;
     let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
     Ok(format!("{}anon-{hex}", region.account_id_prefix()))
@@ -116,8 +113,14 @@ impl AccountStore {
         if session.chars().count() > MAX_SESSION_LENGTH {
             return Err(AccountStoreError::new("session 过长", 400));
         }
-        let user_id = truncate_chars(&pick(payload, &["userId", "user_id", "userid"]), MAX_IDENTITY_LENGTH);
-        let image_id = truncate_chars(&pick(payload, &["imageId", "image_id"]), MAX_IDENTITY_LENGTH);
+        let user_id = truncate_chars(
+            &pick(payload, &["userId", "user_id", "userid"]),
+            MAX_IDENTITY_LENGTH,
+        );
+        let image_id = truncate_chars(
+            &pick(payload, &["imageId", "image_id"]),
+            MAX_IDENTITY_LENGTH,
+        );
         let provider_id = region.provider_id();
 
         // 身份标识：优先 userId（稳定）；没有就用随机段（不去重，理由见
@@ -179,7 +182,10 @@ impl AccountStore {
         let now = logging::now_ms();
         let mut record = Map::new();
         record.insert("id".to_string(), Value::String(id.clone()));
-        record.insert("provider".to_string(), Value::String(provider_id.to_string()));
+        record.insert(
+            "provider".to_string(),
+            Value::String(provider_id.to_string()),
+        );
         record.insert("name".to_string(), Value::String(record_name.clone()));
         mark_name_custom(
             &mut record,
@@ -200,13 +206,21 @@ impl AccountStore {
             record.insert("imageId".to_string(), previous);
         }
         record.insert("accessToken".to_string(), Value::String(session.clone()));
-        record.insert("tokenTail".to_string(), Value::String(token_tail_of(&session)));
+        record.insert(
+            "tokenTail".to_string(),
+            Value::String(token_tail_of(&session)),
+        );
         record.insert("expiresAt".to_string(), Value::from(now + SESSION_TTL_MS));
         record.insert("source".to_string(), Value::String(source.to_string()));
         record.insert("priority".to_string(), Value::from(priority));
         record.insert(
             "enabled".to_string(),
-            Value::Bool(existing.as_ref().map(StoredAccount::enabled).unwrap_or(true)),
+            Value::Bool(
+                existing
+                    .as_ref()
+                    .map(StoredAccount::enabled)
+                    .unwrap_or(true),
+            ),
         );
         record.insert(
             "addedAt".to_string(),
@@ -230,7 +244,10 @@ impl AccountStore {
         self.with_conn(&guard, |conn| sql::put(conn, &saved))?;
         logging::log(
             "[Accounts]",
-            &format!("✅ MonkeyCode {} 账号已保存: {record_name}（优先级 {priority}）", region.label()),
+            &format!(
+                "✅ MonkeyCode {} 账号已保存: {record_name}（优先级 {priority}）",
+                region.label()
+            ),
         );
         Ok(self.public_account(&saved))
     }
@@ -241,7 +258,15 @@ impl AccountStore {
         let region = Region::from_provider_id(&record.provider());
         let available = record.has_token() && region.is_some();
         let mut public = Map::new();
-        for key in ["id", "provider", "name", "userId", "source", "tokenTail", "imageId"] {
+        for key in [
+            "id",
+            "provider",
+            "name",
+            "userId",
+            "source",
+            "tokenTail",
+            "imageId",
+        ] {
             public.insert(
                 key.to_string(),
                 record.get(key).cloned().unwrap_or(Value::Null),
@@ -272,7 +297,10 @@ impl AccountStore {
         // 本家没有续期协议（30 天硬限制，见 `credentials.rs` 的模块头），恒 false
         public.insert("hasRefreshToken".to_string(), Value::Bool(false));
         public.insert("desktop".to_string(), Value::Bool(false));
-        public.insert("expiresAt".to_string(), Value::from(record.expires_at().unwrap_or(0.0) as i64));
+        public.insert(
+            "expiresAt".to_string(),
+            Value::from(record.expires_at().unwrap_or(0.0) as i64),
+        );
         public.insert("priority".to_string(), Value::from(record.priority()));
         public.insert("enabled".to_string(), Value::Bool(record.enabled()));
         public.insert("addedAt".to_string(), Value::from(record.added_at()));
@@ -283,7 +311,10 @@ impl AccountStore {
         );
         public.insert(
             "rateLimits".to_string(),
-            record.get("rateLimits").cloned().unwrap_or_else(|| json!({})),
+            record
+                .get("rateLimits")
+                .cloned()
+                .unwrap_or_else(|| json!({})),
         );
         public.insert("available".to_string(), Value::Bool(available));
         Value::Object(public)

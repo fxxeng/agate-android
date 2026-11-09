@@ -54,14 +54,21 @@ pub fn hold(wire_bytes: i64, at_ms: i64) -> bool {
         // 锁被毒过：里面的值仍是合法的 Option<Gate>，不该因此把判据丢掉
         Err(poisoned) => poisoned.into_inner(),
     };
-    let blocked_before = guard.as_ref().is_some_and(|gate| gate.expires_at_ms > at_ms);
+    let blocked_before = guard
+        .as_ref()
+        .is_some_and(|gate| gate.expires_at_ms > at_ms);
     match &mut *guard {
         // 门还在：只往下收，也不延长寿命（寿命由第一次撞墙决定，避免持续失败被记成永久）
         Some(gate) if gate.expires_at_ms > at_ms => {
             gate.floor_bytes = gate.floor_bytes.min(wire_bytes.max(0));
         }
         // 门已过期或从没建过：整条重来
-        slot => *slot = Some(Gate { floor_bytes: wire_bytes.max(0), expires_at_ms: at_ms + GATE_TTL_MS }),
+        slot => {
+            *slot = Some(Gate {
+                floor_bytes: wire_bytes.max(0),
+                expires_at_ms: at_ms + GATE_TTL_MS,
+            })
+        }
     }
     !blocked_before
 }
@@ -69,7 +76,10 @@ pub fn hold(wire_bytes: i64, at_ms: i64) -> bool {
 /// 当前门内的下界（没门 / 已过期 = `None`）。
 pub fn floor(at_ms: i64) -> Option<i64> {
     let guard = slot().lock().ok()?;
-    guard.as_ref().filter(|gate| gate.expires_at_ms > at_ms).map(|gate| gate.floor_bytes)
+    guard
+        .as_ref()
+        .filter(|gate| gate.expires_at_ms > at_ms)
+        .map(|gate| gate.floor_bytes)
 }
 
 /// 还剩多少毫秒到期（给文案说「多久后重新探」用）。
@@ -127,9 +137,16 @@ mod gate_rules {
         let at = 50_000;
         assert!(hold(123, at));
         assert_eq!(Some(123), floor(at + GATE_TTL_MS - 1));
-        assert_eq!(None, floor(at + GATE_TTL_MS), "到期就放行：上游的墙会随负载与版本变");
+        assert_eq!(
+            None,
+            floor(at + GATE_TTL_MS),
+            "到期就放行：上游的墙会随负载与版本变"
+        );
         assert_eq!(0, ms_left(at + GATE_TTL_MS));
-        assert!(ms_left(at + 1_000) > 0, "门内要说得出还剩多久，文案才有意义");
+        assert!(
+            ms_left(at + 1_000) > 0,
+            "门内要说得出还剩多久，文案才有意义"
+        );
     }
 
     #[test]
@@ -139,6 +156,10 @@ mod gate_rules {
         // 过期后再撞：整条重来，寿命由新的这次决定
         assert!(hold(90, GATE_TTL_MS + 5));
         assert_eq!(Some(90), floor(GATE_TTL_MS + 5));
-        assert_eq!(GATE_TTL_MS, ms_left(GATE_TTL_MS + 5), "寿命从这一次起算，不接上一次的尾巴");
+        assert_eq!(
+            GATE_TTL_MS,
+            ms_left(GATE_TTL_MS + 5),
+            "寿命从这一次起算，不接上一次的尾巴"
+        );
     }
 }

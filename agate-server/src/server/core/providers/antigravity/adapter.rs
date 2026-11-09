@@ -151,19 +151,15 @@ impl ProviderAdapter for AntigravityAdapter {
         let enterprise = !email.is_empty()
             && !email.ends_with("@gmail.com")
             && !email.ends_with("@googlemail.com");
-        let envelope =
-            protocol::antigravity_outbound::antigravity_request_from_chat(
-                body,
-                &wire_model,
-                project,
-                enterprise,
-            )
-            .map_err(|message| {
-                GatewayError::with_status(
-                    400,
-                    format!("Antigravity 请求转换失败：{message}"),
-                )
-            })?;
+        let envelope = protocol::antigravity_outbound::antigravity_request_from_chat(
+            body,
+            &wire_model,
+            project,
+            enterprise,
+        )
+        .map_err(|message| {
+            GatewayError::with_status(400, format!("Antigravity 请求转换失败：{message}"))
+        })?;
         let url = endpoints::stream_generate_url(endpoints::V1_BASE_URL_DAILY);
         // content 请求的头集合（不带 `x-goog-user-project`、不带
         // `x-goog-api-client`，见 endpoints.rs 的模块头）
@@ -306,7 +302,12 @@ impl ProviderAdapter for AntigravityAdapter {
     /// 契约只把**错误体**传进来，而 Google 的错误体把语义放在 `error.status` 里
     /// （归一化层读的是顶层 `code` 与 `error.message`），所以这里按 message 的
     /// 关键词判瞬时故障。429 不走这里 —— 它是 `QuotaLimited`，换账号比原地重试有用。
-    fn retry_advice(&self, error_body: &Value, attempt: usize, budget: usize) -> Option<RetryAdvice> {
+    fn retry_advice(
+        &self,
+        error_body: &Value,
+        attempt: usize,
+        budget: usize,
+    ) -> Option<RetryAdvice> {
         if attempt >= budget {
             return None;
         }
@@ -316,9 +317,16 @@ impl ProviderAdapter for AntigravityAdapter {
             .map(str::trim)
             .unwrap_or("");
         let lowered = raw.to_ascii_lowercase();
-        let transient = ["unavailable", "internal", "deadline_exceeded", "overloaded", "try again", "timeout"]
-            .iter()
-            .any(|pattern| lowered.contains(pattern));
+        let transient = [
+            "unavailable",
+            "internal",
+            "deadline_exceeded",
+            "overloaded",
+            "try again",
+            "timeout",
+        ]
+        .iter()
+        .any(|pattern| lowered.contains(pattern));
         if !transient {
             return None;
         }
@@ -337,8 +345,9 @@ impl ProviderAdapter for AntigravityAdapter {
         &'a self,
         store: &'a AccountStore,
         account_id: &'a str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, GatewayError>> + Send + 'a>>
-    {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<String, GatewayError>> + Send + 'a>,
+    > {
         Box::pin(async move {
             let credentials = oauth::ensure_fresh(store, account_id, false).await?;
             if credentials.access_token.trim().is_empty() {
@@ -360,8 +369,9 @@ impl ProviderAdapter for AntigravityAdapter {
         &'a self,
         store: &'a AccountStore,
         account_id: &'a str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, GatewayError>> + Send + 'a>>
-    {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<String, GatewayError>> + Send + 'a>,
+    > {
         Box::pin(async move {
             let credentials = oauth::ensure_fresh(store, account_id, true).await?;
             Ok(credentials.access_token)
@@ -383,9 +393,8 @@ impl ProviderAdapter for AntigravityAdapter {
         &'a self,
         store: &'a AccountStore,
         account_id: &'a str,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<Value, GatewayError>> + Send + 'a>,
-    > {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value, GatewayError>> + Send + 'a>>
+    {
         Box::pin(super::balance::query_usage(store, account_id))
     }
 
@@ -508,7 +517,10 @@ impl ProviderAdapter for AntigravityAdapter {
             if project_id.trim().is_empty() {
                 match project::discover_project(&credentials.access_token, proxy.as_ref()).await {
                     Ok(found) => {
-                        if store.set_antigravity_project(&credentials.id, &found).is_err() {
+                        if store
+                            .set_antigravity_project(&credentials.id, &found)
+                            .is_err()
+                        {
                             logging::verbose(
                                 "[Antigravity]",
                                 "project 发现结果未能写回账号记录（记录可能已被删除）",
@@ -522,7 +534,13 @@ impl ProviderAdapter for AntigravityAdapter {
                     ),
                 }
             }
-            models::refresh(&credentials.access_token, &project_id, proxy.as_ref(), force).await
+            models::refresh(
+                &credentials.access_token,
+                &project_id,
+                proxy.as_ref(),
+                force,
+            )
+            .await
         })
     }
 }

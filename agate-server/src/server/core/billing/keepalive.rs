@@ -15,7 +15,7 @@
 //! 用户在输入框里写的多半是「逗号/空格分隔的一行」，api 层拆好数组再进来，
 //! 这里做最后一道净化。
 
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use crate::server::config;
 use crate::server::logging;
@@ -87,11 +87,12 @@ pub fn models() -> Vec<String> {
 /// 返回归一化后的清单（写盘失败返回 Err，调用方把原因吐给界面）。
 pub fn set_models(list: &[String]) -> Result<Vec<String>, String> {
     let picked = normalize(list);
-    let value: Vec<String> = if picked.is_empty() { default_models() } else { picked };
-    config::update_raw_field(
-        CONFIG_KEY,
-        json!({ "models": value }),
-    );
+    let value: Vec<String> = if picked.is_empty() {
+        default_models()
+    } else {
+        picked
+    };
+    config::update_raw_field(CONFIG_KEY, json!({ "models": value }));
     logging::log(
         "[Checkin]",
         &format!("WorkBuddy 国际版保活模型链已改为 {}", value.join(" → ")),

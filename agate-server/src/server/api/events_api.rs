@@ -15,8 +15,8 @@ use std::convert::Infallible;
 use std::time::Duration;
 
 use axum::response::sse::{Event, KeepAlive, Sse};
-use futures::stream::StreamExt;
 use futures::future::ok;
+use futures::stream::StreamExt;
 use futures::stream::{self as fstream};
 use serde_json::json;
 use tokio_stream::wrappers::BroadcastStream;
@@ -36,16 +36,14 @@ pub async fn handle() -> Sse<impl futures::Stream<Item = Result<Event, Infallibl
                 .data(r#"{"type":"lagged","data":{"hint":"refresh"}}"#))),
         }
     });
-    let hello = fstream::once(ok(Event::default()
-        .event("hello")
-        .data(
-            json!({
-                "type": "hello",
-                "tsMs": events::now_ms(),
-                "data": { "version": env!("CARGO_PKG_VERSION") },
-            })
-            .to_string(),
-        )));
+    let hello = fstream::once(ok(Event::default().event("hello").data(
+        json!({
+            "type": "hello",
+            "tsMs": events::now_ms(),
+            "data": { "version": env!("CARGO_PKG_VERSION") },
+        })
+        .to_string(),
+    )));
     // axum 0.8 的 KeepAlive 只有 text()（发 `: ping` 注释帧，不带事件名）；
     // okhttp-sse 对注释帧不回调 onEvent，正好是纯心跳语义。
     Sse::new(hello.chain(live)).keep_alive(

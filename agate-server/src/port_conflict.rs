@@ -75,7 +75,11 @@ impl PortConflict {
 
     /// 组装冲突描述（文案集中在这里，避免界面与后端各说各话）。
     pub fn new(kind: ConflictKind, port: u16, detail: &str) -> Self {
-        Self { kind, port, message: describe(kind, port, detail) }
+        Self {
+            kind,
+            port,
+            message: describe(kind, port, detail),
+        }
     }
 
     /// 侧栏那一行用的短标签。

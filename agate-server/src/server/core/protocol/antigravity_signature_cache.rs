@@ -83,7 +83,10 @@ pub fn remember_for_session(session: &str, name: &str, signature: &str) {
     if session.is_empty() || name.is_empty() || signature.is_empty() {
         return;
     }
-    insert(format!("{SESSION_PREFIX}{session}|{name}"), signature.to_string());
+    insert(
+        format!("{SESSION_PREFIX}{session}|{name}"),
+        signature.to_string(),
+    );
 }
 
 /// 按 call id 取回签名（请求侧回填的主键档）。

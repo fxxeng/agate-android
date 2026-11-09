@@ -110,7 +110,10 @@ pub fn default_tier(payload: &Value) -> String {
         .and_then(Value::as_array)
         .and_then(|tiers| {
             tiers.iter().find_map(|tier| {
-                let is_default = tier.get("isDefault").and_then(Value::as_bool).unwrap_or(false);
+                let is_default = tier
+                    .get("isDefault")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
                 if !is_default {
                     return None;
                 }
@@ -172,7 +175,10 @@ pub async fn discover_project(
     proxy: Option<&ResolvedProxy>,
 ) -> Result<String, GatewayError> {
     if access_token.trim().is_empty() {
-        return Err(GatewayError::with_status(401, "Antigravity project 发现需要 access token"));
+        return Err(GatewayError::with_status(
+            401,
+            "Antigravity project 发现需要 access token",
+        ));
     }
     let url = endpoints::load_code_assist_url();
     let (status, payload, text) = post_json(
@@ -237,7 +243,10 @@ pub async fn onboard(
             format!("Antigravity project 开通失败（HTTP {status}）：{detail}"),
         ));
     }
-    let done = payload.get("done").and_then(Value::as_bool).unwrap_or(false);
+    let done = payload
+        .get("done")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     let project = onboard_project_of(&payload);
     if done && !project.is_empty() {
         return Ok(project);
@@ -323,7 +332,10 @@ fn describe_body(payload: &Value, text: &str) -> String {
 
 /// 截断（按字符，UTF-8 安全）
 fn truncate(text: &str) -> String {
-    let collapsed: String = text.chars().filter(|character| !character.is_control()).collect();
+    let collapsed: String = text
+        .chars()
+        .filter(|character| !character.is_control())
+        .collect();
     match collapsed.char_indices().nth(200) {
         Some((index, _)) => format!("{}…", &collapsed[..index]),
         None => collapsed,

@@ -101,8 +101,8 @@ use report::{entry_json, provider_label, CACHE_WINDOWS};
 // 的采集侧也要用（同一份上限常量，见 record::MAX_RAW_BODY_BYTES 的说明）。
 // CompactStart 在此 re-export：api::stats_api 的 compact 路由按它分派响应。
 // VacuumStatus 只在本模块内（字段类型 / maintenance 的方法）可见。
-use maintenance::VacuumStatus;
 pub use maintenance::CompactStart;
+use maintenance::VacuumStatus;
 pub use record::{
     AttemptDetail, NewRequestEntry, RequestEntry, RequestQuery, Retention, RetryEvent,
     RunningProgress, SensitiveHit, DEFAULT_LIMIT, MAX_LIMIT, MAX_RAW_BODY_BYTES, MAX_RAW_ROWS,
@@ -141,7 +141,10 @@ const RUNNING_STALE_MS: i64 = 60 * 60 * 1000;
 /// 进程重启后遗留的进行中行按 `ts` 判定：早于本次启动时刻的全是孤儿。
 /// 以进程启动时间做阈值而不是固定时长，能覆盖长请求在重启时仍在途的场景。
 fn stale_cutoff() -> i64 {
-    std::cmp::max(now_ms() - RUNNING_STALE_MS, crate::server::logging::process_started_at())
+    std::cmp::max(
+        now_ms() - RUNNING_STALE_MS,
+        crate::server::logging::process_started_at(),
+    )
 }
 
 /// 请求统计存储本体。所有公开方法取 `&self`，内部一把 `Mutex` 串行化调用序列。
@@ -547,7 +550,9 @@ impl RequestStats {
             return;
         }
         let guard = self.guard();
-        let _ = self.with_conn_mut(&guard, |conn| sql::update_running_progress(conn, id, progress));
+        let _ = self.with_conn_mut(&guard, |conn| {
+            sql::update_running_progress(conn, id, progress)
+        });
     }
 
     /// 存一条请求的**原始正文**（`request_raw` 表；两侧各截断到
@@ -569,7 +574,13 @@ impl RequestStats {
     /// UPSERT 覆盖同 id（`sql::upsert_raw`）；正文不设条数上限 —— 表的增长
     /// 由「调试模式开关」天然约束（关着不写），清历史走请求日志页的清理。
     /// 失败只打控制台 —— 正文是排障辅助，丢一侧不能影响请求。
-    pub fn store_raw(&self, id: &str, ts: i64, request_body: Option<&str>, response_body: Option<&str>) {
+    pub fn store_raw(
+        &self,
+        id: &str,
+        ts: i64,
+        request_body: Option<&str>,
+        response_body: Option<&str>,
+    ) {
         let id = id.trim();
         if id.is_empty() {
             return;
@@ -610,8 +621,8 @@ impl RequestStats {
         };
         // 上限常量放存储层（record::MAX_RAW_BODY_BYTES），采集与读取共用一份，
         // 依赖方向保持 api → request_stats（理由见该常量的说明）
-        let truncated = request_body.len() >= MAX_RAW_BODY_BYTES
-            || response_body.len() >= MAX_RAW_BODY_BYTES;
+        let truncated =
+            request_body.len() >= MAX_RAW_BODY_BYTES || response_body.len() >= MAX_RAW_BODY_BYTES;
         Some(json!({
             "id": raw_id,
             "requestBody": request_body,
@@ -645,11 +656,7 @@ impl RequestStats {
     ///
     /// `custom` 只在 `range == "custom"` 时有意义（起止本地自然日，路由层已
     /// 解析校验）；其余档位传 None，区间由 `range_bounds` 现算。
-    pub fn usage_summary(
-        &self,
-        range: &str,
-        custom: Option<(NaiveDate, NaiveDate)>,
-    ) -> Value {
+    pub fn usage_summary(&self, range: &str, custom: Option<(NaiveDate, NaiveDate)>) -> Value {
         let now = clock::now_ms();
         let windows: Vec<i64> = CACHE_WINDOWS.iter().map(|(_, ms)| *ms).collect();
         let loaded = {
@@ -900,7 +907,9 @@ impl RetentionBounds {
     fn of(retention: Retention) -> Self {
         let now_day = today();
         Self {
-            requests_ms: local_midnight_ms(now_day - ChronoDuration::days(retention.request_days - 1)),
+            requests_ms: local_midnight_ms(
+                now_day - ChronoDuration::days(retention.request_days - 1),
+            ),
             daily_key: date_key(now_day - ChronoDuration::days(retention.daily_days - 1)),
         }
     }

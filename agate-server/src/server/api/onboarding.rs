@@ -66,8 +66,7 @@ const CODEARTS_PROVIDER_ID: &str =
 /// OfficeAce 的分派键：它的新手任务与每日签到是**同一个上游动作**
 /// （`POST /v1/subscription/bonus/claim` 一次发当天所有奖励），见
 /// `officeace::onboarding` 的模块头。
-const OFFICEACE_PROVIDER_ID: &str =
-    crate::server::core::account_store::OFFICEACE_PROVIDER_ID;
+const OFFICEACE_PROVIDER_ID: &str = crate::server::core::account_store::OFFICEACE_PROVIDER_ID;
 
 /// 从账号存储里查一条账号的 provider id（查不到账号给空串 —— 分派会落到
 /// Loomy 分支，由 `loomy_account_record` 报 404，与既有兜底行为一致）。

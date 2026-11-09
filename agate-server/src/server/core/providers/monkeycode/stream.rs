@@ -71,11 +71,11 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
 use super::credentials::MonkeyCodeCredentials;
-use super::translate::{handle_message, Handled, Terminal, DONE_FRAME};
-pub use super::translate::Translator;
 use super::endpoints;
 use super::region::Region;
 use super::task;
+pub use super::translate::Translator;
+use super::translate::{handle_message, Handled, Terminal, DONE_FRAME};
 
 /// 任务流连接类型（TLS 由 tokio-tungstenite 按 `wss` scheme 自动包装）
 pub type TaskSocket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
@@ -139,7 +139,9 @@ pub async fn connect(
         tokio_tungstenite::connect_async_tls_with_config(request, None, false, None),
     )
     .await
-    .map_err(|_| GatewayError::with_status(504, "MonkeyCode 任务流连接超时（WebSocket 握手未完成）"))?
+    .map_err(|_| {
+        GatewayError::with_status(504, "MonkeyCode 任务流连接超时（WebSocket 握手未完成）")
+    })?
     .map_err(connect_error)?;
     logging::verbose(
         "[MonkeyCode]",
@@ -160,7 +162,9 @@ fn connect_error(error: tokio_tungstenite::tungstenite::Error) -> GatewayError {
             if status == 401 || status == 403 {
                 GatewayError::with_status(
                     401,
-                    format!("MonkeyCode 任务流鉴权失败（HTTP {status}）：请在账号页重新粘贴 session"),
+                    format!(
+                        "MonkeyCode 任务流鉴权失败（HTTP {status}）：请在账号页重新粘贴 session"
+                    ),
                 )
             } else {
                 GatewayError::with_status(
@@ -204,7 +208,6 @@ fn send_error(what: &str, error: tokio_tungstenite::tungstenite::Error) -> Gatew
     GatewayError::with_status(502, format!("MonkeyCode 任务流发送 {what} 失败：{error}"))
 }
 
-
 // ─── 驱动（流式 / 非流式）─────────────────────────────────────
 
 /// 帧出口：流式走 mpsc（背压不丢帧），非流式只推进状态机。
@@ -231,7 +234,10 @@ pub async fn drive_stream(
     telemetry: &Arc<RequestTelemetry>,
 ) {
     if let Err(error) = drive(stream, translator, Mode::Stream(&sender), telemetry).await {
-        logging::verbose("[MonkeyCode]", &format!("任务流转发结束：{}", error.message));
+        logging::verbose(
+            "[MonkeyCode]",
+            &format!("任务流转发结束：{}", error.message),
+        );
     }
 }
 
@@ -262,7 +268,10 @@ async fn drive(
         }
         if !emit(&mode, &mut pending).await {
             let _ = stream.socket.close(None).await;
-            return Err(GatewayError::with_status(499, "客户端已断开，任务流转发停止"));
+            return Err(GatewayError::with_status(
+                499,
+                "客户端已断开，任务流转发停止",
+            ));
         }
     }
     let idle = Duration::from_millis(
@@ -332,7 +341,10 @@ async fn drive(
         if !pending.is_empty() && !emit(&mode, &mut pending).await {
             // 客户端断开：它已经不收帧了，继续消费没有意义（参考 abort 分支同）
             let _ = stream.socket.close(None).await;
-            return Err(GatewayError::with_status(499, "客户端已断开，任务流转发停止"));
+            return Err(GatewayError::with_status(
+                499,
+                "客户端已断开，任务流转发停止",
+            ));
         }
     };
     match terminal {

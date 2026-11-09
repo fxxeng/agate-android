@@ -44,7 +44,8 @@ pub struct LoomyCredentials {
 impl LoomyCredentials {
     /// 是否已过期或进入临期窗口（上游无续期手段，这个判定只用于提示重登）
     pub fn expiring(&self) -> bool {
-        self.expires_at > 0 && self.expires_at - EXPIRY_MARGIN_MS <= crate::server::logging::now_ms()
+        self.expires_at > 0
+            && self.expires_at - EXPIRY_MARGIN_MS <= crate::server::logging::now_ms()
     }
 }
 

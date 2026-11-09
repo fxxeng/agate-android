@@ -52,7 +52,7 @@ use crate::server::logging;
 use crate::server::ServerState;
 
 use super::disconnect_guard::DisconnectGuard;
-use super::pipeline::{self, json_response, RecordContext, RecordingStream, sse_response};
+use super::pipeline::{self, json_response, sse_response, RecordContext, RecordingStream};
 
 /// 对外模型名的长度上限（与 `model_test` 的 `text_field` 上限同一量级）
 const MAX_MODEL_CHARS: usize = 128;
@@ -92,10 +92,7 @@ pub async fn put_config(State(_state): State<ServerState>, body: Bytes) -> Respo
         Err(message) => return errors::management_error(400, message),
     };
     if !config::set_assistant_config(config.clone()) {
-        logging::log(
-            "[Config]",
-            "⚠️  AI 助手设置写入失败（本次运行内仍生效）",
-        );
+        logging::log("[Config]", "⚠️  AI 助手设置写入失败（本次运行内仍生效）");
     }
     // 回给前端的形态与 GET 完全一致（展开过的工具表）——「存了什么」与
     // 「界面看到什么」用同一个序列化口，免得前端保存后自己那那份与后端分叉
@@ -216,7 +213,9 @@ pub async fn chat(State(state): State<ServerState>, body: Bytes) -> Response {
     // 模型路由：对外名 → 上游名（默认值 / 映射别名 / 目录校验与 /v1/* 同源）
     let requested_model = match pipeline::resolve_model(&state, &mut upstream, None) {
         Ok(name) => name,
-        Err(error) => return errors::management_error(error.http_status().as_u16() as i32, error.message),
+        Err(error) => {
+            return errors::management_error(error.http_status().as_u16() as i32, error.message)
+        }
     };
 
     let started_at = logging::now_ms();
@@ -260,7 +259,10 @@ pub async fn chat(State(state): State<ServerState>, body: Bytes) -> Response {
         .await;
 
     match outcome {
-        Ok(ForwardOutcome::Stream { status, stream: source }) => {
+        Ok(ForwardOutcome::Stream {
+            status,
+            stream: source,
+        }) => {
             let status = StatusCode::from_u16(status).unwrap_or(StatusCode::OK);
             let context = RecordContext {
                 stats: state.request_stats(),

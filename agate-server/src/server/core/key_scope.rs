@@ -101,7 +101,8 @@ impl KeyScope {
 
     /// 允许路由到 `provider`（provider id）？
     pub fn allows_provider(&self, provider: &str) -> bool {
-        self.allowed_providers.is_empty() || self.allowed_providers.contains(&normalize_one(provider))
+        self.allowed_providers.is_empty()
+            || self.allowed_providers.contains(&normalize_one(provider))
     }
 
     /// 白名单里的 provider id（小写、排序；未限制 = 空表）。

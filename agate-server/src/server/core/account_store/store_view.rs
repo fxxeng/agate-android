@@ -22,7 +22,9 @@ use serde_json::{json, Map, Value};
 
 use crate::server::core::account_store::state::{AccountState, StoredAccount};
 use crate::server::core::account_store::store::{forwards_requests, AccountStore};
-use crate::server::core::account_store::store_util::{js_truthy, max_concurrent_public_for, value_or, value_or_nullish};
+use crate::server::core::account_store::store_util::{
+    js_truthy, max_concurrent_public_for, value_or, value_or_nullish,
+};
 use crate::server::core::custom_providers;
 use crate::server::core::endpoints::{resolve_edition, EditionInfo};
 use crate::server::core::proxies::describe_account_proxy;
@@ -42,10 +44,7 @@ impl AccountStore {
         public.insert("id".to_string(), Value::String(record.id().to_string()));
         // 所属提供商（Agate 改造新增字段）：缺失时按 workbuddy 兜底，
         // 保证界面拿到的每条账号都能直接分组，不必自己判断「没有 provider = 老数据」
-        public.insert(
-            "provider".to_string(),
-            Value::String(record.provider()),
-        );
+        public.insert("provider".to_string(), Value::String(record.provider()));
         // name 无兜底：原样透出（含非字符串的脏值），缺失时不出现该键
         if let Some(value) = fields.get("name") {
             public.insert("name".to_string(), value.clone());
@@ -80,12 +79,7 @@ impl AccountStore {
         );
         public.insert(
             "hasRefreshToken".to_string(),
-            Value::Bool(
-                fields
-                    .get("refreshToken")
-                    .map(js_truthy)
-                    .unwrap_or(false),
-            ),
+            Value::Bool(fields.get("refreshToken").map(js_truthy).unwrap_or(false)),
         );
         public.insert(
             "prefixPath".to_string(),
@@ -472,10 +466,8 @@ impl AccountStore {
     /// 计数在已读出的账号列表上跑（不再次访问数据库、不再取锁）——
     /// `snapshot` 的调用方已经持锁，且已经把那份列表读在手上了。
     fn provider_summary(&self, state: &AccountState) -> Value {
-        let counts: Vec<(String, usize)> = state
-            .accounts
-            .iter()
-            .fold(Vec::new(), |mut acc, record| {
+        let counts: Vec<(String, usize)> =
+            state.accounts.iter().fold(Vec::new(), |mut acc, record| {
                 let provider = record.provider();
                 match acc.iter_mut().find(|(id, _)| *id == provider) {
                     Some((_, count)) => *count += 1,
@@ -583,7 +575,10 @@ impl AccountStore {
         public.insert("enabled".to_string(), Value::Bool(record.enabled()));
         public.insert("addedAt".to_string(), Value::from(record.added_at()));
         public.insert("updatedAt".to_string(), Value::from(record.updated_at()));
-        public.insert("proxy".to_string(), describe_account_proxy(Some(&record.proxy())));
+        public.insert(
+            "proxy".to_string(),
+            describe_account_proxy(Some(&record.proxy())),
+        );
         // 「可用」= 凭证完整（与各家同一语义，见 `accounts-shared` 的 available 说明）。
         // 自定义账号这一项以前恒 true，于是「没填 Key 也没勾无需鉴权」的账号照样出现在
         // 「模型来源」下拉里（界面按 `available !== false` 过滤，见 models-fetch-modal）
@@ -658,12 +653,17 @@ fn usage_query_public(value: Option<&Value>) -> Value {
 /// 阈值 1；显式配置一律原样尊重 —— 那是用户选过的，缺省不能覆盖它。skip / disable
 /// 档下阈值缺失或非法时回落缺省 1。
 fn low_balance_public(provider: &str, value: Option<&Value>) -> Value {
-    use crate::server::core::usage_records::{default_low_balance, default_low_balance_mode, DEFAULT_LOW_BALANCE_THRESHOLD};
+    use crate::server::core::usage_records::{
+        default_low_balance, default_low_balance_mode, DEFAULT_LOW_BALANCE_THRESHOLD,
+    };
     let default_mode = default_low_balance_mode(provider);
     let Some(fields) = value.and_then(Value::as_object) else {
         return default_low_balance(provider);
     };
-    let mode = fields.get("mode").and_then(Value::as_str).unwrap_or(default_mode);
+    let mode = fields
+        .get("mode")
+        .and_then(Value::as_str)
+        .unwrap_or(default_mode);
     let threshold = fields
         .get("threshold")
         .and_then(Value::as_f64)

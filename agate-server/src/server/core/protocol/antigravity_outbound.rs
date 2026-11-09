@@ -122,8 +122,7 @@ const DEFAULT_THINKING_BUDGET: i64 = 32_768;
 /// 图片生成的 `maxOutputTokens`（9router 图片分支逐字）
 const IMAGE_MAX_OUTPUT_TOKENS: i64 = 8_192;
 /// Claude Agent SDK 前导指纹声明（Manager/9router 都整句删除，坑 #12）
-const CLAUDE_SDK_PREAMBLE: &str =
-    "You are a Claude agent, built on Anthropic's Claude Agent SDK.";
+const CLAUDE_SDK_PREAMBLE: &str = "You are a Claude agent, built on Anthropic's Claude Agent SDK.";
 
 // ─── 请求：chat → v1internal 信封 ────────────────────────────
 
@@ -224,7 +223,9 @@ fn system_instruction(messages: &[Value]) -> Option<Value> {
         if role != "system" && role != "developer" {
             continue;
         }
-        let text = sanitize_prompt(&content_text(message.get("content").unwrap_or(&Value::Null)));
+        let text = sanitize_prompt(&content_text(
+            message.get("content").unwrap_or(&Value::Null),
+        ));
         if !text.trim().is_empty() {
             texts.push(text.trim().to_string());
         }
@@ -333,7 +334,8 @@ fn contents_of(messages: &[Value]) -> Result<Vec<Value>, ConvertError> {
                 );
             }
             "assistant" => {
-                let mut parts = content_parts_of(message.get("content").unwrap_or(&Value::Null), "assistant");
+                let mut parts =
+                    content_parts_of(message.get("content").unwrap_or(&Value::Null), "assistant");
                 if is_truthy(message.get("reasoning_content").unwrap_or(&Value::Null)) {
                     // 两参考的处理：9router 的请求侧直接丢掉纯思考 part；
                     // 没有签名可回填，带上去反而可能被上游拒（报告已注明限制）
@@ -352,7 +354,8 @@ fn contents_of(messages: &[Value]) -> Result<Vec<Value>, ConvertError> {
             }
             // user 与一切未识别的角色都当 user（9router 同口径）
             _ => {
-                let parts = content_parts_of(message.get("content").unwrap_or(&Value::Null), "user");
+                let parts =
+                    content_parts_of(message.get("content").unwrap_or(&Value::Null), "user");
                 if !parts.is_empty() {
                     push_turn(&mut contents, "user", parts);
                 }
@@ -380,7 +383,10 @@ fn contents_of(messages: &[Value]) -> Result<Vec<Value>, ConvertError> {
         contents.push(json!({ "role": "user", "parts": [{ "text": FALLBACK_USER_TEXT }] }));
     }
     if string_field(&contents[0], "role") != "user" {
-        contents.insert(0, json!({ "role": "user", "parts": [{ "text": LEADING_USER_TEXT }] }));
+        contents.insert(
+            0,
+            json!({ "role": "user", "parts": [{ "text": LEADING_USER_TEXT }] }),
+        );
     }
     Ok(contents)
 }
@@ -673,7 +679,11 @@ fn generation_config(chat: &Value, model: &str, image_gen: bool) -> Value {
         });
     }
     let mut config = Map::new();
-    for (source, target) in [("temperature", "temperature"), ("top_p", "topP"), ("top_k", "topK")] {
+    for (source, target) in [
+        ("temperature", "temperature"),
+        ("top_p", "topP"),
+        ("top_k", "topK"),
+    ] {
         if let Some(value) = chat.get(source).filter(|value| value.is_number()) {
             config.insert(target.to_string(), value.clone());
         }
@@ -687,7 +697,11 @@ fn generation_config(chat: &Value, model: &str, image_gen: bool) -> Value {
         .or_insert_with(|| json!(1.0));
     let client_max = ["max_tokens", "max_completion_tokens"]
         .iter()
-        .find_map(|key| chat.get(*key).and_then(Value::as_i64).filter(|value| *value > 0));
+        .find_map(|key| {
+            chat.get(*key)
+                .and_then(Value::as_i64)
+                .filter(|value| *value > 0)
+        });
     match thinking_budget(chat, model) {
         Some(budget) => {
             let mut max = client_max;
@@ -701,7 +715,9 @@ fn generation_config(chat: &Value, model: &str, image_gen: bool) -> Value {
                 _ => budget.min(MAX_OUTPUT_TOKENS - THINKING_HEADROOM),
             };
             if let Some(value) = max.as_mut() {
-                *value = (*value).max(budget.saturating_add(1)).min(MAX_OUTPUT_TOKENS);
+                *value = (*value)
+                    .max(budget.saturating_add(1))
+                    .min(MAX_OUTPUT_TOKENS);
             }
             config.insert(
                 "thinkingConfig".to_string(),
@@ -788,4 +804,3 @@ fn request_id() -> String {
 fn is_image_model(model: &str) -> bool {
     model.to_ascii_lowercase().contains("image")
 }
-

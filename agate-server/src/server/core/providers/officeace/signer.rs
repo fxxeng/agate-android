@@ -249,14 +249,18 @@ fn sha256_hex(bytes: &[u8]) -> String {
 }
 
 fn hmac_sha256(key: &[u8], message: &str) -> Vec<u8> {
-    #[allow(clippy::expect_used)] // HMAC-SHA256 接受任意长度密钥，Err 仅泛型 API 占位（R46/T1 白名单）
+    #[allow(clippy::expect_used)]
+    // HMAC-SHA256 接受任意长度密钥，Err 仅泛型 API 占位（R46/T1 白名单）
     let mut mac = Hmac::<Sha256>::new_from_slice(key).expect("HMAC 接受任意长度密钥");
     mac.update(message.as_bytes());
     mac.finalize().into_bytes().to_vec()
 }
 
 fn hmac_sha256_hex(key: &[u8], message: &str) -> String {
-    hmac_sha256(key, message).iter().map(|byte| format!("{byte:02x}")).collect()
+    hmac_sha256(key, message)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 /// 签名算法选择。
@@ -403,8 +407,10 @@ fn sign_material(request: &SignRequest<'_>) -> Result<Material, String> {
                 &sha256_hex(canonical_request.as_bytes()),
             ]
             .join("\n");
-            let signature =
-                hmac_sha256_hex(request.credential.secret_access_key.as_bytes(), &string_to_sign);
+            let signature = hmac_sha256_hex(
+                request.credential.secret_access_key.as_bytes(),
+                &string_to_sign,
+            );
             let authorization = format!(
                 "{SDK_ALGORITHM} Access={}, SignedHeaders={signed_headers}, Signature={signature}",
                 request.credential.access_key_id
@@ -432,7 +438,8 @@ fn sign_material(request: &SignRequest<'_>) -> Result<Material, String> {
             let mut seed = scope.clone().into_bytes();
             seed.push(1);
             let derived = &hmac_sha256(&step1, &String::from_utf8_lossy(&seed))[..32];
-            let signing_key_hex: String = derived.iter().map(|byte| format!("{byte:02x}")).collect();
+            let signing_key_hex: String =
+                derived.iter().map(|byte| format!("{byte:02x}")).collect();
             // ⚠️ 按**十六进制字符串**当密钥（不是那 32 个字节）—— 见文件头第 3 条
             let signature = hmac_sha256_hex(signing_key_hex.as_bytes(), &string_to_sign);
             let authorization = format!(
@@ -568,7 +575,10 @@ mod tests {
         // 用宽松的未保留集（codearts 口径）重算规范请求串的路径段
         let loose_keep = |byte: u8| {
             byte.is_ascii_alphanumeric()
-                || matches!(byte, b'-' | b'_' | b'.' | b'!' | b'~' | b'*' | b'\'' | b'(' | b')')
+                || matches!(
+                    byte,
+                    b'-' | b'_' | b'.' | b'!' | b'~' | b'*' | b'\'' | b'(' | b')'
+                )
         };
         let (path, _) = split_path_query(url).unwrap();
         let loose_path = path

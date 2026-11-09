@@ -73,7 +73,10 @@ fn add_on_bucket(raw: &Value) -> Option<&Value> {
     let total = number(bucket.get("total"));
     let used = number(bucket.get("used"));
     let remaining = number(bucket.get("remaining"));
-    if [total, used, remaining].iter().all(|value| value.unwrap_or(0.0) <= 0.0) {
+    if [total, used, remaining]
+        .iter()
+        .all(|value| value.unwrap_or(0.0) <= 0.0)
+    {
         return None;
     }
     Some(bucket)
@@ -90,7 +93,10 @@ fn add_on(raw: &Value, fallback_unit: &str) -> (Vec<Value>, Option<f64>) {
     let total = number(bucket.get("total"));
     let used = number(bucket.get("used"));
     let remaining = number(bucket.get("remaining"));
-    let unit = bucket.get("unit").and_then(Value::as_str).unwrap_or(fallback_unit);
+    let unit = bucket
+        .get("unit")
+        .and_then(Value::as_str)
+        .unwrap_or(fallback_unit);
     let mut wallets = Vec::new();
     if let Some(value) = used {
         wallets.push(wallet("addon_used", "资源包已用", value, unit));
@@ -106,14 +112,25 @@ fn add_on(raw: &Value, fallback_unit: &str) -> (Vec<Value>, Option<f64>) {
 /// 判据细则见 [`org_package`] 的文档；这里与 [`add_on_bucket`] 同一取向 ——
 /// 判据只写一份，钱包行与 [`credit_rows`] 的组织资源包行都从这里取桶。
 fn org_bucket(raw: &Value) -> Option<&Value> {
-    let bucket = raw.get("orgResourcePackage").filter(|value| value.is_object())?;
+    let bucket = raw
+        .get("orgResourcePackage")
+        .filter(|value| value.is_object())?;
     let cap = number(bucket.get("cap")).or_else(|| number(bucket.get("total")));
     let used = number(bucket.get("used"));
     let remaining = number(bucket.get("remaining"));
-    let usable = bucket.get("available").and_then(Value::as_bool).unwrap_or_else(|| {
-        [cap, used, remaining].iter().any(|value| value.unwrap_or(0.0) > 0.0)
-    });
-    if usable { Some(bucket) } else { None }
+    let usable = bucket
+        .get("available")
+        .and_then(Value::as_bool)
+        .unwrap_or_else(|| {
+            [cap, used, remaining]
+                .iter()
+                .any(|value| value.unwrap_or(0.0) > 0.0)
+        });
+    if usable {
+        Some(bucket)
+    } else {
+        None
+    }
 }
 
 /// 组织资源包（`orgResourcePackage`）→ 钱包行 + 剩余额度。
@@ -136,7 +153,10 @@ fn org_package(raw: &Value, fallback_unit: &str) -> (Vec<Value>, Option<f64>) {
     let cap = number(bucket.get("cap")).or_else(|| number(bucket.get("total")));
     let used = number(bucket.get("used"));
     let remaining = number(bucket.get("remaining"));
-    let unit = bucket.get("unit").and_then(Value::as_str).unwrap_or(fallback_unit);
+    let unit = bucket
+        .get("unit")
+        .and_then(Value::as_str)
+        .unwrap_or(fallback_unit);
     let mut wallets = Vec::new();
     if let Some(total) = cap.filter(|value| *value > 0.0) {
         wallets.push(wallet("org_total", "组织总额", total, unit));
@@ -230,7 +250,10 @@ fn credit_row(
             row.insert(key.to_string(), json!(value));
         }
     }
-    if let Some(unit) = unit.map(str::trim).filter(|value| !value.is_empty() && *value != doc_unit) {
+    if let Some(unit) = unit
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && *value != doc_unit)
+    {
         row.insert("unit".to_string(), Value::String(unit.to_string()));
     }
     Some(Value::Object(row))
@@ -259,8 +282,15 @@ async fn plan_name(credentials: &Credentials, proxy: Option<&ResolvedProxy>) -> 
         None,
         &endpoints::open_api_headers(Some(&credentials.access_token)),
         proxy,
-    ).await.ok()?;
-    let name = response.payload?.get("plan_tier_name")?.as_str()?.trim().to_string();
+    )
+    .await
+    .ok()?;
+    let name = response
+        .payload?
+        .get("plan_tier_name")?
+        .as_str()?
+        .trim()
+        .to_string();
     if name.is_empty() {
         None
     } else {
@@ -279,7 +309,10 @@ fn usage_document(raw: &Value) -> Value {
     let remaining = quota.and_then(|quota| number(quota.get("remaining")));
     let total = quota.and_then(|quota| number(quota.get("total")));
     let used = quota.and_then(|quota| number(quota.get("used")));
-    let unit = quota.and_then(|quota| quota.get("unit")).and_then(Value::as_str).unwrap_or("额度");
+    let unit = quota
+        .and_then(|quota| quota.get("unit"))
+        .and_then(Value::as_str)
+        .unwrap_or("额度");
     let mut wallets = Vec::new();
     if let Some(value) = used {
         wallets.push(json!({ "type": "user_used", "displayName": "个人已用", "balance": value }));
@@ -327,7 +360,8 @@ pub async fn query(
         None,
         &endpoints::open_api_headers(Some(&credentials.access_token)),
         proxy.as_ref(),
-    ).await?;
+    )
+    .await?;
     if response.status == 401 && credentials.can_refresh() {
         credentials = refresh::ensure_fresh(store, region, account_id, true).await?;
         response = auth::request(
@@ -336,7 +370,8 @@ pub async fn query(
             None,
             &endpoints::open_api_headers(Some(&credentials.access_token)),
             proxy.as_ref(),
-        ).await?;
+        )
+        .await?;
     }
     let raw = auth::payload(response, "额度查询")?;
     let mut document = usage_document(&raw);
@@ -360,7 +395,10 @@ mod tests {
     use super::*;
 
     fn wallet_by_type<'a>(document: &'a Value, kind: &str) -> Option<&'a Value> {
-        document.get("wallets")?.as_array()?.iter()
+        document
+            .get("wallets")?
+            .as_array()?
+            .iter()
             .find(|wallet| wallet.get("type").and_then(Value::as_str) == Some(kind))
     }
 
@@ -371,29 +409,48 @@ mod tests {
     /// 的同一类事故，issue 里只会被报成「组织额度不统计」。
     #[test]
     fn the_org_package_total_is_read_from_cap_not_total() {
-        let raw: Value = serde_json::from_str(r#"{
+        let raw: Value = serde_json::from_str(
+            r#"{
             "userQuota": {"total": 3000.0, "used": 100.0, "remaining": 2900.0, "unit": "credits"},
             "orgResourcePackage": {"used": 40.0, "remaining": 460.0, "percentage": 0.08,
                                    "unit": "credits", "cap": 500.0, "available": true}
-        }"#).unwrap();
+        }"#,
+        )
+        .unwrap();
         let document = usage_document(&raw);
-        assert_eq!(Some(500.0), wallet_by_type(&document, "org_total").and_then(|wallet| wallet["balance"].as_f64()));
-        assert_eq!(Some(40.0), wallet_by_type(&document, "org_used").and_then(|wallet| wallet["balance"].as_f64()));
+        assert_eq!(
+            Some(500.0),
+            wallet_by_type(&document, "org_total").and_then(|wallet| wallet["balance"].as_f64())
+        );
+        assert_eq!(
+            Some(40.0),
+            wallet_by_type(&document, "org_used").and_then(|wallet| wallet["balance"].as_f64())
+        );
         // 组织剩余与个人额度一样能花，`available` 必须把它算进去
-        assert_eq!(Some(3360.0), document["available"].as_f64(), "2900 个人 + 460 组织");
+        assert_eq!(
+            Some(3360.0),
+            document["available"].as_f64(),
+            "2900 个人 + 460 组织"
+        );
     }
 
     /// `available:false` 的空桶是**整个键返回**的（实测 Teams 账号如此），
     /// 键在不在不是判据；画成「组织总额 0」会让用户以为组织包被清空了。
     #[test]
     fn an_unavailable_org_package_contributes_nothing() {
-        let raw: Value = serde_json::from_str(r#"{
+        let raw: Value = serde_json::from_str(
+            r#"{
             "userQuota": {"total": 3000.0, "used": 115.0, "remaining": 2885.0, "unit": "credits"},
             "orgResourcePackage": {"used": 0.0, "remaining": 0.0, "percentage": 0.0,
                                    "unit": "credits", "cap": 0.0, "available": false}
-        }"#).unwrap();
+        }"#,
+        )
+        .unwrap();
         let document = usage_document(&raw);
-        assert!(wallet_by_type(&document, "org_total").is_none(), "不可用的组织包不该出行");
+        assert!(
+            wallet_by_type(&document, "org_total").is_none(),
+            "不可用的组织包不该出行"
+        );
         assert!(wallet_by_type(&document, "org_used").is_none());
         assert_eq!(Some(2885.0), document["available"].as_f64(), "只有个人额度");
     }
@@ -402,10 +459,13 @@ mod tests {
     /// 上游明确说它现在不能用，加进去就是教用户去花一笔花不掉的钱。
     #[test]
     fn an_unavailable_org_package_is_excluded_from_available_even_with_numbers() {
-        let raw: Value = serde_json::from_str(r#"{
+        let raw: Value = serde_json::from_str(
+            r#"{
             "userQuota": {"remaining": 100.0, "unit": "credits"},
             "orgResourcePackage": {"remaining": 999.0, "cap": 999.0, "available": false}
-        }"#).unwrap();
+        }"#,
+        )
+        .unwrap();
         let document = usage_document(&raw);
         assert_eq!(Some(100.0), document["available"].as_f64());
     }
@@ -418,17 +478,26 @@ mod tests {
     /// 该是 `null`（「没读到」），而不是把 `total` 当成剩余量加进去。
     #[test]
     fn a_legacy_org_package_without_the_available_flag_still_shows() {
-        let raw: Value = serde_json::from_str(r#"{
+        let raw: Value = serde_json::from_str(
+            r#"{
             "orgResourcePackage": {"total": 300.0, "used": 10.0, "unit": "credits"}
-        }"#).unwrap();
+        }"#,
+        )
+        .unwrap();
         let document = usage_document(&raw);
-        assert!(wallet_by_type(&document, "org_used").is_some(), "老形状也要出行");
+        assert!(
+            wallet_by_type(&document, "org_used").is_some(),
+            "老形状也要出行"
+        );
         assert_eq!(
             Some(300.0),
             wallet_by_type(&document, "org_total").and_then(|wallet| wallet["balance"].as_f64()),
             "老形状的 total 走 cap 的兜底"
         );
-        assert!(document["available"].is_null(), "没有 remaining 就没有「还能花多少」，不能拿 total 顶替");
+        assert!(
+            document["available"].is_null(),
+            "没有 remaining 就没有「还能花多少」，不能拿 total 顶替"
+        );
         // 三个桶全缺时同样不伪造 0：available 是 null，界面区分「没读到」与「真的是 0」
         let empty = usage_document(&serde_json::json!({}));
         assert!(empty["available"].is_null());

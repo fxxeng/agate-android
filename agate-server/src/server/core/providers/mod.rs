@@ -94,8 +94,8 @@
 //!                stream / chat / balance
 //! 本文件仍然只做「身份与元数据」这一件事，不认识磁盘也不认识账号。
 
-pub mod adapter;
 pub mod accio;
+pub mod adapter;
 /// Antigravity（Google 的 AI IDE，推理走 **Google Cloud Code Assist**
 /// `v1internal`）。适配实现在 `antigravity/`：账号管理（粘贴 Google
 /// refresh token）+ token 刷新（Google OAuth 的 form 端点）+ 模型目录
@@ -138,19 +138,19 @@ pub mod loomy;
 /// 见 `monkeycode/mod.rs` 的模块头。
 pub mod monkeycode;
 pub mod officeace;
+pub mod onboarding_memory;
 /// OrcaTerm（腾讯云遨驰终端桌面客户端）。适配实现在 `orcaterm/`：
 /// 账号管理（**粘贴 accessToken** / 导入桌面端 `data.bin` 登录态）+
 /// OAuth 续期（上游有真续期接口）+ **会话转发**（建会话 → assistant SSE，
 /// 多轮拍平为单条输入）+ 余额（月度 AI 配额）全部已接通；
 /// `is_stateful` 为 true（请求内会话，与 KukuAI 同形态），见 `orcaterm/mod.rs`。
 pub mod orcaterm;
-pub mod onboarding_memory;
+pub mod qoder;
+pub mod raccoon;
 /// **本地就绪闸门**：一条通道在「还没出本机就注定发不出去」时，让选路绕开它
 /// （当前唯一的用户是 ZCode 活动套餐的令牌池，判据与取舍见模块头）。
 /// 不进身份体系：它是各家的共用设施，只按 provider id 记状态。
 pub mod readiness;
-pub mod qoder;
-pub mod raccoon;
 pub mod refresh_flight;
 pub mod router;
 /// Trae（字节 AI IDE）。适配实现在 `trae/`：登录 / 凭据 / 目录 / 会话式转发
@@ -507,69 +507,144 @@ pub const PROVIDERS: &[ProviderMeta] = &[
     // 由它自己拼版本后缀（拼成「登录 WorkBuddy 国内版账号」）；`/health` 的
     // `product` 字段也仍是 "WorkBuddy" —— 桌面端靠它认出自家网关的端口。
     // 这两处都不是「这一家在界面上的名字」，各自有各自的契约。
-    ProviderMeta { id: "workbuddy", label: "WorkBuddy 国内版" },
+    ProviderMeta {
+        id: "workbuddy",
+        label: "WorkBuddy 国内版",
+    },
     // 两个地区**相邻**排列（与 AutoClaw / Accio / ZCode 同一理由：同一条产品线的
     // 两个版本，中间隔着别家会让「找国际版」变成一次扫描）。
     // 顺序也决定模型目录合并时同名模型先归谁家 —— 国内版在前，与存量账号的
     // 归属一致。
-    ProviderMeta { id: "workbuddy-intl", label: "WorkBuddy 国际版" },
-    ProviderMeta { id: "raccoon", label: "小浣熊" },
-    ProviderMeta { id: "catpaw", label: "CatPaw" },
+    ProviderMeta {
+        id: "workbuddy-intl",
+        label: "WorkBuddy 国际版",
+    },
+    ProviderMeta {
+        id: "raccoon",
+        label: "小浣熊",
+    },
+    ProviderMeta {
+        id: "catpaw",
+        label: "CatPaw",
+    },
     // AutoClaw 两个地区**相邻**排列（本次改动的要求）：界面上它们是同一条产品线的
     // 两个版本，中间隔着别的家会让「找国际版」变成一次扫描。顺序也决定模型目录
     // 合并时同名模型先归谁家 —— 国内版在前，与存量账号的归属一致。
-    ProviderMeta { id: "autoclaw", label: "AutoClaw 国内版" },
-    ProviderMeta { id: "autoclaw-intl", label: "AutoClaw 国际版" },
+    ProviderMeta {
+        id: "autoclaw",
+        label: "AutoClaw 国内版",
+    },
+    ProviderMeta {
+        id: "autoclaw-intl",
+        label: "AutoClaw 国际版",
+    },
     // Qoder 两个地区**相邻**排列（与 AutoClaw / Accio / ZCode 同一理由）：拆家后
     // 是**两家独立的提供商**，国内版保持裸 `qoder`（存量账号的落盘契约，只改
     // 展示名），国际版取 `qoder-intl`。顺序也决定模型目录合并时同名模型先归
     // 谁家 —— 国内版在前，与存量账号的归属一致。
-    ProviderMeta { id: "qoder", label: "Qoder 中国版" },
-    ProviderMeta { id: "qoder-intl", label: "Qoder 国际版" },
-    ProviderMeta { id: "cline-free", label: "Cline Free" },
-    ProviderMeta { id: "cline-pass", label: "Cline Pass" },
+    ProviderMeta {
+        id: "qoder",
+        label: "Qoder 中国版",
+    },
+    ProviderMeta {
+        id: "qoder-intl",
+        label: "Qoder 国际版",
+    },
+    ProviderMeta {
+        id: "cline-free",
+        label: "Cline Free",
+    },
+    ProviderMeta {
+        id: "cline-pass",
+        label: "Cline Pass",
+    },
     // Accio 两个地区**相邻**排列（与 AutoClaw 同一理由：同一条产品线的两个
     // 版本，中间隔着别家会让「找国际版」变成一次扫描）。顺序也决定模型目录
     // 合并时同名模型先归谁家 —— 国际版在前（用户装的、默认用的是它）。
-    ProviderMeta { id: "accio", label: "Accio" },
-    ProviderMeta { id: "accio-cn", label: "Accio 国内版" },
+    ProviderMeta {
+        id: "accio",
+        label: "Accio",
+    },
+    ProviderMeta {
+        id: "accio-cn",
+        label: "Accio 国内版",
+    },
     // ZCode 两个地区**相邻**排列（与 AutoClaw / Accio 同一理由：同一条产品线的
     // 两个版本，中间隔着别家会让「找国际版」变成一次扫描）。顺序也决定模型目录
     // 合并时同名模型先归谁家 —— 国内版在前（国内网络环境下更常被添加的那个）。
-    ProviderMeta { id: "zcode", label: "ZCode 国内版" },
-    ProviderMeta { id: "zcode-intl", label: "ZCode 国际版" },
-    ProviderMeta { id: "codearts", label: "CodeArts" },
-    ProviderMeta { id: "trae", label: "Trae" },
+    ProviderMeta {
+        id: "zcode",
+        label: "ZCode 国内版",
+    },
+    ProviderMeta {
+        id: "zcode-intl",
+        label: "ZCode 国际版",
+    },
+    ProviderMeta {
+        id: "codearts",
+        label: "CodeArts",
+    },
+    ProviderMeta {
+        id: "trae",
+        label: "Trae",
+    },
     // Loomy（讯飞）：单一地区、单一入口（手机号验证码登录），没有国际版伴生。
-    ProviderMeta { id: "loomy", label: "Loomy" },
+    ProviderMeta {
+        id: "loomy",
+        label: "Loomy",
+    },
     // KukuAI（百度文库库库 AI）：单一地区、单一入口（粘贴 Cookie / 导入本机
     // 客户端登录态），没有国际版伴生。排在末尾（2026-10 接入，后到居后）。
-    ProviderMeta { id: "kuku", label: "KukuAI" },
+    ProviderMeta {
+        id: "kuku",
+        label: "KukuAI",
+    },
     // MonkeyCode（长亭科技）的两个站点**相邻**排列（与 AutoClaw / Qoder /
     // ZCode 同一理由：同一条产品线的两个版本，中间隔着别家会让「找国际版」
     // 变成一次扫描）。顺序也决定模型目录合并时同名模型先归谁家 ——
     // 国内版在前（用户直觉里「MonkeyCode 就是国内那个站」）。
-    ProviderMeta { id: "monkeycode", label: "MonkeyCode" },
-    ProviderMeta { id: "monkeycode-intl", label: "MonkeyCode 国际版" },
+    ProviderMeta {
+        id: "monkeycode",
+        label: "MonkeyCode",
+    },
+    ProviderMeta {
+        id: "monkeycode-intl",
+        label: "MonkeyCode 国际版",
+    },
     // Command Code：单一域名、单一入口（粘贴 user_ API Key），没有国际版伴生
     // （规格 §9：参考里只有 api.commandcode.ai 一个主机）。排在末尾
     // （2026-10 接入，后到居后，与 Kuku 同一处置）。
-    ProviderMeta { id: "commandcode", label: "Command Code" },
+    ProviderMeta {
+        id: "commandcode",
+        label: "Command Code",
+    },
     // Antigravity（Google）：单一入口（粘贴 Google refresh token）、没有地区
     // 伴生（规格 §6：没有 region 参数，sandbox/daily/prod 是环境不是地区）。
     // 排在末尾（2026-10 接入，后到居后，与 Kuku / Command Code 同一处置）。
-    ProviderMeta { id: "antigravity", label: "Antigravity" },
-    ProviderMeta { id: "chatglm", label: "智谱清言" },
+    ProviderMeta {
+        id: "antigravity",
+        label: "Antigravity",
+    },
+    ProviderMeta {
+        id: "chatglm",
+        label: "智谱清言",
+    },
     // OfficeAce（华为云果办 / OfficeClaw）：排末尾（新家按约定追加在末尾）。
     // 它的可用名单与 codearts / catpaw / trae / zcode 大面积同名（glm-5.2 /
     // glm-5.3 / deepseek-v4-flash-0731 / kimi-k2.6 …），注册表顺序决定目录
     // 合并时同名模型先归谁家 —— 放在末尾即「同名时优先已有各家」。
-    ProviderMeta { id: "officeace", label: "OfficeAce 果办" },
+    ProviderMeta {
+        id: "officeace",
+        label: "OfficeAce 果办",
+    },
     // OrcaTerm（腾讯云遨驰终端桌面客户端）：单一入口（粘贴 accessToken /
     // 导入桌面端登录态），没有地区伴生。排在末尾（2026-10 接入，后到居后）。
     // 它的模型名（glm-5.3 / kimi-k3 / deepseek-v4-* 等）与 codearts / catpaw /
     // zcode 大面积同名，同样靠末位让同名模型优先归已有各家。
-    ProviderMeta { id: "orcaterm", label: "OrcaTerm" },
+    ProviderMeta {
+        id: "orcaterm",
+        label: "OrcaTerm",
+    },
 ];
 
 /// provider id 在注册表里的下标（未知 id → None）。

@@ -214,8 +214,7 @@ pub struct ChatPlan {
 pub fn build_chat_body(body: &Value, model: &str) -> Value {
     let messages = read_messages(body);
     // 单轮原样发、多轮才拍平（理由见模块头：标记会显示在官方客户端里）
-    let flat = plain_single_message(&messages)
-        .unwrap_or_else(|| flatten_messages(&messages));
+    let flat = plain_single_message(&messages).unwrap_or_else(|| flatten_messages(&messages));
     // reasoning_effort：客户端显式传了就透传（上游认这个键，取值 "")/thinking/
     // deep_thinking 三档由 `meta_data.chat_mode` 与 `reasoning_effort` 共同表达）
     let chat_mode = body
@@ -371,14 +370,20 @@ mod tests {
             "glm-5.3",
         );
         assert_eq!(body["meta_data"]["chat_mode"], json!("zero"));
-        assert_eq!(body["meta_data"]["reasoning_effort"], json!("deep_thinking"));
+        assert_eq!(
+            body["meta_data"]["reasoning_effort"],
+            json!("deep_thinking")
+        );
         assert_eq!(body["meta_data"]["is_networking"], json!(true));
     }
 
     /// 不传档位时不塞空字段（保持最小 meta_data）
     #[test]
     fn omits_effort_when_absent() {
-        let body = build_chat_body(&json!({ "messages": [{ "role": "user", "content": "hi" }] }), "m");
+        let body = build_chat_body(
+            &json!({ "messages": [{ "role": "user", "content": "hi" }] }),
+            "m",
+        );
         assert!(body["meta_data"].get("reasoning_effort").is_none());
     }
 

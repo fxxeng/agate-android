@@ -55,8 +55,8 @@ use super::super::adapter::{
 };
 use super::super::content_block;
 use super::super::ProviderKind;
-use super::region::Region;
 use super::normalize;
+use super::region::Region;
 
 /// 上游错误码 11-128（历史文案：Illegal API invocation from an unapproved channel）。
 ///
@@ -65,7 +65,7 @@ use super::normalize;
 /// 拦截会持续一小段时间，期间客户端失败自动重试会形成重试风暴并给拦截续期，
 /// 因此命中 11-128 时值得退避重试 —— 次数与间隔统一走设置页的「请求重试」
 /// （历史硬编码是 10 秒 / 25 秒各一次；间隔设得过短会拉长拦截窗口，建议 ≥10 秒）。
-const RATE_LIMIT_CODE: i64 = 11-128;
+const RATE_LIMIT_CODE: i64 = 11 - 128;
 
 /// 上游要求首条消息必须是 system prompt，否则返回 400
 /// （first message is not system prompt）。客户端没带 system 消息时注入一条兜底系统消息。
@@ -353,7 +353,10 @@ impl ProviderAdapter for WorkBuddyAdapter {
                             )
                         })
                 }
-                Err(error) => Err(GatewayError::with_status(error.http_status(), error.message)),
+                Err(error) => Err(GatewayError::with_status(
+                    error.http_status(),
+                    error.message,
+                )),
             }
         })
     }
@@ -383,9 +386,7 @@ impl ProviderAdapter for WorkBuddyAdapter {
         store: &'a AccountStore,
         account_id: &'a str,
         _force: bool,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = ModelRefreshOutcome> + Send + 'a>,
-    > {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ModelRefreshOutcome> + Send + 'a>> {
         Box::pin(async move {
             let auth = AuthService::for_store(store.clone());
             // `account_id` 非空 = 用户在「获取模型」弹窗里点名的那条账号
@@ -422,7 +423,12 @@ impl ProviderAdapter for WorkBuddyAdapter {
     ///
     /// 返回的 `reason` 不含「第 n/N 次」：那是编排层才知道的读数
     /// （见 `RetryAdvice` 的说明）。
-    fn retry_advice(&self, error_body: &Value, attempt: usize, budget: usize) -> Option<RetryAdvice> {
+    fn retry_advice(
+        &self,
+        error_body: &Value,
+        attempt: usize,
+        budget: usize,
+    ) -> Option<RetryAdvice> {
         let code = error_body.get("code").and_then(Value::as_i64);
         if code != Some(RATE_LIMIT_CODE) {
             return None;
@@ -567,9 +573,8 @@ impl ProviderAdapter for WorkBuddyAdapter {
         &'a self,
         store: &'a AccountStore,
         account_id: &'a str,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<Value, GatewayError>> + Send + 'a>,
-    > {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value, GatewayError>> + Send + 'a>>
+    {
         Box::pin(async move {
             let Some(entry) = store.get_session_by_id(account_id) else {
                 return Err(GatewayError::with_status(
@@ -619,11 +624,19 @@ fn subscription_of(usage: &Value) -> Option<Value> {
     if usage.get("kind").and_then(Value::as_str) == Some("enterprise") {
         return None;
     }
-    let edition = usage.get("editionType").and_then(Value::as_str).unwrap_or("free");
+    let edition = usage
+        .get("editionType")
+        .and_then(Value::as_str)
+        .unwrap_or("free");
     let plan_name = match edition {
         "free" => "Free".to_string(),
         "pro_trial" => "Trial".to_string(),
-        _ => usage.get("planName").and_then(Value::as_str).unwrap_or("").trim().to_string(),
+        _ => usage
+            .get("planName")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string(),
     };
     if plan_name.is_empty() {
         return None;
@@ -644,7 +657,11 @@ fn subscription_of(usage: &Value) -> Option<Value> {
     // 三个可选数值：`usageLeft` / `usageTotal` 上游给的是**字符串**（Node 版
     // `String(...)`），这里原样带出去 —— 前端 `subscriptionText` 本来就是
     // `Number(...)` 读的（见 accounts-panels.tsx），两份形状不必统一成数字。
-    for (from, to) in [("expireAt", "expireAt"), ("usageLeft", "remainQuota"), ("usageTotal", "totalQuota")] {
+    for (from, to) in [
+        ("expireAt", "expireAt"),
+        ("usageLeft", "remainQuota"),
+        ("usageTotal", "totalQuota"),
+    ] {
         if let Some(value) = usage.get(from) {
             if !value.is_null() {
                 subscription.insert(to.to_string(), value.clone());
@@ -660,7 +677,10 @@ fn subscription_of(usage: &Value) -> Option<Value> {
 /// 存在时直接用它、完全不看账号库（脚本/CI 用户的旁路入口）。
 /// 「本地区」由调用方给的 `region` 决定 —— 变量名按地区分开，见
 /// `Region::env_token`。
-async fn default_session_token(store: &AccountStore, region: Region) -> Result<String, GatewayError> {
+async fn default_session_token(
+    store: &AccountStore,
+    region: Region,
+) -> Result<String, GatewayError> {
     if let Some(token) = region.env_token() {
         return Ok(token);
     }
@@ -679,7 +699,10 @@ async fn default_session_token(store: &AccountStore, region: Region) -> Result<S
             401,
             "当前没有可用登录态：请先在桌面端完成登录",
         )),
-        Err(error) => Err(GatewayError::with_status(error.http_status(), error.message)),
+        Err(error) => Err(GatewayError::with_status(
+            error.http_status(),
+            error.message,
+        )),
     }
 }
 
@@ -744,14 +767,14 @@ pub(super) fn chat_headers(
     let mut headers: Vec<(String, String)> = vec![
         ("Content-Type".to_string(), "application/json".to_string()),
         // 对话链路专用 UA（国际版 5.8.4 实测；完整三段含 CLI 扩展段）
-        (
-            "User-Agent".to_string(),
-            edition.chat_ua.to_string(),
-        ),
+        ("User-Agent".to_string(), edition.chat_ua.to_string()),
         // 客户端身份头：服务端按此做客户端识别与白名单校验
         ("X-IDE-Type".to_string(), edition.ua_platform.to_string()),
         ("X-IDE-Name".to_string(), edition.ua_platform.to_string()),
-        ("X-IDE-Version".to_string(), edition.chat_ide_version.to_string()),
+        (
+            "X-IDE-Version".to_string(),
+            edition.chat_ide_version.to_string(),
+        ),
         ("X-Product".to_string(), "SaaS".to_string()),
         ("X-Agent-Intent".to_string(), "craft".to_string()),
         ("X-Agent-Purpose".to_string(), "conversation".to_string()),
@@ -768,15 +791,15 @@ pub(super) fn chat_headers(
         ("X-Request-ID".to_string(), message_id),
         // 链路头族（5.8.4 对话请求随带的观测头）
         ("X-Trace-ID".to_string(), trace_id.clone()),
-        ("traceparent".to_string(), format!("00-{trace_id}-{span_id}-01")),
+        (
+            "traceparent".to_string(),
+            format!("00-{trace_id}-{span_id}-01"),
+        ),
         ("b3".to_string(), format!("{trace_id}-{span_id}-1")),
         ("X-B3-TraceId".to_string(), trace_id),
         ("X-B3-SpanId".to_string(), span_id.clone()),
         ("X-B3-Sampled".to_string(), "1".to_string()),
-        (
-            "Accept-Language".to_string(),
-            accept_language.to_string(),
-        ),
+        ("Accept-Language".to_string(), accept_language.to_string()),
         ("X-Requested-With".to_string(), "XMLHttpRequest".to_string()),
         ("X-CodeBuddy-Request".to_string(), "1".to_string()),
         ("Origin".to_string(), origin.clone()),

@@ -65,7 +65,12 @@ pub struct UsageTokens {
 
 /// 「输入 token 数」的别名表（含驼峰形态）。**表序就是优先序**：多项都命中时按表序
 /// 取第一个**正数**（见 [`first_positive`]），不是求和、也不是取末位。
-const PROMPT_KEYS: &[&str] = &["prompt_tokens", "input_tokens", "promptTokens", "inputTokens"];
+const PROMPT_KEYS: &[&str] = &[
+    "prompt_tokens",
+    "input_tokens",
+    "promptTokens",
+    "inputTokens",
+];
 /// 「输出 token 数」的别名表。
 const COMPLETION_KEYS: &[&str] = &[
     "completion_tokens",
@@ -121,7 +126,12 @@ pub fn extract_usage(usage: &Value) -> Option<UsageTokens> {
         .find_map(|details| first_positive(details, CACHE_READ_KEYS))
         .or_else(|| first_positive(object, CACHE_READ_KEYS))
         .unwrap_or(0);
-    Some(UsageTokens { prompt, completion, total, cache_read })
+    Some(UsageTokens {
+        prompt,
+        completion,
+        total,
+        cache_read,
+    })
 }
 
 /// 按别名表依次取**第一个正数**（口径见模块头部）。
@@ -153,11 +163,7 @@ fn positive_field(value: Option<&Value>) -> Option<i64> {
         Value::Number(number) => number
             .as_i64()
             .or_else(|| number.as_f64().map(|number| number as i64)),
-        Value::String(text) => text
-            .trim()
-            .parse::<f64>()
-            .ok()
-            .map(|number| number as i64),
+        Value::String(text) => text.trim().parse::<f64>().ok().map(|number| number as i64),
         _ => None,
     };
     raw.filter(|number| *number > 0)
@@ -689,9 +695,7 @@ impl RequestTelemetry {
     }
 
     /// 取采集器（未开启调试模式时为 None，调用点据此完全跳过采集）
-    pub fn capture(
-        &self,
-    ) -> Option<Arc<crate::server::core::debug_traffic::TrafficCapture>> {
+    pub fn capture(&self) -> Option<Arc<crate::server::core::debug_traffic::TrafficCapture>> {
         self.capture
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -1208,7 +1212,10 @@ mod usage_extraction {
             "cache_read_input_tokens": 4800,
         });
         let tokens = extract_usage(&usage).expect("对象就该出值");
-        assert_eq!(4800, tokens.cache_read, "嵌套那份是废值，不该当「命中 0」用掉");
+        assert_eq!(
+            4800, tokens.cache_read,
+            "嵌套那份是废值，不该当「命中 0」用掉"
+        );
         assert_eq!(1200, tokens.prompt, "其余三项照常");
     }
 
@@ -1228,7 +1235,10 @@ mod usage_extraction {
         assert_eq!(34, tokens.prompt, "字符串数字要落数");
         assert_eq!(12, tokens.completion, "12.0 这类浮点截断成 12");
         assert_eq!(46, tokens.total, "total 缺值时按 prompt + completion 补");
-        assert_eq!(7, tokens.cache_read, "驼峰/浮点之外的容器键也走同一张别名表");
+        assert_eq!(
+            7, tokens.cache_read,
+            "驼峰/浮点之外的容器键也走同一张别名表"
+        );
     }
 
     /// 非正值（0 与负数）都当废值：不写进聚合，也不占住别名表。
@@ -1247,7 +1257,10 @@ mod usage_extraction {
         });
         let tokens = extract_usage(&usage).expect("对象就该出值");
         assert_eq!(0, tokens.completion, "负的输出去落 0，别把负数带进聚合");
-        assert_eq!(90, tokens.total, "total 为 0 是废值，回落 prompt + completion");
+        assert_eq!(
+            90, tokens.total,
+            "total 为 0 是废值，回落 prompt + completion"
+        );
         assert_eq!(0, tokens.cache_read, "负的命中同样是废值");
 
         // 负值必须让位：同一含义的另一项有真值时，读得到的是真值而不是 0
@@ -1257,7 +1270,11 @@ mod usage_extraction {
             "cache_read_tokens": -12,
             "cached_tokens": 33,
         });
-        assert_eq!(33, extract_usage(&masked).unwrap().cache_read, "废值不许扮演「有值」");
+        assert_eq!(
+            33,
+            extract_usage(&masked).unwrap().cache_read,
+            "废值不许扮演「有值」"
+        );
     }
 
     /// 反空跑：两项**都是正数**时按别名表的顺序取第一项，不是求和也不是取末位。
@@ -1296,7 +1313,10 @@ mod usage_extraction {
         let tokens = extract_usage(&usage).expect("对象就该出值");
         assert_eq!(500, tokens.prompt, "驼峰的 inputTokens 就是 prompt");
         assert_eq!(20, tokens.completion);
-        assert_eq!(610, tokens.total, "读的是 totalTokens，不是兜底加出来的 520");
+        assert_eq!(
+            610, tokens.total,
+            "读的是 totalTokens，不是兜底加出来的 520"
+        );
         assert_eq!(300, tokens.cache_read, "容器内同样按「第一个正数」挑");
     }
 

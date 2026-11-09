@@ -164,10 +164,7 @@ pub async fn claim_daily_login_score(
 ///
 /// 两条都是「限时活动」形态：活动未开启 / 已下线时上游给中性拒绝，
 /// 这里如实转成中性文案（不是失败）。
-pub async fn claim_bonus(
-    store: &AccountStore,
-    account_id: &str,
-) -> Result<Value, GatewayError> {
+pub async fn claim_bonus(store: &AccountStore, account_id: &str) -> Result<Value, GatewayError> {
     let Some(credentials) = login_credentials(store, account_id).await? else {
         return Ok(guest_result());
     };
@@ -218,7 +215,9 @@ pub async fn claim_bonus(
         Err(error) => {
             // 活动不存在/未开启类错误不算失败（记中性文案），其余原样上抛
             let message = error.message.clone();
-            if message.contains("活动") || message.contains("未开启") || message.contains("not found")
+            if message.contains("活动")
+                || message.contains("未开启")
+                || message.contains("not found")
             {
                 messages.push(format!("积分活动：{message}"));
             } else {
@@ -244,11 +243,7 @@ pub async fn claim_bonus(
             .get("claimed")
             .and_then(Value::as_bool)
             .map(|claimed| !claimed)
-            .or_else(|| {
-                result
-                    .get("claimable")
-                    .and_then(Value::as_bool)
-            })
+            .or_else(|| result.get("claimable").and_then(Value::as_bool))
     });
     if claimable == Some(true) {
         match http::post_json(
@@ -323,9 +318,6 @@ mod tests {
         // 上游按百分之一记 ⇒ 原始值 20000
         assert_eq!(super::super::balance::score_from_raw(20000.0), 200.0);
         // 与余额换算同源：同一函数、同一结果
-        assert_eq!(
-            super::super::balance::score_from_raw(1864405.0),
-            18644.05
-        );
+        assert_eq!(super::super::balance::score_from_raw(1864405.0), 18644.05);
     }
 }

@@ -53,7 +53,10 @@ pub struct AccountStoreError {
 
 impl AccountStoreError {
     pub fn new(message: impl Into<String>, status_code: i32) -> Self {
-        Self { message: message.into(), status_code }
+        Self {
+            message: message.into(),
+            status_code,
+        }
     }
 
     pub(crate) fn bad_request(message: impl Into<String>) -> Self {
@@ -143,7 +146,11 @@ impl AccountStore {
             None => crate::server::config::config_dir().join(crate::server::db::FILE_NAME),
         };
         Self {
-            inner: Arc::new(Inner { db, file_path, lock: Mutex::new(()) }),
+            inner: Arc::new(Inner {
+                db,
+                file_path,
+                lock: Mutex::new(()),
+            }),
         }
     }
 
@@ -254,7 +261,10 @@ impl AccountStore {
             .with(|conn| sql::load_priority_scope(conn))
             .and_then(Result::ok)
             .flatten();
-        AccountState { accounts, priority_scope }
+        AccountState {
+            accounts,
+            priority_scope,
+        }
     }
 
     /// 写回全部账号（**按差异写**，见 `sql::save_state`）。
@@ -314,7 +324,11 @@ impl AccountStore {
     /// 「读全量 → 在数组里 find」，现在是一次主键查询 —— 转发链路上这些函数
     /// 是**每个请求**都会调到的（`rotate` 按 id 取会话、适配器按 id 取记录），
     /// 于是「每次转发少解析 20 条记录的 JSON」是这条改造里收益最直接的一处。
-    pub(crate) fn record_by_id(&self, _guard: &MutexGuard<'_, ()>, id: &str) -> Option<StoredAccount> {
+    pub(crate) fn record_by_id(
+        &self,
+        _guard: &MutexGuard<'_, ()>,
+        id: &str,
+    ) -> Option<StoredAccount> {
         let db = self.inner.db.as_ref()?;
         db.with(|conn| sql::load_by_id(conn, id))
             .and_then(Result::ok)
@@ -644,11 +658,15 @@ impl AccountStore {
             name: record.name(),
             uid: record.uid(),
             refresh_token,
-            endpoint: record.endpoint().unwrap_or_else(|| edition.endpoint.to_string()),
+            endpoint: record
+                .endpoint()
+                .unwrap_or_else(|| edition.endpoint.to_string()),
             prefix_path: record
                 .prefix_path()
                 .unwrap_or_else(|| edition.prefix_path.to_string()),
-            platform: record.platform().unwrap_or_else(|| edition.platform.to_string()),
+            platform: record
+                .platform()
+                .unwrap_or_else(|| edition.platform.to_string()),
             edition: edition.id.to_string(),
             proxy,
             proxy_error,
@@ -730,14 +748,12 @@ pub(crate) fn live_desktop_credentials(record: &StoredAccount) -> Option<(String
     if super::is_autoclaw_family(&record.provider()) && record.is_desktop() {
         // 地区取记录自己的 provider（两地共用一个文件，见上方说明）；
         // 认不出的 id 退回国内版 —— 与 `to_autoclaw_public_account` 同一兜底口径
-        let region = crate::server::core::providers::autoclaw::Region::from_provider_id(
-            &record.provider(),
-        )
-        .unwrap_or(crate::server::core::providers::autoclaw::Region::Cn);
-        let credentials = crate::server::core::providers::autoclaw::credentials::local_credentials(
-            region,
-        )
-        .ok()?;
+        let region =
+            crate::server::core::providers::autoclaw::Region::from_provider_id(&record.provider())
+                .unwrap_or(crate::server::core::providers::autoclaw::Region::Cn);
+        let credentials =
+            crate::server::core::providers::autoclaw::credentials::local_credentials(region)
+                .ok()?;
         return Some((
             credentials.token,
             credentials.refresh_token,
@@ -762,8 +778,8 @@ pub(crate) fn live_desktop_credentials(record: &StoredAccount) -> Option<(String
     if record.provider() != super::RACCOON_PROVIDER_ID || !record.is_desktop() {
         return None;
     }
-    let credentials = crate::server::core::providers::raccoon::credentials::desktop_credentials()
-        .ok()?;
+    let credentials =
+        crate::server::core::providers::raccoon::credentials::desktop_credentials().ok()?;
     Some((
         credentials.token,
         credentials.refresh_token,
@@ -792,9 +808,7 @@ pub(crate) fn forwards_requests(record: &StoredAccount) -> bool {
 fn split_resolution(resolution: Option<ProxyResolution>) -> (Value, Option<String>) {
     match resolution {
         None => (Value::Null, None),
-        Some(ProxyResolution::Resolved(ref proxy)) => {
-            (json!(proxy_json(proxy)), None)
-        }
+        Some(ProxyResolution::Resolved(ref proxy)) => (json!(proxy_json(proxy)), None),
         Some(ProxyResolution::Failed(message)) => (Value::Null, Some(message)),
     }
 }

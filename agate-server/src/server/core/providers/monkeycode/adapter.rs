@@ -56,11 +56,11 @@ pub struct MonkeyCodeAdapter {
 }
 
 /// 国内版静态实例
-pub static MONKEYCODE_ADAPTER: MonkeyCodeAdapter =
-    MonkeyCodeAdapter { region: Region::Cn };
+pub static MONKEYCODE_ADAPTER: MonkeyCodeAdapter = MonkeyCodeAdapter { region: Region::Cn };
 /// 国际版静态实例
-pub static MONKEYCODE_INTL_ADAPTER: MonkeyCodeAdapter =
-    MonkeyCodeAdapter { region: Region::Intl };
+pub static MONKEYCODE_INTL_ADAPTER: MonkeyCodeAdapter = MonkeyCodeAdapter {
+    region: Region::Intl,
+};
 
 impl ProviderAdapter for MonkeyCodeAdapter {
     fn kind(&self) -> ProviderKind {
@@ -150,8 +150,9 @@ impl ProviderAdapter for MonkeyCodeAdapter {
         &'a self,
         store: &'a AccountStore,
         account_id: &'a str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, GatewayError>> + Send + 'a>>
-    {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<String, GatewayError>> + Send + 'a>,
+    > {
         Box::pin(async move {
             let record = store.monkeycode_account_record(self.region, account_id);
             if !account_id.is_empty() && record.is_none() {
@@ -214,7 +215,10 @@ impl ProviderAdapter for MonkeyCodeAdapter {
                 if account_id.is_empty() {
                     logging::verbose(
                         "[Models]",
-                        &format!("MonkeyCode {} 模型目录刷新跳过：尚未添加账号", self.region.label()),
+                        &format!(
+                            "MonkeyCode {} 模型目录刷新跳过：尚未添加账号",
+                            self.region.label()
+                        ),
                     );
                     return ModelRefreshOutcome::unchanged();
                 }

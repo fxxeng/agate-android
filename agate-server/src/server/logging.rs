@@ -298,11 +298,13 @@ mod tests {
     /// 正常成功文案不得被判成 error，否则等于常挂红标。
     #[test]
     fn infer_level_treats_plain_success_as_info() {
-        assert_eq!(infer_level("[Checkin]", "⏰ 定时签到开始（到点触发）"), "info");
+        assert_eq!(
+            infer_level("[Checkin]", "⏰ 定时签到开始（到点触发）"),
+            "info"
+        );
         assert_eq!(
             infer_level("[Checkin]", "定时签到完成: 2/2 个账号成功领取"),
             "info"
         );
     }
 }
-

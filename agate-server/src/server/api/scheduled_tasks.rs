@@ -101,7 +101,10 @@ fn configure(id: &str, body: &Bytes) -> Response {
     // （此时下面 patch 为空，不会命中「没有需要更新的字段」）。
     let mut disabled_touched = false;
     if id == scheduled_tasks::TASK_CREDENTIAL_MAINTENANCE {
-        if let Some(raw) = payload.as_object().and_then(|object| object.get("disabledProviders")) {
+        if let Some(raw) = payload
+            .as_object()
+            .and_then(|object| object.get("disabledProviders"))
+        {
             let Some(list) = raw.as_array() else {
                 return bad_request("disabledProviders 必须是数组");
             };

@@ -105,7 +105,7 @@
 
 use serde_json::{json, Map, Value};
 
-use crate::server::config;
+use crate::server::config;
 use crate::server::events;
 
 pub const KEY_MODEL_RULES: &str = "modelRules";
@@ -182,7 +182,10 @@ pub struct RuleEntry {
 
 impl RuleEntry {
     fn new(provider: Option<&str>, id: &str) -> Self {
-        Self { provider: provider.map(str::to_string), id: id.to_string() }
+        Self {
+            provider: provider.map(str::to_string),
+            id: id.to_string(),
+        }
     }
 
     fn to_value(&self) -> Value {
@@ -196,7 +199,10 @@ impl RuleEntry {
     /// None（全局条目）或与目标一致。
     fn matches(&self, provider: &str, id: &str) -> bool {
         self.id.eq_ignore_ascii_case(id)
-            && self.provider.as_deref().map_or(true, |p| p.eq_ignore_ascii_case(provider))
+            && self
+                .provider
+                .as_deref()
+                .map_or(true, |p| p.eq_ignore_ascii_case(provider))
     }
 }
 
@@ -331,7 +337,11 @@ fn entries_from(value: Option<&Value>) -> Vec<RuleEntry> {
                     }
                     // 新形态：{provider, id}
                     Value::Object(object) => {
-                        let id = object.get("id").and_then(Value::as_str).map(str::trim).unwrap_or("");
+                        let id = object
+                            .get("id")
+                            .and_then(Value::as_str)
+                            .map(str::trim)
+                            .unwrap_or("");
                         if id.is_empty() {
                             return None;
                         }
@@ -400,7 +410,11 @@ fn capabilities_from(value: Option<&Value>) -> Vec<CapabilityOverride> {
                 .iter()
                 .filter_map(|item| {
                     let object = item.as_object()?;
-                    let id = object.get("id").and_then(Value::as_str).map(str::trim).unwrap_or("");
+                    let id = object
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .unwrap_or("");
                     let provider = object
                         .get("provider")
                         .and_then(Value::as_str)
@@ -514,7 +528,7 @@ impl ModelRules {
             // `hidden` 不再写出（机制已移除，见模块头）：整份替换落盘时，
             // 配置里残留的 hidden 名单就此消失 —— 一次性清理的实现方式。
             "mappings": self.mappings.iter().map(Mapping::to_value).collect::<Vec<_>>(),
-            // `custom` 必须在这里写出：本函数是**整份替换**（`save` → 
+            // `custom` 必须在这里写出：本函数是**整份替换**（`save` →
             // `config::update_raw_field`），漏掉哪个键，任何一次写规则
             // （启停 / 加映射 / 删映射 / 四个种子）都会把那个键的数据整份抹掉。
             "custom": self.custom.iter().map(CustomModel::to_value).collect::<Vec<_>>(),
@@ -541,15 +555,28 @@ impl ModelRules {
         let matches = |m: &&Mapping| {
             m.alias.eq_ignore_ascii_case(alias) && m.target.eq_ignore_ascii_case(target)
         };
-        self.mappings.iter().filter(matches)
-            .find(|m| m.provider.as_deref().is_some_and(|owner| owner.eq_ignore_ascii_case(provider)))
-            .or_else(|| self.mappings.iter().filter(matches).find(|m| m.provider.is_none()))
+        self.mappings
+            .iter()
+            .filter(matches)
+            .find(|m| {
+                m.provider
+                    .as_deref()
+                    .is_some_and(|owner| owner.eq_ignore_ascii_case(provider))
+            })
+            .or_else(|| {
+                self.mappings
+                    .iter()
+                    .filter(matches)
+                    .find(|m| m.provider.is_none())
+            })
     }
 
     /// disabled 只控制原始 ID 的默认绑定，不能连带关闭其他别名。
     pub fn default_enabled(&self, provider: &str, id: &str) -> bool {
         !self.is_disabled(provider, id)
-            && self.binding(provider, id, id).map_or(true, |mapping| mapping.enabled)
+            && self
+                .binding(provider, id, id)
+                .map_or(true, |mapping| mapping.enabled)
     }
 
     pub fn is_blocked(&self, provider: &str, id: &str) -> bool {
@@ -574,7 +601,9 @@ impl ModelRules {
 
     /// 该对外名是否已存在任何映射条目（种子防抢占判断用）。
     pub fn has_alias(&self, alias: &str) -> bool {
-        self.mappings.iter().any(|m| m.alias.eq_ignore_ascii_case(alias))
+        self.mappings
+            .iter()
+            .any(|m| m.alias.eq_ignore_ascii_case(alias))
     }
 
     /// 某条映射的对外名：target 归属 `provider`（None = 旧版全局条目）。
@@ -591,7 +620,11 @@ impl ModelRules {
         self.mappings
             .iter()
             .filter(|m| m.target.eq_ignore_ascii_case(target))
-            .filter(|m| m.provider.as_deref().map_or(true, |p| p.eq_ignore_ascii_case(provider)))
+            .filter(|m| {
+                m.provider
+                    .as_deref()
+                    .map_or(true, |p| p.eq_ignore_ascii_case(provider))
+            })
             .map(|m| m.alias.as_str())
             .collect()
     }
@@ -643,7 +676,11 @@ impl ModelRules {
     /// 那批标记对 Qoder 不构成「已种」的证据。
     fn is_seeded(&self, provider: &str, id: &str) -> bool {
         let key = format!("{provider}:{id}");
-        if self.seeded.iter().any(|item| item.eq_ignore_ascii_case(&key)) {
+        if self
+            .seeded
+            .iter()
+            .any(|item| item.eq_ignore_ascii_case(&key))
+        {
             return true;
         }
         if !matches!(provider, "workbuddy" | "raccoon") {
@@ -672,7 +709,10 @@ pub fn current() -> ModelRules {
 fn save(rules: &ModelRules) -> bool {
     let ok = config::update_raw_field(KEY_MODEL_RULES, rules.to_value());
     if ok {
-        events::publish("models_changed", serde_json::json!({ "reason": "model_rules" }));
+        events::publish(
+            "models_changed",
+            serde_json::json!({ "reason": "model_rules" }),
+        );
     }
     ok
 }
@@ -775,38 +815,54 @@ fn apply_state(
         if enabled {
             match provider {
                 Some(provider) => enable_on(&mut rules.disabled, provider, id, other_providers),
-                None => rules.disabled.retain(|entry| !entry.id.eq_ignore_ascii_case(id)),
+                None => rules
+                    .disabled
+                    .retain(|entry| !entry.id.eq_ignore_ascii_case(id)),
             }
         } else {
             set_membership(&mut rules.disabled, provider, id, true);
         }
         // 历史同名映射和默认绑定共用一个开关，不能留下第二个关闭来源。
         for mapping in &mut rules.mappings {
-            if mapping.alias.eq_ignore_ascii_case(id) && mapping.target.eq_ignore_ascii_case(id)
+            if mapping.alias.eq_ignore_ascii_case(id)
+                && mapping.target.eq_ignore_ascii_case(id)
                 && provider.map_or(true, |owner| mapping.provider.as_deref() == Some(owner))
             {
                 mapping.enabled = enabled;
             }
         }
         if let Some(owner) = provider {
-            if let Some(global) = rules.mappings.iter().find(|mapping| {
-                mapping.provider.is_none() && mapping.alias.eq_ignore_ascii_case(id)
-                    && mapping.target.eq_ignore_ascii_case(id)
-            }).cloned() {
-                if !rules.mappings.iter().any(|mapping| mapping.provider.as_deref() == Some(owner)
-                    && mapping.alias.eq_ignore_ascii_case(id) && mapping.target.eq_ignore_ascii_case(id))
-                {
-                    rules.mappings.push(Mapping { provider: Some(owner.to_string()), enabled, ..global });
+            if let Some(global) = rules
+                .mappings
+                .iter()
+                .find(|mapping| {
+                    mapping.provider.is_none()
+                        && mapping.alias.eq_ignore_ascii_case(id)
+                        && mapping.target.eq_ignore_ascii_case(id)
+                })
+                .cloned()
+            {
+                if !rules.mappings.iter().any(|mapping| {
+                    mapping.provider.as_deref() == Some(owner)
+                        && mapping.alias.eq_ignore_ascii_case(id)
+                        && mapping.target.eq_ignore_ascii_case(id)
+                }) {
+                    rules.mappings.push(Mapping {
+                        provider: Some(owner.to_string()),
+                        enabled,
+                        ..global
+                    });
                 }
             }
         }
     }
 }
 
-
 /// 把 `(provider, id)` 的**禁用**落到列表上（幂等；provider=None = 全局）
 fn set_membership(list: &mut Vec<RuleEntry>, provider: Option<&str>, id: &str, present: bool) {
-    list.retain(|entry| !(entry.provider == provider.map(str::to_string) && entry.id.eq_ignore_ascii_case(id)));
+    list.retain(|entry| {
+        !(entry.provider == provider.map(str::to_string) && entry.id.eq_ignore_ascii_case(id))
+    });
     if present {
         list.push(RuleEntry::new(provider, id));
     }
@@ -862,7 +918,9 @@ pub fn add_mapping(
             if enabled {
                 match provider {
                     Some(owner) => enable_on(&mut rules.disabled, owner, target, other_providers),
-                    None => rules.disabled.retain(|entry| !entry.id.eq_ignore_ascii_case(target)),
+                    None => rules
+                        .disabled
+                        .retain(|entry| !entry.id.eq_ignore_ascii_case(target)),
                 }
             } else {
                 set_membership(&mut rules.disabled, provider, target, true);
@@ -898,9 +956,12 @@ pub fn add_mapping(
             provider: provider.map(str::to_string),
             reasoning: match reasoning {
                 Some(value) => value.and_then(normalize_reasoning),
-                None => inherited.as_ref().and_then(|mapping| mapping.reasoning.clone()),
+                None => inherited
+                    .as_ref()
+                    .and_then(|mapping| mapping.reasoning.clone()),
             },
-            enabled: enabled.unwrap_or_else(|| inherited.as_ref().map_or(true, |mapping| mapping.enabled)),
+            enabled: enabled
+                .unwrap_or_else(|| inherited.as_ref().map_or(true, |mapping| mapping.enabled)),
         });
         touched = true;
     }
@@ -944,9 +1005,7 @@ pub fn remove_custom(provider: &str, id: &str) -> (ModelRules, bool) {
     let removed = rules.custom.len() != before;
     if removed {
         // 精确匹配的启停规则
-        rules
-            .disabled
-            .retain(|entry| !entry.matches(provider, id));
+        rules.disabled.retain(|entry| !entry.matches(provider, id));
         // 指向这个模型的映射（带 provider 的那种才算得准）
         rules.mappings.retain(|mapping| {
             !(mapping.target.eq_ignore_ascii_case(id)
@@ -956,7 +1015,9 @@ pub fn remove_custom(provider: &str, id: &str) -> (ModelRules, bool) {
                     .is_some_and(|owner| owner.eq_ignore_ascii_case(provider)))
         });
         // 针对它的能力覆盖（provider 必填，matches 就是精确定位）
-        rules.capabilities.retain(|entry| !entry.matches(provider, id));
+        rules
+            .capabilities
+            .retain(|entry| !entry.matches(provider, id));
         save(&rules);
     }
     (rules, removed)
@@ -1059,7 +1120,10 @@ pub fn set_capabilities(
 /// 消费方：管理页判「来源 = 手动」（`catalog::manage_entries`）、以及 AutoClaw
 /// 的模型路由解析（未知名字不静默回落，见 `autoclaw::models::resolve_model_route`）。
 pub fn is_custom(provider: &str, id: &str) -> bool {
-    current().custom.iter().any(|item| item.matches(provider, id))
+    current()
+        .custom
+        .iter()
+        .any(|item| item.matches(provider, id))
 }
 
 /// 某一家当前登记的自定义模型，转成**聚合层认的条目形态**。
@@ -1180,9 +1244,9 @@ pub fn remove_mapping(
 /// 内部代号）。`raccoon-chat-ml-5-5` 这类正经命名不会命中。
 fn is_opaque_raccoon_id(id: &str) -> bool {
     match id.strip_prefix("raccoon-") {
-        Some(rest) => !rest.is_empty()
-            && rest.len() <= 8
-            && rest.chars().all(|c| c.is_ascii_hexdigit()),
+        Some(rest) => {
+            !rest.is_empty() && rest.len() <= 8 && rest.chars().all(|c| c.is_ascii_hexdigit())
+        }
         None => false,
     }
 }
@@ -1215,8 +1279,16 @@ const EXTRA_ALIASES: &[(&str, &str, &str)] = &[
     ("raccoon", "sn-deepseek-v4-1-flash", "deepseek-v4.1-flash"),
     // 两家 provider id 从 `Pool` 推导，别处已无 `"cline"` 这个 id（见
     // `providers::PROVIDERS` 的 cline-free / cline-pass 两条）
-    ("cline-free", "cline-free/deepseek-v4.1-flash", "deepseek-v4.1-flash"),
-    ("cline-pass", "cline-pass/deepseek-v4.1-flash", "deepseek-v4.1-flash"),
+    (
+        "cline-free",
+        "cline-free/deepseek-v4.1-flash",
+        "deepseek-v4.1-flash",
+    ),
+    (
+        "cline-pass",
+        "cline-pass/deepseek-v4.1-flash",
+        "deepseek-v4.1-flash",
+    ),
     // 免费池的裸 id：短名 `glm-5.3-flash` 与订阅池那条撞名（见上文）
     ("cline-free", "z-ai/glm-5.3-flash", "glm-5.3-flash"),
     ("cline-pass", "cline-pass/glm-5.3-flash", "glm-5.3-flash"),
@@ -1249,7 +1321,11 @@ fn seed_extra_aliases(
             continue;
         }
         let key = extra_alias_key(provider, id, alias);
-        if rules.seeded.iter().any(|item| item.eq_ignore_ascii_case(&key)) {
+        if rules
+            .seeded
+            .iter()
+            .any(|item| item.eq_ignore_ascii_case(&key))
+        {
             continue;
         }
         rules.seeded.push(key);
@@ -1269,7 +1345,9 @@ fn seed_extra_aliases(
         let exists = rules.mappings.iter().any(|m| {
             m.alias.eq_ignore_ascii_case(alias)
                 && m.target.eq_ignore_ascii_case(target)
-                && m.provider.as_deref().map_or(true, |p| p.eq_ignore_ascii_case(provider))
+                && m.provider
+                    .as_deref()
+                    .map_or(true, |p| p.eq_ignore_ascii_case(provider))
         });
         if exists {
             continue;
@@ -1288,7 +1366,6 @@ fn seed_extra_aliases(
     }
     touched
 }
-
 
 /// 小浣熊清单的**默认规则种子**：对 `ids` 里每个还没种过的模型做一次默认处理 ——
 ///
@@ -1332,9 +1409,7 @@ pub fn seed_raccoon_defaults(ids: &[String]) -> Option<String> {
                 continue;
             }
             // alias 已有映射（不管是自动还是人工）或与小浣熊自己的上游 id 撞名 → 不动
-            if rules.has_alias(alias)
-                || ids.iter().any(|other| other.eq_ignore_ascii_case(alias))
-            {
+            if rules.has_alias(alias) || ids.iter().any(|other| other.eq_ignore_ascii_case(alias)) {
                 continue;
             }
             rules.mappings.retain(|m| {

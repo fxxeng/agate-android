@@ -158,7 +158,9 @@ mod tests {
         let headers = merge_headers(&overrides(&[("X-Custom-Trace", "abc")]));
         assert_eq!(headers.len(), DEFAULT_HEADERS.len() + 1);
         assert_eq!(
-            headers.last().map(|(key, value)| (key.as_str(), value.as_str())),
+            headers
+                .last()
+                .map(|(key, value)| (key.as_str(), value.as_str())),
             Some(("X-Custom-Trace", "abc"))
         );
     }

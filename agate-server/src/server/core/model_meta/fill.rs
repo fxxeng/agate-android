@@ -63,7 +63,9 @@ const LEVEL_KEYS: [&str; 3] = ["reasoningLevels", "reasoningEfforts", "efforts"]
 /// `custom_providers::bindings::public_models`。收在两处就不可能出现「管理页
 /// 改了、下游没变」那种分叉（与能力位覆盖层同一理由）。
 pub fn apply(item: &mut Value) {
-    let Some(id) = item.get("id").and_then(Value::as_str).map(str::to_string) else { return };
+    let Some(id) = item.get("id").and_then(Value::as_str).map(str::to_string) else {
+        return;
+    };
     let record = snapshot::lookup(&id);
     let mut sources: Map<String, Value> = Map::new();
     if let Some(record) = &record {
@@ -99,7 +101,11 @@ pub fn apply(item: &mut Value) {
     } else if let Some(object) = item.as_object() {
         // 没收录也要把上游声明记下来：管理页据此说明「这个值来自上游」，
         // 而不是显示成「没数据」。
-        for key in BOOL_BRIDGE.iter().map(|(key, _)| *key).chain(TOKEN_BRIDGE.iter().map(|(key, _)| *key)) {
+        for key in BOOL_BRIDGE
+            .iter()
+            .map(|(key, _)| *key)
+            .chain(TOKEN_BRIDGE.iter().map(|(key, _)| *key))
+        {
             if object.get(key).is_some_and(|value| !value.is_null()) {
                 sources.insert(key.to_string(), json!("upstream"));
             }
@@ -121,7 +127,9 @@ fn normalize_levels(item: &mut Value, record: Option<&Record>) {
         .filter(|levels| !levels.is_empty());
     let levels = match declared {
         Some(levels) => levels,
-        None => record.map(|record| record.levels.clone()).unwrap_or_default(),
+        None => record
+            .map(|record| record.levels.clone())
+            .unwrap_or_default(),
     };
     if levels.is_empty() {
         return;
@@ -159,7 +167,9 @@ pub fn mark_user(item: &mut Value, keys: &[String]) {
     if keys.is_empty() {
         return;
     }
-    let Some(object) = item.as_object_mut() else { return };
+    let Some(object) = item.as_object_mut() else {
+        return;
+    };
     let mut sources = object
         .get("capSources")
         .and_then(Value::as_object)

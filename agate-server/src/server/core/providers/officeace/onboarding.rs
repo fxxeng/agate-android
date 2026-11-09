@@ -57,7 +57,11 @@ fn ledger_of(store: &AccountStore, account_id: &str) -> Ledger {
         .officeace_bonus_ledger(account_id)
         .filter(|stored| stored.get("day").and_then(Value::as_str) == Some(day.as_str()));
     let Some(stored) = stored else {
-        return Ledger { day, claimed: BTreeSet::new(), all: false };
+        return Ledger {
+            day,
+            claimed: BTreeSet::new(),
+            all: false,
+        };
     };
     let claimed = stored
         .get("items")
@@ -144,9 +148,9 @@ fn credential_of(
     store: &AccountStore,
     account_id: &str,
 ) -> Result<credentials::OfficeAceCredential, GatewayError> {
-    let record = store
-        .officeace_account_record(account_id)
-        .ok_or_else(|| GatewayError::with_status(400, "OfficeAce 账号不存在或不可用，请重新选择"))?;
+    let record = store.officeace_account_record(account_id).ok_or_else(|| {
+        GatewayError::with_status(400, "OfficeAce 账号不存在或不可用，请重新选择")
+    })?;
     credentials::from_record(Some(&record))
 }
 

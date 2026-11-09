@@ -132,9 +132,9 @@ pub(super) async fn query_usage(
     store: &AccountStore,
     account_id: &str,
 ) -> Result<Value, GatewayError> {
-    let record = store.zcode_account_record(account_id).ok_or_else(|| {
-        GatewayError::with_status(404, "找不到该 ZCode 账号".to_string())
-    })?;
+    let record = store
+        .zcode_account_record(account_id)
+        .ok_or_else(|| GatewayError::with_status(404, "找不到该 ZCode 账号".to_string()))?;
     let region = record
         .get("provider")
         .and_then(Value::as_str)
@@ -191,7 +191,7 @@ pub(super) async fn query_usage(
                             // 明细挂在合并**之后**：`credits` 读的是这份文档最终的
                             // `wallets`（此时是监控通道的窗口行），与余额列显示的完全
                             // 同源 —— 见 [`with_credits`]。
-                            return Ok(with_credits(merge_monitor_windows(value, windows)))
+                            return Ok(with_credits(merge_monitor_windows(value, windows)));
                         }
                         Ok(_) => {}
                         Err(error) => {
@@ -242,10 +242,12 @@ pub(super) async fn query_usage(
     if errors.is_empty() {
         // 两把凭证都没有：用可识别的「未配置」而不是失败 —— 用户去账号设置里
         // 补上任意一把就能查（两把各能读一条通道，见上表）
-        return Err(crate::server::core::providers::adapter::usage_not_configured(
-            &format!("ZCode {}", region.label()),
-            "Coding Plan JWT 或编码套餐 API Key",
-        ));
+        return Err(
+            crate::server::core::providers::adapter::usage_not_configured(
+                &format!("ZCode {}", region.label()),
+                "Coding Plan JWT 或编码套餐 API Key",
+            ),
+        );
     }
     // 401 优先（「请重新登录」是用户能照着做的那一句），否则第一个错误
     let position = errors
@@ -334,7 +336,11 @@ async fn billing_channel(
         };
         // 业务码为 0 表示「响应体里没有 code」（HTTP 层错误，体可能是空的）——
         // 那种情况别拼一个读起来莫名其妙的「（0）」
-        let label = if code == 0 { String::new() } else { format!("（{code}）") };
+        let label = if code == 0 {
+            String::new()
+        } else {
+            format!("（{code}）")
+        };
         return Err(GatewayError::with_status(
             502,
             format!("ZCode 余额查询失败{label}：{detail}"),
@@ -370,9 +376,8 @@ fn normalize(data: &Value) -> Value {
     // 余额跳过档少拦一个账号）。其余一律算能用 —— 包括「状态字符串认不出来」的：
     // 那是我们识别能力的边界，不该变成用户的额度凭空消失
     // （旧实现把非 active 一律当过期，正是那一类 bug 的来源）。
-    let usable = |plan: &Value| -> bool {
-        state_of(plan) != PlanState::Expired && !all_pending(plan, now)
-    };
+    let usable =
+        |plan: &Value| -> bool { state_of(plan) != PlanState::Expired && !all_pending(plan, now) };
     // 桶的归属：`user_plan_id` 优先、退回 `plan_id`（官方同款配对规则）
     let owners_of = |bucket: &Value| -> Vec<&Value> {
         let user_plan_id = bucket.get("user_plan_id").and_then(Value::as_str);
@@ -380,9 +385,16 @@ fn normalize(data: &Value) -> Value {
         plans
             .iter()
             .copied()
-            .filter(|plan| match (user_plan_id, plan.get("user_plan_id").and_then(Value::as_str)) {
-                (Some(left), Some(right)) => left == right,
-                _ => plan_id.is_some() && plan.get("plan_id").and_then(Value::as_str) == plan_id,
+            .filter(|plan| {
+                match (
+                    user_plan_id,
+                    plan.get("user_plan_id").and_then(Value::as_str),
+                ) {
+                    (Some(left), Some(right)) => left == right,
+                    _ => {
+                        plan_id.is_some() && plan.get("plan_id").and_then(Value::as_str) == plan_id
+                    }
+                }
             })
             .collect()
     };
@@ -394,9 +406,7 @@ fn normalize(data: &Value) -> Value {
     // 桶所属套餐的展示名（给界面当「这个额度来自哪个套餐」的标签用；认不出就给 None，
     // 界面退回 `subscription.planName`）
     let owner_name = |bucket: &Value| -> Option<String> {
-        owners_of(bucket)
-            .into_iter()
-            .find_map(plan_display_name)
+        owners_of(bucket).into_iter().find_map(plan_display_name)
     };
 
     let mut wallets: Vec<Value> = Vec::new();
@@ -437,7 +447,11 @@ fn normalize(data: &Value) -> Value {
             let Some(remaining) = remaining else {
                 continue;
             };
-            let unit_for_row = if bucket_unit.is_empty() { unit.clone() } else { bucket_unit };
+            let unit_for_row = if bucket_unit.is_empty() {
+                unit.clone()
+            } else {
+                bucket_unit
+            };
             let view = match bucket_total {
                 Some(total) if total > 0.0 => format!(
                     "{} / {} {}",
@@ -495,7 +509,11 @@ fn normalize(data: &Value) -> Value {
             "state".to_string(),
             Value::String(state_of(plan).key().to_string()),
         );
-        if let Some(ends_at) = plan.get("ends_at").and_then(number_of).filter(|value| *value > 0.0) {
+        if let Some(ends_at) = plan
+            .get("ends_at")
+            .and_then(number_of)
+            .filter(|value| *value > 0.0)
+        {
             // 秒 → 毫秒：账号页各家（qoder / raccoon / workbuddy）的到期一律毫秒，
             // 混用会让时间显示成 1970 年。
             //
@@ -603,9 +621,23 @@ impl PlanState {
 
 /// 生效时间的候选键链（上游在不同接口/版本里用过不同名字：领取预览那套是
 /// `starts_at`，官方 TS 接口里 `effective_at` 挂在权益上）
-const START_KEYS: &[&str] = &["starts_at", "start_at", "startsAt", "startAt", "effective_at", "not_before"];
+const START_KEYS: &[&str] = &[
+    "starts_at",
+    "start_at",
+    "startsAt",
+    "startAt",
+    "effective_at",
+    "not_before",
+];
 /// 到期时间的候选键链（`ends_at` 是既有口径，其余为容错）
-const END_KEYS: &[&str] = &["ends_at", "end_at", "endsAt", "endAt", "expire_at", "expires_at"];
+const END_KEYS: &[&str] = &[
+    "ends_at",
+    "end_at",
+    "endsAt",
+    "endAt",
+    "expire_at",
+    "expires_at",
+];
 
 /// 判一份套餐现在是什么状态。
 ///
@@ -643,7 +675,14 @@ fn plan_state(plan: &Value, now: f64) -> PlanState {
         // 上游认的「在用」字面值（`valid` 来自同族的订阅列表接口）
         Some("active") | Some("valid") => PlanState::Active,
         // 明确表示结束 / 作废的取值（做包含匹配：上游写过 `expired_at` 这类变体）
-        Some(value) if value.contains("expire") || value.contains("cancel") || value == "ended" || value == "invalid" => PlanState::Expired,
+        Some(value)
+            if value.contains("expire")
+                || value.contains("cancel")
+                || value == "ended"
+                || value == "invalid" =>
+        {
+            PlanState::Expired
+        }
         // 缺失 / 空串 / 认不出的取值（`paused`、`pending` 之类）：不知道，别猜
         _ => PlanState::Unknown,
     }
@@ -706,7 +745,11 @@ fn all_pending(plan: &Value, now: f64) -> bool {
 /// 这个量级，不会误伤。
 fn plan_bound(plan: &Value, keys: &[&str]) -> Option<f64> {
     for key in keys {
-        if let Some(value) = plan.get(*key).and_then(number_of).filter(|value| value.is_finite()) {
+        if let Some(value) = plan
+            .get(*key)
+            .and_then(number_of)
+            .filter(|value| value.is_finite())
+        {
             return Some(if value > 1e11 { value / 1000.0 } else { value });
         }
     }
@@ -907,7 +950,11 @@ fn pick_plan<'a>(plans: &[&'a Value], now: f64) -> Option<&'a Value> {
             active
         } else {
             let pending = of(PlanState::Pending);
-            if pending.is_empty() { plans.to_vec() } else { pending }
+            if pending.is_empty() {
+                plans.to_vec()
+            } else {
+                pending
+            }
         }
     };
     let mut best: Option<&'a Value> = None;
@@ -918,8 +965,7 @@ fn pick_plan<'a>(plans: &[&'a Value], now: f64) -> Option<&'a Value> {
                 let key = plan_rank(plan, now);
                 let current_key = plan_rank(current, now);
                 let take = key < current_key
-                    || (key == current_key
-                        && plan_id_of(plan) < plan_id_of(current));
+                    || (key == current_key && plan_id_of(plan) < plan_id_of(current));
                 if take {
                     best = Some(plan);
                 }
@@ -997,7 +1043,11 @@ fn has_daily_entitlement(plan: &Value) -> bool {
 pub(super) fn number_of(value: &Value) -> Option<f64> {
     match value {
         Value::Number(number) => number.as_f64(),
-        Value::String(text) => text.trim().parse::<f64>().ok().filter(|value| value.is_finite()),
+        Value::String(text) => text
+            .trim()
+            .parse::<f64>()
+            .ok()
+            .filter(|value| value.is_finite()),
         _ => None,
     }
 }

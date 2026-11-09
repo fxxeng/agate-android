@@ -52,8 +52,8 @@ use crate::server::core::endpoints::resolve_edition;
 use crate::server::core::limiter;
 use crate::server::core::providers::DEFAULT_PROVIDER_ID;
 use crate::server::core::proxies::describe_account_proxy;
-use crate::server::logging;
 use crate::server::events;
+use crate::server::logging;
 
 /// 单账号并发上限的封顶值（0 = 不限）。界面输入框用的是同一个数
 /// （ui-islands 的 `CONC_MAX`）；两处要对得上，否则会「界面让填、接口回 400」。
@@ -229,10 +229,9 @@ impl AccountStore {
         //   冲突判定走 `priority_holder`（一条 SQL 换掉「读全量 + 内存里 find」）。
         let existing_priority = existing.as_ref().map(StoredAccount::priority);
         let priority = match payload_object.get("priority") {
-            Some(value) => normalize_priority(
-                Some(value),
-                existing_priority.unwrap_or(DEFAULT_PRIORITY),
-            ),
+            Some(value) => {
+                normalize_priority(Some(value), existing_priority.unwrap_or(DEFAULT_PRIORITY))
+            }
             None => match existing_priority {
                 Some(value) => value,
                 None => {
@@ -241,9 +240,9 @@ impl AccountStore {
                 }
             },
         };
-        if let Some(holder_name) = self.with_conn(&_guard, |conn| {
-            sql::priority_holder(conn, priority, &id)
-        })? {
+        if let Some(holder_name) =
+            self.with_conn(&_guard, |conn| sql::priority_holder(conn, priority, &id))?
+        {
             return Err(AccountStoreError::new(
                 format!(
                     "优先级 {priority} 已被账号「{holder_name}」占用，请换一个\
@@ -268,14 +267,15 @@ impl AccountStore {
         let record_name = explicit_name
             .or_else(|| optional_text(account.get("nickname")))
             .or_else(|| optional_text(payload_object.get("nickname")))
-            .or_else(|| existing.as_ref().and_then(|item| optional_text(item.get("name"))))
+            .or_else(|| {
+                existing
+                    .as_ref()
+                    .and_then(|item| optional_text(item.get("name")))
+            })
             .unwrap_or_else(|| format!("账号 {}", truncate_chars(&uid, 8)));
         record.insert("name".to_string(), Value::String(record_name.clone()));
         mark_name_custom(&mut record, explicit, existing.as_ref());
-        record.insert(
-            "uid".to_string(),
-            Value::String(uid.clone()),
-        );
+        record.insert("uid".to_string(), Value::String(uid.clone()));
         record.insert(
             "nickname".to_string(),
             Value::String(
@@ -308,7 +308,10 @@ impl AccountStore {
                 .unwrap_or_default();
             record.insert(key.to_string(), Value::String(value));
         }
-        record.insert("accessToken".to_string(), Value::String(access_token.clone()));
+        record.insert(
+            "accessToken".to_string(),
+            Value::String(access_token.clone()),
+        );
         record.insert(
             "refreshToken".to_string(),
             Value::String(if refresh_token.is_empty() {
@@ -327,7 +330,8 @@ impl AccountStore {
         record.insert(
             "expiresAt".to_string(),
             number_or(
-                auth.get("expiresAt").or_else(|| payload_object.get("expiresAt")),
+                auth.get("expiresAt")
+                    .or_else(|| payload_object.get("expiresAt")),
                 existing
                     .as_ref()
                     .and_then(StoredAccount::expires_at)
@@ -338,8 +342,7 @@ impl AccountStore {
         record.insert(
             "refreshExpiresAt".to_string(),
             number_or(
-                auth
-                    .get("refreshExpiresAt")
+                auth.get("refreshExpiresAt")
                     .or_else(|| payload_object.get("refreshExpiresAt")),
                 existing
                     .as_ref()
@@ -359,34 +362,52 @@ impl AccountStore {
         record.insert("edition".to_string(), Value::String(edition.id.to_string()));
         // 先取出既有记录的这三个字段：payload 里没给就沿用原来的（Node 用 `??`，
         // 所以空串是有效值、只有 null/缺失才回落版本的默认值）
-        let existing_prefix = existing.as_ref().and_then(|item| item.get("prefixPath")).cloned();
-        let existing_endpoint = existing.as_ref().and_then(|item| item.get("endpoint")).cloned();
-        let existing_platform = existing.as_ref().and_then(|item| item.get("platform")).cloned();
+        let existing_prefix = existing
+            .as_ref()
+            .and_then(|item| item.get("prefixPath"))
+            .cloned();
+        let existing_endpoint = existing
+            .as_ref()
+            .and_then(|item| item.get("endpoint"))
+            .cloned();
+        let existing_platform = existing
+            .as_ref()
+            .and_then(|item| item.get("platform"))
+            .cloned();
         record.insert(
             "prefixPath".to_string(),
             value_or_nullish(
-                payload_object.get("prefixPath").or(existing_prefix.as_ref()),
+                payload_object
+                    .get("prefixPath")
+                    .or(existing_prefix.as_ref()),
                 Value::String(edition.prefix_path.to_string()),
             ),
         );
         record.insert(
             "endpoint".to_string(),
             value_or_nullish(
-                payload_object.get("endpoint").or(existing_endpoint.as_ref()),
+                payload_object
+                    .get("endpoint")
+                    .or(existing_endpoint.as_ref()),
                 Value::String(edition.endpoint.to_string()),
             ),
         );
         record.insert(
             "platform".to_string(),
             value_or_nullish(
-                payload_object.get("platform").or(existing_platform.as_ref()),
+                payload_object
+                    .get("platform")
+                    .or(existing_platform.as_ref()),
                 Value::String(edition.platform.to_string()),
             ),
         );
         record.insert("priority".to_string(), Value::from(priority));
         let enabled = match payload_object.get("enabled") {
             Some(value) => !matches!(value, Value::Bool(false)),
-            None => existing.as_ref().map(StoredAccount::enabled).unwrap_or(true),
+            None => existing
+                .as_ref()
+                .map(StoredAccount::enabled)
+                .unwrap_or(true),
         };
         record.insert("enabled".to_string(), Value::Bool(enabled));
         record.insert("proxy".to_string(), resolved_proxy);
@@ -574,7 +595,10 @@ impl AccountStore {
             }
             changes.push(format!(
                 "优先级 → {}（本组置顶 + 本组排到最前）",
-                ordered.first().map(StoredAccount::priority).unwrap_or(DEFAULT_PRIORITY)
+                ordered
+                    .first()
+                    .map(StoredAccount::priority)
+                    .unwrap_or(DEFAULT_PRIORITY)
             ));
             if let Some(record) = ordered.iter_mut().find(|item| item.id() == id) {
                 record.set_updated_at(logging::now_ms());
@@ -762,7 +786,11 @@ impl AccountStore {
             let current = record.enabled();
             if next != current {
                 record.set_enabled(next);
-                changes.push(if next { "已启用".to_string() } else { "已禁用".to_string() });
+                changes.push(if next {
+                    "已启用".to_string()
+                } else {
+                    "已禁用".to_string()
+                });
             }
         }
 
@@ -825,7 +853,10 @@ impl AccountStore {
             // `routing::max_concurrent_of`（缺失 = 0 = 不限）。
             let next = normalize_max_concurrent(value)?;
             // 缺省记录无此键 = 不限（读侧按 0 处理），所以这里恒存显式数字
-            let current = record.get("maxConcurrent").and_then(Value::as_u64).unwrap_or(0);
+            let current = record
+                .get("maxConcurrent")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
             if next != current {
                 record.set("maxConcurrent", Value::from(next));
                 changes.push(if next == 0 {
@@ -926,9 +957,9 @@ impl AccountStore {
         let enabled = fields.get("enabled").map(js_truthy).unwrap_or(false);
         let interval = match fields.get("interval") {
             None | Some(Value::Null) => 0,
-            Some(raw) => raw.as_i64().ok_or_else(|| {
-                AccountStoreError::bad_request("查询间隔必须是整数（单位：秒）")
-            })?,
+            Some(raw) => raw
+                .as_i64()
+                .ok_or_else(|| AccountStoreError::bad_request("查询间隔必须是整数（单位：秒）"))?,
         };
         if interval != 0 && !(MIN..=MAX).contains(&interval) {
             return Err(AccountStoreError::bad_request(format!(
@@ -949,9 +980,8 @@ impl AccountStore {
     /// 「已开启」的变更日志，也不会把缺省配置物化进每条账号记录。
     fn normalize_usage_query_lenient(value: Option<&Value>) -> Value {
         const DEFAULT: i64 = crate::server::core::usage_records::DEFAULT_QUERY_INTERVAL_SECONDS;
-        Self::normalize_usage_query(value.unwrap_or(&Value::Null)).unwrap_or_else(|_| {
-            json!({ "enabled": true, "interval": DEFAULT })
-        })
+        Self::normalize_usage_query(value.unwrap_or(&Value::Null))
+            .unwrap_or_else(|_| json!({ "enabled": true, "interval": DEFAULT }))
     }
 
     /// `lowBalance` 的写入侧归一化：mode 三选一；非 off 档要求阈值有限且 > 0；
@@ -977,7 +1007,9 @@ impl AccountStore {
             .and_then(Value::as_f64)
             .ok_or_else(|| AccountStoreError::bad_request("余额阈值必须是大于 0 的数字"))?;
         if !threshold.is_finite() || threshold <= 0.0 {
-            return Err(AccountStoreError::bad_request("余额阈值必须是大于 0 的数字"));
+            return Err(AccountStoreError::bad_request(
+                "余额阈值必须是大于 0 的数字",
+            ));
         }
         Ok(json!({ "mode": mode, "threshold": threshold }))
     }
@@ -997,7 +1029,10 @@ impl AccountStore {
 
     /// 变更提示文案：`每 90 分钟` 这类人能读的间隔。
     fn describe_usage_query(next: &Value) -> String {
-        let enabled = next.get("enabled").and_then(Value::as_bool).unwrap_or(false);
+        let enabled = next
+            .get("enabled")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         if !enabled {
             return "自动查询余额 → 关闭".to_string();
         }

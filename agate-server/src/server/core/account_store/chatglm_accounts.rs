@@ -145,14 +145,14 @@ impl AccountStore {
         let now = logging::now_ms();
         let mut record = Map::new();
         record.insert("id".to_string(), Value::String(id.clone()));
-        record.insert("provider".to_string(), Value::String(chatglm_id().to_string()));
+        record.insert(
+            "provider".to_string(),
+            Value::String(chatglm_id().to_string()),
+        );
         record.insert("name".to_string(), Value::String(record_name.clone()));
         mark_name_custom(&mut record, explicit, existing.as_ref());
         record.insert("uid".to_string(), Value::String(credentials.uid.clone()));
-        record.insert(
-            "loginName".to_string(),
-            Value::String(nickname.clone()),
-        );
+        record.insert("loginName".to_string(), Value::String(nickname.clone()));
         // ── 令牌落**顶层** `accessToken` / `refreshToken`（不是嵌套 auth）─────
         // 全仓的凭证约定是顶层键：`StoredAccount::access_token()` 只读顶层
         // `accessToken`，而 `has_credentials()`（转发选路 / 余额查询 / 本轮行
@@ -190,11 +190,21 @@ impl AccountStore {
         record.insert("priority".to_string(), Value::from(priority));
         record.insert(
             "enabled".to_string(),
-            Value::Bool(existing.as_ref().map(StoredAccount::enabled).unwrap_or(true)),
+            Value::Bool(
+                existing
+                    .as_ref()
+                    .map(StoredAccount::enabled)
+                    .unwrap_or(true),
+            ),
         );
         record.insert(
             "addedAt".to_string(),
-            Value::from(existing.as_ref().map(StoredAccount::added_at).unwrap_or(now)),
+            Value::from(
+                existing
+                    .as_ref()
+                    .map(StoredAccount::added_at)
+                    .unwrap_or(now),
+            ),
         );
         record.insert("updatedAt".to_string(), Value::from(now));
         let mut merged = record;
@@ -453,8 +463,9 @@ mod tests {
             "accessToken": "top-token-value",
             "deviceId": "c9074ab1-208b-4255-8f71-09cc2ce32278",
         });
-        let credentials = crate::server::core::providers::chatglm::credentials::from_record(Some(&top))
-            .expect("顶层形态应当读到");
+        let credentials =
+            crate::server::core::providers::chatglm::credentials::from_record(Some(&top))
+                .expect("顶层形态应当读到");
         assert_eq!(credentials.access_token, "top-token-value");
 
         let nested = json!({
@@ -510,8 +521,7 @@ mod tests {
     /// 真实例（TempDb），锁的是 bootstrap 的真实路径：落库、判据恢复、幂等。
     #[test]
     fn nested_token_migration_is_reachable_through_the_store() {
-        let (db, _keep) =
-            crate::server::db::test_temp::TempDb::open("chatglm-nested-token-wiring");
+        let (db, _keep) = crate::server::db::test_temp::TempDb::open("chatglm-nested-token-wiring");
         let store = AccountStore::with_db(Some(db));
         // 造一条「首版形态」存量记录：令牌在嵌套 auth 里（绕过写入侧的新口径，
         // 直接按 save_state 差异落库，等价于老版本写下的数据）

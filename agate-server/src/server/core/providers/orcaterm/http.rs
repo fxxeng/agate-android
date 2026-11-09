@@ -30,7 +30,10 @@ fn transport_error(what: &str, error: reqwest::Error) -> GatewayError {
     if error.is_timeout() {
         GatewayError::with_status(504, format!("{what}超时，请稍后重试"))
     } else {
-        GatewayError::with_status(502, format!("{what}失败：{}", egress::describe_error_detail(&error)))
+        GatewayError::with_status(
+            502,
+            format!("{what}失败：{}", egress::describe_error_detail(&error)),
+        )
     }
 }
 
@@ -42,7 +45,10 @@ fn translate_status(status: u16, url: &str, head: &str) -> GatewayError {
             format!("OrcaTerm 登录态已失效，请重新导入或重新粘贴该账号的 accessToken（HTTP {status}，{url}）"),
         )
     } else {
-        GatewayError::with_status(status as i32, format!("OrcaTerm 返回 HTTP {status}（{url}）：{head}"))
+        GatewayError::with_status(
+            status as i32,
+            format!("OrcaTerm 返回 HTTP {status}（{url}）：{head}"),
+        )
     }
 }
 
@@ -63,7 +69,9 @@ pub async fn post_json_value(
         builder = builder.header(name.as_str(), value);
     }
     builder = builder.json(body);
-    builder = builder.timeout(std::time::Duration::from_millis(timeout_ms.unwrap_or(REQUEST_TIMEOUT_MS)));
+    builder = builder.timeout(std::time::Duration::from_millis(
+        timeout_ms.unwrap_or(REQUEST_TIMEOUT_MS),
+    ));
     let response = builder
         .send()
         .await

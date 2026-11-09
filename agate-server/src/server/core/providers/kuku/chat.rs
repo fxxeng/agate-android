@@ -29,7 +29,7 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use futures::StreamExt;
-use serde_json::{Map, Value, json};
+use serde_json::{json, Map, Value};
 use tokio_stream::wrappers::ReceiverStream;
 
 use crate::server::core::account_store::AccountStore;
@@ -38,7 +38,7 @@ use crate::server::core::upstream::usage::RequestTelemetry;
 use crate::server::core::upstream::ForwardOutcome;
 use crate::server::errors::GatewayError;
 
-use super::credentials::{self, KukuCredentials, request_headers};
+use super::credentials::{self, request_headers, KukuCredentials};
 use super::session::{self, TokenTriple};
 use super::{APP_ID, BASE_URL, CHANNEL, DEFAULT_MODEL, DEFAULT_THINK_MODE, WEB_QUERY};
 
@@ -72,22 +72,37 @@ pub async fn run_chat(
     let query = format!("{WEB_QUERY}{}", session::token_query(&triple));
 
     // ── 建会话 ──────────────────────────────────────────────
-    let created = create_session(&credentials, &query, &triple, &prompt, &model, proxy.as_ref()).await?;
+    let created = create_session(
+        &credentials,
+        &query,
+        &triple,
+        &prompt,
+        &model,
+        proxy.as_ref(),
+    )
+    .await?;
     // 分配算力 + 切会话（容错：失败不阻断对话，浏览器也会调这两步）
     if let Err(error) = allocate(&credentials, &query, proxy.as_ref()).await {
-        crate::server::logging::verbose("[Kuku]", &format!("idallochstr 失败（容错）：{}", error.message));
+        crate::server::logging::verbose(
+            "[Kuku]",
+            &format!("idallochstr 失败（容错）：{}", error.message),
+        );
     }
-    if let Err(error) = switch_session(&credentials, &query, &created.session_id, proxy.as_ref()).await {
-        crate::server::logging::verbose("[Kuku]", &format!("sessionswitch 失败（容错）：{}", error.message));
+    if let Err(error) =
+        switch_session(&credentials, &query, &created.session_id, proxy.as_ref()).await
+    {
+        crate::server::logging::verbose(
+            "[Kuku]",
+            &format!("sessionswitch 失败（容错）：{}", error.message),
+        );
     }
 
     // ── SSE 流 ──────────────────────────────────────────────
-    let url = format!(
-        "{BASE_URL}/wenchain/genflowpro/sse/getchatcontent?{query}"
-    );
+    let url = format!("{BASE_URL}/wenchain/genflowpro/sse/getchatcontent?{query}");
     let payload = chat_payload(&prompt, &model, &created.session_id, &created.reply_id);
     let headers = request_headers(&credentials);
-    let response = super::http::sse_post(&url, &headers, &payload, proxy.as_ref(), "KukuAI 对话").await?;
+    let response =
+        super::http::sse_post(&url, &headers, &payload, proxy.as_ref(), "KukuAI 对话").await?;
 
     if let Some(capture) = telemetry.capture().as_deref() {
         capture.reset_request(&url, super::kuku_id(), &headers, body);
@@ -105,7 +120,10 @@ pub async fn run_chat(
     crate::spawn_task(async move {
         let outcome = drive_stream(response, &requested, &sender).await;
         if let Err(error) = outcome {
-            crate::server::logging::verbose("[Kuku]", &format!("对话流处理中断：{}", error.message));
+            crate::server::logging::verbose(
+                "[Kuku]",
+                &format!("对话流处理中断：{}", error.message),
+            );
         }
     });
     Ok(ForwardOutcome::Stream {
@@ -161,7 +179,9 @@ async fn create_session(
             "client_added": client_added.to_string()
         }
     });
-    let value = super::http::post_json_value(&url, &headers, &body, proxy, Some(SESSION_TIMEOUT_MS)).await?;
+    let value =
+        super::http::post_json_value(&url, &headers, &body, proxy, Some(SESSION_TIMEOUT_MS))
+            .await?;
     let code = value
         .get("status")
         .and_then(|status| status.get("code"))
@@ -196,7 +216,10 @@ async fn create_session(
             "KukuAI 建会话返回缺少 session_id（上游响应异常）",
         ));
     }
-    Ok(NewSession { session_id, reply_id })
+    Ok(NewSession {
+        session_id,
+        reply_id,
+    })
 }
 
 /// 分配算力（容错）。
@@ -268,7 +291,10 @@ pub fn build_prompt(messages: Option<&Value>) -> String {
     }
     let mut lines: Vec<String> = Vec::new();
     for message in items {
-        let role = message.get("role").and_then(Value::as_str).unwrap_or("user");
+        let role = message
+            .get("role")
+            .and_then(Value::as_str)
+            .unwrap_or("user");
         let text = content_text(message);
         let Some(text) = text else { continue };
         if text.trim().is_empty() {
@@ -330,8 +356,12 @@ impl SseScanner {
         while let Some(split_at) = self.buffer.find("\n\n") {
             let raw = self.buffer.drain(..=split_at + 1).collect::<String>();
             for line in raw.split('\n') {
-                let Some(payload) = line.strip_prefix("data: ") else { continue };
-                let Ok(parsed) = serde_json::from_str::<Value>(payload) else { continue };
+                let Some(payload) = line.strip_prefix("data: ") else {
+                    continue;
+                };
+                let Ok(parsed) = serde_json::from_str::<Value>(payload) else {
+                    continue;
+                };
                 if let Some(event) = event_from_json(&parsed) {
                     events.push(event);
                 }
@@ -403,7 +433,10 @@ struct KukuStream {
 impl KukuStream {
     fn new(model: &str) -> Self {
         Self {
-            id: format!("chatcmpl-{}", crate::server::logging::now_ms() * 1000 % 1_000_000_000_000_000),
+            id: format!(
+                "chatcmpl-{}",
+                crate::server::logging::now_ms() * 1000 % 1_000_000_000_000_000
+            ),
             created: crate::server::logging::now_ms() / 1000,
             model: model.to_string(),
             scanner: SseScanner::default(),
@@ -467,7 +500,10 @@ impl KukuStream {
         chunk.insert("object".to_string(), json!("chat.completion.chunk"));
         chunk.insert("created".to_string(), json!(self.created));
         chunk.insert("model".to_string(), json!(self.model));
-        chunk.insert("choices".to_string(), Value::Array(vec![Value::Object(choice)]));
+        chunk.insert(
+            "choices".to_string(),
+            Value::Array(vec![Value::Object(choice)]),
+        );
         Frame::Chunk(Value::Object(chunk))
     }
 }
@@ -480,9 +516,11 @@ async fn drive_stream(
     model: &str,
     sender: &tokio::sync::mpsc::Sender<Result<Bytes, std::io::Error>>,
 ) -> Result<(), GatewayError> {
-    let source = response
-        .bytes_stream()
-        .map(|item| item.map_err(|error| std::io::Error::other(crate::server::core::egress::describe_error_detail(&error))));
+    let source = response.bytes_stream().map(|item| {
+        item.map_err(|error| {
+            std::io::Error::other(crate::server::core::egress::describe_error_detail(&error))
+        })
+    });
     let mut source = crate::server::core::upstream::stall::idle_guard(
         Box::pin(source),
         std::time::Duration::from_millis(STREAM_IDLE_MS),
@@ -514,10 +552,15 @@ async fn send_frame(
 }
 
 /// 非流式：遍历同样的上游流，聚合为完整 JSON。
-async fn aggregate(response: reqwest::Response, client_model: &str) -> Result<ForwardOutcome, GatewayError> {
-    let source = response
-        .bytes_stream()
-        .map(|item| item.map_err(|error| std::io::Error::other(crate::server::core::egress::describe_error_detail(&error))));
+async fn aggregate(
+    response: reqwest::Response,
+    client_model: &str,
+) -> Result<ForwardOutcome, GatewayError> {
+    let source = response.bytes_stream().map(|item| {
+        item.map_err(|error| {
+            std::io::Error::other(crate::server::core::egress::describe_error_detail(&error))
+        })
+    });
     let mut source = crate::server::core::upstream::stall::idle_guard(
         Box::pin(source),
         std::time::Duration::from_millis(STREAM_IDLE_MS),
@@ -547,8 +590,13 @@ async fn aggregate(response: reqwest::Response, client_model: &str) -> Result<Fo
     body.insert("object".to_string(), json!("chat.completion"));
     body.insert("created".to_string(), json!(created));
     body.insert("model".to_string(), json!(model));
-    body.insert("choices".to_string(), Value::Array(vec![Value::Object(choice)]));
-    Ok(ForwardOutcome::Completion { body: Value::Object(body) })
+    body.insert(
+        "choices".to_string(),
+        Value::Array(vec![Value::Object(choice)]),
+    );
+    Ok(ForwardOutcome::Completion {
+        body: Value::Object(body),
+    })
 }
 
 // ─── 随机串 ──────────────────────────────────────────────────

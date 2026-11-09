@@ -26,9 +26,9 @@
 //! ── 硬约束 ──────────────────────────────────────────────────
 //! release 是 `panic=abort`：本文件零 unwrap/expect/panic。
 
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
-use super::{GrowthAccount, GrowthCall, MP_UA, growth_request};
+use super::{growth_request, GrowthAccount, GrowthCall, MP_UA};
 
 /// 活动端点基址。
 pub const CLOUD_AGENT: &str = "https://www.codebuddy.cn";
@@ -47,7 +47,14 @@ async fn school_request(
         ("Content-Type".to_string(), "application/json".to_string()),
         ("User-Agent".to_string(), MP_UA.to_string()),
     ];
-    growth_request(account, method, &format!("{CLOUD_AGENT}{path}"), body, &headers).await
+    growth_request(
+        account,
+        method,
+        &format!("{CLOUD_AGENT}{path}"),
+        body,
+        &headers,
+    )
+    .await
 }
 
 /// 任务列表（GET /portal/activity/school/tasks）→ (tasks, in_period)。
@@ -87,7 +94,11 @@ pub async fn post_viewed(account: &GrowthAccount, code: &str) -> Result<(), Stri
     if call.ok() {
         Ok(())
     } else {
-        Err(format!("viewed HTTP {} code={:?}", call.status, call.code()))
+        Err(format!(
+            "viewed HTTP {} code={:?}",
+            call.status,
+            call.code()
+        ))
     }
 }
 
@@ -103,7 +114,11 @@ pub async fn post_share_complete(account: &GrowthAccount) -> Result<(), String> 
     if call.ok() {
         Ok(())
     } else {
-        Err(format!("share-complete HTTP {} code={:?}", call.status, call.code()))
+        Err(format!(
+            "share-complete HTTP {} code={:?}",
+            call.status,
+            call.code()
+        ))
     }
 }
 
@@ -119,7 +134,12 @@ pub async fn post_claim(account: &GrowthAccount, code: &str) -> Result<(), Strin
     if call.ok() {
         Ok(())
     } else {
-        Err(format!("claim HTTP {} code={:?} {}", call.status, call.code(), call.msg()))
+        Err(format!(
+            "claim HTTP {} code={:?} {}",
+            call.status,
+            call.code(),
+            call.msg()
+        ))
     }
 }
 
@@ -172,7 +192,11 @@ pub async fn post_draw(
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_string();
-    let credit = call.data().get("credit_amount").and_then(Value::as_i64).unwrap_or(0);
+    let credit = call
+        .data()
+        .get("credit_amount")
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
     let balance = call
         .data()
         .get("chance_balance")
@@ -245,14 +269,20 @@ async fn fetch_school_expert(account: &GrowthAccount) -> (String, String, String
                         let name = expert
                             .get("display_name_zh")
                             .and_then(|value| {
-                                value.get("zh").and_then(Value::as_str).or_else(|| value.as_str())
+                                value
+                                    .get("zh")
+                                    .and_then(Value::as_str)
+                                    .or_else(|| value.as_str())
                             })
                             .unwrap_or(id)
                             .to_string();
                         let profession = expert
                             .get("profession_zh")
                             .and_then(|value| {
-                                value.get("zh").and_then(Value::as_str).or_else(|| value.as_str())
+                                value
+                                    .get("zh")
+                                    .and_then(Value::as_str)
+                                    .or_else(|| value.as_str())
                             })
                             .unwrap_or("")
                             .to_string();
@@ -306,7 +336,11 @@ pub async fn report_events(account: &GrowthAccount, events: &[Value]) -> Result<
     if call.ok() {
         Ok(())
     } else {
-        Err(format!("school 事件上报 HTTP {} code={:?}", call.status, call.code()))
+        Err(format!(
+            "school 事件上报 HTTP {} code={:?}",
+            call.status,
+            call.code()
+        ))
     }
 }
 
@@ -368,7 +402,10 @@ pub async fn process_task(account: &GrowthAccount, code: &str, task: &Value) -> 
         .unwrap_or("")
         .to_lowercase();
     let cur = task.get("progress").and_then(Value::as_i64).unwrap_or(0);
-    let target = task.get("target_count").and_then(Value::as_i64).unwrap_or(1);
+    let target = task
+        .get("target_count")
+        .and_then(Value::as_i64)
+        .unwrap_or(1);
 
     if status == "completed" || status == "claimed" {
         return SchoolReport {
@@ -401,8 +438,7 @@ pub async fn process_task(account: &GrowthAccount, code: &str, task: &Value) -> 
                 message: format!("viewed 激活失败：{error}"),
             };
         }
-        tokio::time::sleep(std::time::Duration::from_millis(super::GROWTH_WRITE_GAP_MS))
-            .await;
+        tokio::time::sleep(std::time::Duration::from_millis(super::GROWTH_WRITE_GAP_MS)).await;
     }
 
     // 2) 判据触发（share 一次；desktop_seq 一次 6 连；其余按 target-进度循环）
@@ -451,8 +487,7 @@ pub async fn process_task(account: &GrowthAccount, code: &str, task: &Value) -> 
                 message: format!("判据触发失败：{error}"),
             };
         }
-        tokio::time::sleep(std::time::Duration::from_millis(super::GROWTH_WRITE_GAP_MS))
-            .await;
+        tokio::time::sleep(std::time::Duration::from_millis(super::GROWTH_WRITE_GAP_MS)).await;
         // 每轮回读，到目标即止
         if let Ok((tasks, _)) = fetch_tasks(account).await {
             if let Some(after) = super::find_task(&tasks, code) {
@@ -481,7 +516,10 @@ pub async fn process_task(account: &GrowthAccount, code: &str, task: &Value) -> 
         Ok((tasks, _)) => super::find_task(&tasks, code)
             .map(|task| {
                 (
-                    task.get("status").and_then(Value::as_str).unwrap_or("").to_lowercase(),
+                    task.get("status")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_lowercase(),
                     task.get("progress").and_then(Value::as_i64).unwrap_or(0),
                 )
             })
@@ -576,7 +614,11 @@ pub async fn run_all(
         }
         reports.push(process_task(account, code, task).await);
     }
-    let lottery_result = if lottery { Some(run_lottery(account, 20).await) } else { None };
+    let lottery_result = if lottery {
+        Some(run_lottery(account, 20).await)
+    } else {
+        None
+    };
     (reports, lottery_result)
 }
 
@@ -606,7 +648,11 @@ pub async fn run_lottery(account: &GrowthAccount, max_draws: usize) -> Value {
         Ok(result) => result,
         Err(error) => return json!({ "success": false, "message": error }),
     };
-    if !config.get("in_period").and_then(Value::as_bool).unwrap_or(false) {
+    if !config
+        .get("in_period")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
         return json!({ "success": false, "message": "活动非进行期，抽奖跳过" });
     }
     let mut balance = chance.get("balance").and_then(Value::as_i64).unwrap_or(0);
@@ -649,10 +695,8 @@ pub async fn run_lottery(account: &GrowthAccount, max_draws: usize) -> Value {
                     stall = 0;
                 }
                 previous = balance;
-                tokio::time::sleep(std::time::Duration::from_millis(
-                    super::GROWTH_WRITE_GAP_MS,
-                ))
-                .await;
+                tokio::time::sleep(std::time::Duration::from_millis(super::GROWTH_WRITE_GAP_MS))
+                    .await;
             }
             Err(error) => {
                 return json!({

@@ -58,13 +58,17 @@ pub async fn export_backup(State(state): State<ServerState>, body: axum::body::B
         Ok(path) => path,
         Err(response) => return response,
     };
-    let include_logs = !matches!(payload.get("includeLogs"), Some(serde_json::Value::Bool(false)));
+    let include_logs = !matches!(
+        payload.get("includeLogs"),
+        Some(serde_json::Value::Bool(false))
+    );
 
     let Some(db) = state.db().cloned() else {
         return errors::management_error(500, "数据库不可用，无法导出（详见启动日志）");
     };
-    let result = tokio::task::spawn_blocking(move || backup::export_to_file(&db, &target, include_logs))
-        .await;
+    let result =
+        tokio::task::spawn_blocking(move || backup::export_to_file(&db, &target, include_logs))
+            .await;
     match result {
         Ok(Ok(data)) => ok_json(data),
         Ok(Err(message)) => errors::management_error(500, message),

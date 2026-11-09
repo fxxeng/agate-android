@@ -30,7 +30,7 @@
 //! 把它算进「待领」就是骗用户点一次然后失败 —— 所以行上带一个 `blocked`，
 //! 既不计入 `unclaimed`，也不发领取，只在展开的任务清单里如实显示「暂不可领」。
 
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use crate::server::core::account_store::codearts_accounts::CODEARTS_PROVIDER_ID;
 use crate::server::core::account_store::AccountStore;
@@ -107,7 +107,8 @@ fn points_sum(rows: &[Value], only_done: bool) -> f64 {
 }
 
 /// 状态响应里固定的那两项说明（记忆路径与实查路径共用一份文案）。
-const TASK_NOTE: &str = "一次性奖励：领一次就没了，且到账的是套餐赠送积分（不增加福利模型 token 池）";
+const TASK_NOTE: &str =
+    "一次性奖励：领一次就没了，且到账的是套餐赠送积分（不增加福利模型 token 池）";
 
 /// 把 provider / note 并进一份响应（记忆路径与实查路径共用）。
 fn with_meta(mut payload: Value) -> Value {
@@ -212,7 +213,11 @@ pub async fn claim_all(store: &AccountStore, account_id: &str) -> Result<Value, 
     // 被限流）用 `before`（就是本轮挑中的那几条）当当前真相 —— 两条路都**不再
     // 额外打一次 delivery**（旧实现在 after 为空时回落到 `newbie_gift`，
     // 那是一次多余的只读请求）。
-    let after: Vec<Campaign> = if run.after.is_empty() { run.before.clone() } else { run.after };
+    let after: Vec<Campaign> = if run.after.is_empty() {
+        run.before.clone()
+    } else {
+        run.after
+    };
     // 任务清单恒为「新人礼那一条」：`after` 在成功路径上是回读的**全量**活动
     // 列表（执行体要它逐条确认），直接拿它铺行会让卡片在领取后多出邀请 /
     // 学生认证 / 每日签到三条 —— 同一张卡片「查询」一条、「领取」四条，
@@ -228,7 +233,11 @@ pub async fn claim_all(store: &AccountStore, account_id: &str) -> Result<Value, 
         .before
         .iter()
         .filter(|item| actionable(item))
-        .filter(|item| after.iter().any(|seen| seen.key() == item.key() && settled(seen)))
+        .filter(|item| {
+            after
+                .iter()
+                .any(|seen| seen.key() == item.key() && settled(seen))
+        })
         .collect();
     let results: Vec<Value> = run
         .before
@@ -278,7 +287,10 @@ fn settled_claim_response(snapshot: &Value) -> Value {
         object.insert("claimed".to_string(), json!(0));
         object.insert("failed".to_string(), json!(0));
         object.insert("claimedPoints".to_string(), json!(0));
-        object.insert("outcome".to_string(), json!(welfare::Outcome::Already.label()));
+        object.insert(
+            "outcome".to_string(),
+            json!(welfare::Outcome::Already.label()),
+        );
     }
     with_meta(payload)
 }
@@ -288,7 +300,14 @@ mod shaping {
     use super::*;
     use serde_json::json;
 
-    fn campaign(id: &str, kind: &str, title: &str, claimable: bool, status: &str, amount: f64) -> Campaign {
+    fn campaign(
+        id: &str,
+        kind: &str,
+        title: &str,
+        claimable: bool,
+        status: &str,
+        amount: f64,
+    ) -> Campaign {
         Campaign {
             id: json!(id),
             kind: kind.to_string(),
@@ -302,15 +321,23 @@ mod shaping {
 
     #[test]
     fn only_the_newbie_gift_is_a_task_and_the_other_three_kinds_stay_out() {
-        assert!(campaign("4", "NEW_USER_REGISTER", "新人注册礼", true, "", 4000.0).is_newbie_gift());
+        assert!(
+            campaign("4", "NEW_USER_REGISTER", "新人注册礼", true, "", 4000.0).is_newbie_gift()
+        );
         // 每日那条不是新手任务（混领就是把每天的事当成只有一次的事做）
-        assert!(!campaign("1", "USER_LOGIN", "每日签到领1000积分", true, "", 1000.0).is_newbie_gift());
+        assert!(
+            !campaign("1", "USER_LOGIN", "每日签到领1000积分", true, "", 1000.0).is_newbie_gift()
+        );
         // 这两类**有意不给入口**（理由见模块头），不是漏做：学生认证的前置是认证本身、
         // 邀请礼的收益归邀请人。判据收窄到一条，界面上就不会出现必然失败的按钮。
         assert!(!campaign("2", "STUDENT_CERTIFIED", "学生认证", true, "", 4000.0).is_newbie_gift());
         assert!(!campaign("3", "INVITE_USER", "邀请好友", true, "ENTRY", 1000.0).is_newbie_gift());
         // 认不出键的条目不算任务（没有键就没法记台账、也没法回读确认）
-        assert!(!Campaign { id: Value::Null, ..campaign("4", "NEW_USER_REGISTER", "", true, "", 1.0) }.is_newbie_gift());
+        assert!(!Campaign {
+            id: Value::Null,
+            ..campaign("4", "NEW_USER_REGISTER", "", true, "", 1.0)
+        }
+        .is_newbie_gift());
         assert!(!campaign("", "NEW_USER_REGISTER", "空键", true, "", 1.0).is_newbie_gift());
     }
 
@@ -318,12 +345,37 @@ mod shaping {
     fn an_unavailable_task_shows_as_blocked_and_is_not_counted_as_unclaimed() {
         let rows = vec![
             // 实测会出现的形状：条目在列表里，但 claimable:false 且从未到账
-            task_row(&campaign("4", "NEW_USER_REGISTER", "新人注册礼", false, "", 4000.0)),
-            task_row(&campaign("5", "NEW_USER_REGISTER", "新人注册礼（第二期）", true, "", 4000.0)),
-            task_row(&campaign("6", "NEW_USER_REGISTER", "新人注册礼（已领）", false, "CONFIRMED", 4000.0)),
+            task_row(&campaign(
+                "4",
+                "NEW_USER_REGISTER",
+                "新人注册礼",
+                false,
+                "",
+                4000.0,
+            )),
+            task_row(&campaign(
+                "5",
+                "NEW_USER_REGISTER",
+                "新人注册礼（第二期）",
+                true,
+                "",
+                4000.0,
+            )),
+            task_row(&campaign(
+                "6",
+                "NEW_USER_REGISTER",
+                "新人注册礼（已领）",
+                false,
+                "CONFIRMED",
+                4000.0,
+            )),
         ];
         assert_eq!(Some(true), rows[0].get("blocked").and_then(Value::as_bool));
-        assert_eq!(0, unclaimed_of(&rows[..1]), "blocked 的行不能算待领：点一次就失败一次");
+        assert_eq!(
+            0,
+            unclaimed_of(&rows[..1]),
+            "blocked 的行不能算待领：点一次就失败一次"
+        );
         assert_eq!(1, unclaimed_of(&rows), "只有能领且没到账的那条算待领");
         // 已到账的那条：不再 blocked（没活可干也不是"卡住"，是完事了），也不算待领
         assert_eq!(Some(false), rows[2].get("blocked").and_then(Value::as_bool));
@@ -333,8 +385,22 @@ mod shaping {
     #[test]
     fn a_settled_task_counts_into_earned_but_not_into_unclaimed() {
         let rows = vec![
-            task_row(&campaign("4", "NEW_USER_REGISTER", "新人注册礼", false, "CONFIRMED", 4000.0)),
-            task_row(&campaign("5", "NEW_USER_REGISTER", "新人注册礼（第二期）", true, "", 1000.0)),
+            task_row(&campaign(
+                "4",
+                "NEW_USER_REGISTER",
+                "新人注册礼",
+                false,
+                "CONFIRMED",
+                4000.0,
+            )),
+            task_row(&campaign(
+                "5",
+                "NEW_USER_REGISTER",
+                "新人注册礼（第二期）",
+                true,
+                "",
+                1000.0,
+            )),
         ];
         assert_eq!(4000.0, points_sum(&rows, true), "已到账的按上游名义值合计");
         assert_eq!(5000.0, points_sum(&rows, false));
@@ -346,28 +412,70 @@ mod shaping {
         // 认得的类：按 kind 给中文，忽略上游那个英文 title（金额不重复写进标题）
         assert_eq!(
             "每日签到",
-            task_row(&campaign("1", "DAILY_CLAIM", "Daily Check-in: Claim 1000 Credits", true, "", 1000.0))["title"]
+            task_row(&campaign(
+                "1",
+                "DAILY_CLAIM",
+                "Daily Check-in: Claim 1000 Credits",
+                true,
+                "",
+                1000.0
+            ))["title"]
         );
         assert_eq!(
             "用户登录送积分",
-            task_row(&campaign("1", "USER_LOGIN", "Login reward for credits", true, "", 100.0))["title"]
+            task_row(&campaign(
+                "1",
+                "USER_LOGIN",
+                "Login reward for credits",
+                true,
+                "",
+                100.0
+            ))["title"]
         );
         assert_eq!(
             "新用户注册礼",
-            task_row(&campaign("4", "NEW_USER_REGISTER", "新用户注册送 4000 积分", true, "", 4000.0))["title"]
+            task_row(&campaign(
+                "4",
+                "NEW_USER_REGISTER",
+                "新用户注册送 4000 积分",
+                true,
+                "",
+                4000.0
+            ))["title"]
         );
         assert_eq!(
             "学生认证",
-            task_row(&campaign("2", "STUDENT_CERTIFIED", "Student Certification: Claim 4000 Credits", false, "", 4000.0))["title"]
+            task_row(&campaign(
+                "2",
+                "STUDENT_CERTIFIED",
+                "Student Certification: Claim 4000 Credits",
+                false,
+                "",
+                4000.0
+            ))["title"]
         );
         assert_eq!(
             "邀请好友",
-            task_row(&campaign("3", "INVITE_USER", "Invite & Earn with Referral Codes", true, "ENTRY", 1000.0))["title"]
+            task_row(&campaign(
+                "3",
+                "INVITE_USER",
+                "Invite & Earn with Referral Codes",
+                true,
+                "ENTRY",
+                1000.0
+            ))["title"]
         );
         // 认不出的类：回退上游原文；上游也没给才回退 kind
         assert_eq!(
             "Some New Campaign",
-            task_row(&campaign("9", "SOME_NEW_KIND", "Some New Campaign", true, "", 1.0))["title"]
+            task_row(&campaign(
+                "9",
+                "SOME_NEW_KIND",
+                "Some New Campaign",
+                true,
+                "",
+                1.0
+            ))["title"]
         );
         assert_eq!(
             "SOME_NEW_KIND",

@@ -161,9 +161,7 @@ impl ProviderAdapter for ChatglmAdapter {
 
         match code {
             // 访客/登录态失效：交给编排层刷新一次（访客会重新换发凭证）
-            Some(40003) | Some(40103) => {
-                return UpstreamErrorClass::TokenExpired { message }
-            }
+            Some(40003) | Some(40103) => return UpstreamErrorClass::TokenExpired { message },
             // 额度不足：本家最常见的失败（访客走 AgentMore 通道时必现）。
             // 归限额而不是致命 —— 换一个有额度的账号比直接报错有用得多，
             // 且下游按 429 退避也符合「这会儿没量了」的语义
@@ -267,14 +265,15 @@ impl ProviderAdapter for ChatglmAdapter {
             let credentials = credentials::from_record(record.as_ref())?;
             // 访客（或没有 refresh_token 的记录）：重新换发访客凭证
             if credentials.is_guest || credentials.refresh_token.trim().is_empty() {
-                let (access, refresh, uid) = super::http::guest_access(&credentials.device_id, None)
-                    .await
-                    .map_err(|error| {
-                        GatewayError::with_status(
-                            error.status_code,
-                            format!("智谱清言访客凭证重新换发失败：{}", error.message),
-                        )
-                    })?;
+                let (access, refresh, uid) =
+                    super::http::guest_access(&credentials.device_id, None)
+                        .await
+                        .map_err(|error| {
+                            GatewayError::with_status(
+                                error.status_code,
+                                format!("智谱清言访客凭证重新换发失败：{}", error.message),
+                            )
+                        })?;
                 // 写回账号（设备号保持不变 —— 它是身份的一部分）
                 if !account_id.is_empty() {
                     let _ = store.update_chatglm_tokens(account_id, &access, &refresh);
@@ -372,9 +371,8 @@ impl ProviderAdapter for ChatglmAdapter {
         &'a self,
         store: &'a AccountStore,
         account_id: &'a str,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<Value, GatewayError>> + Send + 'a>,
-    > {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value, GatewayError>> + Send + 'a>>
+    {
         Box::pin(async move { balance::query(store, account_id).await })
     }
 }

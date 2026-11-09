@@ -75,12 +75,18 @@ pub fn spawn(store: AccountStore) {
         crate::task_supervisor::TaskScope::Core,
         "zcode_config_sync",
         move |mut cancellation| async move {
-            if !cancellation.wait_or_cancel(Duration::from_millis(FIRST_DELAY_MS)).await {
+            if !cancellation
+                .wait_or_cancel(Duration::from_millis(FIRST_DELAY_MS))
+                .await
+            {
                 return;
             }
             loop {
                 sync_once(&store).await;
-                if !cancellation.wait_or_cancel(Duration::from_millis(SYNC_INTERVAL_MS)).await {
+                if !cancellation
+                    .wait_or_cancel(Duration::from_millis(SYNC_INTERVAL_MS))
+                    .await
+                {
                     break;
                 }
             }
@@ -206,7 +212,12 @@ fn mapping_account(store: &AccountStore, region: Region) -> Option<(String, Stri
         // 与 `balance::query_usage` 的取法同一条链）
         let key = store
             .zcode_account_record(id)
-            .and_then(|record| record.get("accessToken").and_then(Value::as_str).map(str::to_string))
+            .and_then(|record| {
+                record
+                    .get("accessToken")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
             .map(|key| key.trim().to_string())
             .filter(|key| !key.is_empty());
         if let Some(key) = key {

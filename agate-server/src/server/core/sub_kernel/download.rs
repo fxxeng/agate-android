@@ -86,7 +86,8 @@ enum DownloadError {
 
 /// 执行下载（worker 调用；已安装时是 no-op ——「重复点下载」不重复拉）。
 pub async fn run_download() -> Result<DownloadOutcome, String> {
-    let Some((asset, sha256)) = crate::server::core::sub_kernel::asset_for_current_platform() else {
+    let Some((asset, sha256)) = crate::server::core::sub_kernel::asset_for_current_platform()
+    else {
         return Err(crate::server::core::sub_kernel::unsupported_reason()
             .unwrap_or_else(|| "当前平台暂不支持代理子内核".to_string()));
     };
@@ -96,7 +97,8 @@ pub async fn run_download() -> Result<DownloadOutcome, String> {
     let dir = kernel_dir();
     std::fs::create_dir_all(&dir).map_err(|error| format!("创建内核目录失败: {error}"))?;
     let archive_path = dir.join(asset);
-    let url = format!("https://github.com/MetaCubeX/mihomo/releases/download/{KERNEL_VERSION}/{asset}");
+    let url =
+        format!("https://github.com/MetaCubeX/mihomo/releases/download/{KERNEL_VERSION}/{asset}");
     log_line(&format!("⬇️ 开始下载代理内核 {KERNEL_VERSION}（{asset}）"));
 
     // 出口候选在开跑前定下：选定线路不可用时**直接报错**，不乱试别的线路
@@ -158,7 +160,8 @@ fn egress_candidates() -> Result<Vec<Option<crate::server::core::proxies::Resolv
         return match resolve_account_proxy(Some(&configured)) {
             Some(ProxyResolution::Resolved(proxy)) if proxy.port.is_some() => Ok(vec![Some(proxy)]),
             Some(ProxyResolution::Resolved(_)) => Err(
-                "选定的下载出口没有可用的监听端口（内核还没为它分配端口），换一条线路再试".to_string(),
+                "选定的下载出口没有可用的监听端口（内核还没为它分配端口），换一条线路再试"
+                    .to_string(),
             ),
             Some(ProxyResolution::Failed(reason)) => Err(format!(
                 "选定的下载出口不可用（{reason}），重新选一条线路再试"
@@ -228,8 +231,7 @@ async fn download_to_file(
             Err(_) => continue,
         };
         let Some(chunk) = next else { break };
-        let chunk =
-            chunk.map_err(|error| DownloadError::Failed(format!("下载中断: {error}")))?;
+        let chunk = chunk.map_err(|error| DownloadError::Failed(format!("下载中断: {error}")))?;
         file.write_all(&chunk)
             .map_err(|error| DownloadError::Failed(format!("写入下载文件失败: {error}")))?;
         received += chunk.len() as u64;
@@ -273,13 +275,12 @@ fn install_binary(archive_path: &std::path::Path, dir: &std::path::Path) -> Resu
     let binary_path = dir.join(kernel_binary_name());
     // 旧二进制先删（Windows 上 rename 到已存在的目标会失败）
     let _ = std::fs::remove_file(&binary_path);
-    let archive = std::fs::File::open(archive_path)
-        .map_err(|error| format!("打开下载文件失败: {error}"))?;
+    let archive =
+        std::fs::File::open(archive_path).map_err(|error| format!("打开下载文件失败: {error}"))?;
     let mut decoder = flate2::read::GzDecoder::new(archive);
-    let mut binary = std::fs::File::create(&binary_path)
-        .map_err(|error| format!("安装内核失败: {error}"))?;
-    std::io::copy(&mut decoder, &mut binary)
-        .map_err(|error| format!("解压内核失败: {error}"))?;
+    let mut binary =
+        std::fs::File::create(&binary_path).map_err(|error| format!("安装内核失败: {error}"))?;
+    std::io::copy(&mut decoder, &mut binary).map_err(|error| format!("解压内核失败: {error}"))?;
     // 可执行位与平台文件权限由宿主 adapter 处理。
     crate::server::core::sub_kernel::process::process_adapter()
         .set_executable(&binary_path)

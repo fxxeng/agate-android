@@ -70,8 +70,13 @@ pub fn create_run(db: &Db, input: &RunInput<'_>) -> Result<(), String> {
               schedule_id, auto_checkin)
              VALUES (?1, ?2, ?3, ?4, 'running', ?5, ?6, ?7, ?8)",
             params![
-                input.run_id, input.started_at, input.source, input.reason,
-                input.target_count, input.skipped_count, input.schedule_id,
+                input.run_id,
+                input.started_at,
+                input.source,
+                input.reason,
+                input.target_count,
+                input.skipped_count,
+                input.schedule_id,
                 input.auto_checkin
             ],
         )?;
@@ -220,7 +225,14 @@ pub fn finish_run(
     skipped_count: i64,
 ) -> Result<(), String> {
     finish_run_with_summary(
-        db, run_id, finished_at, status, target_count, result_count, skipped_count, None,
+        db,
+        run_id,
+        finished_at,
+        status,
+        target_count,
+        result_count,
+        skipped_count,
+        None,
     )
 }
 
@@ -261,7 +273,15 @@ pub fn finish_run_with_summary(
              SET status = ?2, finished_at = ?3, target_count = ?4,
                  result_count = ?5, skipped_count = ?6, summary_json = ?7
              WHERE run_id = ?1 AND status = 'running'",
-            params![run_id, status, finished_at, target_count, result_count, skipped_count, summary_json],
+            params![
+                run_id,
+                status,
+                finished_at,
+                target_count,
+                result_count,
+                skipped_count,
+                summary_json
+            ],
         )?;
         if changed != 1 {
             return Err(rusqlite::Error::InvalidQuery);
@@ -402,13 +422,22 @@ pub fn record_reconciliation_evidence(
     account_id: &str,
     result: &Value,
 ) -> Result<Value, String> {
-    let verdict = result.get("verdict").and_then(Value::as_str).unwrap_or("unknown");
+    let verdict = result
+        .get("verdict")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
     if verdict != "confirmed" && verdict != "unknown" {
         return Err("无效的 Provider 对账 verdict".to_string());
     }
     let provider = result.get("provider").and_then(Value::as_str).unwrap_or("");
-    let evidence_type = result.get("evidenceType").and_then(Value::as_str).unwrap_or("");
-    let observed_at = result.get("observedAt").and_then(Value::as_i64).unwrap_or(0);
+    let evidence_type = result
+        .get("evidenceType")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let observed_at = result
+        .get("observedAt")
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
     let campaign_id: String = result
         .get("campaignId")
         .and_then(Value::as_str)
@@ -437,9 +466,7 @@ pub fn record_reconciliation_evidence(
         .get("upstreamCheckedIn")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let status_available = result
-        .get("statusAvailable")
-        .and_then(Value::as_bool);
+    let status_available = result.get("statusAvailable").and_then(Value::as_bool);
     let reason: String = result
         .get("reason")
         .and_then(Value::as_str)
@@ -458,10 +485,10 @@ pub fn record_reconciliation_evidence(
         && business_day.len() == 10
         && upstream_checked_in
         && upstream_status == "CHECKED_IN"
-        && ((provider == "workbuddy") || (provider == "workbuddy-intl" && status_available == Some(true)));
-    let confirmed = verdict == "confirmed"
-        && observed_at > 0
-        && (qoder_confirmed || workbuddy_confirmed);
+        && ((provider == "workbuddy")
+            || (provider == "workbuddy-intl" && status_available == Some(true)));
+    let confirmed =
+        verdict == "confirmed" && observed_at > 0 && (qoder_confirmed || workbuddy_confirmed);
     if verdict == "confirmed" && !confirmed {
         return Err("confirmed 对账证据缺少必要字段或不满足 Provider 专属证据契约".to_string());
     }
@@ -480,11 +507,14 @@ pub fn record_reconciliation_evidence(
 
     with_db(db, |conn| {
         let tx = conn.transaction()?;
-        let stored_context: Option<(String, i64)> = tx.query_row(
-            "SELECT provider, started_at FROM checkin_run_accounts
+        let stored_context: Option<(String, i64)> = tx
+            .query_row(
+                "SELECT provider, started_at FROM checkin_run_accounts
              WHERE run_id = ?1 AND account_id = ?2 AND state = 'uncertain'",
-            params![run_id, account_id], |row| Ok((row.get(0)?, row.get(1)?)),
-        ).optional()?;
+                params![run_id, account_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
         let Some((stored_provider, account_started_at_ms)) = stored_context else {
             return Err(rusqlite::Error::InvalidQuery);
         };
@@ -514,7 +544,8 @@ pub fn record_reconciliation_evidence(
         let unresolved: bool = tx.query_row(
             "SELECT reconciled_at IS NULL FROM checkin_run_accounts
              WHERE run_id = ?1 AND account_id = ?2 AND state = 'uncertain'",
-            params![run_id, account_id], |row| row.get(0),
+            params![run_id, account_id],
+            |row| row.get(0),
         )?;
         let resolved = confirmed && unresolved;
         tx.execute(
@@ -592,9 +623,10 @@ pub fn query_reconciliation_evidence(
 fn pending_reconciliation_projections(
     db: &Db,
 ) -> Result<Vec<PendingReconciliationProjection>, String> {
-    db.with(|conn| -> Result<Vec<PendingReconciliationProjection>, rusqlite::Error> {
-        let mut statement = conn.prepare(
-            "SELECT a.run_id, a.account_id, a.account_name, a.provider,
+    db.with(
+        |conn| -> Result<Vec<PendingReconciliationProjection>, rusqlite::Error> {
+            let mut statement = conn.prepare(
+                "SELECT a.run_id, a.account_id, a.account_name, a.provider,
                     a.reconciliation_evidence_id, a.started_at
              FROM checkin_run_accounts a
              JOIN checkin_reconciliation_evidence e
@@ -604,21 +636,22 @@ fn pending_reconciliation_projections(
                AND a.reconciliation_projected_at IS NULL
                AND e.verdict = 'confirmed' AND e.resolved = 1
              ORDER BY a.reconciled_at ASC, a.run_id ASC, a.ordinal ASC",
-        )?;
-        let rows = statement
-            .query_map([], |row| {
-                Ok(PendingReconciliationProjection {
-                    run_id: row.get(0)?,
-                    account_id: row.get(1)?,
-                    account_name: row.get(2)?,
-                    provider: row.get(3)?,
-                    evidence_id: row.get(4)?,
-                    account_started_at: row.get(5)?,
-                })
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(rows)
-    })
+            )?;
+            let rows = statement
+                .query_map([], |row| {
+                    Ok(PendingReconciliationProjection {
+                        run_id: row.get(0)?,
+                        account_id: row.get(1)?,
+                        account_name: row.get(2)?,
+                        provider: row.get(3)?,
+                        evidence_id: row.get(4)?,
+                        account_started_at: row.get(5)?,
+                    })
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(rows)
+        },
+    )
     .ok_or_else(|| "签到执行台账数据库连接不可用".to_string())?
     .map_err(|error| format!("读取待投影对账记录失败: {error}"))
 }
@@ -662,7 +695,12 @@ pub fn project_pending_reconciliation_history(
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .filter_map(|account| account.get("id").and_then(Value::as_str).map(str::to_string))
+        .filter_map(|account| {
+            account
+                .get("id")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
         .collect();
     let pending = pending_reconciliation_projections(db)?;
     let mut projected = 0usize;
@@ -706,37 +744,39 @@ pub fn recover_startup(
     store: &crate::server::core::account_store::AccountStore,
 ) -> Result<RecoveryReport, String> {
     let (in_flight, saved) = db
-        .with(|conn| -> Result<(Vec<(String, String)>, Vec<SavedAccountResult>), rusqlite::Error> {
-            let mut in_flight_stmt = conn.prepare(
-                "SELECT run_id, account_id FROM checkin_run_accounts WHERE state = 'in_flight'",
-            )?;
-            let in_flight = in_flight_stmt
-                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
-                .collect::<Result<Vec<_>, _>>()?;
+        .with(
+            |conn| -> Result<(Vec<(String, String)>, Vec<SavedAccountResult>), rusqlite::Error> {
+                let mut in_flight_stmt = conn.prepare(
+                    "SELECT run_id, account_id FROM checkin_run_accounts WHERE state = 'in_flight'",
+                )?;
+                let in_flight = in_flight_stmt
+                    .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+                    .collect::<Result<Vec<_>, _>>()?;
 
-            let mut saved_stmt = conn.prepare(
-                "SELECT a.run_id, a.account_id, a.provider, r.source, r.reason,
+                let mut saved_stmt = conn.prepare(
+                    "SELECT a.run_id, a.account_id, a.provider, r.source, r.reason,
                         a.result_saved_at, a.result_json
                  FROM checkin_run_accounts a
                  JOIN checkin_runs r ON r.run_id = a.run_id
                  WHERE a.state = 'result_saved'
                  ORDER BY r.started_at, a.ordinal",
-            )?;
-            let saved = saved_stmt
-                .query_map([], |row| {
-                    Ok(SavedAccountResult {
-                        run_id: row.get(0)?,
-                        account_id: row.get(1)?,
-                        provider: row.get(2)?,
-                        source: row.get(3)?,
-                        reason: row.get(4)?,
-                        result_saved_at: row.get(5)?,
-                        result_json: row.get(6)?,
-                    })
-                })?
-                .collect::<Result<Vec<_>, _>>()?;
-            Ok((in_flight, saved))
-        })
+                )?;
+                let saved = saved_stmt
+                    .query_map([], |row| {
+                        Ok(SavedAccountResult {
+                            run_id: row.get(0)?,
+                            account_id: row.get(1)?,
+                            provider: row.get(2)?,
+                            source: row.get(3)?,
+                            reason: row.get(4)?,
+                            result_saved_at: row.get(5)?,
+                            result_json: row.get(6)?,
+                        })
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok((in_flight, saved))
+            },
+        )
         .ok_or_else(|| "签到执行台账数据库连接不可用".to_string())?
         .map_err(|error| format!("读取签到恢复任务失败: {error}"))?;
 
@@ -758,19 +798,31 @@ pub fn recover_startup(
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .filter_map(|account| account.get("id").and_then(Value::as_str).map(str::to_string))
+        .filter_map(|account| {
+            account
+                .get("id")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
         .collect();
 
     for saved in saved {
-        let row: Value = serde_json::from_str(&saved.result_json)
-            .map_err(|error| format!("签到结果快照损坏（{} / {}）：{error}", saved.run_id, saved.account_id))?;
+        let row: Value = serde_json::from_str(&saved.result_json).map_err(|error| {
+            format!(
+                "签到结果快照损坏（{} / {}）：{error}",
+                saved.run_id, saved.account_id
+            )
+        })?;
         // 账号仍存在时恢复账号页 checkinAt；已被用户删除的账号不再写账号表，
         // 但仍保留执行结果历史，避免删除账号导致已发生的远端结果失去审计记录。
         if existing_accounts.contains(&saved.account_id)
             && crate::server::core::billing::checkin::day_completed(&row)
             && !store.mark_checkin(&saved.account_id, saved.result_saved_at)
         {
-            return Err(format!("恢复签到时间失败（账号 {}）；执行结果仍保留在台账", saved.account_id));
+            return Err(format!(
+                "恢复签到时间失败（账号 {}）；执行结果仍保留在台账",
+                saved.account_id
+            ));
         }
         if saved.source == "activity" {
             // 活动入口把 mode 保存在原始结果快照中；恢复必须沿用原 mode，
@@ -793,42 +845,56 @@ pub fn recover_startup(
                 Some(saved.result_saved_at),
             )?;
         }
-        mark_projected(db, &saved.run_id, &saved.account_id, crate::server::logging::now_ms())?;
+        mark_projected(
+            db,
+            &saved.run_id,
+            &saved.account_id,
+            crate::server::logging::now_ms(),
+        )?;
         report.projected += 1;
     }
 
     report.projected += project_pending_reconciliation_history(db, store)?;
 
     let open_runs = db
-        .with(|conn| -> Result<Vec<(String, i64, i64, i64, String, String)>, rusqlite::Error> {
-            let mut statement = conn.prepare(
-                "SELECT run_id, target_count, skipped_count, started_at, source, reason
+        .with(
+            |conn| -> Result<Vec<(String, i64, i64, i64, String, String)>, rusqlite::Error> {
+                let mut statement = conn.prepare(
+                    "SELECT run_id, target_count, skipped_count, started_at, source, reason
                  FROM checkin_runs WHERE status = 'running' ORDER BY started_at",
-            )?;
-            let rows = statement
-                .query_map([], |row| {
-                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?))
-                })?
-                .collect::<Result<Vec<_>, _>>()?;
-            Ok(rows)
-        })
+                )?;
+                let rows = statement
+                    .query_map([], |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                            row.get(5)?,
+                        ))
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(rows)
+            },
+        )
         .ok_or_else(|| "签到执行台账数据库连接不可用".to_string())?
         .map_err(|error| format!("读取遗留签到批次失败: {error}"))?;
 
     for (run_id, target_count, skipped_count, started_at, source, reason) in open_runs {
         let accounts = db
-            .with(|conn| -> Result<Vec<(String, String, Option<String>)>, rusqlite::Error> {
-                let mut statement = conn.prepare(
-                    "SELECT account_name, state, result_json FROM checkin_run_accounts
+            .with(
+                |conn| -> Result<Vec<(String, String, Option<String>)>, rusqlite::Error> {
+                    let mut statement = conn.prepare(
+                        "SELECT account_name, state, result_json FROM checkin_run_accounts
                      WHERE run_id = ?1 ORDER BY ordinal",
-                )?;
-                let rows = statement
-                    .query_map([&run_id], |row| {
-                        Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-                    })?
-                    .collect::<Result<Vec<_>, _>>()?;
-                Ok(rows)
-            })
+                    )?;
+                    let rows = statement
+                        .query_map([&run_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+                        .collect::<Result<Vec<_>, _>>()?;
+                    Ok(rows)
+                },
+            )
             .ok_or_else(|| "签到执行台账数据库连接不可用".to_string())?
             .map_err(|error| format!("读取遗留批次账号失败（{run_id}）：{error}"))?;
 
@@ -841,9 +907,10 @@ pub fn recover_startup(
                 let row: Value = serde_json::from_str(result_json)
                     .map_err(|error| format!("签到结果快照损坏（{run_id}）：{error}"))?;
                 resolved_count += 1;
-                if row.get("claim").is_some_and(
-                    crate::server::core::billing::checkin::checkin_completed_today,
-                ) {
+                if row
+                    .get("claim")
+                    .is_some_and(crate::server::core::billing::checkin::checkin_completed_today)
+                {
                     succeeded += 1;
                 }
                 if row
@@ -894,7 +961,11 @@ pub fn recover_startup(
             &run_id,
             finished_at,
             RUN_INTERRUPTED,
-            if target_count > 0 { target_count } else { accounts.len() as i64 },
+            if target_count > 0 {
+                target_count
+            } else {
+                accounts.len() as i64
+            },
             resolved_count as i64,
             skipped_count,
             if source == "activity" || source == "single" {
@@ -925,7 +996,10 @@ pub fn recover_startup(
     for (run_id, summary_json) in pending_history {
         let summary: Value = serde_json::from_str(&summary_json)
             .map_err(|error| format!("签到批次汇总快照损坏（{run_id}）：{error}"))?;
-        let reason = summary.get("reason").and_then(Value::as_str).unwrap_or("恢复补账");
+        let reason = summary
+            .get("reason")
+            .and_then(Value::as_str)
+            .unwrap_or("恢复补账");
         crate::server::core::checkin_history::record_for_run(&summary, &run_id, reason)?;
         mark_history_projected(db, &run_id)?;
     }
@@ -940,18 +1014,20 @@ pub fn recover_startup(
 /// 启动/签到前重放本地写入，不涉及 Provider 请求。
 pub fn project_pending_auto_results(db: &Db) -> Result<usize, String> {
     let pending = db
-        .with(|conn| -> Result<Vec<(String, Option<String>, String)>, rusqlite::Error> {
-            let mut statement = conn.prepare(
-                "SELECT run_id, schedule_id, summary_json FROM checkin_runs
+        .with(
+            |conn| -> Result<Vec<(String, Option<String>, String)>, rusqlite::Error> {
+                let mut statement = conn.prepare(
+                    "SELECT run_id, schedule_id, summary_json FROM checkin_runs
                  WHERE status != 'running' AND auto_checkin = 1
                    AND auto_result_projected = 0 AND summary_json IS NOT NULL
                  ORDER BY finished_at, started_at",
-            )?;
-            let rows = statement
-                .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
-                .collect::<Result<Vec<_>, _>>()?;
-            Ok(rows)
-        })
+                )?;
+                let rows = statement
+                    .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(rows)
+            },
+        )
         .ok_or_else(|| "签到执行台账数据库连接不可用".to_string())?
         .map_err(|error| format!("读取待恢复自动签到摘要失败: {error}"))?;
 
@@ -961,7 +1037,10 @@ pub fn project_pending_auto_results(db: &Db) -> Result<usize, String> {
             .map_err(|error| format!("自动签到摘要快照损坏（{run_id}）：{error}"))?;
         crate::server::core::auto_checkin::project_result(&summary)?;
         if let Some(schedule_id) = schedule_id.as_deref() {
-            crate::server::core::checkin_schedules::mark_result_checked(schedule_id, Some(summary.clone()))?;
+            crate::server::core::checkin_schedules::mark_result_checked(
+                schedule_id,
+                Some(summary.clone()),
+            )?;
         }
         let changed = with_db(db, |conn| {
             conn.execute(
@@ -990,7 +1069,9 @@ pub fn ensure_recovered(db: &Db) -> Result<(), String> {
         .ok_or_else(|| "签到执行台账数据库连接不可用".to_string())?
         .map_err(|error| format!("检查签到恢复状态失败: {error}"))?;
     if unresolved > 0 {
-        return Err(format!("存在 {unresolved} 个尚未恢复的签到批次，已阻止新的上游请求"));
+        return Err(format!(
+            "存在 {unresolved} 个尚未恢复的签到批次，已阻止新的上游请求"
+        ));
     }
     Ok(())
 }
@@ -1052,7 +1133,13 @@ mod tests {
                     "SELECT schedule_id, auto_checkin, auto_result_projected
                      FROM checkin_runs WHERE run_id = 'auto-run'",
                     [],
-                    |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?)),
+                    |row| {
+                        Ok((
+                            row.get::<_, Option<String>>(0)?,
+                            row.get::<_, i64>(1)?,
+                            row.get::<_, i64>(2)?,
+                        ))
+                    },
                 )
             })
             .expect("database should be available")
@@ -1101,16 +1188,8 @@ mod tests {
         assert!(uncertain_accounts_today(&db)
             .expect("uncertain account query")
             .contains("account-uncertain"));
-        finish_run(
-            &db,
-            "run-uncertain",
-            now + 1,
-            RUN_INTERRUPTED,
-            1,
-            1,
-            0,
-        )
-        .expect("interrupted run should close after isolation");
+        finish_run(&db, "run-uncertain", now + 1, RUN_INTERRUPTED, 1, 1, 0)
+            .expect("interrupted run should close after isolation");
         ensure_recovered(&db).expect("closed interrupted run must not block other accounts");
     }
 
@@ -1118,12 +1197,15 @@ mod tests {
     fn result_save_and_projection_are_idempotent() {
         let (db, _guard) = TempDb::open("checkin-ledger-idempotent");
         seed_run(&db);
-        assert!(save_result(&db, "run-1", "account-1", 102, r#"{"ok":true}"#)
-            .expect("first result save"));
-        assert!(!save_result(&db, "run-1", "account-1", 103, r#"{"ok":true}"#)
-            .expect("same result replay is idempotent"));
-        assert!(mark_projected(&db, "run-1", "account-1", 104)
-            .expect("projection should advance"));
+        assert!(
+            save_result(&db, "run-1", "account-1", 102, r#"{"ok":true}"#)
+                .expect("first result save")
+        );
+        assert!(
+            !save_result(&db, "run-1", "account-1", 103, r#"{"ok":true}"#)
+                .expect("same result replay is idempotent")
+        );
+        assert!(mark_projected(&db, "run-1", "account-1", 104).expect("projection should advance"));
         assert!(!mark_projected(&db, "run-1", "account-1", 105)
             .expect("projection replay is idempotent"));
         finish_run(&db, "run-1", 106, RUN_COMPLETED, 1, 1, 0)
@@ -1136,13 +1218,10 @@ mod tests {
         seed_run(&db);
         save_result(&db, "run-1", "account-1", 102, r#"{"ok":true}"#)
             .expect("result should be saved");
-        mark_projected(&db, "run-1", "account-1", 103)
-            .expect("account projection should complete");
+        mark_projected(&db, "run-1", "account-1", 103).expect("account projection should complete");
         let summary = r#"{"at":104,"reason":"manual","succeeded":1}"#;
-        finish_run_with_summary(
-            &db, "run-1", 104, RUN_COMPLETED, 1, 1, 0, Some(summary),
-        )
-        .expect("terminal state and summary should commit together");
+        finish_run_with_summary(&db, "run-1", 104, RUN_COMPLETED, 1, 1, 0, Some(summary))
+            .expect("terminal state and summary should commit together");
         let stored: (String, i64) = db
             .with(|conn| {
                 conn.query_row(
@@ -1175,7 +1254,8 @@ mod tests {
                 schedule_id: None,
                 auto_checkin: false,
             },
-        ).expect("run should be created");
+        )
+        .expect("run should be created");
         begin_account(
             &db,
             &AccountInput {
@@ -1186,7 +1266,8 @@ mod tests {
                 ordinal: 0,
                 started_at: now + 1,
             },
-        ).expect("account intent should be committed");
+        )
+        .expect("account intent should be committed");
         mark_uncertain(&db, "run-review", "account-review", "response was lost")
             .expect("uncertain transition should succeed");
 
@@ -1205,17 +1286,36 @@ mod tests {
     fn qoder_confirmed_evidence_is_append_only_and_releases_isolation_atomically() {
         let (db, _guard) = TempDb::open("checkin-ledger-qoder-evidence");
         let now = crate::server::logging::now_ms();
-        create_run(&db, &RunInput {
-            run_id: "qoder-run", started_at: now, source: "manual", reason: "test",
-            target_count: 1, skipped_count: 0, schedule_id: None, auto_checkin: false,
-        }).expect("run created");
-        begin_account(&db, &AccountInput {
-            run_id: "qoder-run", account_id: "qoder-account", account_name: "Qoder",
-            provider: "qoder-intl", ordinal: 0, started_at: now,
-        }).expect("account started");
-        mark_uncertain(&db, "qoder-run", "qoder-account", "response lost")
-            .expect("mark uncertain");
-        assert!(uncertain_accounts_today(&db).expect("isolation query").contains("qoder-account"));
+        create_run(
+            &db,
+            &RunInput {
+                run_id: "qoder-run",
+                started_at: now,
+                source: "manual",
+                reason: "test",
+                target_count: 1,
+                skipped_count: 0,
+                schedule_id: None,
+                auto_checkin: false,
+            },
+        )
+        .expect("run created");
+        begin_account(
+            &db,
+            &AccountInput {
+                run_id: "qoder-run",
+                account_id: "qoder-account",
+                account_name: "Qoder",
+                provider: "qoder-intl",
+                ordinal: 0,
+                started_at: now,
+            },
+        )
+        .expect("account started");
+        mark_uncertain(&db, "qoder-run", "qoder-account", "response lost").expect("mark uncertain");
+        assert!(uncertain_accounts_today(&db)
+            .expect("isolation query")
+            .contains("qoder-account"));
 
         let window_start = now.div_euclid(1000) - 60;
         let window_end = now.div_euclid(1000) + 60;
@@ -1228,7 +1328,9 @@ mod tests {
         let first = record_reconciliation_evidence(&db, "qoder-run", "qoder-account", &unknown)
             .expect("unknown evidence stored");
         assert_eq!(first["resolved"], false);
-        assert!(uncertain_accounts_today(&db).expect("still isolated").contains("qoder-account"));
+        assert!(uncertain_accounts_today(&db)
+            .expect("still isolated")
+            .contains("qoder-account"));
 
         let confirmed = serde_json::json!({
             "verdict": "confirmed", "provider": "qoder-intl",
@@ -1239,16 +1341,25 @@ mod tests {
         let second = record_reconciliation_evidence(&db, "qoder-run", "qoder-account", &confirmed)
             .expect("confirmed evidence stored");
         assert_eq!(second["resolved"], true);
-        assert!(!uncertain_accounts_today(&db).expect("isolation released").contains("qoder-account"));
+        assert!(!uncertain_accounts_today(&db)
+            .expect("isolation released")
+            .contains("qoder-account"));
 
         let audit = query_reconciliation_evidence(&db, "qoder-run", "qoder-account", 100, 0)
             .expect("audit query");
         assert_eq!(audit["entries"].as_array().map(Vec::len), Some(2));
-        let immutable = db.with(|conn| conn.execute(
+        let immutable = db
+            .with(|conn| {
+                conn.execute(
             "UPDATE checkin_reconciliation_evidence SET verdict = 'unknown' WHERE evidence_id = ?1",
             [second["evidenceId"].as_i64().unwrap_or_default()],
-        )).expect("db available");
-        assert!(immutable.is_err(), "evidence updates must be rejected by trigger");
+        )
+            })
+            .expect("db available");
+        assert!(
+            immutable.is_err(),
+            "evidence updates must be rejected by trigger"
+        );
     }
 
     #[test]
@@ -1270,14 +1381,32 @@ mod tests {
             let (db, _guard) = TempDb::open(&format!("checkin-ledger-{provider}-evidence"));
             let now = crate::server::logging::now_ms();
             let run_id = format!("{provider}-run");
-            create_run(&db, &RunInput {
-                run_id: &run_id, started_at: now, source: "manual", reason: "test",
-                target_count: 1, skipped_count: 0, schedule_id: None, auto_checkin: false,
-            }).expect("run created");
-            begin_account(&db, &AccountInput {
-                run_id: &run_id, account_id, account_name: "WorkBuddy",
-                provider, ordinal: 0, started_at: now,
-            }).expect("account started");
+            create_run(
+                &db,
+                &RunInput {
+                    run_id: &run_id,
+                    started_at: now,
+                    source: "manual",
+                    reason: "test",
+                    target_count: 1,
+                    skipped_count: 0,
+                    schedule_id: None,
+                    auto_checkin: false,
+                },
+            )
+            .expect("run created");
+            begin_account(
+                &db,
+                &AccountInput {
+                    run_id: &run_id,
+                    account_id,
+                    account_name: "WorkBuddy",
+                    provider,
+                    ordinal: 0,
+                    started_at: now,
+                },
+            )
+            .expect("account started");
             mark_uncertain(&db, &run_id, account_id, "response lost").expect("mark uncertain");
 
             let evidence = crate::server::core::providers::workbuddy::reconcile::classify_status(
@@ -1287,7 +1416,9 @@ mod tests {
             let audit = record_reconciliation_evidence(&db, &run_id, account_id, &evidence)
                 .expect("valid WorkBuddy status evidence should be stored");
             assert_eq!(audit["resolved"], true);
-            assert!(!uncertain_accounts_today(&db).expect("isolation query").contains(account_id));
+            assert!(!uncertain_accounts_today(&db)
+                .expect("isolation query")
+                .contains(account_id));
         }
     }
 
@@ -1295,16 +1426,39 @@ mod tests {
     fn workbuddy_intl_storage_requires_status_available_true() {
         let (db, _guard) = TempDb::open("checkin-ledger-workbuddy-intl-unavailable");
         let now = crate::server::logging::now_ms();
-        create_run(&db, &RunInput {
-            run_id: "workbuddy-intl-run", started_at: now, source: "manual", reason: "test",
-            target_count: 1, skipped_count: 0, schedule_id: None, auto_checkin: false,
-        }).expect("run created");
-        begin_account(&db, &AccountInput {
-            run_id: "workbuddy-intl-run", account_id: "workbuddy-intl-account", account_name: "WorkBuddy Intl",
-            provider: "workbuddy-intl", ordinal: 0, started_at: now,
-        }).expect("account started");
-        mark_uncertain(&db, "workbuddy-intl-run", "workbuddy-intl-account", "response lost")
-            .expect("mark uncertain");
+        create_run(
+            &db,
+            &RunInput {
+                run_id: "workbuddy-intl-run",
+                started_at: now,
+                source: "manual",
+                reason: "test",
+                target_count: 1,
+                skipped_count: 0,
+                schedule_id: None,
+                auto_checkin: false,
+            },
+        )
+        .expect("run created");
+        begin_account(
+            &db,
+            &AccountInput {
+                run_id: "workbuddy-intl-run",
+                account_id: "workbuddy-intl-account",
+                account_name: "WorkBuddy Intl",
+                provider: "workbuddy-intl",
+                ordinal: 0,
+                started_at: now,
+            },
+        )
+        .expect("account started");
+        mark_uncertain(
+            &db,
+            "workbuddy-intl-run",
+            "workbuddy-intl-account",
+            "response lost",
+        )
+        .expect("mark uncertain");
         let evidence = serde_json::json!({
             "verdict": "confirmed", "provider": "workbuddy-intl",
             "evidenceType": "checkin_status", "observedAt": now,
@@ -1313,8 +1467,12 @@ mod tests {
             "reason": "missing status availability flag",
         });
         assert!(record_reconciliation_evidence(
-            &db, "workbuddy-intl-run", "workbuddy-intl-account", &evidence,
-        ).is_err());
+            &db,
+            "workbuddy-intl-run",
+            "workbuddy-intl-account",
+            &evidence,
+        )
+        .is_err());
     }
 
     #[test]
@@ -1322,16 +1480,39 @@ mod tests {
         let (db, _guard) = TempDb::open("checkin-ledger-workbuddy-cross-day");
         let now = crate::server::logging::now_ms();
         let previous_day = now.saturating_sub(24 * 60 * 60 * 1000);
-        create_run(&db, &RunInput {
-            run_id: "workbuddy-old-run", started_at: previous_day, source: "manual", reason: "test",
-            target_count: 1, skipped_count: 0, schedule_id: None, auto_checkin: false,
-        }).expect("run created");
-        begin_account(&db, &AccountInput {
-            run_id: "workbuddy-old-run", account_id: "workbuddy-old-account", account_name: "WorkBuddy",
-            provider: "workbuddy", ordinal: 0, started_at: previous_day,
-        }).expect("account started");
-        mark_uncertain(&db, "workbuddy-old-run", "workbuddy-old-account", "response lost")
-            .expect("mark uncertain");
+        create_run(
+            &db,
+            &RunInput {
+                run_id: "workbuddy-old-run",
+                started_at: previous_day,
+                source: "manual",
+                reason: "test",
+                target_count: 1,
+                skipped_count: 0,
+                schedule_id: None,
+                auto_checkin: false,
+            },
+        )
+        .expect("run created");
+        begin_account(
+            &db,
+            &AccountInput {
+                run_id: "workbuddy-old-run",
+                account_id: "workbuddy-old-account",
+                account_name: "WorkBuddy",
+                provider: "workbuddy",
+                ordinal: 0,
+                started_at: previous_day,
+            },
+        )
+        .expect("account started");
+        mark_uncertain(
+            &db,
+            "workbuddy-old-run",
+            "workbuddy-old-account",
+            "response lost",
+        )
+        .expect("mark uncertain");
 
         let evidence = crate::server::core::providers::workbuddy::reconcile::classify_status(
             crate::server::core::providers::workbuddy::Region::Cn,
@@ -1341,10 +1522,16 @@ mod tests {
         );
         assert_eq!(evidence["verdict"], "unknown");
         let audit = record_reconciliation_evidence(
-            &db, "workbuddy-old-run", "workbuddy-old-account", &evidence,
-        ).expect("unknown evidence should be append-only stored");
+            &db,
+            "workbuddy-old-run",
+            "workbuddy-old-account",
+            &evidence,
+        )
+        .expect("unknown evidence should be append-only stored");
         assert_eq!(audit["resolved"], false);
-        assert!(uncertain_accounts_today(&db).expect("isolation query").is_empty());
+        assert!(uncertain_accounts_today(&db)
+            .expect("isolation query")
+            .is_empty());
     }
 
     #[test]
@@ -1352,16 +1539,39 @@ mod tests {
         let (db, _guard) = TempDb::open("checkin-ledger-workbuddy-forged-day");
         let now = crate::server::logging::now_ms();
         let previous_day = now.saturating_sub(24 * 60 * 60 * 1000);
-        create_run(&db, &RunInput {
-            run_id: "workbuddy-forged-run", started_at: previous_day, source: "manual", reason: "test",
-            target_count: 1, skipped_count: 0, schedule_id: None, auto_checkin: false,
-        }).expect("run created");
-        begin_account(&db, &AccountInput {
-            run_id: "workbuddy-forged-run", account_id: "workbuddy-forged-account", account_name: "WorkBuddy",
-            provider: "workbuddy", ordinal: 0, started_at: previous_day,
-        }).expect("account started");
-        mark_uncertain(&db, "workbuddy-forged-run", "workbuddy-forged-account", "response lost")
-            .expect("mark uncertain");
+        create_run(
+            &db,
+            &RunInput {
+                run_id: "workbuddy-forged-run",
+                started_at: previous_day,
+                source: "manual",
+                reason: "test",
+                target_count: 1,
+                skipped_count: 0,
+                schedule_id: None,
+                auto_checkin: false,
+            },
+        )
+        .expect("run created");
+        begin_account(
+            &db,
+            &AccountInput {
+                run_id: "workbuddy-forged-run",
+                account_id: "workbuddy-forged-account",
+                account_name: "WorkBuddy",
+                provider: "workbuddy",
+                ordinal: 0,
+                started_at: previous_day,
+            },
+        )
+        .expect("account started");
+        mark_uncertain(
+            &db,
+            "workbuddy-forged-run",
+            "workbuddy-forged-account",
+            "response lost",
+        )
+        .expect("mark uncertain");
 
         let evidence = serde_json::json!({
             "verdict": "confirmed",
@@ -1374,11 +1584,20 @@ mod tests {
             "reason": "forged current-day status",
         });
         assert!(record_reconciliation_evidence(
-            &db, "workbuddy-forged-run", "workbuddy-forged-account", &evidence,
-        ).is_err());
+            &db,
+            "workbuddy-forged-run",
+            "workbuddy-forged-account",
+            &evidence,
+        )
+        .is_err());
         let audit = query_reconciliation_evidence(
-            &db, "workbuddy-forged-run", "workbuddy-forged-account", 10, 0,
-        ).expect("audit query");
+            &db,
+            "workbuddy-forged-run",
+            "workbuddy-forged-account",
+            10,
+            0,
+        )
+        .expect("audit query");
         assert_eq!(audit["total"], 0);
     }
 
@@ -1386,74 +1605,147 @@ mod tests {
     fn confirmed_evidence_without_complete_qoder_fields_is_rejected() {
         let (db, _guard) = TempDb::open("checkin-ledger-invalid-evidence");
         let now = crate::server::logging::now_ms();
-        create_run(&db, &RunInput {
-            run_id: "qoder-run", started_at: now, source: "manual", reason: "test",
-            target_count: 1, skipped_count: 0, schedule_id: None, auto_checkin: false,
-        }).expect("run created");
-        begin_account(&db, &AccountInput {
-            run_id: "qoder-run", account_id: "qoder-account", account_name: "Qoder",
-            provider: "qoder", ordinal: 0, started_at: now,
-        }).expect("account started");
-        mark_uncertain(&db, "qoder-run", "qoder-account", "response lost")
-            .expect("mark uncertain");
+        create_run(
+            &db,
+            &RunInput {
+                run_id: "qoder-run",
+                started_at: now,
+                source: "manual",
+                reason: "test",
+                target_count: 1,
+                skipped_count: 0,
+                schedule_id: None,
+                auto_checkin: false,
+            },
+        )
+        .expect("run created");
+        begin_account(
+            &db,
+            &AccountInput {
+                run_id: "qoder-run",
+                account_id: "qoder-account",
+                account_name: "Qoder",
+                provider: "qoder",
+                ordinal: 0,
+                started_at: now,
+            },
+        )
+        .expect("account started");
+        mark_uncertain(&db, "qoder-run", "qoder-account", "response lost").expect("mark uncertain");
         let invalid = serde_json::json!({
             "verdict": "confirmed", "provider": "qoder", "evidenceType": "campaign_claim_status",
             "observedAt": now, "upstreamStatus": "CLAIMED",
         });
-        assert!(record_reconciliation_evidence(&db, "qoder-run", "qoder-account", &invalid).is_err());
+        assert!(
+            record_reconciliation_evidence(&db, "qoder-run", "qoder-account", &invalid).is_err()
+        );
         let mismatched_window = serde_json::json!({
             "verdict": "confirmed", "provider": "qoder", "evidenceType": "campaign_claim_status",
             "observedAt": now, "campaignId": "campaign-1", "upstreamStatus": "CLAIMED",
             "businessWindow": {"startAt": 1, "endAt": 2},
         });
-        assert!(record_reconciliation_evidence(&db, "qoder-run", "qoder-account", &mismatched_window).is_err());
-        assert!(uncertain_accounts_today(&db).expect("isolation query").contains("qoder-account"));
+        assert!(record_reconciliation_evidence(
+            &db,
+            "qoder-run",
+            "qoder-account",
+            &mismatched_window
+        )
+        .is_err());
+        assert!(uncertain_accounts_today(&db)
+            .expect("isolation query")
+            .contains("qoder-account"));
     }
 
     #[test]
     fn reconciliation_projection_marker_is_evidence_bound_and_idempotent() {
         let (db, _guard) = TempDb::open("checkin-ledger-reconciliation-projection");
         let now = crate::server::logging::now_ms();
-        create_run(&db, &RunInput {
-            run_id: "qoder-projection-run", started_at: now, source: "manual", reason: "test",
-            target_count: 1, skipped_count: 0, schedule_id: None, auto_checkin: false,
-        }).expect("run created");
-        begin_account(&db, &AccountInput {
-            run_id: "qoder-projection-run", account_id: "qoder-projection-account",
-            account_name: "Qoder", provider: "qoder", ordinal: 0, started_at: now,
-        }).expect("account started");
-        mark_uncertain(&db, "qoder-projection-run", "qoder-projection-account", "response lost")
-            .expect("mark uncertain");
+        create_run(
+            &db,
+            &RunInput {
+                run_id: "qoder-projection-run",
+                started_at: now,
+                source: "manual",
+                reason: "test",
+                target_count: 1,
+                skipped_count: 0,
+                schedule_id: None,
+                auto_checkin: false,
+            },
+        )
+        .expect("run created");
+        begin_account(
+            &db,
+            &AccountInput {
+                run_id: "qoder-projection-run",
+                account_id: "qoder-projection-account",
+                account_name: "Qoder",
+                provider: "qoder",
+                ordinal: 0,
+                started_at: now,
+            },
+        )
+        .expect("account started");
+        mark_uncertain(
+            &db,
+            "qoder-projection-run",
+            "qoder-projection-account",
+            "response lost",
+        )
+        .expect("mark uncertain");
         let evidence = serde_json::json!({
             "verdict": "confirmed", "provider": "qoder", "evidenceType": "campaign_claim_status",
             "observedAt": now + 1, "campaignId": "campaign-1", "upstreamStatus": "CLAIMED",
             "businessWindow": {"startAt": now.div_euclid(1000) - 10, "endAt": now.div_euclid(1000) + 10},
         });
         let audit = record_reconciliation_evidence(
-            &db, "qoder-projection-run", "qoder-projection-account", &evidence,
-        ).expect("confirmed evidence persisted");
+            &db,
+            "qoder-projection-run",
+            "qoder-projection-account",
+            &evidence,
+        )
+        .expect("confirmed evidence persisted");
         let evidence_id = audit["evidenceId"].as_i64().expect("evidence id");
         let pending = pending_reconciliation_projections(&db).expect("pending projections");
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].evidence_id, evidence_id);
         assert!(mark_reconciliation_projected(
-            &db, "qoder-projection-run", "qoder-projection-account", evidence_id, now + 2,
-        ).expect("first marker"));
+            &db,
+            "qoder-projection-run",
+            "qoder-projection-account",
+            evidence_id,
+            now + 2,
+        )
+        .expect("first marker"));
         assert!(!mark_reconciliation_projected(
-            &db, "qoder-projection-run", "qoder-projection-account", evidence_id, now + 3,
-        ).expect("duplicate marker"));
-        assert!(pending_reconciliation_projections(&db).expect("no pending").is_empty());
+            &db,
+            "qoder-projection-run",
+            "qoder-projection-account",
+            evidence_id,
+            now + 3,
+        )
+        .expect("duplicate marker"));
+        assert!(pending_reconciliation_projections(&db)
+            .expect("no pending")
+            .is_empty());
         assert!(mark_reconciliation_projected(
-            &db, "qoder-projection-run", "qoder-projection-account", evidence_id + 1, now + 4,
-        ).is_ok_and(|changed| !changed));
+            &db,
+            "qoder-projection-run",
+            "qoder-projection-account",
+            evidence_id + 1,
+            now + 4,
+        )
+        .is_ok_and(|changed| !changed));
     }
 
     #[test]
     fn uncertain_transition_never_reopens_provider_attempt() {
         let (db, _guard) = TempDb::open("checkin-ledger-uncertain");
         seed_run(&db);
-        assert!(mark_uncertain(&db, "run-1", "account-1", "process interrupted")
-            .expect("in-flight attempt should be quarantined"));
+        assert!(
+            mark_uncertain(&db, "run-1", "account-1", "process interrupted")
+                .expect("in-flight attempt should be quarantined")
+        );
         assert!(!mark_uncertain(&db, "run-1", "account-1", "again")
             .expect("uncertain transition should be idempotent"));
         finish_run(&db, "run-1", 107, RUN_INTERRUPTED, 1, 0, 0)
@@ -1473,27 +1765,42 @@ mod tests {
         seed_run(&db);
 
         // 模拟 Provider 已返回、result_saved 已提交，但进程在本地历史投影前退出。
-        assert!(save_result(&db, "run-1", "account-1", 102, r#"{"ok":true}"#)
-            .expect("durable response should be saved"));
-        assert!(ensure_recovered(&db).is_err(), "running batch must gate new upstream work");
-        assert!(finish_run(&db, "run-1", 103, RUN_INTERRUPTED, 1, 1, 0).is_err(),
-            "a saved-but-unprojected result must not be hidden by closing the run");
+        assert!(
+            save_result(&db, "run-1", "account-1", 102, r#"{"ok":true}"#)
+                .expect("durable response should be saved")
+        );
+        assert!(
+            ensure_recovered(&db).is_err(),
+            "running batch must gate new upstream work"
+        );
+        assert!(
+            finish_run(&db, "run-1", 103, RUN_INTERRUPTED, 1, 1, 0).is_err(),
+            "a saved-but-unprojected result must not be hidden by closing the run"
+        );
 
         let state: (String, Option<i64>, Option<String>) = db
-            .with(|conn| conn.query_row(
-                "SELECT state, result_saved_at, result_json FROM checkin_run_accounts
+            .with(|conn| {
+                conn.query_row(
+                    "SELECT state, result_saved_at, result_json FROM checkin_run_accounts
                  WHERE run_id = 'run-1' AND account_id = 'account-1'",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            ))
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+            })
             .expect("database should be available")
             .expect("account ledger row should exist");
         assert_eq!(state.0, ACCOUNT_RESULT_SAVED);
-        assert_eq!(state.1, Some(102), "the first durable result timestamp is immutable");
+        assert_eq!(
+            state.1,
+            Some(102),
+            "the first durable result timestamp is immutable"
+        );
         assert_eq!(state.2.as_deref(), Some(r#"{"ok":true}"#));
 
-        assert!(!save_result(&db, "run-1", "account-1", 999, r#"{"ok":true}"#)
-            .expect("replaying the same provider response must be idempotent"));
+        assert!(
+            !save_result(&db, "run-1", "account-1", 999, r#"{"ok":true}"#)
+                .expect("replaying the same provider response must be idempotent")
+        );
         assert!(mark_projected(&db, "run-1", "account-1", 104)
             .expect("recovery can finish the local projection"));
         finish_run(&db, "run-1", 105, RUN_COMPLETED, 1, 1, 0)
@@ -1508,24 +1815,35 @@ mod tests {
         assert!(mark_uncertain(&db, "run-1", "account-1", "response lost")
             .expect("in-flight request should be quarantined"));
 
-        assert!(save_result(&db, "run-1", "account-1", 102, r#"{"ok":true}"#).is_err(),
-            "late result must not silently rewrite an uncertain attempt");
-        assert!(mark_projected(&db, "run-1", "account-1", 103).is_err(),
-            "uncertain attempt has no trusted result to project");
-        assert!(!mark_uncertain(&db, "run-1", "account-1", "duplicate recovery")
-            .expect("recovery replay must not create another transition"));
+        assert!(
+            save_result(&db, "run-1", "account-1", 102, r#"{"ok":true}"#).is_err(),
+            "late result must not silently rewrite an uncertain attempt"
+        );
+        assert!(
+            mark_projected(&db, "run-1", "account-1", 103).is_err(),
+            "uncertain attempt has no trusted result to project"
+        );
+        assert!(
+            !mark_uncertain(&db, "run-1", "account-1", "duplicate recovery")
+                .expect("recovery replay must not create another transition")
+        );
 
         let state: (String, Option<String>) = db
-            .with(|conn| conn.query_row(
-                "SELECT state, result_json FROM checkin_run_accounts
+            .with(|conn| {
+                conn.query_row(
+                    "SELECT state, result_json FROM checkin_run_accounts
                  WHERE run_id = 'run-1' AND account_id = 'account-1'",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            ))
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+            })
             .expect("database should be available")
             .expect("account ledger row should exist");
         assert_eq!(state.0, ACCOUNT_UNCERTAIN);
-        assert!(state.1.is_none(), "uncertain state must not acquire an invented result");
+        assert!(
+            state.1.is_none(),
+            "uncertain state must not acquire an invented result"
+        );
 
         finish_run(&db, "run-1", 104, RUN_INTERRUPTED, 1, 0, 0)
             .expect("interrupted run may close while retaining uncertain evidence");
@@ -1536,9 +1854,7 @@ mod tests {
     fn saved_result_cannot_be_silently_overwritten() {
         let (db, _guard) = TempDb::open("checkin-ledger-no-overwrite");
         seed_run(&db);
-        save_result(&db, "run-1", "account-1", 102, r#"{"ok":true}"#)
-            .expect("first result save");
-        assert!(save_result(&db, "run-1", "account-1", 103, r#"{"ok":false}"#)
-            .is_err());
+        save_result(&db, "run-1", "account-1", 102, r#"{"ok":true}"#).expect("first result save");
+        assert!(save_result(&db, "run-1", "account-1", 103, r#"{"ok":false}"#).is_err());
     }
 }

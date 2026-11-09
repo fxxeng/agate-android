@@ -78,7 +78,10 @@ pub fn new_login_state() -> String {
 pub async fn complete_login(token: &str) -> Result<OrcatermCredentials, GatewayError> {
     let raw = token.trim();
     if raw.is_empty() {
-        return Err(GatewayError::with_status(400, "登录窗口没有捕获到 ot_session，请重新发起登录"));
+        return Err(GatewayError::with_status(
+            400,
+            "登录窗口没有捕获到 ot_session，请重新发起登录",
+        ));
     }
     let normalized = credentials::normalize_token(raw);
     if normalized.split('.').count() != 3 {
@@ -97,8 +100,8 @@ pub async fn complete_login(token: &str) -> Result<OrcatermCredentials, GatewayE
     // 只判「真的过期」而不判「临期」（与 `is_expiring` 的 10 分钟窗口区分开）：
     // 临期令牌仍是可用的，落库后由续期机制接管（`OAuthRefreshToken` 实测能
     // 拿任意有效旧令牌换新），为此把一次成功的扫码判成失败不值当。
-    let expired = parsed.expires_at > 0
-        && parsed.expires_at <= crate::server::logging::now_ms() / 1000;
+    let expired =
+        parsed.expires_at > 0 && parsed.expires_at <= crate::server::logging::now_ms() / 1000;
     if expired {
         return Err(GatewayError::with_status(
             400,

@@ -107,7 +107,10 @@ pub async fn subscribe_model_info(
     promotion_code: Option<&str>,
 ) -> Result<Value, String> {
     let url = format!("{cloud_base}/v1/claw/client-subscription");
-    let body = match promotion_code.map(str::trim).filter(|code| !code.is_empty()) {
+    let body = match promotion_code
+        .map(str::trim)
+        .filter(|code| !code.is_empty())
+    {
         Some(code) => serde_json::json!({ "promotion_code": code }).to_string(),
         None => "{}".to_string(),
     };
@@ -142,10 +145,7 @@ pub async fn subscribe_model_info(
         .await
         .map_err(|error| format!("开通请求失败：{}", egress::describe_error_detail(&error)))?;
     let status = response.status().as_u16();
-    let payload = response
-        .json::<Value>()
-        .await
-        .unwrap_or(Value::Null);
+    let payload = response.json::<Value>().await.unwrap_or(Value::Null);
     if !(200..300).contains(&status) {
         let error_code = payload
             .get("error_code")
@@ -161,7 +161,11 @@ pub async fn subscribe_model_info(
                 "该账号尚未开通果办服务（{hint}）：请先在 OfficeAce 客户端完成开通，再回来重新登录"
             ));
         }
-        let shown = if detail.is_empty() { error_code } else { detail };
+        let shown = if detail.is_empty() {
+            error_code
+        } else {
+            detail
+        };
         return Err(format!("开通失败（HTTP {status}）：{shown}"));
     }
     payload

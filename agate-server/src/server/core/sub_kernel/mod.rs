@@ -288,7 +288,10 @@ enum Command {
     Restart(Vec<ProviderInput>),
     /// 强制刷新一条订阅的内容（mihomo 的 provider 强制拉取），节点集合
     /// 变了才重建配置
-    Refresh { sub_id: String, providers: Vec<ProviderInput> },
+    Refresh {
+        sub_id: String,
+        providers: Vec<ProviderInput>,
+    },
     /// 下载内核；带非空 providers 时下完自动拉起
     Download(Vec<ProviderInput>),
     /// 停掉内核并删除已下载的内核（二进制 / 配置 / 端口映射）
@@ -334,11 +337,17 @@ fn send(command: Command) -> bool {
         return false;
     }
     let Some(sender) = guard.as_ref() else {
-        logging::log("[Subscription]", "❌ 代理内核命令未接收：Sidecar worker 尚未启动或正在关闭");
+        logging::log(
+            "[Subscription]",
+            "❌ 代理内核命令未接收：Sidecar worker 尚未启动或正在关闭",
+        );
         return false;
     };
     if let Err(error) = sender.send(command) {
-        logging::log("[Subscription]", &format!("❌ 代理内核命令投递失败：{error}"));
+        logging::log(
+            "[Subscription]",
+            &format!("❌ 代理内核命令投递失败：{error}"),
+        );
         return false;
     }
     true
@@ -349,7 +358,10 @@ fn send(command: Command) -> bool {
 pub fn spawn_worker() {
     let mut sender_guard = lock_sender();
     if is_shutting_down() {
-        logging::log("[Subscription]", "⚠️ Sidecar 已进入关闭状态，拒绝重新启动 worker");
+        logging::log(
+            "[Subscription]",
+            "⚠️ Sidecar 已进入关闭状态，拒绝重新启动 worker",
+        );
         return;
     }
     if sender_guard.is_some() {
@@ -681,66 +693,73 @@ pub fn request_remove() {
 /// running，内核进程在两次操作之间崩溃时快照还是 true —— 这里补一次
 /// 本地端口探活（connect 到控制端口，毫秒级），状态不符时如实报 false。
 pub fn status_json() -> Value {
-    let (controller_port, snapshot_running, listener_count, last_error, provider_sync, download_state, download_received, download_total, download_error, halted) =
-        with_status(|snapshot| {
-            (
-                snapshot.controller_port,
-                snapshot.running,
-                snapshot.listener_count,
-                snapshot.last_error.clone(),
-                snapshot.provider_sync.clone(),
-                snapshot.download.state,
-                snapshot.download.received,
-                snapshot.download.total,
-                snapshot.download.error.clone(),
-                snapshot.halted,
-            )
-        });
+    let (
+        controller_port,
+        snapshot_running,
+        listener_count,
+        last_error,
+        provider_sync,
+        download_state,
+        download_received,
+        download_total,
+        download_error,
+        halted,
+    ) = with_status(|snapshot| {
+        (
+            snapshot.controller_port,
+            snapshot.running,
+            snapshot.listener_count,
+            snapshot.last_error.clone(),
+            snapshot.provider_sync.clone(),
+            snapshot.download.state,
+            snapshot.download.received,
+            snapshot.download.total,
+            snapshot.download.error.clone(),
+            snapshot.halted,
+        )
+    });
     // 探活（最长 300ms 的 TCP connect）必须**在锁外**：放在 with_status
     // 闭包里会让 STATUS 锁被持满整个探活时长，阻塞 is_manually_halted /
     // record_running 等并发读者。
     let running = kernel_running_with(controller_port, snapshot_running);
     json!({
-            "installed": installed(),
-            "available": available(),
-            "platform": platform_info(),
-            "version": KERNEL_VERSION,
-            "asset": asset_for_current_platform().map(|(name, _)| name),
-            "running": running,
-            "controllerPort": controller_port,
-            "listenerCount": listener_count,
-            // 统一测试口（「网络代理」页的节点测试全走它；见 runtime::select_test_node）
-            "testPort": runtime::test_port(),
-            "kernelDir": kernel_dir().to_string_lossy(),
-            // 默认目录单列一个读数：下载弹窗要给「恢复默认」一个具体的目标值
-            // （界面不该自己去拼 `{config_dir}/proxy-kernel`，那是后端的布局）
-            "kernelDirDefault": default_kernel_dir().to_string_lossy(),
-            // 已存的下载线路（描述形态，与 /api/update/proxy 同口径）：
-            // 弹窗用它把「当前选的是哪条」显示出来 —— null = 默认链
-            "downloadProxy": crate::server::core::proxies::describe_account_proxy(
-                crate::server::config::kernel_proxy().as_ref(),
-            ),
-            "lastError": last_error,
-            // 手动关闭闩（前端用它把停止态的文案从「已停止」换成「已手动关闭」）
-            "halted": halted,
-            "providerSync": provider_sync,
-            "download": {
-                "state": download_state,
-                "received": download_received,
-                "total": download_total,
-                "error": download_error,
-            },
-        })
+        "installed": installed(),
+        "available": available(),
+        "platform": platform_info(),
+        "version": KERNEL_VERSION,
+        "asset": asset_for_current_platform().map(|(name, _)| name),
+        "running": running,
+        "controllerPort": controller_port,
+        "listenerCount": listener_count,
+        // 统一测试口（「网络代理」页的节点测试全走它；见 runtime::select_test_node）
+        "testPort": runtime::test_port(),
+        "kernelDir": kernel_dir().to_string_lossy(),
+        // 默认目录单列一个读数：下载弹窗要给「恢复默认」一个具体的目标值
+        // （界面不该自己去拼 `{config_dir}/proxy-kernel`，那是后端的布局）
+        "kernelDirDefault": default_kernel_dir().to_string_lossy(),
+        // 已存的下载线路（描述形态，与 /api/update/proxy 同口径）：
+        // 弹窗用它把「当前选的是哪条」显示出来 —— null = 默认链
+        "downloadProxy": crate::server::core::proxies::describe_account_proxy(
+            crate::server::config::kernel_proxy().as_ref(),
+        ),
+        "lastError": last_error,
+        // 手动关闭闩（前端用它把停止态的文案从「已停止」换成「已手动关闭」）
+        "halted": halted,
+        "providerSync": provider_sync,
+        "download": {
+            "state": download_state,
+            "received": download_received,
+            "total": download_total,
+            "error": download_error,
+        },
+    })
 }
 
 /// 「快照 running ∧ 控制端口可达」的合取。UI 的 running 字段与内核
 /// autostart 守卫同源，避免两处口径分叉。探活是最长 300ms 的 TCP
 /// connect，调用方必须已经不在 STATUS 锁内。
 fn kernel_running_with(controller_port: Option<u16>, snapshot_running: bool) -> bool {
-    snapshot_running
-        && controller_port
-            .map(controller_alive)
-            .unwrap_or(false)
+    snapshot_running && controller_port.map(controller_alive).unwrap_or(false)
 }
 
 /// 内核当前是否实际可达（autostart 守卫用；与 `status_json` 的 running
@@ -880,9 +899,7 @@ mod platform_tests {
     fn supported_platform_has_no_unsupported_reason() {
         assert!(platform_unsupported_reason("linux", "aarch64").is_none());
     }
-
 }
-
 
 #[cfg(test)]
 mod worker_shutdown_tests {

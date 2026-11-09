@@ -127,11 +127,17 @@ pub async fn fetch_checksum(url: &str) -> Result<String, UpdateError> {
 
 /// 从校验文件正文里取哈希（首段 + 64 位十六进制）。
 fn parse_checksum(text: &str) -> Result<String, UpdateError> {
-    let token = text.split_whitespace().next().unwrap_or("").to_ascii_lowercase();
+    let token = text
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
     if token.len() == 64 && token.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         Ok(token)
     } else {
-        Err(UpdateError::new("校验文件格式异常（找不到 sha256 哈希），已放弃安装"))
+        Err(UpdateError::new(
+            "校验文件格式异常（找不到 sha256 哈希），已放弃安装",
+        ))
     }
 }
 
@@ -182,7 +188,10 @@ pub fn extract_bundle(
     let mut header = [0u8; 512];
     let mut long_name: Option<String> = None;
     let mut total: u64 = 0;
-    let mut out = Extracted { binary: false, ui_files: 0 };
+    let mut out = Extracted {
+        binary: false,
+        ui_files: 0,
+    };
 
     loop {
         if !read_header(&mut tar, &mut header)? {
@@ -206,7 +215,9 @@ pub fn extract_bundle(
         match entry_type {
             'L' => {
                 let body = read_meta(&mut tar, size)?;
-                name = String::from_utf8_lossy(&body).trim_end_matches('\0').to_string();
+                name = String::from_utf8_lossy(&body)
+                    .trim_end_matches('\0')
+                    .to_string();
                 read_padding(&mut tar, size)?;
                 long_name = Some(name);
                 continue;
@@ -214,10 +225,10 @@ pub fn extract_bundle(
             'x' => {
                 let body = read_meta(&mut tar, size)?;
                 let text = String::from_utf8_lossy(&body).to_string();
-                if let Some(value) = text
-                    .lines()
-                    .find_map(|line| line.strip_prefix("path=").map(|value| value.trim().to_string()))
-                {
+                if let Some(value) = text.lines().find_map(|line| {
+                    line.strip_prefix("path=")
+                        .map(|value| value.trim().to_string())
+                }) {
                     long_name = Some(value);
                 }
                 read_padding(&mut tar, size)?;
@@ -337,11 +348,13 @@ fn write_entry(reader: &mut impl Read, target: &Path, size: u64) -> Result<(), U
         return Err(UpdateError::new("更新包里的条目体积异常，已中止"));
     }
     if let Some(parent) = target.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|error| UpdateError::new(format!("创建目录失败（{}）：{error}", parent.display())))?;
+        std::fs::create_dir_all(parent).map_err(|error| {
+            UpdateError::new(format!("创建目录失败（{}）：{error}", parent.display()))
+        })?;
     }
-    let mut file = std::fs::File::create(target)
-        .map_err(|error| UpdateError::new(format!("写入文件失败（{}）：{error}", target.display())))?;
+    let mut file = std::fs::File::create(target).map_err(|error| {
+        UpdateError::new(format!("写入文件失败（{}）：{error}", target.display()))
+    })?;
     let mut remaining = size;
     let mut buffer = vec![0u8; 64 * 1024];
     while remaining > 0 {
@@ -349,12 +362,14 @@ fn write_entry(reader: &mut impl Read, target: &Path, size: u64) -> Result<(), U
         reader
             .read_exact(&mut buffer[..chunk])
             .map_err(|error| UpdateError::new(format!("读取更新包失败：{error}")))?;
-        file.write_all(&buffer[..chunk])
-            .map_err(|error| UpdateError::new(format!("写入文件失败（{}）：{error}", target.display())))?;
+        file.write_all(&buffer[..chunk]).map_err(|error| {
+            UpdateError::new(format!("写入文件失败（{}）：{error}", target.display()))
+        })?;
         remaining -= chunk as u64;
     }
-    file.flush()
-        .map_err(|error| UpdateError::new(format!("写入文件失败（{}）：{error}", target.display())))?;
+    file.flush().map_err(|error| {
+        UpdateError::new(format!("写入文件失败（{}）：{error}", target.display()))
+    })?;
     set_mode(target, 0o644);
     Ok(())
 }
@@ -390,7 +405,10 @@ fn octal(bytes: &[u8]) -> u64 {
 
 /// tar 头里的 C 字符串字段
 fn cstr(bytes: &[u8]) -> String {
-    let end = bytes.iter().position(|byte| *byte == 0).unwrap_or(bytes.len());
+    let end = bytes
+        .iter()
+        .position(|byte| *byte == 0)
+        .unwrap_or(bytes.len());
     String::from_utf8_lossy(&bytes[..end]).to_string()
 }
 
@@ -489,7 +507,10 @@ fn copy_dir_all(from: &Path, to: &Path) -> std::io::Result<()> {
 /// 改**镜像层**里的目录时）。
 fn restore(target: &Path, backup: &Path) -> Result<(), UpdateError> {
     if !backup.exists() {
-        return Err(UpdateError::with_status(400, "没有可回滚的上一版本（备份不存在）"));
+        return Err(UpdateError::with_status(
+            400,
+            "没有可回滚的上一版本（备份不存在）",
+        ));
     }
     let name = target
         .file_name()
@@ -585,7 +606,10 @@ pub fn apply(
 /// 回滚到上一版本（二进制与界面一起）。
 pub fn rollback(exe: &Path, ui_dir: Option<&Path>) -> Result<ApplyOutcome, UpdateError> {
     if !backup_path(exe).is_file() {
-        return Err(UpdateError::with_status(400, "没有可回滚的上一版本（备份不存在）"));
+        return Err(UpdateError::with_status(
+            400,
+            "没有可回滚的上一版本（备份不存在）",
+        ));
     }
     restore(exe, &backup_path(exe))?;
     let mut ui_updated = false;

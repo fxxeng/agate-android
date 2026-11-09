@@ -54,7 +54,11 @@ pub(crate) fn merge_imported(items: &[Value]) -> Result<MergeReport, String> {
     // 形态被读成空表、`models[]` 的额外键被丢、`name` 缺失被回落成 id）——
     // 拿归一形态写回，这些损失会被固化进盘上，不可逆。
     let mut current = read_raw_items();
-    let mut report = MergeReport { added: 0, updated: 0, warnings: Vec::new() };
+    let mut report = MergeReport {
+        added: 0,
+        updated: 0,
+        warnings: Vec::new(),
+    };
     let mut seen: HashSet<String> = HashSet::new();
 
     for item in items {
@@ -120,7 +124,9 @@ pub(crate) fn merge_imported(items: &[Value]) -> Result<MergeReport, String> {
     }
 
     if !write_items(&current) {
-        return Err("保存失败：自定义提供商定义写入未成功（请检查磁盘空间与配置目录权限）".to_string());
+        return Err(
+            "保存失败：自定义提供商定义写入未成功（请检查磁盘空间与配置目录权限）".to_string(),
+        );
     }
     Ok(report)
 }

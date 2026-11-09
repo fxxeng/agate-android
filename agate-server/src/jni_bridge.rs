@@ -232,13 +232,9 @@ enum EnsureError {
 /// 双检）必须成对调用本函数——只改一处会给并发留窗口。两处都在
 /// `paths::set_config_dir_override` 之前，失配请求不会污染进程全局
 /// paths 状态。
-fn check_data_dir_match(
-    existing: &std::path::Path,
-    requested: &str,
-) -> Result<bool, EnsureError> {
+fn check_data_dir_match(existing: &std::path::Path, requested: &str) -> Result<bool, EnsureError> {
     let requested = std::path::Path::new(requested);
-    let requested = std::fs::canonicalize(requested)
-        .unwrap_or_else(|_| requested.to_path_buf());
+    let requested = std::fs::canonicalize(requested).unwrap_or_else(|_| requested.to_path_buf());
     if requested.as_path() == existing {
         return Ok(false);
     }
@@ -360,7 +356,11 @@ fn scheduler_set(on: bool) -> Value {
     core.scheduler_on = on;
     server::logging::log(
         "[Checkin]",
-        if on { "后台签到调度已开启" } else { "后台签到调度已关闭" },
+        if on {
+            "后台签到调度已开启"
+        } else {
+            "后台签到调度已关闭"
+        },
     );
     json!({ "ok": true, "scheduler": on })
 }
@@ -419,7 +419,9 @@ fn checkin_run_and_wait() -> Value {
         Ok(Some(result)) => json!({ "ok": true, "done": true, "result": result }),
         // None = 已有一轮在执行，本次没有启动新的签到。
         Ok(None) => json!({ "ok": false, "done": true, "error": "busy" }),
-        Err(_) => json!({ "ok": false, "done": true, "error": "checkin task ended without result" }),
+        Err(_) => {
+            json!({ "ok": false, "done": true, "error": "checkin task ended without result" })
+        }
     }
 }
 
@@ -460,12 +462,10 @@ fn api_call(method: &str, path: &str, body: Option<String>, api_key: &str) -> Va
     }
     // 请求体用 axum::body::Body（上游 CORS 测试同款）——bytes::Bytes 直传会
     // 撞上 http-body 版本分裂的 trait impl 不匹配，Body 由 axum 自己的依赖树提供。
-    let Ok(request) = builder
-        .body(match &body {
-            Some(b) => axum::body::Body::from(b.clone()),
-            None => axum::body::Body::empty(),
-        })
-    else {
+    let Ok(request) = builder.body(match &body {
+        Some(b) => axum::body::Body::from(b.clone()),
+        None => axum::body::Body::empty(),
+    }) else {
         return json!({ "ok": false, "error": "build request failed" });
     };
     // oneshot 派到内核全局 runtime，mpsc 同步等结果（与 checkin_run_now 同款模式）。
@@ -476,7 +476,10 @@ fn api_call(method: &str, path: &str, body: Option<String>, api_key: &str) -> Va
                 let status = resp.status().as_u16();
                 match axum::body::to_bytes(resp.into_body(), 4 * 1024 * 1024).await {
                     Ok(bytes) => Some((status, String::from_utf8_lossy(&bytes).into_owned())),
-                    Err(_) => Some((status, "{\"success\":false,\"error\":\"body read failed\"}".to_owned())),
+                    Err(_) => Some((
+                        status,
+                        "{\"success\":false,\"error\":\"body read failed\"}".to_owned(),
+                    )),
                 }
             }
             Err(_) => None,
@@ -611,7 +614,11 @@ fn start_gateway(data_dir: &str, port: u16, bind_lan: bool, api_key: Option<&str
             Ok(tx) => tx,
             Err(conflict) => {
                 crate::server::config::parse::clear_android_api_key_override();
-                logcat_write(LOG_ERROR, LOGCAT_TAG, &format!("网关启动失败: {}", conflict.message));
+                logcat_write(
+                    LOG_ERROR,
+                    LOGCAT_TAG,
+                    &format!("网关启动失败: {}", conflict.message),
+                );
                 return json!({
                     "ok": false,
                     "stage": "bind",
@@ -697,13 +704,17 @@ fn status_json() -> Value {
         let Ok(guard) = CORE.lock() else {
             return json!({ "ok": false, "error": "state poisoned" });
         };
-        guard.as_ref().map(|c| (c.scheduler_on, c.started_at.elapsed().as_secs()))
+        guard
+            .as_ref()
+            .map(|c| (c.scheduler_on, c.started_at.elapsed().as_secs()))
     };
     let running = {
         let Ok(guard) = RUNNING.lock() else {
             return json!({ "ok": false, "error": "state poisoned" });
         };
-        guard.as_ref().map(|r| (r.port, r.bind_lan, r.started_at.elapsed().as_secs()))
+        guard
+            .as_ref()
+            .map(|r| (r.port, r.bind_lan, r.started_at.elapsed().as_secs()))
     };
     // running/port/bind_lan/uptime_sec 字段向后兼容（M3 的 UI 读这几个）；
     // core/scheduler 是 B 包新增的两级状态。
@@ -812,9 +823,9 @@ fn json_reply(env: &mut JNIEnv<'_>, value: Value) -> jstring {
         // 裸 JSONObject 解析点拿 null 抛 NPE）；连它都分配不出来才返回 null，
         // 由 Kotlin envelope() 收敛成 malformed native reply（两层兜底链）。
         Err(_) => {
-            let fallback =
-                env.new_string(r#"{"ok":false,"stage":"jni","error":"reply alloc failed"}"#)
-                    .map(|s| s.into_raw());
+            let fallback = env
+                .new_string(r#"{"ok":false,"stage":"jni","error":"reply alloc failed"}"#)
+                .map(|s| s.into_raw());
             if fallback.is_err() {
                 // 第二次分配的 pending 异常同样必须清掉：否则 null 一到 Java
                 // 侧就会被 JVM 换成抛异常，兜底契约失效（R47/T3.2）。
@@ -840,13 +851,27 @@ pub extern "system" fn Java_dev_agate_core_Gateway_nativeStart<'local>(
     let cfg: Value = match serde_json::from_str(&cfg_text) {
         Ok(v) => v,
         Err(e) => {
-            return json_reply(&mut env, json!({"ok": false, "stage": "config", "error": e.to_string()}))
+            return json_reply(
+                &mut env,
+                json!({"ok": false, "stage": "config", "error": e.to_string()}),
+            )
         }
     };
-    let Some(data_dir) = cfg.get("data_dir").and_then(Value::as_str).map(str::to_owned) else {
-        return json_reply(&mut env, json!({"ok": false, "stage": "config", "error": "data_dir 必填"}));
+    let Some(data_dir) = cfg
+        .get("data_dir")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+    else {
+        return json_reply(
+            &mut env,
+            json!({"ok": false, "stage": "config", "error": "data_dir 必填"}),
+        );
     };
-    let port = cfg.get("port").and_then(Value::as_u64).unwrap_or(8080).clamp(1, 65535) as u16;
+    let port = cfg
+        .get("port")
+        .and_then(Value::as_u64)
+        .unwrap_or(8080)
+        .clamp(1, 65535) as u16;
     // api_key（M3）：Android host 通过显式运行时覆盖注入，不修改进程环境变量，
     // config::active_keys_from 每次鉴权读取该覆盖，无需写 config.json；
     // 效果 = 上游「兼容模式」：局域网形态下壳的 /api 与 /v1 请求带这把 Key
@@ -858,15 +883,24 @@ pub extern "system" fn Java_dev_agate_core_Gateway_nativeStart<'local>(
         .map(str::trim)
         .filter(|k| !k.is_empty())
         .map(str::to_owned);
-    let bind_lan = cfg.get("bind_lan").and_then(Value::as_bool).unwrap_or(false);
+    let bind_lan = cfg
+        .get("bind_lan")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     // admin_token：M0 预留 —— M1 局域网模式的 X-Internal-Admin-Token 免登守卫用它
     if let Some(token) = cfg.get("admin_token").and_then(Value::as_str) {
         server::logging::log(
             "[Security]",
-            &format!("admin_token 已登记（{} 字符），局域网守卫启用后生效", token.chars().count()),
+            &format!(
+                "admin_token 已登记（{} 字符），局域网守卫启用后生效",
+                token.chars().count()
+            ),
         );
     }
-    json_reply(&mut env, start_gateway(&data_dir, port, bind_lan, api_key.as_deref()))
+    json_reply(
+        &mut env,
+        start_gateway(&data_dir, port, bind_lan, api_key.as_deref()),
+    )
 }
 
 #[no_mangle]
@@ -913,7 +947,11 @@ pub extern "system" fn Java_dev_agate_core_Gateway_nativeCheckinRunNow<'local>(
     _class: JClass<'local>,
     timeout_ms: jlong,
 ) -> jstring {
-    let timeout = if timeout_ms > 0 { timeout_ms as u64 } else { 120_000 };
+    let timeout = if timeout_ms > 0 {
+        timeout_ms as u64
+    } else {
+        120_000
+    };
     json_reply(&mut env, checkin_run_now(timeout))
 }
 

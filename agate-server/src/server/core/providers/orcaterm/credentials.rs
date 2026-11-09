@@ -28,7 +28,7 @@
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use crate::server::core::account_store::AccountStore;
 use crate::server::core::providers::refresh_flight;
@@ -93,7 +93,10 @@ pub fn normalize_token(raw: &str) -> String {
     if let Some(rest) = token.strip_prefix("ot_session=") {
         token = rest.trim().to_string();
     }
-    if let Some(rest) = token.strip_prefix("Bearer ").or_else(|| token.strip_prefix("bearer ")) {
+    if let Some(rest) = token
+        .strip_prefix("Bearer ")
+        .or_else(|| token.strip_prefix("bearer "))
+    {
         token = rest.trim().to_string();
     }
     token
@@ -110,7 +113,9 @@ fn decode_jwt_claims(token: &str) -> Option<Value> {
         base64.push('=');
     }
     use base64::Engine as _;
-    let bytes = base64::engine::general_purpose::STANDARD.decode(base64).ok()?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(base64)
+        .ok()?;
     let claims = serde_json::from_slice::<Value>(&bytes).ok()?;
     claims.is_object().then_some(claims)
 }
@@ -148,7 +153,9 @@ pub fn credentials_from_payload(payload: &Value) -> Result<OrcatermCredentials, 
                 .map(normalize_token)
                 .unwrap_or_default();
             if direct.is_empty() {
-                return Err("缺少 accessToken（粘贴 OrcaTerm 的 JWT，或整个 data.bin 的内容）".to_string());
+                return Err(
+                    "缺少 accessToken（粘贴 OrcaTerm 的 JWT，或整个 data.bin 的内容）".to_string(),
+                );
             }
             direct
         }
@@ -198,15 +205,27 @@ pub fn read_desktop_credentials() -> Result<OrcatermCredentials, String> {
     let text = std::fs::read_to_string(&path)
         .map_err(|error| format!("读取客户端登录态失败（{}）：{error}", path.display()))?;
     let Ok(data) = serde_json::from_str::<Value>(&text) else {
-        return Err(format!("客户端登录态文件不是有效 JSON（{}）", path.display()));
+        return Err(format!(
+            "客户端登录态文件不是有效 JSON（{}）",
+            path.display()
+        ));
     };
     let token = normalize_token(
-        data.get("oauth_access_token").and_then(Value::as_str).unwrap_or(""),
+        data.get("oauth_access_token")
+            .and_then(Value::as_str)
+            .unwrap_or(""),
     );
     if token.is_empty() {
-        return Err("本机客户端未登录（data.bin 里没有 oauth_access_token）；请先在 OrcaTerm 客户端登录".to_string());
+        return Err(
+            "本机客户端未登录（data.bin 里没有 oauth_access_token）；请先在 OrcaTerm 客户端登录"
+                .to_string(),
+        );
     }
-    let expires_at = data.get("oauth_expires_at").and_then(Value::as_i64).unwrap_or(0) / 1000;
+    let expires_at = data
+        .get("oauth_expires_at")
+        .and_then(Value::as_i64)
+        .unwrap_or(0)
+        / 1000;
     let (user_id, jwt_exp) = claims_of(&token);
     // data.bin 的 oauth_expires_at 与 JWT exp 取较新者（两者语义相同，毫秒 / 秒）
     let expires_at = if jwt_exp > 0 { jwt_exp } else { expires_at };
@@ -215,9 +234,19 @@ pub fn read_desktop_credentials() -> Result<OrcatermCredentials, String> {
         .get("auth_identity")
         .and_then(Value::as_str)
         .and_then(|identity| serde_json::from_str::<Value>(identity).ok())
-        .and_then(|identity| identity.get("nickName").and_then(Value::as_str).map(str::to_string))
+        .and_then(|identity| {
+            identity
+                .get("nickName")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
         .unwrap_or_default();
-    Ok(OrcatermCredentials { access_token: token, expires_at, user_id, nickname })
+    Ok(OrcatermCredentials {
+        access_token: token,
+        expires_at,
+        user_id,
+        nickname,
+    })
 }
 
 /// 本机登录态的展示摘要（前端导入预检用）。
@@ -235,23 +264,41 @@ pub fn desktop_summary() -> Result<Value, String> {
 /// CGI 网关的请求头（`Authorization: Bearer`；`uin` 在 query 上，不在头里）。
 pub fn cgi_headers(credentials: &OrcatermCredentials) -> Vec<(String, String)> {
     vec![
-        ("Authorization".to_string(), format!("Bearer {}", credentials.access_token)),
+        (
+            "Authorization".to_string(),
+            format!("Bearer {}", credentials.access_token),
+        ),
         ("Content-Type".to_string(), "application/json".to_string()),
         ("User-Agent".to_string(), USER_AGENT.to_string()),
-        ("Origin".to_string(), "https://orcaterm.cloud.tencent.com".to_string()),
-        ("Referer".to_string(), "https://orcaterm.cloud.tencent.com/".to_string()),
+        (
+            "Origin".to_string(),
+            "https://orcaterm.cloud.tencent.com".to_string(),
+        ),
+        (
+            "Referer".to_string(),
+            "https://orcaterm.cloud.tencent.com/".to_string(),
+        ),
     ]
 }
 
 /// assistant 网关的请求头（`X-Product: orcaterm` 是本家的产品标识）。
 pub fn lightai_headers(credentials: &OrcatermCredentials, seq_id: &str) -> Vec<(String, String)> {
     vec![
-        ("Authorization".to_string(), format!("Bearer {}", credentials.access_token)),
+        (
+            "Authorization".to_string(),
+            format!("Bearer {}", credentials.access_token),
+        ),
         ("X-Product".to_string(), "orcaterm".to_string()),
         ("x-seqid".to_string(), seq_id.to_string()),
         ("User-Agent".to_string(), USER_AGENT.to_string()),
-        ("Origin".to_string(), "https://orcaterm.cloud.tencent.com".to_string()),
-        ("Referer".to_string(), "https://orcaterm.cloud.tencent.com/".to_string()),
+        (
+            "Origin".to_string(),
+            "https://orcaterm.cloud.tencent.com".to_string(),
+        ),
+        (
+            "Referer".to_string(),
+            "https://orcaterm.cloud.tencent.com/".to_string(),
+        ),
     ]
 }
 
@@ -266,7 +313,10 @@ pub async fn cgi_action(
     data: Value,
     proxy: Option<&crate::server::core::proxies::ResolvedProxy>,
 ) -> Result<Value, GatewayError> {
-    let url = format!("{CGI_BASE}/cgi/api?action={action}&uin={}", credentials.user_id);
+    let url = format!(
+        "{CGI_BASE}/cgi/api?action={action}&uin={}",
+        credentials.user_id
+    );
     let body = json!({ "action": action, "data": data });
     let value = post_json_value(&url, &cgi_headers(credentials), &body, proxy, None).await?;
     Ok(value
@@ -284,8 +334,14 @@ pub async fn fetch_user_info(
 ) -> Result<(String, String), GatewayError> {
     let response = cgi_action(credentials, "GetUserInfo", json!({}), proxy).await?;
     if let Some(error) = response.get("Error") {
-        let code = error.get("Code").and_then(Value::as_str).unwrap_or("UNKNOWN");
-        let message = error.get("Message").and_then(Value::as_str).unwrap_or("上游错误");
+        let code = error
+            .get("Code")
+            .and_then(Value::as_str)
+            .unwrap_or("UNKNOWN");
+        let message = error
+            .get("Message")
+            .and_then(Value::as_str)
+            .unwrap_or("上游错误");
         return Err(GatewayError::with_status(
             401,
             format!("OrcaTerm 凭证被上游拒绝（{code}：{message}）"),
@@ -370,27 +426,43 @@ async fn call_refresh_api(
     .await?;
     let code = response.get("Code").and_then(Value::as_i64).unwrap_or(-1);
     if code != 0 {
-        let message = response.get("Message").and_then(Value::as_str).unwrap_or("未知错误");
+        let message = response
+            .get("Message")
+            .and_then(Value::as_str)
+            .unwrap_or("未知错误");
         return Err(GatewayError::with_status(
             401,
             format!("OrcaTerm 续期失败（code={code}：{message}）；请重新导入桌面端登录态或重新粘贴 accessToken"),
         ));
     }
     let token = normalize_token(
-        response.get("AccessToken").and_then(Value::as_str).unwrap_or(""),
+        response
+            .get("AccessToken")
+            .and_then(Value::as_str)
+            .unwrap_or(""),
     );
     if token.is_empty() {
-        return Err(GatewayError::with_status(502, "OrcaTerm 续期响应缺少 AccessToken"));
+        return Err(GatewayError::with_status(
+            502,
+            "OrcaTerm 续期响应缺少 AccessToken",
+        ));
     }
     let (user_id, expires_at) = claims_of(&token);
     logging::verbose(
         "[OrcaTerm]",
-        &format!("账号 {} 的 accessToken 已续期（新过期时刻 {expires_at}）", credentials.user_id),
+        &format!(
+            "账号 {} 的 accessToken 已续期（新过期时刻 {expires_at}）",
+            credentials.user_id
+        ),
     );
     Ok(OrcatermCredentials {
         access_token: token,
         expires_at,
-        user_id: if user_id.is_empty() { credentials.user_id.clone() } else { user_id },
+        user_id: if user_id.is_empty() {
+            credentials.user_id.clone()
+        } else {
+            user_id
+        },
         nickname: credentials.nickname.clone(),
     })
 }
@@ -413,7 +485,10 @@ pub fn snapshot_for(
         )
     })?;
     let token = normalize_token(
-        record.get("accessToken").and_then(Value::as_str).unwrap_or(""),
+        record
+            .get("accessToken")
+            .and_then(Value::as_str)
+            .unwrap_or(""),
     );
     if token.is_empty() {
         return Err(GatewayError::with_status(
@@ -435,6 +510,10 @@ pub fn snapshot_for(
             .filter(|value| !value.is_empty())
             .map(str::to_string)
             .unwrap_or(jwt_user_id),
-        nickname: record.get("loginName").and_then(Value::as_str).unwrap_or("").to_string(),
+        nickname: record
+            .get("loginName")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
     })
 }

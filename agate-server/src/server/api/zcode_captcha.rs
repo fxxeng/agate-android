@@ -27,11 +27,11 @@ use serde_json::Value;
 
 use crate::server::config;
 use crate::server::core::providers::zcode;
+use crate::server::core::providers::zcode::captcha;
 use crate::server::errors::management_error;
 use crate::server::http::{ok_json, parse_body};
 use crate::server::logging;
 use crate::server::ServerState;
-use crate::server::core::providers::zcode::captcha;
 
 /// 界面希望维持的库存目标（低于它就该补货）等**节奏设置**已改成可配置：
 /// 键与端点见 `zcode_captcha_pool_api`（设置页「网关 → 验证码令牌池」）。
@@ -102,7 +102,10 @@ fn start_plan_accounts(state: &ServerState) -> (usize, Option<String>) {
     let mut start_plan_id: Option<String> = None;
     let mut fallback_id: Option<String> = None;
     for account in accounts {
-        let provider = account.get("provider").and_then(Value::as_str).unwrap_or("");
+        let provider = account
+            .get("provider")
+            .and_then(Value::as_str)
+            .unwrap_or("");
         if zcode::region::Region::from_provider_id(provider).is_none() {
             continue;
         }

@@ -44,7 +44,9 @@ use serde_json::Value;
 use crate::server::core::egress;
 use crate::server::core::providers::codearts::credentials::DpopKeyPair;
 use crate::server::core::providers::codearts::dpop::DpopKey;
-use crate::server::core::providers::officeace::signer::{self, Algorithm, Credential as SigningCredential};
+use crate::server::core::providers::officeace::signer::{
+    self, Algorithm, Credential as SigningCredential,
+};
 use crate::server::logging;
 
 use super::provision;
@@ -56,7 +58,8 @@ pub const AUTH_BASE: &str = "https://auth.huaweicloud.com";
 /// 固定的 client_id（官方实现同款）。
 pub const CLIENT_ID: &str = "pdp5_for_agentarts";
 /// 授权回调**指向云端**（不是本机 loopback）。
-pub const REDIRECT_URI: &str = "https://agentarts.cn-southwest-2.myhuaweicloud.com/v1/claw/auth/callback";
+pub const REDIRECT_URI: &str =
+    "https://agentarts.cn-southwest-2.myhuaweicloud.com/v1/claw/auth/callback";
 /// 令牌端点（与 CodeArts 同一个 STS 主机）。
 pub const TOKEN_URL: &str = "https://sts.cn-north-4.myhuaweicloud.com/v1/oauth2/tokens";
 /// 区域（控制面签名用）。
@@ -149,12 +152,22 @@ async fn fetch_state() -> Result<String, String> {
         .body("{}")
         .send()
         .await
-        .map_err(|error| format!("向云端申请 state 失败：{}", egress::describe_error_detail(&error)))?;
+        .map_err(|error| {
+            format!(
+                "向云端申请 state 失败：{}",
+                egress::describe_error_detail(&error)
+            )
+        })?;
     let status = response.status().as_u16();
     let text = response.text().await.unwrap_or_default();
     let state = serde_json::from_str::<Value>(&text)
         .ok()
-        .and_then(|payload| payload.get("state").and_then(Value::as_str).map(str::to_string))
+        .and_then(|payload| {
+            payload
+                .get("state")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
         .unwrap_or_default();
     if state.trim().is_empty() {
         return Err(format!("云端没给出 state（HTTP {status}）"));
@@ -172,7 +185,10 @@ fn build_authorize_url(state: &str, challenge: &str) -> String {
         url_escape(state),
         url_escape(REDIRECT_URI),
     );
-    format!("{AUTH_BASE}/authui/login.html?service={}", url_escape(&inner))
+    format!(
+        "{AUTH_BASE}/authui/login.html?service={}",
+        url_escape(&inner)
+    )
 }
 
 impl LoginFlow {
@@ -186,7 +202,8 @@ impl LoginFlow {
             Sha256::digest(code_verifier.as_bytes()).to_vec()
         };
         let challenge = base64url(&digest);
-        let dpop_key_pair = DpopKey::generate().map_err(|error| format!("生成 DPoP 密钥失败：{error}"))?;
+        let dpop_key_pair =
+            DpopKey::generate().map_err(|error| format!("生成 DPoP 密钥失败：{error}"))?;
         let auth_url = build_authorize_url(&state, &challenge);
         Ok(Self {
             state,
@@ -220,7 +237,9 @@ impl LoginFlow {
             .timeout(Duration::from_millis(REQUEST_TIMEOUT_MS))
             .send()
             .await
-            .map_err(|error| format!("轮询授权码失败：{}", egress::describe_error_detail(&error)))?;
+            .map_err(|error| {
+                format!("轮询授权码失败：{}", egress::describe_error_detail(&error))
+            })?;
         let status = response.status().as_u16();
         let text = response.text().await.unwrap_or_default();
         match status {
@@ -265,8 +284,7 @@ impl LoginFlow {
     ///      `client-subscription`（body `{}`）开通，成功即返回 `model_info`；
     ///   4. 从 `model_info` 解网关三件套落盘。
     pub async fn finish(&self, code: &str) -> Result<GatewayCredential, String> {
-        let (mut temporary, expires_at, identity, refresh_token) =
-            self.exchange_code(code).await?;
+        let (mut temporary, expires_at, identity, refresh_token) = self.exchange_code(code).await?;
         // ① project_id 补查（见模块头 ⑦ 与 provision 模块头）
         if temporary.project_id.is_empty() {
             if let Some(project_id) = provision::resolve_project_id(&temporary, REGION).await {
@@ -352,9 +370,7 @@ impl LoginFlow {
             .body(form)
             .send()
             .await
-            .map_err(|error| {
-                format!("续期请求失败：{}", egress::describe_error_detail(&error))
-            })?;
+            .map_err(|error| format!("续期请求失败：{}", egress::describe_error_detail(&error)))?;
         let status = response.status().as_u16();
         let text = response.text().await.unwrap_or_default();
         let payload = serde_json::from_str::<Value>(&text).unwrap_or(Value::Null);
@@ -456,7 +472,10 @@ impl LoginFlow {
             .send()
             .await
             .map_err(|error| {
-                format!("换取临时凭据失败：{}", egress::describe_error_detail(&error))
+                format!(
+                    "换取临时凭据失败：{}",
+                    egress::describe_error_detail(&error)
+                )
             })?;
         let status = response.status().as_u16();
         let text = response.text().await.unwrap_or_default();
@@ -569,7 +588,11 @@ impl LoginFlow {
         // 开通那一发在顶层。两层都兜，非对象一律当「没有」。
         let model_info = payload
             .get("model_info")
-            .or_else(|| payload.get("subscription").and_then(|value| value.get("model_info")))
+            .or_else(|| {
+                payload
+                    .get("subscription")
+                    .and_then(|value| value.get("model_info"))
+            })
             .or_else(|| payload.get("modelInfo"))
             .filter(|value| value.is_object())
             .cloned()
@@ -612,7 +635,10 @@ fn gateway_of(model_info: &Value) -> Result<(String, String, String), String> {
         .trim()
         .to_string();
     if app_key.is_empty() || app_secret.is_empty() {
-        return Err("云端返回了模型信息，但缺少模型网关凭据（model_app_key / model_app_secret）".to_string());
+        return Err(
+            "云端返回了模型信息，但缺少模型网关凭据（model_app_key / model_app_secret）"
+                .to_string(),
+        );
     }
     let host = model_info
         .get("model_api_url_base")
@@ -699,7 +725,10 @@ pub(crate) fn jwt_identity(token: &str) -> TokenIdentity {
     // 顶层字段优先：上游哪天把名字放回顶层，这里不需要改代码
     for field in ["preferred_username", "name"] {
         if let Some(text) = text_of(&claims, field) {
-            return TokenIdentity { user_name: text, principal_id };
+            return TokenIdentity {
+                user_name: text,
+                principal_id,
+            };
         }
     }
     TokenIdentity {
@@ -731,10 +760,7 @@ fn decode_user_profile(text: &str) -> Option<Value> {
     if body.is_empty() {
         return None;
     }
-    for candidate in [
-        URL_SAFE_NO_PAD.decode(body),
-        STANDARD_NO_PAD.decode(body),
-    ] {
+    for candidate in [URL_SAFE_NO_PAD.decode(body), STANDARD_NO_PAD.decode(body)] {
         let Ok(bytes) = candidate else { continue };
         if let Ok(parsed) = serde_json::from_slice::<Value>(&bytes) {
             return Some(parsed);
@@ -785,7 +811,11 @@ fn days_from_civil(year: i64, month: i64, day: i64) -> Option<i64> {
         return None;
     }
     let adjusted_year = if month <= 2 { year - 1 } else { year };
-    let era = if adjusted_year >= 0 { adjusted_year } else { adjusted_year - 399 } / 400;
+    let era = if adjusted_year >= 0 {
+        adjusted_year
+    } else {
+        adjusted_year - 399
+    } / 400;
     let yoe = adjusted_year - era * 400;
     let mp = if month > 2 { month - 3 } else { month + 9 };
     let doy = (153 * mp + 2) / 5 + day - 1;
@@ -823,7 +853,10 @@ mod tests {
     #[test]
     fn rfc3339_parses_official_shape() {
         // 2026-10-10T03:15:00Z
-        assert_eq!(Some(1_791_602_100_000), parse_rfc3339_ms("2026-10-10T03:15:00Z"));
+        assert_eq!(
+            Some(1_791_602_100_000),
+            parse_rfc3339_ms("2026-10-10T03:15:00Z")
+        );
         assert_eq!(Some(0), parse_rfc3339_ms("1970-01-01T00:00:00Z"));
         assert_eq!(None, parse_rfc3339_ms("not a date"));
         assert_eq!(None, parse_rfc3339_ms("2026-13-01T00:00:00Z"));
@@ -843,7 +876,9 @@ mod tests {
 
         assert_eq!(
             "user@example.com",
-            name_of(&token_of(r#"{"preferred_username":"user@example.com","sub":"u1"}"#))
+            name_of(&token_of(
+                r#"{"preferred_username":"user@example.com","sub":"u1"}"#
+            ))
         );
         // `preferred_username` 缺 → 退到 `name`
         assert_eq!("张三", name_of(&token_of(r#"{"name":"张三"}"#)));
@@ -872,7 +907,10 @@ mod tests {
             r#"{{"client_id":"pdp5_for_agentarts","type":"app","iat":1,"exp":2,"user_profile":"{profile}"}}"#
         );
         let identity = jwt_identity(&format!("header.{}.sig", base64url(claims.as_bytes())));
-        assert_eq!("hid_synthetic-1", identity.user_name, "名字在 user_profile.account_name");
+        assert_eq!(
+            "hid_synthetic-1", identity.user_name,
+            "名字在 user_profile.account_name"
+        );
         assert_eq!("prin_89abcdef01234567", identity.principal_id);
     }
 
@@ -929,7 +967,10 @@ mod tests {
 
         // 只有 refresh_token（登录与续期响应的实测形态）
         let identity = response_identity(&json!({"credentials": {}, "refresh_token": bearer}));
-        assert_eq!("hid_synthetic-1", identity.user_name, "名字在 refresh_token 里");
+        assert_eq!(
+            "hid_synthetic-1", identity.user_name,
+            "名字在 refresh_token 里"
+        );
         assert_eq!("0123456789abcdef0123456789abcdef", identity.principal_id);
 
         // 同一发里 id_token 也带名字 ⇒ 以 id_token 为准（它是这次会话的身份快照）

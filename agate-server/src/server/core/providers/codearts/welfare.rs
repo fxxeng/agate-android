@@ -39,7 +39,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use crate::server::core::account_store::AccountStore;
 use crate::server::core::egress;
@@ -198,7 +198,12 @@ pub fn today(now_ms: i64) -> String {
     let seconds = now_ms / 1000 + i64::from(DAY_ZONE_OFFSET_SECONDS);
     chrono::DateTime::from_timestamp(seconds, 0)
         .map(|time| time.date_naive().format("%Y-%m-%d").to_string())
-        .unwrap_or_else(|| chrono::Utc::now().date_naive().format("%Y-%m-%d").to_string())
+        .unwrap_or_else(|| {
+            chrono::Utc::now()
+                .date_naive()
+                .format("%Y-%m-%d")
+                .to_string()
+        })
 }
 
 /// 一个北京时间自然日的长度（毫秒）。
@@ -232,21 +237,28 @@ async fn welfare_request(
     credential: &Credential,
 ) -> Result<Value, GatewayError> {
     let url = format!("{}{path}", trim(base));
-    let payload = body.clone().map(|value| value.to_string().into_bytes()).unwrap_or_default();
+    let payload = body
+        .clone()
+        .map(|value| value.to_string().into_bytes())
+        .unwrap_or_default();
     let headers = vec![
         ("Content-Type".to_string(), "application/json".to_string()),
         ("Agent-Type".to_string(), "PromptCenter".to_string()),
         ("X-Language".to_string(), chat::DEFAULT_LANGUAGE.to_string()),
     ];
     let signing = super::oauth::signer_credential(credential);
-    let signed = signer::sign(method, &url, &headers, &payload, &signing, false)
-        .map_err(|reason| GatewayError::with_status(500, format!("CodeArts 活动请求签名失败：{reason}")))?;
+    let signed =
+        signer::sign(method, &url, &headers, &payload, &signing, false).map_err(|reason| {
+            GatewayError::with_status(500, format!("CodeArts 活动请求签名失败：{reason}"))
+        })?;
     let built = match method {
         "POST" => egress::client_for(None)
             .post(&url)
             .timeout(std::time::Duration::from_secs(20))
             .body(payload.clone()),
-        _ => egress::client_for(None).get(&url).timeout(std::time::Duration::from_secs(20)),
+        _ => egress::client_for(None)
+            .get(&url)
+            .timeout(std::time::Duration::from_secs(20)),
     };
     let mut request = built;
     for (name, value) in signed {
@@ -256,7 +268,10 @@ async fn welfare_request(
         let status = if error.is_timeout() { 504 } else { 502 };
         GatewayError::with_status(
             status,
-            format!("CodeArts 活动请求失败：{}", egress::describe_error_detail(&error)),
+            format!(
+                "CodeArts 活动请求失败：{}",
+                egress::describe_error_detail(&error)
+            ),
         )
     })?;
     let status = response.status().as_u16();
@@ -276,18 +291,24 @@ async fn welfare_request(
     if status != 200 {
         return Err(GatewayError::with_status(
             i32::from(status),
-            format!("CodeArts 活动接口返回 HTTP {status}：{}", excerpt(&text, credential)),
+            format!(
+                "CodeArts 活动接口返回 HTTP {status}：{}",
+                excerpt(&text, credential)
+            ),
         ));
     }
     // `code` 缺失与 `code != 0` 同罪：**没确认成功就不能记为已领取**
-    let parsed: Value = serde_json::from_str(&text)
-        .map_err(|_| GatewayError::with_status(502, "CodeArts 活动接口响应不是合法 JSON，未记录为已领取"))?;
+    let parsed: Value = serde_json::from_str(&text).map_err(|_| {
+        GatewayError::with_status(502, "CodeArts 活动接口响应不是合法 JSON，未记录为已领取")
+    })?;
     match parsed.get("code").and_then(Value::as_i64) {
         Some(0) => {}
         other => {
             return Err(GatewayError::with_status(
                 502,
-                format!("CodeArts 活动接口未确认成功（需要 code=0，实际 {other:?}），未记录为已领取"),
+                format!(
+                    "CodeArts 活动接口未确认成功（需要 code=0，实际 {other:?}），未记录为已领取"
+                ),
             ));
         }
     }
@@ -320,12 +341,34 @@ fn parse_delivery(data: &Value) -> Result<Vec<Campaign>, GatewayError> {
         .iter()
         .map(|item| Campaign {
             id: item.get("campaignId").cloned().unwrap_or(Value::Null),
-            kind: item.get("type").and_then(Value::as_str).unwrap_or("").to_string(),
-            title: item.get("title").and_then(Value::as_str).unwrap_or("").to_string(),
-            claimable: item.get("claimable").and_then(Value::as_bool).unwrap_or(false),
-            status: item.get("status").and_then(Value::as_str).unwrap_or("").to_string(),
-            benefit_amount: item.get("benefitAmount").and_then(Value::as_f64).unwrap_or(0.0),
-            benefit_unit: item.get("benefitUnit").and_then(Value::as_str).unwrap_or("").to_string(),
+            kind: item
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+            title: item
+                .get("title")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+            claimable: item
+                .get("claimable")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            status: item
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+            benefit_amount: item
+                .get("benefitAmount")
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0),
+            benefit_unit: item
+                .get("benefitUnit")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
         })
         .collect())
 }
@@ -348,22 +391,42 @@ pub async fn claim(
     // 响应里的活动 id 必须与请求的一致，否则**不进入确认阶段**：
     // 确认错活动会把别人的到账当成自己的
     let returned = data.get("campaignId").cloned().unwrap_or(Value::Null);
-    let expected = Campaign { id: campaign_id.clone(), ..Campaign::default() }.key();
-    let actual = Campaign { id: returned, ..Campaign::default() }.key();
+    let expected = Campaign {
+        id: campaign_id.clone(),
+        ..Campaign::default()
+    }
+    .key();
+    let actual = Campaign {
+        id: returned,
+        ..Campaign::default()
+    }
+    .key();
     if actual != expected || expected.is_empty() {
         return Err(GatewayError::with_status(
             502,
-            format!("CodeArts 领取响应活动 ID 不匹配（要 {expected}，回 {actual}），未进入确认阶段"),
+            format!(
+                "CodeArts 领取响应活动 ID 不匹配（要 {expected}，回 {actual}），未进入确认阶段"
+            ),
         ));
     }
     Ok(())
 }
 
 /// 确认一笔。
-pub async fn confirm(base: &str, credential: &Credential, campaign_id: &Value) -> Result<(), GatewayError> {
-    welfare_request(base, "POST", CONFIRM_PATH, Some(json!({"campaignId": campaign_id})), credential)
-        .await
-        .map(|_| ())
+pub async fn confirm(
+    base: &str,
+    credential: &Credential,
+    campaign_id: &Value,
+) -> Result<(), GatewayError> {
+    welfare_request(
+        base,
+        "POST",
+        CONFIRM_PATH,
+        Some(json!({"campaignId": campaign_id})),
+        credential,
+    )
+    .await
+    .map(|_| ())
 }
 
 /// 台账（存在账号记录的 `codeartsWelfare` 里）。
@@ -390,7 +453,9 @@ impl Ledger {
         // 日期本身要能解析：一个读不懂的 day 不能当成「不是今天」
         chrono::NaiveDate::parse_from_str(&day, "%Y-%m-%d").ok()?;
         let attempts = value.get("attempts").and_then(Value::as_i64)?;
-        if value.get("version").and_then(Value::as_i64)? != LEDGER_VERSION || !(0..=MAX_ATTEMPTS_PER_DAY).contains(&attempts) {
+        if value.get("version").and_then(Value::as_i64)? != LEDGER_VERSION
+            || !(0..=MAX_ATTEMPTS_PER_DAY).contains(&attempts)
+        {
             return None;
         }
         let mut campaigns = HashMap::new();
@@ -399,9 +464,19 @@ impl Ledger {
                 campaigns.insert(
                     key.clone(),
                     Progress {
-                        idempotent_key: item.get("idempotentKey").and_then(Value::as_str).unwrap_or("").to_string(),
-                        claimed: item.get("claimed").and_then(Value::as_bool).unwrap_or(false),
-                        confirmed: item.get("confirmed").and_then(Value::as_bool).unwrap_or(false),
+                        idempotent_key: item
+                            .get("idempotentKey")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_string(),
+                        claimed: item
+                            .get("claimed")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false),
+                        confirmed: item
+                            .get("confirmed")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false),
                     },
                 );
             }
@@ -410,8 +485,15 @@ impl Ledger {
             version: LEDGER_VERSION,
             day,
             attempts,
-            last_attempt_ms: value.get("lastAttemptMs").and_then(Value::as_i64).unwrap_or(0).max(0),
-            accepted: value.get("accepted").and_then(Value::as_bool).unwrap_or(false),
+            last_attempt_ms: value
+                .get("lastAttemptMs")
+                .and_then(Value::as_i64)
+                .unwrap_or(0)
+                .max(0),
+            accepted: value
+                .get("accepted")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
             campaigns,
         })
     }
@@ -441,10 +523,18 @@ impl Ledger {
 
 /// 只读预览（面板上「先看一眼」那一步）：**一个写请求都不发**。
 /// 返回今天的状态、可领的活动、以及限流闸门的剩余量。
-pub async fn preview(store: &AccountStore, account_id: &str, base: &str, now_ms: i64) -> Result<Value, GatewayError> {
+pub async fn preview(
+    store: &AccountStore,
+    account_id: &str,
+    base: &str,
+    now_ms: i64,
+) -> Result<Value, GatewayError> {
     let credential = current_credential(store, account_id).await?;
     let items = delivery(base, &credential).await?;
-    let daily: Vec<&Campaign> = items.iter().filter(|item| item.is_daily_login_credit()).collect();
+    let daily: Vec<&Campaign> = items
+        .iter()
+        .filter(|item| item.is_daily_login_credit())
+        .collect();
     let ledger = ledger_of(store, account_id, now_ms)?;
     Ok(json!({
         "day": ledger.day,
@@ -470,7 +560,10 @@ pub async fn preview(store: &AccountStore, account_id: &str, base: &str, now_ms:
 }
 
 /// 读一份可用的凭据（临期就续，与转发同一入口）。
-pub(crate) async fn current_credential(store: &AccountStore, account_id: &str) -> Result<Credential, GatewayError> {
+pub(crate) async fn current_credential(
+    store: &AccountStore,
+    account_id: &str,
+) -> Result<Credential, GatewayError> {
     let proxy = super::record_proxy(store, account_id)?;
     super::refresh::ensure_fresh(store, account_id, false, proxy.as_ref()).await
 }
@@ -487,7 +580,14 @@ pub(crate) async fn current_credential(store: &AccountStore, account_id: &str) -
 ///     两种情况下"重来一天"都会把当天的次数与键一起丢掉。
 fn ledger_of(store: &AccountStore, account_id: &str, now_ms: i64) -> Result<Ledger, GatewayError> {
     let day = today(now_ms);
-    let fresh = || Ledger { version: LEDGER_VERSION, day: day.clone(), attempts: 0, last_attempt_ms: 0, accepted: false, campaigns: HashMap::new() };
+    let fresh = || Ledger {
+        version: LEDGER_VERSION,
+        day: day.clone(),
+        attempts: 0,
+        last_attempt_ms: 0,
+        accepted: false,
+        campaigns: HashMap::new(),
+    };
     let Some(stored) = store.codearts_welfare_ledger(account_id) else {
         return Ok(fresh());
     };
@@ -503,7 +603,10 @@ fn ledger_of(store: &AccountStore, account_id: &str, now_ms: i64) -> Result<Ledg
         std::cmp::Ordering::Less => Ok(fresh()),
         std::cmp::Ordering::Greater => Err(GatewayError::with_status(
             500,
-            format!("系统日期（{day}）早于领取记录（{}），先纠正时钟再领取", ledger.day),
+            format!(
+                "系统日期（{day}）早于领取记录（{}），先纠正时钟再领取",
+                ledger.day
+            ),
         )),
     }
 }
@@ -517,7 +620,11 @@ pub fn gap_remaining(ledger: &Ledger, now_ms: i64) -> Option<u64> {
     // 手工编辑），一个极端值不该让减法绕回一个看起来"早就不等了"的小数。
     let elapsed = now_ms.saturating_sub(ledger.last_attempt_ms);
     let gap = i64::try_from(MIN_ATTEMPT_GAP.as_millis()).unwrap_or(i64::MAX);
-    if elapsed >= gap { None } else { Some(gap.saturating_sub(elapsed) as u64) }
+    if elapsed >= gap {
+        None
+    } else {
+        Some(gap.saturating_sub(elapsed) as u64)
+    }
 }
 
 /// 领哪一组活动。两组用的端点形状完全一样，区别只在**能不能无人值守地领**。
@@ -561,7 +668,11 @@ pub async fn claim_account(
     now_ms: i64,
     manual: bool,
 ) -> Result<Outcome, GatewayError> {
-    Ok(claim_rewards(store, account_id, base, now_ms, manual, Rewards::DailyLogin).await?.outcome)
+    Ok(
+        claim_rewards(store, account_id, base, now_ms, manual, Rewards::DailyLogin)
+            .await?
+            .outcome,
+    )
 }
 
 /// 走一遍完整的领取流程。**这是本模块唯一会发写请求的函数。**
@@ -591,32 +702,72 @@ pub async fn claim_rewards(
     };
 
     let items = delivery(base, &credential).await?;
-    let picked: Vec<Campaign> = items.into_iter().filter(|item| which.selects(item)).collect();
+    let picked: Vec<Campaign> = items
+        .into_iter()
+        .filter(|item| which.selects(item))
+        .collect();
     // 四个提前返回**都要留一行日志**：否则面板上"点了一下但上游说
     // 早就领过了"和"根本没点到/清单里没这一条"在日志里长得一模一样，只能靠猜。
     // 走这些分支时台账不动、也没有写请求，所以日志是它们唯一的痕迹。
     if picked.is_empty() {
-        logging::log("[CodeArts]", &format!("{}：上游活动列表里没有这一条活动，未发送领取请求", which.label()));
-        return Ok(Run { outcome: Outcome::NotEligible, before: Vec::new(), after: Vec::new() });
-    }
-    if picked.iter().all(Campaign::is_confirmed) {
-        logging::log("[CodeArts]", &format!("{}：上游说这一条已经领过了（CONFIRMED / CONSUMED），未发送写请求", which.label()));
-        return Ok(Run { outcome: Outcome::Already, before: picked.clone(), after: Vec::new() });
-    }
-    // 限流只管**写**：读资格、判确认永远放行
-    if !manual && (ledger.attempts >= MAX_ATTEMPTS_PER_DAY || gap_remaining(&ledger, now_ms).is_some()) {
         logging::log(
             "[CodeArts]",
-            &format!("{}：本地限流（今日已 {} 次写尝试），本轮跳过", which.label(), ledger.attempts),
+            &format!(
+                "{}：上游活动列表里没有这一条活动，未发送领取请求",
+                which.label()
+            ),
         );
-        return Ok(Run { outcome: Outcome::Skipped, before: picked.clone(), after: Vec::new() });
+        return Ok(Run {
+            outcome: Outcome::NotEligible,
+            before: Vec::new(),
+            after: Vec::new(),
+        });
+    }
+    if picked.iter().all(Campaign::is_confirmed) {
+        logging::log(
+            "[CodeArts]",
+            &format!(
+                "{}：上游说这一条已经领过了（CONFIRMED / CONSUMED），未发送写请求",
+                which.label()
+            ),
+        );
+        return Ok(Run {
+            outcome: Outcome::Already,
+            before: picked.clone(),
+            after: Vec::new(),
+        });
+    }
+    // 限流只管**写**：读资格、判确认永远放行
+    if !manual
+        && (ledger.attempts >= MAX_ATTEMPTS_PER_DAY || gap_remaining(&ledger, now_ms).is_some())
+    {
+        logging::log(
+            "[CodeArts]",
+            &format!(
+                "{}：本地限流（今日已 {} 次写尝试），本轮跳过",
+                which.label(),
+                ledger.attempts
+            ),
+        );
+        return Ok(Run {
+            outcome: Outcome::Skipped,
+            before: picked.clone(),
+            after: Vec::new(),
+        });
     }
     if !picked.iter().any(Campaign::has_work) {
         logging::log(
             "[CodeArts]",
-            &format!("{}：这一条在列表里但当前不可领（前置未满足），未发送写请求", which.label()),
+            &format!(
+                "{}：这一条在列表里但当前不可领（前置未满足），未发送写请求",
+                which.label()
+            ),
         );
-        return Ok(Run { outcome: Outcome::NotEligible, before: picked.clone(), after: Vec::new() });
+        return Ok(Run {
+            outcome: Outcome::NotEligible,
+            before: picked.clone(),
+            after: Vec::new(),
+        });
     }
 
     ledger.attempts += 1;
@@ -655,9 +806,9 @@ pub async fn claim_rewards(
     let verified = delivery(base, &credential).await?;
     for item in picked.iter().filter(|item| item.has_work()) {
         let id = item.key();
-        let confirmed = verified.iter().any(|seen| {
-            seen.key() == id && seen.kind == item.kind && seen.is_confirmed()
-        });
+        let confirmed = verified
+            .iter()
+            .any(|seen| seen.key() == id && seen.kind == item.kind && seen.is_confirmed());
         if !confirmed {
             return Err(GatewayError::with_status(
                 502,
@@ -672,15 +823,30 @@ pub async fn claim_rewards(
     save(&ledger)?;
     logging::log(
         "[CodeArts]",
-        &format!("{}：官方活动列表已回读确认到账（计入套餐赠送积分，不增加福利模型 token 池）", which.label()),
+        &format!(
+            "{}：官方活动列表已回读确认到账（计入套餐赠送积分，不增加福利模型 token 池）",
+            which.label()
+        ),
     );
-    Ok(Run { outcome: Outcome::Confirmed, before: picked, after: verified })
+    Ok(Run {
+        outcome: Outcome::Confirmed,
+        before: picked,
+        after: verified,
+    })
 }
 
 /// 只读地把**新人注册礼**取回来（签到中心的「新手任务」用，一个写请求都不发）。
-pub async fn newbie_gift(store: &AccountStore, account_id: &str, base: &str) -> Result<Vec<Campaign>, GatewayError> {
+pub async fn newbie_gift(
+    store: &AccountStore,
+    account_id: &str,
+    base: &str,
+) -> Result<Vec<Campaign>, GatewayError> {
     let credential = current_credential(store, account_id).await?;
-    Ok(delivery(base, &credential).await?.into_iter().filter(Campaign::is_newbie_gift).collect())
+    Ok(delivery(base, &credential)
+        .await?
+        .into_iter()
+        .filter(Campaign::is_newbie_gift)
+        .collect())
 }
 
 /// 领取成功后顺手刷新一次余额（面板上「领完就能看到积分变了」）。
@@ -724,7 +890,9 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use crate::server::core::account_store::AccountStore;
-    use crate::server::core::providers::codearts::credentials::{OAuthContext, PkcePair, Credential};
+    use crate::server::core::providers::codearts::credentials::{
+        Credential, OAuthContext, PkcePair,
+    };
     use crate::server::db::Db;
 
     use super::*;
@@ -743,10 +911,19 @@ mod tests {
 
     #[test]
     fn campaign_keys_accept_both_upstream_id_types_but_never_garbage() {
-        assert_eq!("abc", campaign("abc", "USER_LOGIN", "CREDIT", true, "").key());
-        let numeric = Campaign { id: json!(123), ..campaign("", "USER_LOGIN", "CREDIT", true, "") };
+        assert_eq!(
+            "abc",
+            campaign("abc", "USER_LOGIN", "CREDIT", true, "").key()
+        );
+        let numeric = Campaign {
+            id: json!(123),
+            ..campaign("", "USER_LOGIN", "CREDIT", true, "")
+        };
         assert_eq!("123", numeric.key());
-        let broken = Campaign { id: Value::Null, ..numeric.clone() };
+        let broken = Campaign {
+            id: Value::Null,
+            ..numeric.clone()
+        };
         assert_eq!("", broken.key(), "认不出的 id 不能拿去记台账");
         assert!(!broken.is_daily_login_credit(), "没有键就绝不自动领");
     }
@@ -763,7 +940,10 @@ mod tests {
     fn confirmed_needs_both_halves_of_the_signal() {
         assert!(campaign("a", "USER_LOGIN", "CREDIT", false, "CONFIRMED").is_confirmed());
         assert!(campaign("a", "USER_LOGIN", "CREDIT", false, "CONSUMED").is_confirmed());
-        assert!(!campaign("a", "USER_LOGIN", "CREDIT", true, "CONFIRMED").is_confirmed(), "还能领就说明没到账");
+        assert!(
+            !campaign("a", "USER_LOGIN", "CREDIT", true, "CONFIRMED").is_confirmed(),
+            "还能领就说明没到账"
+        );
         assert!(!campaign("a", "USER_LOGIN", "CREDIT", false, "CLAIMED").is_confirmed());
         // 「还有活」与「已确认」是两回事：CLAIMED 未确认的要接着 confirm
         assert!(campaign("a", "USER_LOGIN", "CREDIT", false, "CLAIMED").has_work());
@@ -782,22 +962,47 @@ mod tests {
     #[test]
     fn an_unreadable_ledger_is_refused_not_treated_as_fresh() {
         // version 不对 / 日期解析不出来 / attempts 越界 → 都不能当成「今天还没领过」
-        assert!(Ledger::from_value(&json!({"version": 1, "day": "2026-09-27", "attempts": 0})).is_none());
-        assert!(Ledger::from_value(&json!({"version": LEDGER_VERSION, "day": "昨天", "attempts": 0})).is_none());
-        assert!(Ledger::from_value(&json!({"version": LEDGER_VERSION, "day": "2026-09-27", "attempts": 99})).is_none());
+        assert!(
+            Ledger::from_value(&json!({"version": 1, "day": "2026-09-27", "attempts": 0}))
+                .is_none()
+        );
+        assert!(Ledger::from_value(
+            &json!({"version": LEDGER_VERSION, "day": "昨天", "attempts": 0})
+        )
+        .is_none());
+        assert!(Ledger::from_value(
+            &json!({"version": LEDGER_VERSION, "day": "2026-09-27", "attempts": 99})
+        )
+        .is_none());
         let good = Ledger::from_value(&json!({"version": LEDGER_VERSION, "day": "2026-09-27", "attempts": 2, "campaigns": {"x": {"claimed": true}}})).expect("合法台账");
         assert_eq!(2, good.attempts);
         assert!(good.campaigns["x"].claimed);
         // 往返一次必须等价（台账是要落盘的，序列化不对称等于每次读回都漂一点）
-        assert_eq!(good, Ledger::from_value(&good.to_value()).expect("往返后仍合法"));
+        assert_eq!(
+            good,
+            Ledger::from_value(&good.to_value()).expect("往返后仍合法")
+        );
     }
 
     #[test]
     fn the_rate_gate_only_bounds_writing_attempts() {
-        let mut ledger = Ledger { version: LEDGER_VERSION, day: "2026-09-27".into(), attempts: 1, last_attempt_ms: 1_000, ..Default::default() };
+        let mut ledger = Ledger {
+            version: LEDGER_VERSION,
+            day: "2026-09-27".into(),
+            attempts: 1,
+            last_attempt_ms: 1_000,
+            ..Default::default()
+        };
         // 1 毫秒过去了，还差 599_999
-        assert_eq!(Some(599_999), gap_remaining(&ledger, 1_001), "间隔不足要报剩余时间");
-        assert_eq!(None, gap_remaining(&ledger, 1_000 + MIN_ATTEMPT_GAP.as_millis() as i64));
+        assert_eq!(
+            Some(599_999),
+            gap_remaining(&ledger, 1_001),
+            "间隔不足要报剩余时间"
+        );
+        assert_eq!(
+            None,
+            gap_remaining(&ledger, 1_000 + MIN_ATTEMPT_GAP.as_millis() as i64)
+        );
         ledger.last_attempt_ms = 0;
         assert_eq!(None, gap_remaining(&ledger, 1_000), "从没试过就没有等待");
         ledger.attempts = MAX_ATTEMPTS_PER_DAY;
@@ -807,7 +1012,9 @@ mod tests {
     #[test]
     fn the_day_rolls_over_in_beijing_time_not_utc() {
         // 2026-09-26T16:30Z = 北京时间 2026-09-27 00:30：UTC 还是 26 号，台账必须已经进 27 号
-        let millis = chrono::DateTime::parse_from_rfc3339("2026-09-26T16:30:00Z").unwrap().timestamp_millis();
+        let millis = chrono::DateTime::parse_from_rfc3339("2026-09-26T16:30:00Z")
+            .unwrap()
+            .timestamp_millis();
         assert_eq!("2026-09-27", today(millis));
         let earlier = millis - 45 * 60 * 1000;
         assert_eq!("2026-09-26", today(earlier), "北京 23:45 仍是前一天");
@@ -817,7 +1024,9 @@ mod tests {
     #[test]
     fn next_day_boundary_is_the_coming_beijing_midnight() {
         let ms = |rfc: &str| {
-            chrono::DateTime::parse_from_rfc3339(rfc).expect("合法时刻").timestamp_millis()
+            chrono::DateTime::parse_from_rfc3339(rfc)
+                .expect("合法时刻")
+                .timestamp_millis()
         };
         // 北京 23:45（= UTC 15:45）→ 15 分钟后就是次日零点
         let late = ms("2026-09-26T15:45:00Z");
@@ -860,8 +1069,16 @@ mod tests {
                 "重置点不该比一整天还远：UTC hour={hour}，差了 {} 小时",
                 (boundary - now) / 3_600_000
             );
-            assert_eq!(today(now), today(boundary - 1), "零点前一毫秒还属于今天：hour={hour}");
-            assert_eq!(next_day(&today(now)), today(boundary), "零点整已经属于明天：hour={hour}");
+            assert_eq!(
+                today(now),
+                today(boundary - 1),
+                "零点前一毫秒还属于今天：hour={hour}"
+            );
+            assert_eq!(
+                next_day(&today(now)),
+                today(boundary),
+                "零点整已经属于明天：hour={hour}"
+            );
         }
     }
 
@@ -886,29 +1103,52 @@ mod tests {
         let (seen_clone, index_clone, script_clone) = (seen.clone(), index.clone(), script.clone());
         // 用 fallback 接所有路径与方法：ops 那三个端点各有路径，测试只关心
         // 「按到达顺序回了什么、收到了什么」，不必为每条路径单独挂路由。
-        let app = axum::Router::new().fallback(move |uri: axum::extract::OriginalUri, body: Bytes| {
-            let (seen, index, script) = (seen_clone.clone(), index_clone.clone(), script_clone.clone());
-            async move {
-                let text = String::from_utf8_lossy(&body).to_string();
-                let method = if text.is_empty() { "GET" } else { "POST" };
-                seen.lock().unwrap().push(format!("{method} {} {text}", uri.path()));
-                let slot = index.fetch_add(1, Ordering::SeqCst);
-                let payload = script.get(slot).cloned().unwrap_or_else(|| json!({"code": 0, "data": {"items": []}}));
-                Response::new((StatusCode::OK, [(axum::http::header::CONTENT_TYPE, "application/json")], payload.to_string()).into_response())
-            }
-        });
+        let app =
+            axum::Router::new().fallback(move |uri: axum::extract::OriginalUri, body: Bytes| {
+                let (seen, index, script) = (
+                    seen_clone.clone(),
+                    index_clone.clone(),
+                    script_clone.clone(),
+                );
+                async move {
+                    let text = String::from_utf8_lossy(&body).to_string();
+                    let method = if text.is_empty() { "GET" } else { "POST" };
+                    seen.lock()
+                        .unwrap()
+                        .push(format!("{method} {} {text}", uri.path()));
+                    let slot = index.fetch_add(1, Ordering::SeqCst);
+                    let payload = script
+                        .get(slot)
+                        .cloned()
+                        .unwrap_or_else(|| json!({"code": 0, "data": {"items": []}}));
+                    Response::new(
+                        (
+                            StatusCode::OK,
+                            [(axum::http::header::CONTENT_TYPE, "application/json")],
+                            payload.to_string(),
+                        )
+                            .into_response(),
+                    )
+                }
+            });
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        Mock { base: format!("http://{addr}"), seen }
+        Mock {
+            base: format!("http://{addr}"),
+            seen,
+        }
     }
 
     fn store_with(account_id: &str) -> AccountStore {
         static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let id = SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let dir = std::env::temp_dir().join(format!("codearts-welfare-{}-{id}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("codearts-welfare-{}-{id}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let store = AccountStore::with_db(Some(Db::open(&dir.join("agate.db")).expect("临时库应当能建起来")));
+        let store = AccountStore::with_db(Some(
+            Db::open(&dir.join("agate.db")).expect("临时库应当能建起来"),
+        ));
         store
             .add_codearts_account(
                 &Credential {
@@ -921,7 +1161,10 @@ mod tests {
                     user_id: account_id.into(),
                     refresh_token: "rt".into(),
                     oauth_context: Some(OAuthContext {
-                        pkce_pair: PkcePair { code_verifier: "v".into(), ..Default::default() },
+                        pkce_pair: PkcePair {
+                            code_verifier: "v".into(),
+                            ..Default::default()
+                        },
                         ..Default::default()
                     }),
                     ..Default::default()
@@ -934,7 +1177,12 @@ mod tests {
     }
 
     fn only_account_id(store: &AccountStore) -> String {
-        store.codearts_account_record("").expect("刚添加的账号要能读回")["id"].as_str().unwrap().to_string()
+        store
+            .codearts_account_record("")
+            .expect("刚添加的账号要能读回")["id"]
+            .as_str()
+            .unwrap()
+            .to_string()
     }
 
     fn delivery_of(items: Vec<Value>) -> Value {
@@ -950,31 +1198,54 @@ mod tests {
         let store = store_with("u1");
         let account_id = only_account_id(&store);
         let upstream = mock_upstream(vec![
-            delivery_of(vec![item("c1", true, "")]),                        // 探测
-            json!({"code": 0, "data": {"campaignId": "c1"}}),               // claim
-            json!({"code": 0, "data": {}}),                                  // confirm
-            delivery_of(vec![item("c1", false, "CONFIRMED")]),              // 回读二次确认
+            delivery_of(vec![item("c1", true, "")]),           // 探测
+            json!({"code": 0, "data": {"campaignId": "c1"}}),  // claim
+            json!({"code": 0, "data": {}}),                    // confirm
+            delivery_of(vec![item("c1", false, "CONFIRMED")]), // 回读二次确认
         ])
         .await;
 
-        let outcome = claim_account(&store, &account_id, &upstream.base, logging::now_ms(), true).await.expect("整条流程该走通");
+        let outcome = claim_account(&store, &account_id, &upstream.base, logging::now_ms(), true)
+            .await
+            .expect("整条流程该走通");
         assert_eq!(Outcome::Confirmed, outcome);
 
         let seen = upstream.seen.lock().unwrap().clone();
-        assert_eq!(4, seen.len(), "四步各一次：{:?}", seen.iter().map(|line| line.split_whitespace().take(2).collect::<Vec<_>>()).collect::<Vec<_>>());
-        assert!(seen[0].starts_with("GET /v1/ops/delivery"), "第一步必须是只读探测");
+        assert_eq!(
+            4,
+            seen.len(),
+            "四步各一次：{:?}",
+            seen.iter()
+                .map(|line| line.split_whitespace().take(2).collect::<Vec<_>>())
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            seen[0].starts_with("GET /v1/ops/delivery"),
+            "第一步必须是只读探测"
+        );
         assert!(seen[1].contains("idempotentKey"), "领取请求要带幂等键");
-        assert!(seen[2].starts_with("POST /v1/ops/confirm"), "领完必须 confirm");
-        assert!(seen[3].starts_with("GET /v1/ops/delivery"), "confirm 之后必须回读列表");
+        assert!(
+            seen[2].starts_with("POST /v1/ops/confirm"),
+            "领完必须 confirm"
+        );
+        assert!(
+            seen[3].starts_with("GET /v1/ops/delivery"),
+            "confirm 之后必须回读列表"
+        );
 
         // 幂等键在写请求**之前**就得在盘上：崩溃后重启不能换一个键再领一次
-        let ledger = store.codearts_welfare_ledger(&account_id).expect("台账要落盘");
+        let ledger = store
+            .codearts_welfare_ledger(&account_id)
+            .expect("台账要落盘");
         assert_eq!(1, ledger["attempts"].as_i64().unwrap());
         assert_eq!(true, ledger["accepted"].as_bool().unwrap());
         let progress = &ledger["campaigns"]["c1"];
         assert_eq!(true, progress["claimed"].as_bool().unwrap());
         assert_eq!(true, progress["confirmed"].as_bool().unwrap());
-        assert!(progress["idempotentKey"].as_str().unwrap_or("").starts_with("claim_c1_"));
+        assert!(progress["idempotentKey"]
+            .as_str()
+            .unwrap_or("")
+            .starts_with("claim_c1_"));
     }
 
     #[tokio::test]
@@ -989,12 +1260,26 @@ mod tests {
             delivery_of(vec![item("c2", true, "")]),
         ])
         .await;
-        let error = claim_account(&store, &account_id, &upstream.base, logging::now_ms(), true).await.expect_err("没到账就不能报成功");
-        assert!(error.message.contains("尚未确认到账"), "文案要说明卡在哪：{}", error.message);
+        let error = claim_account(&store, &account_id, &upstream.base, logging::now_ms(), true)
+            .await
+            .expect_err("没到账就不能报成功");
+        assert!(
+            error.message.contains("尚未确认到账"),
+            "文案要说明卡在哪：{}",
+            error.message
+        );
         assert_eq!(502, error.status_code);
         let ledger = store.codearts_welfare_ledger(&account_id).unwrap();
-        assert_eq!(false, ledger["accepted"].as_bool().unwrap(), "未确认不得记为已到账");
-        assert_eq!(1, ledger["attempts"].as_i64().unwrap(), "这次写尝试要计进限流");
+        assert_eq!(
+            false,
+            ledger["accepted"].as_bool().unwrap(),
+            "未确认不得记为已到账"
+        );
+        assert_eq!(
+            1,
+            ledger["attempts"].as_i64().unwrap(),
+            "这次写尝试要计进限流"
+        );
     }
 
     #[tokio::test]
@@ -1006,9 +1291,15 @@ mod tests {
             json!({"code": 0, "data": {"campaignId": "someone-else"}}),
         ])
         .await;
-        let error = claim_account(&store, &account_id, &upstream.base, logging::now_ms(), true).await.expect_err("活动 id 对不上必须失败");
+        let error = claim_account(&store, &account_id, &upstream.base, logging::now_ms(), true)
+            .await
+            .expect_err("活动 id 对不上必须失败");
         assert!(error.message.contains("不匹配"), "{}", error.message);
-        assert_eq!(2, upstream.seen.lock().unwrap().len(), "绝不能去 confirm 别人的活动");
+        assert_eq!(
+            2,
+            upstream.seen.lock().unwrap().len(),
+            "绝不能去 confirm 别人的活动"
+        );
     }
 
     #[tokio::test]
@@ -1020,12 +1311,16 @@ mod tests {
             json!({"code": 4001, "data": null}),
         ])
         .await;
-        let error = claim_account(&store, &account_id, &upstream.base, logging::now_ms(), true).await.expect_err("code!=0 是失败");
+        let error = claim_account(&store, &account_id, &upstream.base, logging::now_ms(), true)
+            .await
+            .expect_err("code!=0 是失败");
         assert!(error.message.contains("未确认成功"), "{}", error.message);
         let ledger = store.codearts_welfare_ledger(&account_id).unwrap();
         assert_eq!(
             false,
-            ledger["campaigns"]["c4"]["claimed"].as_bool().unwrap_or(false),
+            ledger["campaigns"]["c4"]["claimed"]
+                .as_bool()
+                .unwrap_or(false),
             "没领成就不能把 claimed 记成 true"
         );
     }
@@ -1035,9 +1330,21 @@ mod tests {
         let store = store_with("u5");
         let account_id = only_account_id(&store);
         let upstream = mock_upstream(vec![delivery_of(vec![item("c5", false, "CONSUMED")])]).await;
-        let outcome = claim_account(&store, &account_id, &upstream.base, logging::now_ms(), false).await.expect("已确认不是错误");
+        let outcome = claim_account(
+            &store,
+            &account_id,
+            &upstream.base,
+            logging::now_ms(),
+            false,
+        )
+        .await
+        .expect("已确认不是错误");
         assert_eq!(Outcome::Already, outcome);
-        assert_eq!(1, upstream.seen.lock().unwrap().len(), "只读一次，不发任何写请求");
+        assert_eq!(
+            1,
+            upstream.seen.lock().unwrap().len(),
+            "只读一次，不发任何写请求"
+        );
     }
 
     #[tokio::test]
@@ -1062,14 +1369,32 @@ mod tests {
             delivery_of(vec![item("c6", false, "CONFIRMED")]),
         ])
         .await;
-        let outcome = claim_account(&store, &account_id, &upstream.base, logging::now_ms(), false).await.expect("限流不是错误");
+        let outcome = claim_account(
+            &store,
+            &account_id,
+            &upstream.base,
+            logging::now_ms(),
+            false,
+        )
+        .await
+        .expect("限流不是错误");
         assert_eq!(Outcome::Skipped, outcome);
-        assert_eq!(1, upstream.seen.lock().unwrap().len(), "自动路径被挡住时只读列表，不发写请求");
+        assert_eq!(
+            1,
+            upstream.seen.lock().unwrap().len(),
+            "自动路径被挡住时只读列表，不发写请求"
+        );
 
         // 手动：不受这两个闸约束（读资格永远放行，写也允许用户主动补一次）
-        let outcome = claim_account(&store, &account_id, &upstream.base, logging::now_ms(), true).await.expect("手动该继续");
+        let outcome = claim_account(&store, &account_id, &upstream.base, logging::now_ms(), true)
+            .await
+            .expect("手动该继续");
         assert_eq!(Outcome::Confirmed, outcome, "手动这一次要真的把流程走完");
-        assert_eq!(5, upstream.seen.lock().unwrap().len(), "自动 1 次 + 手动 4 步");
+        assert_eq!(
+            5,
+            upstream.seen.lock().unwrap().len(),
+            "自动 1 次 + 手动 4 步"
+        );
     }
 
     #[tokio::test]
@@ -1079,14 +1404,21 @@ mod tests {
         let store = store_with("u8");
         let account_id = only_account_id(&store);
         store
-            .put_codearts_welfare_ledger(&account_id, &json!({"version": 999, "day": "2026-09-27", "attempts": 0}))
+            .put_codearts_welfare_ledger(
+                &account_id,
+                &json!({"version": 999, "day": "2026-09-27", "attempts": 0}),
+            )
             .unwrap();
         let upstream = mock_upstream(vec![delivery_of(vec![item("c8", true, "")])]).await;
         let error = claim_account(&store, &account_id, &upstream.base, logging::now_ms(), true)
             .await
             .expect_err("无效台账必须拒绝");
         assert!(error.message.contains("台账无效"), "{}", error.message);
-        assert_eq!(0, upstream.seen.lock().unwrap().len(), "连只读的探测都不该发出去");
+        assert_eq!(
+            0,
+            upstream.seen.lock().unwrap().len(),
+            "连只读的探测都不该发出去"
+        );
     }
 
     #[tokio::test]
@@ -1100,7 +1432,9 @@ mod tests {
             )
             .unwrap();
         let upstream = mock_upstream(vec![]).await;
-        let error = claim_account(&store, &account_id, &upstream.base, logging::now_ms(), true).await.expect_err("时钟倒退必须拒绝");
+        let error = claim_account(&store, &account_id, &upstream.base, logging::now_ms(), true)
+            .await
+            .expect_err("时钟倒退必须拒绝");
         assert!(error.message.contains("早于领取记录"), "{}", error.message);
         assert_eq!(0, upstream.seen.lock().unwrap().len());
     }
@@ -1110,12 +1444,14 @@ mod tests {
         // 混合清单：每日一条能领、新人礼一条能领、学生认证领不动（实测 claimable:false
         // 且 status 是 null）、邀请礼**也能领**（claimable:true）。
         // 最后那条才是这次收窄的关键判据：能领 ≠ 该领，邀请礼的收益归邀请人。
-        let mixed = || delivery_of(vec![
-            json!({"campaignId": "d1", "type": "USER_LOGIN", "claimable": true, "status": "", "benefitUnit": "CREDIT", "benefitAmount": 1000}),
-            json!({"campaignId": "n1", "type": "NEW_USER_REGISTER", "title": "新人注册礼", "claimable": true, "status": "", "benefitUnit": "CREDIT", "benefitAmount": 4000}),
-            json!({"campaignId": "s1", "type": "STUDENT_CERTIFIED", "title": "学生认证", "claimable": false, "status": null, "benefitUnit": "CREDIT", "benefitAmount": 4000}),
-            json!({"campaignId": "i1", "type": "INVITE_USER", "title": "邀请好友", "claimable": true, "status": "ENTRY", "benefitUnit": "CREDIT", "benefitAmount": 1000}),
-        ]);
+        let mixed = || {
+            delivery_of(vec![
+                json!({"campaignId": "d1", "type": "USER_LOGIN", "claimable": true, "status": "", "benefitUnit": "CREDIT", "benefitAmount": 1000}),
+                json!({"campaignId": "n1", "type": "NEW_USER_REGISTER", "title": "新人注册礼", "claimable": true, "status": "", "benefitUnit": "CREDIT", "benefitAmount": 4000}),
+                json!({"campaignId": "s1", "type": "STUDENT_CERTIFIED", "title": "学生认证", "claimable": false, "status": null, "benefitUnit": "CREDIT", "benefitAmount": 4000}),
+                json!({"campaignId": "i1", "type": "INVITE_USER", "title": "邀请好友", "claimable": true, "status": "ENTRY", "benefitUnit": "CREDIT", "benefitAmount": 1000}),
+            ])
+        };
 
         // 臂一：每日链
         let store = store_with("u8");
@@ -1130,14 +1466,31 @@ mod tests {
             ]),
         ])
         .await;
-        let outcome = claim_account(&store, &account_id, &daily_run.base, logging::now_ms(), true)
-            .await
-            .expect("每日那条该领成");
+        let outcome = claim_account(
+            &store,
+            &account_id,
+            &daily_run.base,
+            logging::now_ms(),
+            true,
+        )
+        .await
+        .expect("每日那条该领成");
         assert_eq!(Outcome::Confirmed, outcome);
         let seen = daily_run.seen.lock().unwrap().clone();
-        assert_eq!(4, seen.len(), "探测 / claim / confirm / 回读各一次：{seen:?}");
-        assert!(seen[1].contains("\"d1\""), "每日链只准领每日那条：{}", seen[1]);
-        assert!(!seen[1].contains("n1"), "新人礼被每日链顺手领掉就是替用户烧掉一次性奖励");
+        assert_eq!(
+            4,
+            seen.len(),
+            "探测 / claim / confirm / 回读各一次：{seen:?}"
+        );
+        assert!(
+            seen[1].contains("\"d1\""),
+            "每日链只准领每日那条：{}",
+            seen[1]
+        );
+        assert!(
+            !seen[1].contains("n1"),
+            "新人礼被每日链顺手领掉就是替用户烧掉一次性奖励"
+        );
 
         // 臂二：新人礼链（签到中心的「新手任务」）
         let store = store_with("u9");
@@ -1154,24 +1507,52 @@ mod tests {
             ]),
         ])
         .await;
-        let run = claim_rewards(&store, &account_id, &newbie.base, logging::now_ms(), true, Rewards::NewbieGift)
-            .await
-            .expect("新人礼该领成");
+        let run = claim_rewards(
+            &store,
+            &account_id,
+            &newbie.base,
+            logging::now_ms(),
+            true,
+            Rewards::NewbieGift,
+        )
+        .await
+        .expect("新人礼该领成");
         assert_eq!(Outcome::Confirmed, run.outcome);
         let seen = newbie.seen.lock().unwrap().clone();
-        assert_eq!(4, seen.len(), "探测 / claim / confirm / 回读各一次，别的一条都不许碰：{seen:?}");
-        assert!(seen[1].contains("\"n1\""), "新人礼链只领新人礼：{}", seen[1]);
-        assert!(!seen[1].contains("d1"), "每日那条不是一笔一次性的账，不能混领");
+        assert_eq!(
+            4,
+            seen.len(),
+            "探测 / claim / confirm / 回读各一次，别的一条都不许碰：{seen:?}"
+        );
+        assert!(
+            seen[1].contains("\"n1\""),
+            "新人礼链只领新人礼：{}",
+            seen[1]
+        );
+        assert!(
+            !seen[1].contains("d1"),
+            "每日那条不是一笔一次性的账，不能混领"
+        );
         // 这两条是这次收窄的全部意义：一条领不动（前置不是 API），一条能领但不该我们领（收益归邀请人）
         for skipped in ["s1", "i1"] {
             assert!(
-                !seen.iter().any(|line| line.starts_with("POST") && line.contains(skipped)),
+                !seen
+                    .iter()
+                    .any(|line| line.starts_with("POST") && line.contains(skipped)),
                 "{skipped} 不该出现在任何写请求里"
             );
         }
         // 回读确认按**这一条自己**的 kind 判，不再硬编码 USER_LOGIN
-        assert!(run.after.iter().any(|item| item.key() == "n1" && item.is_confirmed()));
-        assert_eq!(1, run.before.len(), "本组只挑新人礼那一条： {:?}", run.before.iter().map(Campaign::key).collect::<Vec<_>>());
+        assert!(run
+            .after
+            .iter()
+            .any(|item| item.key() == "n1" && item.is_confirmed()));
+        assert_eq!(
+            1,
+            run.before.len(),
+            "本组只挑新人礼那一条： {:?}",
+            run.before.iter().map(Campaign::key).collect::<Vec<_>>()
+        );
     }
 
     #[tokio::test]
@@ -1186,11 +1567,22 @@ mod tests {
             "status": "CONFIRMED", "benefitUnit": "CREDIT", "benefitAmount": 4000
         })])])
         .await;
-        let run = claim_rewards(&store, &account_id, &upstream.base, logging::now_ms(), true, Rewards::NewbieGift)
-            .await
-            .expect("已领过不是错误");
+        let run = claim_rewards(
+            &store,
+            &account_id,
+            &upstream.base,
+            logging::now_ms(),
+            true,
+            Rewards::NewbieGift,
+        )
+        .await
+        .expect("已领过不是错误");
         assert_eq!(Outcome::Already, run.outcome);
-        assert_eq!(1, upstream.seen.lock().unwrap().len(), "只读探测一次，不许有写");
+        assert_eq!(
+            1,
+            upstream.seen.lock().unwrap().len(),
+            "只读探测一次，不许有写"
+        );
         assert!(
             store.codearts_welfare_ledger(&account_id).is_none(),
             "没发写请求就不该留台账痕迹（留了会把'我们领过'记成事实）"
@@ -1205,8 +1597,14 @@ mod tests {
             "campaignId": "r1", "type": "REGISTER", "claimable": true, "status": "", "benefitUnit": "CREDIT"
         })])])
         .await;
-        let outcome = claim_account(&store, &account_id, &upstream.base, logging::now_ms(), true).await.expect("没有可领不是错误");
+        let outcome = claim_account(&store, &account_id, &upstream.base, logging::now_ms(), true)
+            .await
+            .expect("没有可领不是错误");
         assert_eq!(Outcome::NotEligible, outcome);
-        assert_eq!(1, upstream.seen.lock().unwrap().len(), "一次性奖励绝不自动领");
+        assert_eq!(
+            1,
+            upstream.seen.lock().unwrap().len(),
+            "一次性奖励绝不自动领"
+        );
     }
 }

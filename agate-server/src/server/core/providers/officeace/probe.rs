@@ -178,7 +178,9 @@ fn persist(snapshot: &ProbeState) {
 /// 取状态（首次访问时从库读回）。持锁期间**不**打日志（见模块头）。
 fn with_state<R>(f: impl FnOnce(&mut Option<ProbeState>) -> R) -> R {
     let mutex = state();
-    let mut guard = mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut guard = mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if guard.is_none() {
         *guard = load();
     }
@@ -409,16 +411,26 @@ mod tests {
         assert!(is_model_rejection(&Some(json!({
             "error": {"code": "ModelArts.81004", "message": "Insufficient permission"}
         }))));
-        assert!(is_model_rejection(&Some(json!({"error": {"code": "81010"}}))));
-        assert!(is_model_rejection(&Some(json!({"error": {"code": "81016"}}))));
+        assert!(is_model_rejection(&Some(
+            json!({"error": {"code": "81010"}})
+        )));
+        assert!(is_model_rejection(&Some(
+            json!({"error": {"code": "81016"}})
+        )));
         // 空响应 / 非 JSON / 无关错误：不藏
         assert!(!is_model_rejection(&None));
         assert!(!is_model_rejection(&Some(json!({}))));
         // 体积超限（81113）、限流（81111）：是请求/账号问题，不是这个模型不行
-        assert!(!is_model_rejection(&Some(json!({"error": {"code": "81113"}}))));
-        assert!(!is_model_rejection(&Some(json!({"error": {"code": "81111"}}))));
+        assert!(!is_model_rejection(&Some(
+            json!({"error": {"code": "81113"}})
+        )));
+        assert!(!is_model_rejection(&Some(
+            json!({"error": {"code": "81111"}})
+        )));
         // 凭据类错误：藏模型解决不了
-        assert!(!is_model_rejection(&Some(json!({"error": {"code": "APIG.1009"}}))));
+        assert!(!is_model_rejection(&Some(
+            json!({"error": {"code": "APIG.1009"}})
+        )));
     }
 
     #[test]
@@ -439,7 +451,10 @@ mod tests {
             is_credential_failure(401, &Some(json!({"error_msg": "Invalid model"}))),
             "401 下就算文案撞上模型标记，也不算模型拒绝"
         );
-        assert!(is_credential_failure(403, &Some(json!({"error_code": "APIG.1009"}))));
+        assert!(is_credential_failure(
+            403,
+            &Some(json!({"error_code": "APIG.1009"}))
+        ));
         // 模型级的 81004/81009（参考实现实测带 ModelArts 码）不该被误挡成凭据问题
         assert!(!is_credential_failure(
             403,
@@ -459,11 +474,19 @@ mod tests {
             !is_credential_failure(status, body) && is_model_rejection(body)
         };
         assert!(
-            hides(403, &Some(json!({"error_code": "ModelArts.81004", "error_msg": "Insufficient permission"}))),
+            hides(
+                403,
+                &Some(
+                    json!({"error_code": "ModelArts.81004", "error_msg": "Insufficient permission"})
+                )
+            ),
             "真的模型级无权限该继续隐藏"
         );
         assert!(
-            !hides(403, &Some(json!({"error_code": "APIG.1002", "error_msg": "Insufficient permission"}))),
+            !hides(
+                403,
+                &Some(json!({"error_code": "APIG.1002", "error_msg": "Insufficient permission"}))
+            ),
             "网关凭据错误撞上同一句文案时不许牵连模型"
         );
         assert!(!hides(
@@ -479,6 +502,9 @@ mod tests {
             !round_blames_credentials(28, 17),
             "dev 实测的一轮就是这个形状：28 个里拒 17 个"
         );
-        assert!(!round_blames_credentials(0, 0), "一个模型都没探 ⇒ 不该有任何结论");
+        assert!(
+            !round_blames_credentials(0, 0),
+            "一个模型都没探 ⇒ 不该有任何结论"
+        );
     }
 }

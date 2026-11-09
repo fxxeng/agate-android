@@ -50,13 +50,22 @@ pub fn request_headers(
         ),
         ("App-Name".to_string(), endpoints::APP_NAME.to_string()),
         ("X-Device-Id".to_string(), device_id.to_string()),
-        ("X-App-Platform".to_string(), endpoints::APP_PLATFORM.to_string()),
-        ("X-App-Version".to_string(), endpoints::APP_VERSION.to_string()),
+        (
+            "X-App-Platform".to_string(),
+            endpoints::APP_PLATFORM.to_string(),
+        ),
+        (
+            "X-App-Version".to_string(),
+            endpoints::APP_VERSION.to_string(),
+        ),
         ("X-Timestamp".to_string(), signed.timestamp),
         ("X-Nonce".to_string(), signed.nonce),
         ("X-Sign".to_string(), signed.sign),
         ("Origin".to_string(), endpoints::site_origin()),
-        ("Referer".to_string(), format!("{}/", endpoints::site_origin())),
+        (
+            "Referer".to_string(),
+            format!("{}/", endpoints::site_origin()),
+        ),
     ];
     if !token.trim().is_empty() {
         headers.push((
@@ -334,7 +343,10 @@ pub async fn post_text(
     let text = response.text().await.map_err(|error| {
         GatewayError::with_status(
             502,
-            format!("{what}读取响应失败：{}", egress::describe_error_detail(&error)),
+            format!(
+                "{what}读取响应失败：{}",
+                egress::describe_error_detail(&error)
+            ),
         )
     })?;
     if !(200..300).contains(&status) {
@@ -405,7 +417,10 @@ mod tests {
     /// 业务信封判定：status 0/200 成功，其余带上上游 message
     #[test]
     fn envelope_status_rules() {
-        assert_eq!(check_envelope(&json!({"status": 0, "result": {"a": 1}}), "x").is_ok(), true);
+        assert_eq!(
+            check_envelope(&json!({"status": 0, "result": {"a": 1}}), "x").is_ok(),
+            true
+        );
         assert!(check_envelope(&json!({"status": 200, "result": 1}), "x").is_ok());
         // 缺 status 视为成功（部分接口直接回 result）
         assert!(check_envelope(&json!({"result": 1}), "x").is_ok());
@@ -418,8 +433,11 @@ mod tests {
         assert_eq!(error.upstream_code, Some(-1001));
         assert!(error.message.contains("剩余积分不足"));
 
-        let error = check_envelope(&json!({"status": 40103, "message": "user needs login"}), "x")
-            .expect_err("应当报错");
+        let error = check_envelope(
+            &json!({"status": 40103, "message": "user needs login"}),
+            "x",
+        )
+        .expect_err("应当报错");
         assert_eq!(error.upstream_code, Some(40103));
     }
 

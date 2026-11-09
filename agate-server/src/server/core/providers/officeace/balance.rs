@@ -13,9 +13,9 @@ use super::{credentials, subscription};
 
 /// 查询某 OfficeAce 账号的可领余额 / 积分。
 pub async fn query_usage(store: &AccountStore, account_id: &str) -> Result<Value, GatewayError> {
-    let record = store
-        .officeace_account_record(account_id)
-        .ok_or_else(|| GatewayError::with_status(400, "OfficeAce 账号不存在或不可用，请重新选择"))?;
+    let record = store.officeace_account_record(account_id).ok_or_else(|| {
+        GatewayError::with_status(400, "OfficeAce 账号不存在或不可用，请重新选择")
+    })?;
     let credential = credentials::from_record(Some(&record))?;
     let subscription = subscription::fetch_subscription(&credential).await?;
     Ok(subscription::summarize(&subscription))

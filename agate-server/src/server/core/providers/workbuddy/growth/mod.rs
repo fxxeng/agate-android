@@ -125,7 +125,13 @@ impl GrowthAccount {
         let proxy = ResolvedProxy::from_json(session.get("proxy").unwrap_or(&Value::Null))
             .ok()
             .flatten();
-        Some(Self { uid, nick, token, domain, proxy })
+        Some(Self {
+            uid,
+            nick,
+            token,
+            domain,
+            proxy,
+        })
     }
 
     /// 稳定派生一个 36 位 hex 设备标识（machineId / sessionId 用，幂等）。
@@ -201,12 +207,18 @@ pub async fn growth_request(
     headers: &[(String, String)],
 ) -> Result<GrowthCall, String> {
     let mut final_headers: Vec<(String, String)> = vec![
-        ("Authorization".to_string(), format!("Bearer {}", account.token)),
+        (
+            "Authorization".to_string(),
+            format!("Bearer {}", account.token),
+        ),
         ("Accept".to_string(), "application/json".to_string()),
         ("Content-Type".to_string(), "application/json".to_string()),
         ("User-Agent".to_string(), CLI_UA.to_string()),
         ("Origin".to_string(), "https://www.codebuddy.cn".to_string()),
-        ("Referer".to_string(), "https://www.codebuddy.cn/".to_string()),
+        (
+            "Referer".to_string(),
+            "https://www.codebuddy.cn/".to_string(),
+        ),
     ];
     if !account.uid.is_empty() {
         final_headers.push(("X-User-Id".to_string(), account.uid.clone()));
@@ -216,7 +228,10 @@ pub async fn growth_request(
     }
     for (key, value) in headers {
         // 调用方显式给了同名头就覆盖（比如桌面/web 通道换 UA 与 X-Domain）
-        if let Some(existing) = final_headers.iter_mut().find(|(k, _)| k.eq_ignore_ascii_case(key)) {
+        if let Some(existing) = final_headers
+            .iter_mut()
+            .find(|(k, _)| k.eq_ignore_ascii_case(key))
+        {
             existing.1 = value.clone();
         } else {
             final_headers.push((key.clone(), value.clone()));
@@ -238,7 +253,10 @@ pub async fn growth_request(
             format!("成长任务接口请求失败: {error}")
         }
     })?;
-    Ok(GrowthCall { status: response.status, payload: response.payload })
+    Ok(GrowthCall {
+        status: response.status,
+        payload: response.payload,
+    })
 }
 
 /// 便捷封装：chat 域（copilot.tencent.com）请求。
@@ -249,7 +267,14 @@ pub async fn chat_call(
     body: Option<&Value>,
     headers: &[(String, String)],
 ) -> Result<GrowthCall, String> {
-    growth_request(account, method, &format!("{CHAT_BASE}{path}"), body, headers).await
+    growth_request(
+        account,
+        method,
+        &format!("{CHAT_BASE}{path}"),
+        body,
+        headers,
+    )
+    .await
 }
 
 /// 便捷封装：billing 域（www.codebuddy.cn）请求。
@@ -260,7 +285,14 @@ pub async fn bill_call(
     body: Option<&Value>,
     headers: &[(String, String)],
 ) -> Result<GrowthCall, String> {
-    growth_request(account, method, &format!("{BILL_BASE}{path}"), body, headers).await
+    growth_request(
+        account,
+        method,
+        &format!("{BILL_BASE}{path}"),
+        body,
+        headers,
+    )
+    .await
 }
 
 /// 便捷封装：web 域（www.workbuddy.cn）请求。
@@ -288,7 +320,9 @@ pub async fn list_tasks(account: &GrowthAccount, mp: bool) -> Result<Vec<Value>,
         return Err(format!(
             "任务列表拉取失败（HTTP {} code={}）",
             call.status,
-            call.code().map(|c| c.to_string()).unwrap_or_else(|| "-".to_string())
+            call.code()
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "-".to_string())
         ));
     }
     Ok(call
@@ -351,11 +385,7 @@ pub async fn accept_task(
 ///
 /// 返回：`1` = 新入账（credit/energy 已给）；`2` = 已领（幂等）；
 /// `0` = 失败。第二个返回值是这一笔的收益读数与文案（给记录行）。
-pub async fn claim_task(
-    account: &GrowthAccount,
-    code: &str,
-    mp: bool,
-) -> (i32, i64, i64, String) {
+pub async fn claim_task(account: &GrowthAccount, code: &str, mp: bool) -> (i32, i64, i64, String) {
     let path = format!("/activity/growth/tasks/{code}/claim");
     let headers = events::mp_platform_header(mp);
     let call = chat_call(account, "POST", &path, None, &headers).await;
@@ -386,14 +416,24 @@ fn parse_claim(account: &GrowthAccount, code: &str, call: &GrowthCall) -> (i32, 
         let message = format!(
             "claim HTTP {} code={} {}",
             call.status,
-            call.code().map(|c| c.to_string()).unwrap_or_else(|| "-".to_string()),
+            call.code()
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "-".to_string()),
             call.msg()
         );
         logging::log("[Growth]", &format!("{uid8} {code}: {message}"));
         return (0, 0, 0, message);
     }
-    let credit = call.data().get("credit").and_then(Value::as_i64).unwrap_or(0);
-    let energy = call.data().get("energy").and_then(Value::as_i64).unwrap_or(0);
+    let credit = call
+        .data()
+        .get("credit")
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
+    let energy = call
+        .data()
+        .get("energy")
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
     if call
         .data()
         .get("already_claimed")
@@ -401,7 +441,10 @@ fn parse_claim(account: &GrowthAccount, code: &str, call: &GrowthCall) -> (i32, 
         .unwrap_or(false)
     {
         let message = format!("已领取（credit+{credit} energy+{energy}）");
-        logging::verbose("[Growth]", &format!("{uid8} {code}: claim already_claimed {message}"));
+        logging::verbose(
+            "[Growth]",
+            &format!("{uid8} {code}: claim already_claimed {message}"),
+        );
         return (2, credit, energy, message);
     }
     let message = format!("领取成功（credit+{credit} energy+{energy}）");
@@ -411,7 +454,9 @@ fn parse_claim(account: &GrowthAccount, code: &str, call: &GrowthCall) -> (i32, 
 
 /// 能量余额（只读 oracle，GET /v2/activity/growth/energy → data.balance）。
 pub async fn energy_balance(account: &GrowthAccount) -> Option<i64> {
-    let call = chat_call(account, "GET", "/v2/activity/growth/energy", None, &[]).await.ok()?;
+    let call = chat_call(account, "GET", "/v2/activity/growth/energy", None, &[])
+        .await
+        .ok()?;
     if !call.ok() {
         return None;
     }
@@ -420,7 +465,9 @@ pub async fn energy_balance(account: &GrowthAccount) -> Option<i64> {
 
 /// 连登天数（只读 oracle，GET /activity/growth/streak → data.streak.days）。
 pub async fn growth_streak(account: &GrowthAccount) -> Option<i64> {
-    let call = chat_call(account, "GET", "/activity/growth/streak", None, &[]).await.ok()?;
+    let call = chat_call(account, "GET", "/activity/growth/streak", None, &[])
+        .await
+        .ok()?;
     if !call.ok() {
         return None;
     }
@@ -453,18 +500,43 @@ pub async fn adopt_buddy(account: &GrowthAccount) -> (bool, String) {
     .await;
     tokio::time::sleep(std::time::Duration::from_millis(600)).await;
     // 3) 领养
-    let call = chat_call(account, "POST", "/activity/growth/buddy/first", Some(&json!({})), &[]).await;
+    let call = chat_call(
+        account,
+        "POST",
+        "/activity/growth/buddy/first",
+        Some(&json!({})),
+        &[],
+    )
+    .await;
     match call {
         Ok(call) => {
             if call.ok() {
-                let credit = call.data().get("credit").and_then(Value::as_i64).unwrap_or(0);
-                let energy = call.data().get("energy").and_then(Value::as_i64).unwrap_or(0);
+                let credit = call
+                    .data()
+                    .get("credit")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0);
+                let energy = call
+                    .data()
+                    .get("energy")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0);
                 (true, format!("领养成功（credit+{credit} energy+{energy}）"))
-            } else if call.msg().to_lowercase().contains("first_buddy task not completed") {
+            } else if call
+                .msg()
+                .to_lowercase()
+                .contains("first_buddy task not completed")
+            {
                 // 门槛未达：预期正常态（当日活跃对话量不够），如实标注
-                (false, "领养门槛未达（需先完成当日对话量），明天再试".to_string())
+                (
+                    false,
+                    "领养门槛未达（需先完成当日对话量），明天再试".to_string(),
+                )
             } else {
-                (false, format!("领养失败（HTTP {} {}）", call.status, call.msg()))
+                (
+                    false,
+                    format!("领养失败（HTTP {} {}）", call.status, call.msg()),
+                )
             }
         }
         Err(error) => (false, error),
@@ -588,7 +660,13 @@ pub async fn process_task(account: &GrowthAccount, code: &str, task: &Value) -> 
             2 => TaskOutcome::Already,
             _ => TaskOutcome::Failed,
         };
-        return TaskReport { code: code.to_string(), outcome, message, credit, energy };
+        return TaskReport {
+            code: code.to_string(),
+            outcome,
+            message,
+            credit,
+            energy,
+        };
     }
 
     // 夜猫任务：非窗口期（23:00-08:00 CST）不动
@@ -673,8 +751,14 @@ pub async fn process_task(account: &GrowthAccount, code: &str, task: &Value) -> 
             let progress = task.get("progress").cloned().unwrap_or(Value::Null);
             (
                 progress.get("current").and_then(Value::as_i64).unwrap_or(0),
-                progress.get("target").and_then(Value::as_i64).unwrap_or(target),
-                task.get("accept_status").and_then(Value::as_str).unwrap_or("").to_string(),
+                progress
+                    .get("target")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(target),
+                task.get("accept_status")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
             )
         })
         .unwrap_or((0, target, String::new()));
@@ -695,7 +779,13 @@ pub async fn process_task(account: &GrowthAccount, code: &str, task: &Value) -> 
             2 => TaskOutcome::Already,
             _ => TaskOutcome::Failed,
         };
-        return TaskReport { code: code.to_string(), outcome, message, credit, energy };
+        return TaskReport {
+            code: code.to_string(),
+            outcome,
+            message,
+            credit,
+            energy,
+        };
     }
     TaskReport {
         code: code.to_string(),
@@ -733,7 +823,13 @@ pub async fn process_first_buddy(account: &GrowthAccount, task: &Value) -> TaskR
             2 => TaskOutcome::Already,
             _ => TaskOutcome::Failed,
         };
-        return TaskReport { code: "first_buddy".to_string(), outcome, message, credit, energy };
+        return TaskReport {
+            code: "first_buddy".to_string(),
+            outcome,
+            message,
+            credit,
+            energy,
+        };
     }
     if accept_status == "not_accepted" || accept_status.is_empty() {
         let _ = accept_with_verify(account, "first_buddy", false).await;
@@ -776,7 +872,10 @@ async fn accept_with_verify(account: &GrowthAccount, code: &str, mp: bool) -> bo
         let (ok, status) = match accept_task(account, code, mp).await {
             Ok(result) => result,
             Err(error) => {
-                logging::verbose("[Growth]", &format!("accept {code} 失败（尝试 {attempt}）：{error}"));
+                logging::verbose(
+                    "[Growth]",
+                    &format!("accept {code} 失败（尝试 {attempt}）：{error}"),
+                );
                 (false, error)
             }
         };
@@ -786,13 +885,17 @@ async fn accept_with_verify(account: &GrowthAccount, code: &str, mp: bool) -> bo
             .ok()
             .and_then(|tasks| find_task(&tasks, code))
             .and_then(|task| {
-                task.get("accept_status").and_then(Value::as_str).map(str::to_string)
+                task.get("accept_status")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
             })
             .unwrap_or_default();
         let verified = ok && after != "not_accepted" && !after.is_empty();
         logging::verbose(
             "[Growth]",
-            &format!("accept {code} 尝试{attempt} status={status} 回读={after} verified={verified}"),
+            &format!(
+                "accept {code} 尝试{attempt} status={status} 回读={after} verified={verified}"
+            ),
         );
         if verified {
             return true;
@@ -801,7 +904,6 @@ async fn accept_with_verify(account: &GrowthAccount, code: &str, mp: bool) -> bo
     }
     false
 }
-
 
 /// 账号是不是成长任务适用的对象（国内版 WorkBuddy；global 不适用）。
 ///

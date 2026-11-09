@@ -45,7 +45,10 @@ use crate::server::logging;
 use crate::server::ServerState;
 
 fn list_json(state: &ServerState) -> Value {
-    let keys: Vec<Value> = api_keys::list().iter().map(api_keys::ApiKeyEntry::public_json).collect();
+    let keys: Vec<Value> = api_keys::list()
+        .iter()
+        .map(api_keys::ApiKeyEntry::public_json)
+        .collect();
     // 可用提供商多选的候选：**注册表 + 已建的自定义家**（加一家内置 provider 时
     // 这里自动多一项，前端零改动）。带上 count 让界面能显示「这家有几个账号」——
     // 用户在这里勾「允许哪几家」时，那几家有没有账号是他最需要知道的信息。
@@ -64,11 +67,15 @@ fn list_json(state: &ServerState) -> Value {
     let count_accounts = |id: &str| {
         accounts
             .iter()
-            .filter(|account| crate::server::core::routing::provider_of(account).eq_ignore_ascii_case(id))
+            .filter(|account| {
+                crate::server::core::routing::provider_of(account).eq_ignore_ascii_case(id)
+            })
             .count()
     };
     let mut providers = crate::server::core::providers::summary_json(&count_accounts);
-    providers.extend(crate::server::core::custom_providers::summary_json(&count_accounts));
+    providers.extend(crate::server::core::custom_providers::summary_json(
+        &count_accounts,
+    ));
     json!({
         "keys": keys,
         "authRequired": config::current().api_key_set(),
@@ -121,21 +128,35 @@ fn parse_allowlist(
         // null 与空数组同义（都是「清成不限制」）—— JSON 客户端两种写法都常见
         Value::Null => return Ok(Some(Vec::new())),
         Value::Array(items) => items,
-        _ => return Err(errors::management_error(400, format!("{key} 必须是字符串数组"))),
+        _ => {
+            return Err(errors::management_error(
+                400,
+                format!("{key} 必须是字符串数组"),
+            ))
+        }
     };
     let mut out: Vec<String> = Vec::new();
     for item in items {
         let Some(text) = item.as_str() else {
-            return Err(errors::management_error(400, format!("{key} 的元素必须是字符串")));
+            return Err(errors::management_error(
+                400,
+                format!("{key} 的元素必须是字符串"),
+            ));
         };
         let text = text.trim();
         if text.is_empty() {
             continue;
         }
         if check_provider && !is_allowed_provider_id(text) {
-            return Err(errors::management_error(400, format!("未知的提供商: {text}")));
+            return Err(errors::management_error(
+                400,
+                format!("未知的提供商: {text}"),
+            ));
         }
-        if out.iter().any(|known: &String| known.eq_ignore_ascii_case(text)) {
+        if out
+            .iter()
+            .any(|known: &String| known.eq_ignore_ascii_case(text))
+        {
             continue;
         }
         out.push(text.to_string());
@@ -159,7 +180,11 @@ fn body_object(body: &Bytes) -> Result<serde_json::Map<String, Value>, Response>
 /// 界面整体不可用且无法自救（建 Key 也要先过闸门；headless 的网页面板
 /// 可以靠登录会话自救，桌面壳没有会话通道）。这是注册后世界里的保护性
 /// 约束：先建新的、再动旧的。注册前的免鉴权模式不受影响。
-fn guard_last_active_key(entries: &[api_keys::ApiKeyEntry], target_id: &str, action: &str) -> Result<(), Response> {
+fn guard_last_active_key(
+    entries: &[api_keys::ApiKeyEntry],
+    target_id: &str,
+    action: &str,
+) -> Result<(), Response> {
     if !crate::server::access::panel_auth_enabled() {
         return Ok(());
     }
@@ -205,7 +230,13 @@ pub async fn create_key(State(state): State<ServerState>, body: Bytes) -> Respon
     };
     match api_keys::add(name, key, allowed_providers, allowed_models) {
         Ok(entry) => {
-            logging::log("[Config]", &format!("✅ 新增 API Key「{}」，客户端需带 Authorization: Bearer <key>", entry.name));
+            logging::log(
+                "[Config]",
+                &format!(
+                    "✅ 新增 API Key「{}」，客户端需带 Authorization: Bearer <key>",
+                    entry.name
+                ),
+            );
             let mut payload = list_json(&state);
             if let Some(map) = payload.as_object_mut() {
                 map.insert("created".to_string(), entry.public_json());
@@ -217,7 +248,11 @@ pub async fn create_key(State(state): State<ServerState>, body: Bytes) -> Respon
 }
 
 /// PATCH /api/keys/{id}
-pub async fn update_key(State(state): State<ServerState>, Path(id): Path<String>, body: Bytes) -> Response {
+pub async fn update_key(
+    State(state): State<ServerState>,
+    Path(id): Path<String>,
+    body: Bytes,
+) -> Response {
     let object = match body_object(&body) {
         Ok(object) => object,
         Err(response) => return response,
@@ -244,7 +279,11 @@ pub async fn update_key(State(state): State<ServerState>, Path(id): Path<String>
         Ok(entry) => {
             logging::log(
                 "[Config]",
-                &format!("API Key「{}」已更新（{}）", entry.name, if entry.enabled { "启用" } else { "停用" }),
+                &format!(
+                    "API Key「{}」已更新（{}）",
+                    entry.name,
+                    if entry.enabled { "启用" } else { "停用" }
+                ),
             );
             ok_json(list_json(&state))
         }
@@ -262,7 +301,11 @@ pub async fn delete_key(State(state): State<ServerState>, Path(id): Path<String>
             let remaining = config::current().api_key_set();
             logging::log(
                 "[Config]",
-                if remaining { "API Key 已删除" } else { "API Key 已删除，接口恢复免鉴权（仅监听 127.0.0.1）" },
+                if remaining {
+                    "API Key 已删除"
+                } else {
+                    "API Key 已删除，接口恢复免鉴权（仅监听 127.0.0.1）"
+                },
             );
             ok_json(list_json(&state))
         }

@@ -167,8 +167,7 @@ impl AccountStore {
         };
 
         let _guard = self.guard();
-        let id = account_id_for(&api_key)
-            .map_err(|error| AccountStoreError::new(error, 500))?;
+        let id = account_id_for(&api_key).map_err(|error| AccountStoreError::new(error, 500))?;
         // 撞 id 保护（与 cline 同一考虑）：hash 空间巧合或手改数据都会撞上
         // 别家的记录，覆写会把那条记录的凭证一起弄丢
         let existing = self.record_by_id(&_guard, &id);
@@ -271,7 +270,9 @@ impl AccountStore {
         if let Some(value) = object.get("balanceQuery") {
             if !value.is_null() {
                 let Some(patch) = value.as_object() else {
-                    return Err(AccountStoreError::bad_request("balanceQuery 必须是 JSON 对象"));
+                    return Err(AccountStoreError::bad_request(
+                        "balanceQuery 必须是 JSON 对象",
+                    ));
                 };
                 let mut query = fields
                     .get("balanceQuery")
@@ -304,7 +305,12 @@ impl AccountStore {
         fields.insert("priority".to_string(), Value::from(priority));
         fields.insert(
             "enabled".to_string(),
-            Value::Bool(existing.as_ref().map(StoredAccount::enabled).unwrap_or(true)),
+            Value::Bool(
+                existing
+                    .as_ref()
+                    .map(StoredAccount::enabled)
+                    .unwrap_or(true),
+            ),
         );
         fields.insert(
             "addedAt".to_string(),
@@ -327,10 +333,13 @@ impl AccountStore {
             &format!(
                 "{} 自定义账号{}: {}（{}）",
                 if existing.is_some() { "🔄" } else { "✅" },
-                if existing.is_some() { "已更新" } else { "已添加" },
+                if existing.is_some() {
+                    "已更新"
+                } else {
+                    "已添加"
+                },
                 record_name,
-                custom_providers::label_of(provider_id)
-                    .unwrap_or_else(|| provider_id.to_string()),
+                custom_providers::label_of(provider_id).unwrap_or_else(|| provider_id.to_string()),
             ),
         );
         Ok(CustomAccountUpsert {
@@ -601,7 +610,8 @@ impl AccountStore {
             .cloned()
             .unwrap_or_default();
         let mut after = before.clone();
-        normalize_balance_query_patch(&mut after, object).map_err(AccountStoreError::bad_request)?;
+        normalize_balance_query_patch(&mut after, object)
+            .map_err(AccountStoreError::bad_request)?;
         if after == before {
             return Ok(Vec::new());
         }
@@ -616,7 +626,10 @@ impl AccountStore {
         self.with_conn(&_guard, |conn| sql::update_in_place(conn, &record))?;
         logging::log(
             "[Accounts]",
-            &format!("🔎 自定义账号余额查询配置已更新: {name}（{}）", changes.join("，")),
+            &format!(
+                "🔎 自定义账号余额查询配置已更新: {name}（{}）",
+                changes.join("，")
+            ),
         );
         Ok(changes)
     }
@@ -713,7 +726,8 @@ fn balance_query_of_record(record: &StoredAccount) -> CustomBalanceQuery {
 /// 五个字段横跨三种方案（NewAPI 用前两个、商汤用中间两个、智谱用最后一个），
 /// 合成一张表而不是按方案分开：写入侧不认识方案（它只认字段），按方案建表会
 /// 让「同一字段属于谁」在两处各写一遍。
-pub const BALANCE_QUERY_FIELDS: &[&str] = &["userId", "accessToken", "username", "password", "token"];
+pub const BALANCE_QUERY_FIELDS: &[&str] =
+    &["userId", "accessToken", "username", "password", "token"];
 
 /// 字段的界面/日志名（变更说明与错误文案用；键名对用户没有意义）
 fn balance_query_field_label(key: &str) -> &'static str {
@@ -740,7 +754,9 @@ fn normalize_balance_query_patch(
 ) -> Result<(), String> {
     let mut identity_changed = false;
     for key in BALANCE_QUERY_FIELDS {
-        let Some(value) = patch.get(*key) else { continue };
+        let Some(value) = patch.get(*key) else {
+            continue;
+        };
         let next = match value {
             Value::Null => String::new(),
             Value::String(text) => text.trim().to_string(),

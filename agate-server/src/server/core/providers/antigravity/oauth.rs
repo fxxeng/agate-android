@@ -78,8 +78,8 @@ use serde_json::{Map, Value};
 
 use crate::server::core::account_store::{AccountStore, CredentialWrite};
 use crate::server::core::egress;
-use crate::server::core::proxies::{ProxyResolution, ResolvedProxy};
 use crate::server::core::providers::refresh_flight::{self, Join, Table};
+use crate::server::core::proxies::{ProxyResolution, ResolvedProxy};
 use crate::server::errors::GatewayError;
 use crate::server::logging;
 
@@ -130,7 +130,9 @@ pub fn set_loopback_port(port: u16) {
 /// 而浏览器对 `localhost` 会自己尝试 IPv4 / IPv6 两条栈 —— 网关只监听 IPv4
 /// 时浏览器能落到 127.0.0.1。端口未知时 None，错误由上层文案说清。
 pub fn loopback_base() -> Option<String> {
-    LOOPBACK_PORT.get().map(|port| format!("http://localhost:{port}"))
+    LOOPBACK_PORT
+        .get()
+        .map(|port| format!("http://localhost:{port}"))
 }
 
 /// 本家登录回调地址（授权时拼进授权 URL、换码时逐字回传，见 [`CALLBACK_PATH`]）。
@@ -198,7 +200,10 @@ pub fn account_proxy(record: &Value) -> Result<Option<ResolvedProxy>, GatewayErr
 
 /// 截断上游错误文（按字符，UTF-8 安全）
 fn truncate(text: &str) -> String {
-    let collapsed: String = text.chars().filter(|character| !character.is_control()).collect();
+    let collapsed: String = text
+        .chars()
+        .filter(|character| !character.is_control())
+        .collect();
     match collapsed.char_indices().nth(MAX_ERROR_CHARS) {
         Some((index, _)) => format!("{}…", &collapsed[..index]),
         None => collapsed,
@@ -239,7 +244,10 @@ fn expires_in_of(payload: &Value) -> i64 {
 /// 刷新与换码的响应形态相同（`TokenResponse`），差的只是 `access_token` 缺失
 /// 时的文案语境（刷新 =「旧凭证未被覆盖」，换码 =「账号未保存」），因此由调用
 /// 方把文案递进来。
-fn read_token_response(payload: &Value, missing_access_token: &str) -> Result<TokenResponse, GatewayError> {
+fn read_token_response(
+    payload: &Value,
+    missing_access_token: &str,
+) -> Result<TokenResponse, GatewayError> {
     let access_token = payload
         .get("access_token")
         .and_then(Value::as_str)
@@ -271,7 +279,10 @@ fn read_token_response(payload: &Value, missing_access_token: &str) -> Result<To
 
 /// 解析刷新响应（`refresh_access_token` 的出口；文案见 [`read_token_response`]）
 fn parse_token_response(payload: &Value) -> Result<TokenResponse, GatewayError> {
-    read_token_response(payload, "Antigravity 刷新响应缺少 access_token，旧凭证未被覆盖")
+    read_token_response(
+        payload,
+        "Antigravity 刷新响应缺少 access_token，旧凭证未被覆盖",
+    )
 }
 
 /// 把一次失败响应翻成网关错误（见模块头的三档处置）。
@@ -301,7 +312,10 @@ fn classify_failure(status: u16, text: &str, payload: Option<&Value>) -> Gateway
             } else {
                 format!("：{detail}")
             };
-            GatewayError::with_status(502, format!("Antigravity 刷新 token 失败（{status}）{hint}"))
+            GatewayError::with_status(
+                502,
+                format!("Antigravity 刷新 token 失败（{status}）{hint}"),
+            )
         }
     }
 }
@@ -397,7 +411,9 @@ fn classify_exchange_failure(status: u16, text: &str, payload: Option<&Value>) -
         ),
         "invalid_client" | "unauthorized_client" => GatewayError::with_status(
             401,
-            format!("Antigravity 的 OAuth 客户端未被 Google 接受（{code}）：请重新发起网页登录{hint}"),
+            format!(
+                "Antigravity 的 OAuth 客户端未被 Google 接受（{code}）：请重新发起网页登录{hint}"
+            ),
         ),
         _ => GatewayError::with_status(
             502,
@@ -475,7 +491,10 @@ pub async fn exchange_code(
 ) -> Result<String, GatewayError> {
     let code = code.trim();
     if code.is_empty() {
-        return Err(GatewayError::with_status(400, "缺少授权码，请重新发起网页登录"));
+        return Err(GatewayError::with_status(
+            400,
+            "缺少授权码，请重新发起网页登录",
+        ));
     }
     if code.chars().count() > MAX_CODE_LENGTH {
         return Err(GatewayError::with_status(
@@ -491,7 +510,10 @@ pub async fn exchange_code(
         ));
     }
     if state.chars().count() > MAX_STATE_LENGTH {
-        return Err(GatewayError::with_status(400, "登录 state 过长，请重新发起网页登录"));
+        return Err(GatewayError::with_status(
+            400,
+            "登录 state 过长，请重新发起网页登录",
+        ));
     }
     let redirect_uri = login_redirect_uri().ok_or_else(|| {
         GatewayError::with_status(500, "网关还在启动中，回调端口尚未确定，请稍后重试")
@@ -537,11 +559,17 @@ pub async fn exchange_code(
         let error = classify_exchange_failure(status, &text, Some(&payload));
         logging::log(
             "[Antigravity]",
-            &format!("❌ 网页登录换取凭证失败（HTTP {status}）：{}", error.message),
+            &format!(
+                "❌ 网页登录换取凭证失败（HTTP {status}）：{}",
+                error.message
+            ),
         );
         return Err(error);
     }
-    let token = read_token_response(&payload, "Antigravity 换码响应缺少 access_token，账号未保存")?;
+    let token = read_token_response(
+        &payload,
+        "Antigravity 换码响应缺少 access_token，账号未保存",
+    )?;
     let Some(refresh_token) = token
         .refresh_token
         .as_deref()
@@ -576,7 +604,10 @@ pub async fn exchange_code(
         Err(error) => {
             logging::verbose(
                 "[Antigravity]",
-                &format!("网页登录 project 未发现（不影响账号添加）：{}", error.message),
+                &format!(
+                    "网页登录 project 未发现（不影响账号添加）：{}",
+                    error.message
+                ),
             );
             String::new()
         }
@@ -731,9 +762,9 @@ async fn refresh_and_save(
 /// 「静默用了别人的额度」（与 Trae / ZCode 同一条纪律）。
 pub fn read_record(store: &AccountStore, account_id: &str) -> Result<Value, GatewayError> {
     if account_id.trim().is_empty() {
-        return store
-            .antigravity_account_record("")
-            .ok_or_else(|| GatewayError::with_status(401, "没有可用的 Antigravity 账号，请先在「账号」页添加"));
+        return store.antigravity_account_record("").ok_or_else(|| {
+            GatewayError::with_status(401, "没有可用的 Antigravity 账号，请先在「账号」页添加")
+        });
     }
     store
         .antigravity_account_record(account_id)

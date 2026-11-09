@@ -142,11 +142,11 @@ const SCORE_RECORD_LIMIT: i64 = 50;
 /// 拉一次积分流水（best-effort：失败给 `None`，绝不让余额查询跟着失败）。
 ///
 /// 返回 `(list, has_more)`。`page` / `page_size` 必填（缺了上游回 400）。
-async fn fetch_score_records(
-    token: &str,
-    device_id: &str,
-) -> Option<(Vec<Value>, bool)> {
-    let path = format!("{}?page=1&page_size={SCORE_RECORD_LIMIT}", endpoints::PATH_SCORE_RECORD);
+async fn fetch_score_records(token: &str, device_id: &str) -> Option<(Vec<Value>, bool)> {
+    let path = format!(
+        "{}?page=1&page_size={SCORE_RECORD_LIMIT}",
+        endpoints::PATH_SCORE_RECORD
+    );
     let payload = http::get_json(&path, token, device_id, None, "积分流水查询")
         .await
         .ok()?;
@@ -198,7 +198,10 @@ fn record_row(entry: &Value) -> Option<Value> {
         object.insert("at".to_string(), Value::from((created * 1000.0) as i64));
     }
     if let Some(expired) = pick_number(entry, &["expired_at"]).filter(|value| *value > 0.0) {
-        object.insert("expireAt".to_string(), Value::from((expired * 1000.0) as i64));
+        object.insert(
+            "expireAt".to_string(),
+            Value::from((expired * 1000.0) as i64),
+        );
     }
     let remark = entry
         .get("remark")
@@ -212,10 +215,7 @@ fn record_row(entry: &Value) -> Option<Value> {
 }
 
 /// 查询某账号的积分余额（归一化形状见模块头）。
-pub(super) async fn query(
-    store: &AccountStore,
-    account_id: &str,
-) -> Result<Value, GatewayError> {
+pub(super) async fn query(store: &AccountStore, account_id: &str) -> Result<Value, GatewayError> {
     let record = store.chatglm_account_record(account_id);
     let credentials = credentials::from_record(record.as_ref())?;
     // 访客账号：直接给中性提示（不去打注定 401 的接口）
@@ -248,7 +248,10 @@ pub(super) async fn query(
         .map(str::trim)
         .filter(|text| !text.is_empty())
         .map(str::to_string);
-    let is_member = member.get("is_member").and_then(Value::as_bool).unwrap_or(false);
+    let is_member = member
+        .get("is_member")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     let level = member
         .get("level")
         .and_then(Value::as_str)
@@ -410,11 +413,14 @@ mod tests {
         assert_eq!(pick_number(&value, &["c"]), None);
         assert_eq!(pick_number(&value, &["missing"]), None);
         // 候选键顺序
-        assert_eq!(pick_number(&json!({ "x": 1, "y": 2 }), &["y", "x"]), Some(2.0));
+        assert_eq!(
+            pick_number(&json!({ "x": 1, "y": 2 }), &["y", "x"]),
+            Some(2.0)
+        );
     }
 
     #[test]
-    fn guest_error_is_neutral_and_mentions_guest()  {
+    fn guest_error_is_neutral_and_mentions_guest() {
         let error = guest_has_no_points();
         assert_eq!(error.status_code, 400, "中性标记用 400（前端显示成未配置）");
         assert_eq!(error.code.as_deref(), Some(USAGE_NOT_CONFIGURED_CODE));
@@ -457,7 +463,8 @@ mod tests {
         );
 
         // 没在跑活动的账号：current_score 恒 0，拿它当余额就是那个 bug
-        let activity = json!({ "status": -2, "remain_days": 0, "current_score": 0, "target_score": 0 });
+        let activity =
+            json!({ "status": -2, "remain_days": 0, "current_score": 0, "target_score": 0 });
         assert_eq!(pick_number(&activity, &["current_score"]), Some(0.0));
         assert!(
             !(1..=4).contains(&activity["status"].as_i64().unwrap_or(0)),
@@ -534,7 +541,11 @@ mod tests {
             "expired_at": 1823742972,
         }))
         .expect("正数记录应当成行");
-        assert_eq!(gain["record"], json!(true), "必须带 record 标记（前端靠它换读法）");
+        assert_eq!(
+            gain["record"],
+            json!(true),
+            "必须带 record 标记（前端靠它换读法）"
+        );
         assert_eq!(gain["amount"], json!(1000.0), "金额不换算：原样 1000 积分");
         assert_eq!(gain["unit"], json!("积分"));
         assert_eq!(gain["name"], json!("【任务奖励】创建群聊"));
@@ -558,7 +569,11 @@ mod tests {
             "expired_at": 1823742972,
         }))
         .expect("应当成行");
-        assert_eq!(row["at"], json!(1792206972000i64), "created_at 是秒，要乘 1000");
+        assert_eq!(
+            row["at"],
+            json!(1792206972000i64),
+            "created_at 是秒，要乘 1000"
+        );
         assert_eq!(row["expireAt"], json!(1823742972000i64), "expired_at 同理");
     }
 

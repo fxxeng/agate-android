@@ -94,7 +94,9 @@ pub fn normalize_refresh_token(raw: &str) -> String {
         // 可见 ASCII，因此在这里就地把它们削掉
         let token: String = tail
             .chars()
-            .take_while(|ch| !ch.is_whitespace() && !matches!(ch, '"' | '\'' | ',' | '}' | ']' | ';'))
+            .take_while(|ch| {
+                !ch.is_whitespace() && !matches!(ch, '"' | '\'' | ',' | '}' | ']' | ';')
+            })
             .collect();
         if token.len() > REFRESH_TOKEN_PREFIX.len() {
             return token;
@@ -121,7 +123,10 @@ pub fn normalize_access_token(raw: &str) -> String {
     } else {
         trimmed
     };
-    without_bearer.chars().filter(|ch| !ch.is_whitespace()).collect()
+    without_bearer
+        .chars()
+        .filter(|ch| !ch.is_whitespace())
+        .collect()
 }
 
 /// 从 payload 里取第一个非空字符串（界面的表单键名与落盘名都认）
@@ -195,7 +200,10 @@ pub async fn verify_paste(
             Ok(found) => project_id = found,
             Err(error) => logging::verbose(
                 "[Login]",
-                &format!("Antigravity project 未发现（不影响账号添加）：{}", error.message),
+                &format!(
+                    "Antigravity project 未发现（不影响账号添加）：{}",
+                    error.message
+                ),
             ),
         }
     }
@@ -204,7 +212,11 @@ pub async fn verify_paste(
         "[Login]",
         &format!(
             "✅ Antigravity refresh token 校验通过（{}{}）",
-            if email.is_empty() { "email 未填".to_string() } else { format!("email {email}") },
+            if email.is_empty() {
+                "email 未填".to_string()
+            } else {
+                format!("email {email}")
+            },
             if project_id.is_empty() {
                 "，project 未发现（刷模型清单时会再试）".to_string()
             } else {

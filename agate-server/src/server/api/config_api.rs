@@ -79,7 +79,10 @@ pub async fn post_config(State(_state): State<ServerState>, body: Bytes) -> Resp
             // 失败沿用既有语义（内部已记日志、本次运行已生效，请求照常成功）
             Value::Null => {
                 let _ = config::set_api_key(None);
-                logging::log("[Config]", "API Key 已清除，接口恢复免鉴权（仅监听 127.0.0.1）");
+                logging::log(
+                    "[Config]",
+                    "API Key 已清除，接口恢复免鉴权（仅监听 127.0.0.1）",
+                );
             }
             Value::String(text) => {
                 if text.chars().count() < MIN_API_KEY_LENGTH {
@@ -95,7 +98,10 @@ pub async fn post_config(State(_state): State<ServerState>, body: Bytes) -> Resp
                     return errors::management_error(500, format!("API Key 保存失败: {reason}"));
                 }
                 // 不打印 key 本身（日志会被导出与截图），只说明已更新
-                logging::log("[Config]", "✅ API Key 已更新，客户端需带 Authorization: Bearer <key>");
+                logging::log(
+                    "[Config]",
+                    "✅ API Key 已更新，客户端需带 Authorization: Bearer <key>",
+                );
             }
             // 非 null 且非字符串 → 同一个 400 文案（照抄 Node 版判定）
             _ => return errors::management_error(400, API_KEY_TOO_SHORT),
@@ -117,4 +123,3 @@ pub async fn post_config(State(_state): State<ServerState>, body: Bytes) -> Resp
         "defaultModel": snapshot.default_model(),
     }))
 }
-

@@ -89,7 +89,9 @@ impl OfficeAceCredential {
     /// 转成签名层要的凭据（控制面请求用；没有临时 AK/SK 时返回 Err）。
     pub fn signing(&self) -> Result<SigningCredential, String> {
         if !self.has_control_plane() {
-            return Err("OfficeAce 账号没有控制面凭据（导入时只给了网关 Basic 那一对）".to_string());
+            return Err(
+                "OfficeAce 账号没有控制面凭据（导入时只给了网关 Basic 那一对）".to_string(),
+            );
         }
         Ok(SigningCredential {
             access_key_id: self.access_key_id.clone(),
@@ -122,7 +124,10 @@ pub fn from_record(record: Option<&Value>) -> Result<OfficeAceCredential, Gatewa
         model_app_key: pick(record, &["modelAppKey", "appKey", "model_app_key"]),
         model_app_secret: pick(record, &["modelAppSecret", "appSecret", "model_app_secret"]),
         access_key_id: pick(record, &["accessKeyId", "access_key_id", "accessKey"]),
-        secret_access_key: pick(record, &["secretAccessKey", "secret_access_key", "secretKey"]),
+        secret_access_key: pick(
+            record,
+            &["secretAccessKey", "secret_access_key", "secretKey"],
+        ),
         security_token: pick(record, &["securityToken", "security_token"]),
         project_id: pick(record, &["projectId", "project_id"]),
         expires_at: record.get("expiresAt").and_then(Value::as_i64).unwrap_or(0),
@@ -187,7 +192,10 @@ mod tests {
         let error = from_record(Some(&record)).expect_err("缺网关凭据要报错");
         assert!(error.to_string().contains("网关凭据"), "{}", error);
         let error = from_record(None).expect_err("没有账号要报错");
-        assert!(error.to_string().contains("没有可用的 OfficeAce 账号"), "{error}");
+        assert!(
+            error.to_string().contains("没有可用的 OfficeAce 账号"),
+            "{error}"
+        );
     }
 
     #[test]

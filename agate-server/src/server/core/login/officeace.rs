@@ -19,9 +19,9 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
+use crate::server::core::providers::kind_id;
 use crate::server::core::providers::officeace::oauth::LoginFlow;
 use crate::server::core::providers::ProviderKind;
-use crate::server::core::providers::kind_id;
 use crate::server::logging;
 
 use super::{finish_task_error, LoginService, LoginTaskHandle};
@@ -37,8 +37,16 @@ fn first_non_empty(values: &[&str]) -> Option<String> {
 
 /// 兜底账号名：`OfficeAce <派生 id 前 8 位>`（与账号 id 同源，稳定且能区分多个账号）。
 fn account_id_for_name(base_url: &str, app_key: &str) -> String {
-    let id = crate::server::core::account_store::officeace_accounts::account_id_for(base_url, app_key);
-    let tail: String = id.chars().rev().take(8).collect::<Vec<_>>().into_iter().rev().collect();
+    let id =
+        crate::server::core::account_store::officeace_accounts::account_id_for(base_url, app_key);
+    let tail: String = id
+        .chars()
+        .rev()
+        .take(8)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
     format!("OfficeAce {tail}")
 }
 
@@ -83,8 +91,7 @@ impl LoginService {
         });
         self.tasks.register(&real_state, handle.clone());
 
-        let deadline =
-            tokio::time::Instant::now() + Duration::from_millis(super::LOGIN_TIMEOUT_MS);
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(super::LOGIN_TIMEOUT_MS);
         loop {
             if handle.snapshot().canceled {
                 return;
@@ -111,7 +118,10 @@ impl LoginService {
             let credential = match flow.finish(&code).await {
                 Ok(credential) => credential,
                 Err(error) => {
-                    logging::log("[Login]", &format!("❌ OfficeAce 登录换取凭据失败: {error}"));
+                    logging::log(
+                        "[Login]",
+                        &format!("❌ OfficeAce 登录换取凭据失败: {error}"),
+                    );
                     finish_task_error(&handle, &error);
                     return;
                 }
@@ -153,7 +163,10 @@ impl LoginService {
                 &account_id_for_name(&credential.base_url, &credential.model_app_key),
             ]);
             let account_name = account_name.as_deref();
-            match self.store.add_officeace_account(&payload, account_name, false) {
+            match self
+                .store
+                .add_officeace_account(&payload, account_name, false)
+            {
                 Ok(account) => {
                     task.session = Some(json!({
                         "accountUid": account.get("id"),

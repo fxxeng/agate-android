@@ -30,7 +30,11 @@ async fn live_guest_chat_round_trip() {
         credentials::token_is_guest(&access, false),
         "换来的令牌应当是访客令牌（JWT is_guest=true）"
     );
-    assert_eq!(credentials::token_uid(&access), uid, "JWT 的 uid 应与 user_id 一致");
+    assert_eq!(
+        credentials::token_uid(&access),
+        uid,
+        "JWT 的 uid 应与 user_id 一致"
+    );
     // 有效期写在 exp 里（刚换到的新令牌不该判成临期）
     assert!(
         !credentials::token_expiring_soon(&access),
@@ -40,10 +44,7 @@ async fn live_guest_chat_round_trip() {
     // ── 二、模型目录（登录/访客都读得到，但访客清单更短）───────────
     let outcome = models::refresh(&access, &device_id, true).await;
     let listed = models::list();
-    assert!(
-        !listed.is_empty(),
-        "目录为空（连兜底都没有）：{outcome:?}"
-    );
+    assert!(!listed.is_empty(), "目录为空（连兜底都没有）：{outcome:?}");
     // 实测访客至少能看到 glm-5.3 与 glm-5.3-flash 两个名字。
     // 读 `id`（仓内约定键，见 `models::map_entry`）—— 不是上游的 `selected_model`：
     // 目录条目在归一化时已翻译成仓内键名，读旧键名会恒得空表
@@ -77,9 +78,15 @@ async fn live_guest_chat_round_trip() {
     let flat = body["messages"][0]["content"][0]["text"]
         .as_str()
         .unwrap_or("");
-    assert!(flat.contains("只回答数字"), "system 段应当被拍平进正文：{flat}");
+    assert!(
+        flat.contains("只回答数字"),
+        "system 段应当被拍平进正文：{flat}"
+    );
     assert!(flat.contains("1 加 1"), "用户问题应当被拍平进正文：{flat}");
-    assert!(flat.contains("<|sytstem|>"), "system 标记应当保留上游那个拼写");
+    assert!(
+        flat.contains("<|sytstem|>"),
+        "system 标记应当保留上游那个拼写"
+    );
 
     let raw = http::post_text(
         super::endpoints::PATH_ENGINE_STREAM,
@@ -115,7 +122,12 @@ async fn live_guest_chat_round_trip() {
         let Ok(value) = serde_json::from_str::<serde_json::Value>(payload) else {
             continue;
         };
-        for choice in value.get("choices").and_then(|v| v.as_array()).into_iter().flatten() {
+        for choice in value
+            .get("choices")
+            .and_then(|v| v.as_array())
+            .into_iter()
+            .flatten()
+        {
             if let Some(delta) = choice.get("delta") {
                 if let Some(content) = delta.get("content").and_then(|v| v.as_str()) {
                     text.push_str(content);
@@ -149,7 +161,12 @@ fn delta_text(frames: &[bytes::Bytes]) -> String {
         let Ok(value) = serde_json::from_str::<serde_json::Value>(payload) else {
             continue;
         };
-        for choice in value.get("choices").and_then(|v| v.as_array()).into_iter().flatten() {
+        for choice in value
+            .get("choices")
+            .and_then(|v| v.as_array())
+            .into_iter()
+            .flatten()
+        {
             if let Some(content) = choice
                 .get("delta")
                 .and_then(|delta| delta.get("content"))
@@ -182,7 +199,9 @@ fn final_snapshot_text(raw: &str) -> String {
             .into_iter()
             .flatten()
         {
-            if part.pointer("/meta_data/engine/action").and_then(serde_json::Value::as_str)
+            if part
+                .pointer("/meta_data/engine/action")
+                .and_then(serde_json::Value::as_str)
                 == Some("loading")
             {
                 continue;
@@ -194,7 +213,11 @@ fn final_snapshot_text(raw: &str) -> String {
                 .flatten()
             {
                 if item.get("type").and_then(serde_json::Value::as_str) == Some("text") {
-                    text.push_str(item.get("text").and_then(serde_json::Value::as_str).unwrap_or(""));
+                    text.push_str(
+                        item.get("text")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or(""),
+                    );
                 }
             }
         }
@@ -239,7 +262,10 @@ async fn live_long_answer_is_emitted_exactly_once() {
     .expect("长回答请求应当成功");
 
     let snapshot = final_snapshot_text(&raw);
-    println!("[live] 上游最终快照（{} 字）= {snapshot:?}", snapshot.chars().count());
+    println!(
+        "[live] 上游最终快照（{} 字）= {snapshot:?}",
+        snapshot.chars().count()
+    );
     assert!(
         snapshot.chars().count() > 20,
         "这段提问应当拿到长回答，实际 {} 字（拿构造不出发明者就证明不了重复）",
@@ -251,7 +277,10 @@ async fn live_long_answer_is_emitted_exactly_once() {
     let mut frames = machine.push(raw.as_bytes());
     frames.extend(machine.finish());
     let emitted = delta_text(&frames);
-    println!("[live] 我们下发（{} 字）= {emitted:?}", emitted.chars().count());
+    println!(
+        "[live] 我们下发（{} 字）= {emitted:?}",
+        emitted.chars().count()
+    );
 
     assert_eq!(
         emitted, snapshot,
@@ -276,7 +305,10 @@ async fn live_refresh_rotates_tokens() {
         .await
         .expect("续期应当成功");
     assert!(!new_access.is_empty(), "续期必须返回新 access_token");
-    assert!(!new_refresh.is_empty(), "续期必须返回 refresh_token（可能轮换）");
+    assert!(
+        !new_refresh.is_empty(),
+        "续期必须返回 refresh_token（可能轮换）"
+    );
     assert_eq!(new_uid, uid, "续期后仍是同一个用户");
     println!(
         "[live] access 变化={} refresh 轮换={}",
@@ -340,7 +372,12 @@ async fn live_single_message_needs_no_marks() {
         let Ok(value) = serde_json::from_str::<serde_json::Value>(payload) else {
             continue;
         };
-        for choice in value.get("choices").and_then(|v| v.as_array()).into_iter().flatten() {
+        for choice in value
+            .get("choices")
+            .and_then(|v| v.as_array())
+            .into_iter()
+            .flatten()
+        {
             if let Some(content) = choice
                 .get("delta")
                 .and_then(|delta| delta.get("content"))

@@ -63,19 +63,24 @@ async fn call(
     extra_headers: &[(&str, &str)],
 ) -> Result<Value, GatewayError> {
     if !credential.has_control_plane() {
-        return Err(crate::server::core::providers::adapter::usage_not_configured(
-            "OfficeAce 果办",
-            "控制面临时凭据（AK/SK）",
-        ));
+        return Err(
+            crate::server::core::providers::adapter::usage_not_configured(
+                "OfficeAce 果办",
+                "控制面临时凭据（AK/SK）",
+            ),
+        );
     }
     let base = gateway_base(&credential.base_url);
     if base.is_empty() {
-        return Err(GatewayError::with_status(400, "OfficeAce 账号缺少模型网关基址"));
+        return Err(GatewayError::with_status(
+            400,
+            "OfficeAce 账号缺少模型网关基址",
+        ));
     }
     let url = format!("{base}{path}");
-    let signing = credential
-        .signing()
-        .map_err(|reason| GatewayError::with_status(500, format!("OfficeAce 签名凭据不可用：{reason}")))?;
+    let signing = credential.signing().map_err(|reason| {
+        GatewayError::with_status(500, format!("OfficeAce 签名凭据不可用：{reason}"))
+    })?;
     let payload = body
         .as_ref()
         .map(|value| value.to_string().into_bytes())
@@ -97,7 +102,9 @@ async fn call(
         region: signer::DEFAULT_REGION,
         date_override: None,
     })
-    .map_err(|reason| GatewayError::with_status(500, format!("OfficeAce 订阅请求签名失败：{reason}")))?;
+    .map_err(|reason| {
+        GatewayError::with_status(500, format!("OfficeAce 订阅请求签名失败：{reason}"))
+    })?;
     let built = match method {
         "POST" => egress::client_for(None)
             .post(&url)
@@ -115,7 +122,10 @@ async fn call(
         let status = if error.is_timeout() { 504 } else { 502 };
         GatewayError::with_status(
             status,
-            format!("OfficeAce 订阅请求失败：{}", egress::describe_error_detail(&error)),
+            format!(
+                "OfficeAce 订阅请求失败：{}",
+                egress::describe_error_detail(&error)
+            ),
         )
     })?;
     let status = response.status().as_u16();
@@ -354,7 +364,12 @@ pub fn summarize(subscription: &Value) -> Value {
         .into_iter()
         .flatten()
     {
-        for quota in sku.get("quotas").and_then(Value::as_array).into_iter().flatten() {
+        for quota in sku
+            .get("quotas")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
             let expired = parse_ms(quota.get("expired_time"));
             if expired > 0 && expired <= now {
                 continue;
@@ -369,11 +384,21 @@ pub fn summarize(subscription: &Value) -> Value {
                     let used = num_opt(quota.get("current_value"));
                     // 剩余是减出来的：两个基数缺一个就**不写这个键**（拿 0 顶上等于
                     // 替上游宣布「没用过 / 没发过」）
-                    let remain = total.zip(used).map(|(total, used)| whole_points(total - used));
+                    let remain = total
+                        .zip(used)
+                        .map(|(total, used)| whole_points(total - used));
                     // 配额自己没有名字，挂所属 sku 的；上游连 sku 名字都没给时写
                     // 「套餐积分」—— 界面的兜底名「积分包」分不出这是套餐还是活动发的
-                    let sku_name = sku.get("sku_name").and_then(Value::as_str).unwrap_or("").trim();
-                    let name = if sku_name.is_empty() { "套餐积分" } else { sku_name };
+                    let sku_name = sku
+                        .get("sku_name")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .trim();
+                    let name = if sku_name.is_empty() {
+                        "套餐积分"
+                    } else {
+                        sku_name
+                    };
                     rows.push(credit_row(name, total, used, remain, None, expired));
                 }
                 Some("online_search_count") => {
@@ -552,7 +577,10 @@ mod tests {
         assert_eq!(380.0, out["wallets"][0]["balance"].as_f64().unwrap());
         assert_eq!(100.0, out["wallets"][1]["balance"].as_f64().unwrap());
         assert_eq!(500.0, out["subscription"]["totalQuota"].as_f64().unwrap());
-        assert_eq!(200.0, out["subscription"]["searches"]["total"].as_f64().unwrap());
+        assert_eq!(
+            200.0,
+            out["subscription"]["searches"]["total"].as_f64().unwrap()
+        );
     }
 
     #[test]

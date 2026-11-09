@@ -25,7 +25,7 @@
 //! ── 硬约束 ──────────────────────────────────────────────────
 //! release 是 `panic=abort`：本文件零 unwrap/expect/panic。
 
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use super::credentials::OfficeAceCredential;
 
@@ -200,7 +200,10 @@ mod tests {
     #[test]
     fn basic_header_is_base64_of_key_colon_secret() {
         // "app-key:app-secret" 的 base64（手算并与实现对照）
-        assert_eq!("Basic YXBwLWtleTphcHAtc2VjcmV0", basic_authorization("app-key", "app-secret"));
+        assert_eq!(
+            "Basic YXBwLWtleTphcHAtc2VjcmV0",
+            basic_authorization("app-key", "app-secret")
+        );
     }
 
     #[test]
@@ -232,7 +235,10 @@ mod tests {
         // 客户端显式给 false 时不覆盖
         let mut explicit = json!({"stream": true, "stream_options": {"include_usage": false}});
         ensure_include_usage(&mut explicit);
-        assert_eq!(Value::Bool(false), explicit["stream_options"]["include_usage"]);
+        assert_eq!(
+            Value::Bool(false),
+            explicit["stream_options"]["include_usage"]
+        );
         // 非流式不补
         let mut not_stream = json!({"stream": false});
         ensure_include_usage(&mut not_stream);
@@ -243,7 +249,10 @@ mod tests {
     fn plan_forces_streaming_and_sets_the_three_headers() {
         let plan = build_chat_plan(&credential(), &json!({"model": "glm-5.3", "messages": []}))
             .expect("齐备凭据要能构造");
-        assert_eq!("https://modelgw-0004.example.com/v2/chat/completions", plan.url);
+        assert_eq!(
+            "https://modelgw-0004.example.com/v2/chat/completions",
+            plan.url
+        );
         assert_eq!(Value::Bool(true), plan.body["stream"], "上游恒流式");
         let header = |name: &str| {
             plan.headers
@@ -251,9 +260,16 @@ mod tests {
                 .find(|(key, _)| key == name)
                 .map(|(_, value)| value.clone())
         };
-        assert_eq!(Some("Basic YXBwLWtleTphcHAtc2VjcmV0".to_string()), header("Authorization"));
+        assert_eq!(
+            Some("Basic YXBwLWtleTphcHAtc2VjcmV0".to_string()),
+            header("Authorization")
+        );
         assert_eq!(Some("en".to_string()), header("lang"));
-        assert_eq!(32, header("Chat-Id").unwrap_or_default().len(), "Chat-Id 是 16 字节 hex");
+        assert_eq!(
+            32,
+            header("Chat-Id").unwrap_or_default().len(),
+            "Chat-Id 是 16 字节 hex"
+        );
         assert_eq!(32, header("Session-Id").unwrap_or_default().len());
         // 两次构造的 id 不同（不是常量）
         let again = build_chat_plan(&credential(), &json!({"messages": []})).expect("再来一次");

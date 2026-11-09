@@ -31,10 +31,19 @@ fn advertised_names(
     manifest: &[Value],
 ) -> Vec<String> {
     let mut names: Vec<String> = manifest.iter().map(model_id).collect();
-    names.extend(rules.mappings.iter()
-        .filter(|mapping| mapping.enabled)
-        .filter(|mapping| mapping.provider.as_deref().map_or(true, |owner| owner == provider))
-        .map(|mapping| mapping.alias.clone()));
+    names.extend(
+        rules
+            .mappings
+            .iter()
+            .filter(|mapping| mapping.enabled)
+            .filter(|mapping| {
+                mapping
+                    .provider
+                    .as_deref()
+                    .map_or(true, |owner| owner == provider)
+            })
+            .map(|mapping| mapping.alias.clone()),
+    );
     names
 }
 
@@ -57,9 +66,8 @@ fn public_builtin_items(
     // 却能把这一类「存了但认不出」的输入救回来。
     let pinned = |provider: &str| {
         let label = crate::server::core::providers::label_of(provider);
-        pins.iter().any(|pin| {
-            pin.eq_ignore_ascii_case(provider) || pin.eq_ignore_ascii_case(&label)
-        })
+        pins.iter()
+            .any(|pin| pin.eq_ignore_ascii_case(provider) || pin.eq_ignore_ascii_case(&label))
     };
 
     // 单条 pin：`provider/对外名`。写法与对外 id 完全一致 —— 用户在清单里
@@ -79,8 +87,12 @@ fn public_builtin_items(
         // 整家是否被 pin（Hybrid 下「这家全部带前缀」的快捷方式）
         let home_pinned = pinned(provider);
         for name in names {
-            let Some(wire) = builtin_target(&rules, *kind, manifest, &name) else { continue };
-            let Some(upstream) = manifest.iter().find(|item| model_id(item) == wire.model) else { continue };
+            let Some(wire) = builtin_target(&rules, *kind, manifest, &name) else {
+                continue;
+            };
+            let Some(upstream) = manifest.iter().find(|item| model_id(item) == wire.model) else {
+                continue;
+            };
 
             // ── 裸名与带前缀是**两条**，不是二选一（2026-10-29 修）──────
             // 旧写法用 `wire_name = if prefixed { 前缀 } else { 裸名 }` —— 于是
@@ -181,11 +193,13 @@ pub fn models_response_with_mode(
     mode: ListMode,
     pins: &[String],
 ) -> Value {
-    let active: Vec<_> = active_manifests(store).into_iter()
+    let active: Vec<_> = active_manifests(store)
+        .into_iter()
         .filter(|(kind, _)| key_scope::allows_provider(scope, kind_id(*kind)))
         .collect();
     let (source, refreshed_at) = aggregate_source(&active);
-    let mut data: Vec<_> = public_builtin_items(&active, mode, pins).into_iter()
+    let mut data: Vec<_> = public_builtin_items(&active, mode, pins)
+        .into_iter()
         .map(|(_, item)| item)
         .filter(|item| key_scope::allows_model(scope, &model_id(item)))
         .collect();
@@ -193,7 +207,11 @@ pub fn models_response_with_mode(
     super::super::custom::append_models_response(store, scope, &mut data);
     // 自定义家贡献了条目时，这份列表就不再是单/多家内置的来源了 ——
     // 与「多家内置」同一个词（aggregate），下游据此知道列表是拼出来的。
-    let source = if data.len() > builtin_count { "aggregate" } else { source };
+    let source = if data.len() > builtin_count {
+        "aggregate"
+    } else {
+        source
+    };
     list_response_from(data, source, refreshed_at)
 }
 
@@ -205,12 +223,17 @@ pub fn has_available_providers(store: &AccountStore) -> bool {
 }
 
 pub fn advertised_model_ids(store: &AccountStore) -> Vec<String> {
-    models_response(store, None).get("data").and_then(Value::as_array)
-        .map(|items| items.iter().map(model_id).collect()).unwrap_or_default()
+    models_response(store, None)
+        .get("data")
+        .and_then(Value::as_array)
+        .map(|items| items.iter().map(model_id).collect())
+        .unwrap_or_default()
 }
 
 pub fn advertised_manifest_contains(store: &AccountStore, model: &str) -> bool {
-    advertised_model_ids(store).iter().any(|id| id.eq_ignore_ascii_case(model))
+    advertised_model_ids(store)
+        .iter()
+        .any(|id| id.eq_ignore_ascii_case(model))
 }
 
 pub fn suggest_advertised(store: &AccountStore, model: &str, limit: usize) -> Vec<String> {
@@ -218,17 +241,33 @@ pub fn suggest_advertised(store: &AccountStore, model: &str, limit: usize) -> Ve
 }
 
 pub fn session_models(store: &AccountStore) -> Vec<Value> {
-    models_response(store, None).get("data").and_then(Value::as_array)
-        .cloned().unwrap_or_default().into_iter().map(|mut item| {
-            let provider = item.get("owned_by").and_then(Value::as_str).unwrap_or("").to_string();
-            let is_default = item.get("is_default").cloned().unwrap_or(Value::Bool(false));
+    models_response(store, None)
+        .get("data")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|mut item| {
+            let provider = item
+                .get("owned_by")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let is_default = item
+                .get("is_default")
+                .cloned()
+                .unwrap_or(Value::Bool(false));
             if let Some(object) = item.as_object_mut() {
-                object.insert("providerLabel".to_string(), Value::String(super::super::label_of(&provider)));
+                object.insert(
+                    "providerLabel".to_string(),
+                    Value::String(super::super::label_of(&provider)),
+                );
                 object.insert("provider".to_string(), Value::String(provider));
                 object.insert("isDefault".to_string(), is_default);
             }
             item
-        }).collect()
+        })
+        .collect()
 }
 
 pub fn models_by_provider(store: &AccountStore) -> Value {
@@ -238,7 +277,8 @@ pub fn models_by_provider(store: &AccountStore) -> Value {
         // 前缀形态只是显示层的写法，模型集合本身不变。
         let mut names: Vec<_> = public_builtin_items(&[(kind, manifest)], ListMode::Model, &[])
             .into_iter()
-            .map(|(_, item)| model_id(&item)).collect();
+            .map(|(_, item)| model_id(&item))
+            .collect();
         names.sort_by_key(|name| name.to_lowercase());
         map.insert(kind_id(kind).to_string(), json!(names));
     }
@@ -281,7 +321,9 @@ pub fn manage_view(store: &AccountStore) -> Value {
         let source = if remote { "remote" } else { "builtin" };
         for item in manifest {
             let id = model_id(&item);
-            if id.is_empty() { continue; }
+            if id.is_empty() {
+                continue;
+            }
             if !claimed.insert((provider.to_string(), id.to_lowercase())) {
                 continue; // 同家同 id 的重复条目（见 claimed 的说明）
             }
@@ -295,13 +337,24 @@ pub fn manage_view(store: &AccountStore) -> Value {
             let mut aliases = Vec::new();
             for (index, mapping) in rules.mappings.iter().enumerate() {
                 if !mapping.target.eq_ignore_ascii_case(&id)
-                    || !mapping.provider.as_deref().map_or(true, |owner| owner == provider)
-                { continue; }
+                    || !mapping
+                        .provider
+                        .as_deref()
+                        .map_or(true, |owner| owner == provider)
+                {
+                    continue;
+                }
                 attached.insert(index);
                 if mapping.alias.eq_ignore_ascii_case(&id)
-                    || aliases.iter().any(|alias: &String| alias.eq_ignore_ascii_case(&mapping.alias))
-                { continue; }
-                let Some(effective) = rules.binding(provider, &mapping.alias, &id) else { continue };
+                    || aliases
+                        .iter()
+                        .any(|alias: &String| alias.eq_ignore_ascii_case(&mapping.alias))
+                {
+                    continue;
+                }
+                let Some(effective) = rules.binding(provider, &mapping.alias, &id) else {
+                    continue;
+                };
                 aliases.push(mapping.alias.clone());
                 mappings.push(json!({
                     "alias": effective.alias, "target": id, "provider": provider,
@@ -309,9 +362,15 @@ pub fn manage_view(store: &AccountStore) -> Value {
                     "isDefault": false, "dangling": false, "carried": true,
                 }));
             }
-            let source = if rules.custom.iter().any(|custom| custom.matches(provider, &id)) {
+            let source = if rules
+                .custom
+                .iter()
+                .any(|custom| custom.matches(provider, &id))
+            {
                 "manual"
-            } else { source };
+            } else {
+                source
+            };
             // 覆盖键列表从**本次快照**里查（不调 model_rules::current() —— 那会
             // 每行重新解析一遍配置，几百行的清单就是几百次解析）
             let cap_overrides: Vec<String> = rules
@@ -383,7 +442,9 @@ pub fn manage_view(store: &AccountStore) -> Value {
     for (provider, _) in super::super::custom::catalog_providers(store) {
         // 登记条目（原始形态，含用户登记的 enabled / capabilities / reasoning）
         let registered = crate::server::core::custom_providers::get(&provider);
-        let Some(registered) = registered else { continue; };
+        let Some(registered) = registered else {
+            continue;
+        };
         let registered_models = registered
             .get("models")
             .and_then(Value::as_array)
@@ -396,7 +457,9 @@ pub fn manage_view(store: &AccountStore) -> Value {
             .unwrap_or(&[]);
         for entry in registered_models {
             let id = model_id(entry);
-            if id.is_empty() { continue; }
+            if id.is_empty() {
+                continue;
+            }
             if !claimed.insert((provider.to_string(), id.to_lowercase())) {
                 continue; // 同家同 id 的重复条目（与内置家同一道去重）
             }
@@ -410,7 +473,10 @@ pub fn manage_view(store: &AccountStore) -> Value {
                 capability::apply_overrides(&mut item, &normalized);
             }
             model_meta::apply(&mut item);
-            let enabled = entry.get("enabled").and_then(Value::as_bool).unwrap_or(true);
+            let enabled = entry
+                .get("enabled")
+                .and_then(Value::as_bool)
+                .unwrap_or(true);
             // 别名：登记在这家、且指向这条模型的映射（对外名 → 原始 id）。
             //
             // ⚠️ 这些映射**不进** `mappings[]`（那是内置家的映射视图，写入口
@@ -423,12 +489,22 @@ pub fn manage_view(store: &AccountStore) -> Value {
             // 配置视图）。
             let mut aliases = Vec::new();
             for mapping in registered_mappings {
-                let Some(alias) = mapping.get("alias").and_then(Value::as_str) else { continue; };
-                let Some(mapped) = mapping.get("target").and_then(Value::as_str) else { continue; };
-                if !mapped.eq_ignore_ascii_case(&id) { continue; }
+                let Some(alias) = mapping.get("alias").and_then(Value::as_str) else {
+                    continue;
+                };
+                let Some(mapped) = mapping.get("target").and_then(Value::as_str) else {
+                    continue;
+                };
+                if !mapped.eq_ignore_ascii_case(&id) {
+                    continue;
+                }
                 if alias.eq_ignore_ascii_case(&id)
-                    || aliases.iter().any(|name: &String| name.eq_ignore_ascii_case(alias))
-                { continue; }
+                    || aliases
+                        .iter()
+                        .any(|name: &String| name.eq_ignore_ascii_case(alias))
+                {
+                    continue;
+                }
                 aliases.push(alias.to_string());
             }
             // 能力位覆盖：登记条目上用户手填的那几项（`capabilities` 稀疏表）。
@@ -458,7 +534,9 @@ pub fn manage_view(store: &AccountStore) -> Value {
         }
     }
     for (index, mapping) in rules.mappings.iter().enumerate() {
-        if attached.contains(&index) { continue; }
+        if attached.contains(&index) {
+            continue;
+        }
         let carried = match mapping.provider.as_deref() {
             Some(provider) => kind_from_id(provider).is_some_and(|kind| {
                 entry_id_in_manifest(&manifest_for(kind), &mapping.target).is_some()

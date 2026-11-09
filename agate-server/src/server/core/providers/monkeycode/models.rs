@@ -75,7 +75,9 @@ fn slot(region: Region) -> &'static Mutex<Option<CatalogState>> {
 /// 在锁内执行一段取值，并在首次访问时把落盘缓存装回内存
 fn with_state<R>(region: Region, f: impl FnOnce(&mut Option<CatalogState>) -> R) -> R {
     let mutex = slot(region);
-    let mut guard = mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut guard = mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if guard.is_none() {
         if let Some(cached) = catalog_cache::load(scope_for(region)) {
             *guard = Some(CatalogState {
@@ -132,10 +134,7 @@ fn map_entry(row: &Value) -> Option<Value> {
     item.insert("name".to_string(), Value::String(name));
     item.insert("provider".to_string(), Value::String(provider));
     item.insert("model".to_string(), Value::String(model_name));
-    item.insert(
-        "upstreamId".to_string(),
-        Value::String(text_of(row, "id")),
-    );
+    item.insert("upstreamId".to_string(), Value::String(text_of(row, "id")));
     item.insert(
         "interfaceType".to_string(),
         Value::String(interface_type.clone()),
@@ -162,7 +161,11 @@ fn map_entry(row: &Value) -> Option<Value> {
     );
     item.insert(
         "isDefault".to_string(),
-        Value::Bool(row.get("is_default").and_then(Value::as_bool).unwrap_or(false)),
+        Value::Bool(
+            row.get("is_default")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        ),
     );
     // 免费 / 订阅档：非聚合层字段，但账号页与排障会看（保留原样）
     if let Some(is_free) = row.get("is_free").and_then(Value::as_bool) {
@@ -172,7 +175,10 @@ fn map_entry(row: &Value) -> Option<Value> {
     if !access_level.is_empty() {
         item.insert("accessLevel".to_string(), Value::String(access_level));
     }
-    for (key, target) in [("context_limit", "maxInputTokens"), ("output_limit", "maxOutputTokens")] {
+    for (key, target) in [
+        ("context_limit", "maxInputTokens"),
+        ("output_limit", "maxOutputTokens"),
+    ] {
         if let Some(value) = row.get(key).and_then(Value::as_i64) {
             if value > 0 {
                 item.insert(target.to_string(), Value::from(value));
@@ -271,7 +277,9 @@ pub fn resolve_task_model(region: Region, requested: &str) -> Option<TaskTarget>
 /// 当前模型清单（内存 → 落盘缓存；都没有时为空，由刷新路径填）
 pub fn list(region: Region) -> Vec<Value> {
     with_state(region, |slot| {
-        slot.as_ref().map(|state| state.models.clone()).unwrap_or_default()
+        slot.as_ref()
+            .map(|state| state.models.clone())
+            .unwrap_or_default()
     })
 }
 
@@ -287,7 +295,9 @@ pub fn remote_refreshed(region: Region) -> bool {
 
 /// 最近一次成功刷新的时刻（毫秒；没刷过为 0）—— 界面「更新日期」列读它
 pub fn last_refreshed_at(region: Region) -> i64 {
-    with_state(region, |slot| slot.as_ref().map(|state| state.fetched_at).unwrap_or(0))
+    with_state(region, |slot| {
+        slot.as_ref().map(|state| state.fetched_at).unwrap_or(0)
+    })
 }
 
 /// 拉一次模型目录并落地（内存 + 持久化缓存）。
@@ -306,13 +316,8 @@ pub async fn refresh(region: Region, session: &str, force: bool) -> ModelRefresh
             return ModelRefreshOutcome::unchanged();
         }
     }
-    let payload = match client::get_json(
-        region,
-        endpoints::MODELS_PATH,
-        session,
-        "模型目录查询",
-    )
-    .await
+    let payload = match client::get_json(region, endpoints::MODELS_PATH, session, "模型目录查询")
+        .await
     {
         Ok(payload) => payload,
         Err(error) => return ModelRefreshOutcome::failed(error.message),

@@ -207,7 +207,11 @@ fn routing_key(raw: &str) -> Option<String> {
     }
     // https 的显式端口与缺省等价：`port()` 对默认端口返回 None，统一成 443
     let port = parsed.port().unwrap_or(443);
-    Some(format!("https://{}:{port}{}", host, normalize_path(parsed.path())))
+    Some(format!(
+        "https://{}:{port}{}",
+        host,
+        normalize_path(parsed.path())
+    ))
 }
 
 /// 提取 to 目标的 `scheme://host[:port]/path`（query 与 fragment 丢弃，
@@ -225,7 +229,10 @@ fn origin_and_path(raw: &str) -> Option<String> {
         Some(port) => format!("{host}:{port}"),
         None => host,
     };
-    Some(format!("https://{authority}{}", normalize_path(parsed.path())))
+    Some(format!(
+        "https://{authority}{}",
+        normalize_path(parsed.path())
+    ))
 }
 
 /// path 去尾斜杠（根 `/` 保留，与参考实现 `normalizePath` 同口径）

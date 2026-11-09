@@ -125,7 +125,10 @@ impl CoreTaskSupervisor {
         Fut: Future<Output = ()> + Send + 'static,
     {
         let name = name.into();
-        let mut tasks = self.tasks.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut tasks = self
+            .tasks
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         self.reclaim_finished(&mut tasks);
         let stopped = self
             .stopped_scopes
@@ -134,15 +137,18 @@ impl CoreTaskSupervisor {
         if stopped.contains(&scope) {
             return Err(TaskSpawnError::ScopeStopped);
         }
-        if tasks.iter().any(|entry| {
-            entry.scope == scope && entry.name == name && !entry.handle.is_finished()
-        }) {
+        if tasks
+            .iter()
+            .any(|entry| entry.scope == scope && entry.name == name && !entry.handle.is_finished())
+        {
             return Ok(false);
         }
         drop(stopped);
 
         let (cancel_tx, cancel_rx) = oneshot::channel();
-        let handle = crate::spawn_task(task(TaskCancellation { receiver: cancel_rx }));
+        let handle = crate::spawn_task(task(TaskCancellation {
+            receiver: cancel_rx,
+        }));
         tasks.push(TaskEntry {
             scope,
             name,
@@ -155,17 +161,16 @@ impl CoreTaskSupervisor {
     /// Cancel and join every task in a scope. The timeout is a total scope budget,
     /// not a per-task budget. Timed-out tasks are aborted, then given up to one
     /// additional second for their futures to drop before returning.
-    pub async fn shutdown_scope(
-        &self,
-        scope: TaskScope,
-        timeout: Duration,
-    ) -> ShutdownReport {
+    pub async fn shutdown_scope(&self, scope: TaskScope, timeout: Duration) -> ShutdownReport {
         let mut selected = Vec::new();
         {
             // Match spawn() lock order: tasks -> stopped_scopes. Holding tasks while
             // marking the scope stopped makes the stop gate and task drain one
             // serialized operation relative to concurrent registration.
-            let mut tasks = self.tasks.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut tasks = self
+                .tasks
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             self.stopped_scopes
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -192,7 +197,7 @@ impl CoreTaskSupervisor {
         let mut failed_tasks = Vec::new();
         for index in 0..selected.len() {
             match timeout_at(deadline, &mut selected[index].handle).await {
-                Ok(Ok(())) => {},
+                Ok(Ok(())) => {}
                 Ok(Err(error)) => {
                     if error.is_panic() {
                         failed_tasks.push(selected[index].name.clone());
@@ -229,8 +234,14 @@ impl CoreTaskSupervisor {
     }
 
     pub fn active_count(&self, scope: TaskScope) -> usize {
-        let tasks = self.tasks.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        tasks.iter().filter(|entry| entry.scope == scope && !entry.handle.is_finished()).count()
+        let tasks = self
+            .tasks
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        tasks
+            .iter()
+            .filter(|entry| entry.scope == scope && !entry.handle.is_finished())
+            .count()
     }
 
     /// 最近的任务失败记录（T1.2 有限历史快照，最新在尾部）。
@@ -328,12 +339,14 @@ pub fn core_task_supervisor() -> &'static CoreTaskSupervisor {
 
 /// Stop the process-lifetime Core loops. Host wiring is intentionally a later batch.
 pub async fn shutdown_core_tasks(timeout: Duration) -> ShutdownReport {
-    core_task_supervisor().shutdown_scope(TaskScope::Core, timeout).await
+    core_task_supervisor()
+        .shutdown_scope(TaskScope::Core, timeout)
+        .await
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{CoreTaskSupervisor, FAILURE_HISTORY_CAP, TaskScope, TaskSpawnError};
+    use super::{CoreTaskSupervisor, TaskScope, TaskSpawnError, FAILURE_HISTORY_CAP};
     use std::sync::Arc;
     use std::time::Duration;
     use tokio::sync::oneshot;
@@ -355,13 +368,21 @@ mod tests {
     async fn duplicate_live_registration_is_ignored() {
         let supervisor = CoreTaskSupervisor::new();
         let (release_tx, release_rx) = oneshot::channel::<()>();
-        assert!(supervisor.spawn(TaskScope::Core, "loop", move |mut cancellation| async move {
-            tokio::select! {
-                _ = release_rx => {},
-                _ = cancellation.cancelled() => {},
-            }
-        }).unwrap());
-        assert!(!supervisor.spawn(TaskScope::Core, "loop", |_| async {}).unwrap());
+        assert!(supervisor
+            .spawn(
+                TaskScope::Core,
+                "loop",
+                move |mut cancellation| async move {
+                    tokio::select! {
+                        _ = release_rx => {},
+                        _ = cancellation.cancelled() => {},
+                    }
+                }
+            )
+            .unwrap());
+        assert!(!supervisor
+            .spawn(TaskScope::Core, "loop", |_| async {})
+            .unwrap());
         assert_eq!(supervisor.active_count(TaskScope::Core), 1);
         let _ = release_tx.send(());
         tokio::time::timeout(Duration::from_secs(1), async {
@@ -379,34 +400,58 @@ mod tests {
         let supervisor = CoreTaskSupervisor::new();
         let (started_tx, started_rx) = oneshot::channel::<()>();
         let (other_tx, other_rx) = oneshot::channel::<()>();
-        supervisor.spawn(TaskScope::Core, "core", move |mut cancellation| async move {
-            let _ = started_tx.send(());
-            cancellation.cancelled().await;
-        }).unwrap();
-        supervisor.spawn(TaskScope::Gateway, "gateway", move |mut cancellation| async move {
-            let _ = other_tx.send(());
-            cancellation.cancelled().await;
-        }).unwrap();
+        supervisor
+            .spawn(
+                TaskScope::Core,
+                "core",
+                move |mut cancellation| async move {
+                    let _ = started_tx.send(());
+                    cancellation.cancelled().await;
+                },
+            )
+            .unwrap();
+        supervisor
+            .spawn(
+                TaskScope::Gateway,
+                "gateway",
+                move |mut cancellation| async move {
+                    let _ = other_tx.send(());
+                    cancellation.cancelled().await;
+                },
+            )
+            .unwrap();
         let _ = started_rx.await;
         let _ = other_rx.await;
 
-        let report = supervisor.shutdown_scope(TaskScope::Core, Duration::from_secs(1)).await;
+        let report = supervisor
+            .shutdown_scope(TaskScope::Core, Duration::from_secs(1))
+            .await;
         assert_eq!(report.tasks_joined, 1);
         assert!(!report.timed_out);
         assert_eq!(supervisor.active_count(TaskScope::Core), 0);
         assert_eq!(supervisor.active_count(TaskScope::Gateway), 1);
-        assert!(supervisor.spawn(TaskScope::Core, "late", |_| async {}).is_err());
-        let _ = supervisor.shutdown_scope(TaskScope::Gateway, Duration::from_secs(1)).await;
+        assert!(supervisor
+            .spawn(TaskScope::Core, "late", |_| async {})
+            .is_err());
+        let _ = supervisor
+            .shutdown_scope(TaskScope::Gateway, Duration::from_secs(1))
+            .await;
     }
 
     #[tokio::test]
     async fn shutdown_is_idempotent() {
         let supervisor = CoreTaskSupervisor::new();
-        supervisor.spawn(TaskScope::Core, "loop", |mut cancellation| async move {
-            cancellation.cancelled().await;
-        }).unwrap();
-        let first = supervisor.shutdown_scope(TaskScope::Core, Duration::from_secs(1)).await;
-        let second = supervisor.shutdown_scope(TaskScope::Core, Duration::from_secs(1)).await;
+        supervisor
+            .spawn(TaskScope::Core, "loop", |mut cancellation| async move {
+                cancellation.cancelled().await;
+            })
+            .unwrap();
+        let first = supervisor
+            .shutdown_scope(TaskScope::Core, Duration::from_secs(1))
+            .await;
+        let second = supervisor
+            .shutdown_scope(TaskScope::Core, Duration::from_secs(1))
+            .await;
         assert_eq!(first.tasks_joined, 1);
         assert_eq!(second.tasks_joined, 0);
         assert!(!second.timed_out);
@@ -415,11 +460,15 @@ mod tests {
     #[tokio::test]
     async fn shutdown_reports_panicked_tasks() {
         let supervisor = CoreTaskSupervisor::new();
-        supervisor.spawn(TaskScope::Core, "panicking", |_| async {
-            panic!("test task panic");
-        }).unwrap();
+        supervisor
+            .spawn(TaskScope::Core, "panicking", |_| async {
+                panic!("test task panic");
+            })
+            .unwrap();
         tokio::task::yield_now().await;
-        let report = supervisor.shutdown_scope(TaskScope::Core, Duration::from_secs(1)).await;
+        let report = supervisor
+            .shutdown_scope(TaskScope::Core, Duration::from_secs(1))
+            .await;
         assert_eq!(report.tasks_joined, 1);
         assert_eq!(report.failed_tasks, vec![Arc::from("panicking")]);
         assert!(!report.timed_out);
@@ -485,7 +534,9 @@ mod tests {
                 std::future::pending::<()>().await;
             })
             .unwrap();
-        started_rx.await.expect("worker should start before timeout");
+        started_rx
+            .await
+            .expect("worker should start before timeout");
 
         let report = supervisor
             .shutdown_scope(TaskScope::Sidecar, Duration::from_millis(10))
@@ -507,20 +558,28 @@ mod tests {
         let (release_a, wait_a) = oneshot::channel::<()>();
         let (release_b, wait_b) = oneshot::channel::<()>();
         assert!(supervisor
-            .spawn(TaskScope::Core, "checkin-fire:entry-a", move |mut cancellation| async move {
-                tokio::select! {
-                    _ = wait_a => {}
-                    _ = cancellation.cancelled() => {}
+            .spawn(
+                TaskScope::Core,
+                "checkin-fire:entry-a",
+                move |mut cancellation| async move {
+                    tokio::select! {
+                        _ = wait_a => {}
+                        _ = cancellation.cancelled() => {}
+                    }
                 }
-            })
+            )
             .unwrap());
         assert!(supervisor
-            .spawn(TaskScope::Core, "checkin-fire:entry-b", move |mut cancellation| async move {
-                tokio::select! {
-                    _ = wait_b => {}
-                    _ = cancellation.cancelled() => {}
+            .spawn(
+                TaskScope::Core,
+                "checkin-fire:entry-b",
+                move |mut cancellation| async move {
+                    tokio::select! {
+                        _ = wait_b => {}
+                        _ = cancellation.cancelled() => {}
+                    }
                 }
-            })
+            )
             .unwrap());
         assert_eq!(supervisor.active_count(TaskScope::Core), 2);
         assert!(!supervisor

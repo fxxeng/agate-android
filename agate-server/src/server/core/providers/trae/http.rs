@@ -9,8 +9,8 @@ use std::time::Duration;
 use serde_json::Value;
 
 use crate::server::core::egress;
-use crate::server::errors::GatewayError;
 use crate::server::core::proxies::ResolvedProxy;
+use crate::server::errors::GatewayError;
 
 /// 一次 POST 的结果。
 pub struct Reply {
@@ -52,7 +52,10 @@ pub async fn post_json(
         let status = if error.is_timeout() { 504 } else { 502 };
         GatewayError::with_status(
             status,
-            format!("Trae 请求发送失败：{}", egress::describe_error_detail(&error)),
+            format!(
+                "Trae 请求发送失败：{}",
+                egress::describe_error_detail(&error)
+            ),
         )
     })?;
     let status = response.status().as_u16();
@@ -71,7 +74,10 @@ async fn read_limited(mut response: reqwest::Response) -> Result<String, Gateway
         let status = if error.is_timeout() { 504 } else { 502 };
         GatewayError::with_status(
             status,
-            format!("Trae 响应体读取失败：{}", egress::describe_error_detail(&error)),
+            format!(
+                "Trae 响应体读取失败：{}",
+                egress::describe_error_detail(&error)
+            ),
         )
     })? {
         if append_limited(&mut body, &chunk) {
@@ -126,9 +132,14 @@ mod tests {
     #[test]
     fn the_failure_summary_stays_readable() {
         let urls: Vec<String> = (0..6).map(|index| format!("https://h{index}/x")).collect();
-        let errors: Vec<String> = (0..6).map(|index| format!("h{index} => HTTP 404")).collect();
+        let errors: Vec<String> = (0..6)
+            .map(|index| format!("h{index} => HTTP 404"))
+            .collect();
         let text = describe_candidates(&urls, &errors);
         assert!(text.contains("试过 6 个地址"), "{text}");
-        assert!(text.contains("h0") && text.contains("h2") && !text.contains("h5"), "只留前 3 条：{text}");
+        assert!(
+            text.contains("h0") && text.contains("h2") && !text.contains("h5"),
+            "只留前 3 条：{text}"
+        );
     }
 }

@@ -157,9 +157,7 @@ fn title_of(task: &Value) -> String {
 
 /// 任务状态（缺失按「未开始」处理：宁可多领一次，上游幂等保证不重复加分）
 fn status_of(task: &Value) -> i64 {
-    task.get("status")
-        .and_then(Value::as_i64)
-        .unwrap_or(0)
+    task.get("status").and_then(Value::as_i64).unwrap_or(0)
 }
 
 fn is_done(task: &Value) -> bool {
@@ -174,7 +172,11 @@ fn is_done(task: &Value) -> bool {
 fn reward_points(task: &Value) -> i64 {
     task.pointer("/reward/points")
         .and_then(Value::as_i64)
-        .or_else(|| task.pointer("/reward/points").and_then(Value::as_f64).map(|v| v as i64))
+        .or_else(|| {
+            task.pointer("/reward/points")
+                .and_then(Value::as_f64)
+                .map(|v| v as i64)
+        })
         .filter(|points| *points > 0)
         .unwrap_or(0)
 }
@@ -247,15 +249,16 @@ pub async fn get_tasks(
     );
     if !refresh {
         if let Some(snapshot) = previous.as_ref() {
-            return Ok(crate::server::core::providers::onboarding_memory::serve(snapshot));
+            return Ok(crate::server::core::providers::onboarding_memory::serve(
+                snapshot,
+            ));
         }
     }
     let Some(center) = fetch_center(store, account_id).await? else {
         return Ok(guest_onboarding());
     };
-    let category = category_of(&center, CATEGORY_NEWBIE).unwrap_or_else(|| {
-        json!({ "code": CATEGORY_NEWBIE, "name": "新手任务", "tasks": [] })
-    });
+    let category = category_of(&center, CATEGORY_NEWBIE)
+        .unwrap_or_else(|| json!({ "code": CATEGORY_NEWBIE, "name": "新手任务", "tasks": [] }));
     let mut payload = newbie_payload(&category);
     if let Some(object) = payload.as_object_mut() {
         object.insert("balance".to_string(), json!(balance_of(&center)));
@@ -385,9 +388,8 @@ pub async fn claim_all(store: &AccountStore, account_id: &str) -> Result<Value, 
     let Some(center) = fetch_center(store, account_id).await? else {
         return Ok(guest_onboarding());
     };
-    let category = category_of(&center, CATEGORY_NEWBIE).unwrap_or_else(|| {
-        json!({ "code": CATEGORY_NEWBIE, "name": "新手任务", "tasks": [] })
-    });
+    let category = category_of(&center, CATEGORY_NEWBIE)
+        .unwrap_or_else(|| json!({ "code": CATEGORY_NEWBIE, "name": "新手任务", "tasks": [] }));
 
     let mut rows: Vec<Value> = Vec::new();
     let mut claimed = 0_i64;
@@ -664,10 +666,16 @@ mod tests {
         let center = center_fixture();
         assert_eq!(balance_of(&center), 18644.05);
         // 数字形态也认
-        assert_eq!(balance_of(&json!({ "user_info": { "points_balance": 12.5 } })), 12.5);
+        assert_eq!(
+            balance_of(&json!({ "user_info": { "points_balance": 12.5 } })),
+            12.5
+        );
         // 缺失 / 脏值不 panic
         assert_eq!(balance_of(&json!({})), 0.0);
-        assert_eq!(balance_of(&json!({ "user_info": { "points_balance": "x" } })), 0.0);
+        assert_eq!(
+            balance_of(&json!({ "user_info": { "points_balance": "x" } })),
+            0.0
+        );
     }
 
     /// 任务奖励是**整分**，不要套余额的 /100
@@ -697,6 +705,9 @@ mod tests {
         assert_eq!(title_of(&json!({ "title": "  " })), "");
         assert_eq!(reward_points(&json!({})), 0);
         // 浮点分数字段也认（上游目前是整数，形态变了也不至于丢成 0）
-        assert_eq!(reward_points(&json!({ "reward": { "points": 500.0 } })), 500);
+        assert_eq!(
+            reward_points(&json!({ "reward": { "points": 500.0 } })),
+            500
+        );
     }
 }

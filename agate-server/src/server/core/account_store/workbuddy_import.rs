@@ -38,7 +38,7 @@ use crate::server::logging;
 /// 一致）。M1 遗留的路径拼接抽纯函数收口：段序只有这一份权威定义，段序测试
 /// 全平台可跑。Linux 非 test 编译下它只被 cfg(macos) 函数调用 → dead_code
 /// 警告；测试（全平台编译）是 Linux 上的真实调用点。
-    #[cfg_attr(not(test), allow(dead_code))]
+#[cfg_attr(not(test), allow(dead_code))]
 fn auth_relative_segments() -> [&'static str; 4] {
     ["CodeBuddyExtension", "Data", "Public", "auth"]
 }
@@ -49,7 +49,7 @@ fn auth_directory_macos() -> Option<PathBuf> {
     Some(
         auth_relative_segments()
             .into_iter()
-            .fold(crate::paths::user_home_dir()?, |acc, seg| acc.join(seg))
+            .fold(crate::paths::user_home_dir()?, |acc, seg| acc.join(seg)),
     )
 }
 
@@ -150,11 +150,15 @@ impl AccountStore {
                 path.display()
             ))
         })?;
-        let account = self.add_account(&payload, name, Some(kind_id(if intl {
-            ProviderKind::WorkBuddyIntl
-        } else {
-            ProviderKind::WorkBuddy
-        })));
+        let account = self.add_account(
+            &payload,
+            name,
+            Some(kind_id(if intl {
+                ProviderKind::WorkBuddyIntl
+            } else {
+                ProviderKind::WorkBuddy
+            })),
+        );
         if account.is_ok() {
             logging::log(
                 "[Accounts]",

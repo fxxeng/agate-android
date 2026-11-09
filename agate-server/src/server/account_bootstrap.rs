@@ -200,28 +200,29 @@ pub(crate) fn run(store: &AccountStore) {
     // 绝对主目录就跳过整组导入，且不触碰任何 provider 的导入标记。
     // 显式 Android 配置目录（AGATE_PROXY_HOME）不能代替旧桌面目录，不能据此
     // 猜测 `~/.raccoon-proxy` 等旧文件的位置。
-    let legacy_imports = run_legacy_imports_if_home(crate::paths::user_home_dir().as_deref(), || {
-        // 小浣熊旧数据一次性导入（架构文档 §3.3，W3-T4）：
-        //   `~/.raccoon-proxy/accounts.json`（旧网关多账号）+
-        //   `~/.box-agent/config/auth.json`（桌面端实时登录态）→ raccoon 账号。
-        // 触发条件是「raccoon 账号列表为空 **且** config 里没有 raccoonImported」，
-        // 幂等且失败不阻断（两个来源各自缺失就跳过，见该方法的说明）。
-        store.import_legacy_raccoon_data();
-        // CatPaw 旧数据一次性导入（架构文档 §9，W5-T-d4）：
-        //   `~/.meituan-catpaw/catpaw-proxy-accounts.json`（原项目多账号）+
-        //   `~/.meituan-catpaw/auth.json`（桌面端实时登录态）→ catpaw 账号。
-        // 触发条件是「catpaw 账号列表为空 **且** config 里没有 catpawImported」，
-        // 与上面那条同构（标记键、幂等性、失败不阻断都一致）。
-        store.import_legacy_catpaw_data();
-        // AutoClaw 旧数据一次性导入（架构文档 §10.2 末条，W4b-T-c2）：
-        //   `~/.autoclaw-proxy/accounts.json`（原项目多账号）+
-        //   `%APPDATA%/AutoClaw/auth.json`（桌面端实时登录态；备来源
-        //   `~/.openclaw-autoclaw/openclaw.json`）→ autoclaw 账号。
-        // 触发条件是「autoclaw 账号列表为空 **且** config 里没有 autoclawImported」，
-        // 与上面两条同构（标记键、幂等性、失败不阻断都一致）。
-        // 三条导入追加式共存，各看自己那一家的账号列表与标记键。
-        store.import_legacy_autoclaw_data();
-    });
+    let legacy_imports =
+        run_legacy_imports_if_home(crate::paths::user_home_dir().as_deref(), || {
+            // 小浣熊旧数据一次性导入（架构文档 §3.3，W3-T4）：
+            //   `~/.raccoon-proxy/accounts.json`（旧网关多账号）+
+            //   `~/.box-agent/config/auth.json`（桌面端实时登录态）→ raccoon 账号。
+            // 触发条件是「raccoon 账号列表为空 **且** config 里没有 raccoonImported」，
+            // 幂等且失败不阻断（两个来源各自缺失就跳过，见该方法的说明）。
+            store.import_legacy_raccoon_data();
+            // CatPaw 旧数据一次性导入（架构文档 §9，W5-T-d4）：
+            //   `~/.meituan-catpaw/catpaw-proxy-accounts.json`（原项目多账号）+
+            //   `~/.meituan-catpaw/auth.json`（桌面端实时登录态）→ catpaw 账号。
+            // 触发条件是「catpaw 账号列表为空 **且** config 里没有 catpawImported」，
+            // 与上面那条同构（标记键、幂等性、失败不阻断都一致）。
+            store.import_legacy_catpaw_data();
+            // AutoClaw 旧数据一次性导入（架构文档 §10.2 末条，W4b-T-c2）：
+            //   `~/.autoclaw-proxy/accounts.json`（原项目多账号）+
+            //   `%APPDATA%/AutoClaw/auth.json`（桌面端实时登录态；备来源
+            //   `~/.openclaw-autoclaw/openclaw.json`）→ autoclaw 账号。
+            // 触发条件是「autoclaw 账号列表为空 **且** config 里没有 autoclawImported」，
+            // 与上面两条同构（标记键、幂等性、失败不阻断都一致）。
+            // 三条导入追加式共存，各看自己那一家的账号列表与标记键。
+            store.import_legacy_autoclaw_data();
+        });
     if legacy_imports.is_none() {
         logging::log(
             "[Accounts]",

@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 use crate::server::core::account_store::AccountStore;
 use crate::server::errors::GatewayError;
 
-use super::{USER_AGENT};
+use super::USER_AGENT;
 
 /// BDUSS 最小长度（百度通行证登录态，实测远大于此；只拦明显残缺的值）
 const MIN_BDUSS_LENGTH: usize = 8;
@@ -147,8 +147,12 @@ fn parts_from_array(items: &[Value]) -> (String, String, Vec<(String, String)>) 
     let mut stoken = String::new();
     let mut extras: Vec<(String, String)> = Vec::new();
     for item in items {
-        let Some(name) = item.get("name").and_then(Value::as_str) else { continue };
-        let Some(value) = item.get("value").and_then(Value::as_str) else { continue };
+        let Some(name) = item.get("name").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(value) = item.get("value").and_then(Value::as_str) else {
+            continue;
+        };
         let name = name.trim();
         let value = value.trim();
         if name.is_empty() || value.is_empty() {
@@ -203,7 +207,10 @@ pub fn credentials_from_payload(payload: &Value) -> Result<KukuCredentials, Stri
     let bduss = bduss.trim().to_string();
     let stoken = stoken.trim().to_string();
     if bduss.len() < MIN_BDUSS_LENGTH {
-        return Err("缺少有效的 BDUSS（粘贴 Cookie 头、Cookie 编辑器 JSON 或 {BDUSS, STOKEN} 对象）".to_string());
+        return Err(
+            "缺少有效的 BDUSS（粘贴 Cookie 头、Cookie 编辑器 JSON 或 {BDUSS, STOKEN} 对象）"
+                .to_string(),
+        );
     }
     Ok(KukuCredentials {
         bduss,
@@ -227,7 +234,9 @@ fn user_data_dirs() -> Vec<PathBuf> {
         }
     }
     for base in ["APPDATA", "LOCALAPPDATA"] {
-        let Some(value) = std::env::var_os(base) else { continue };
+        let Some(value) = std::env::var_os(base) else {
+            continue;
+        };
         let base = PathBuf::from(value);
         // 固定形态（Electron 默认）：%APPDATA%\baidugenflowpro
         let direct = base.join("baidugenflowpro");
@@ -476,7 +485,10 @@ pub fn request_headers(credentials: &KukuCredentials) -> Vec<(String, String)> {
     vec![
         ("Cookie".to_string(), credentials.cookie_header()),
         ("User-Agent".to_string(), USER_AGENT.to_string()),
-        ("Referer".to_string(), format!("{}/genflowpro", super::BASE_URL)),
+        (
+            "Referer".to_string(),
+            format!("{}/genflowpro", super::BASE_URL),
+        ),
         ("Origin".to_string(), super::BASE_URL.to_string()),
         ("Accept-Language".to_string(), "zh-CN,zh;q=0.9".to_string()),
     ]
@@ -485,7 +497,10 @@ pub fn request_headers(credentials: &KukuCredentials) -> Vec<(String, String)> {
 /// 从账号记录取转发凭证（`account_id` 为空 → 本家组内优先级最小的启用账号）。
 ///
 /// 记录里的 `accessToken` 存的是 Cookie 头串（`BDUSS=…; STOKEN=…`，见账号层）。
-pub fn snapshot_for(store: &AccountStore, account_id: &str) -> Result<KukuCredentials, GatewayError> {
+pub fn snapshot_for(
+    store: &AccountStore,
+    account_id: &str,
+) -> Result<KukuCredentials, GatewayError> {
     let record = store.kuku_account_record(account_id).ok_or_else(|| {
         GatewayError::with_status(
             401,
@@ -504,8 +519,16 @@ pub fn snapshot_for(store: &AccountStore, account_id: &str) -> Result<KukuCreden
             "KukuAI 账号缺少有效的 BDUSS：请重新添加或重新导入该账号",
         ));
     }
-    let uid = record.get("uid").and_then(Value::as_str).unwrap_or("").to_string();
-    let nickname = record.get("name").and_then(Value::as_str).unwrap_or("").to_string();
+    let uid = record
+        .get("uid")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let nickname = record
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
     Ok(KukuCredentials {
         bduss,
         stoken,

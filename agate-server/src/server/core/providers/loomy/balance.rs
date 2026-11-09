@@ -55,7 +55,8 @@ pub async fn query_usage(store: &AccountStore, account_id: &str) -> Result<Value
     }
     let credentials = credentials::from_record(record.as_ref())?;
 
-    let payload = client::token_request("GET", RECORDS_PATH, &credentials.session, None, "积分查询").await?;
+    let payload =
+        client::token_request("GET", RECORDS_PATH, &credentials.session, None, "积分查询").await?;
 
     let code = client::business_code(&payload);
     if client::is_auth_error_code(&code) {

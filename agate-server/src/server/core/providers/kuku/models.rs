@@ -22,12 +22,12 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use crate::server::core::account_store::AccountStore;
 use crate::server::errors::GatewayError;
 
-use super::credentials::{self, KukuCredentials, request_headers};
+use super::credentials::{self, request_headers, KukuCredentials};
 use super::session::{self, TokenTriple};
 use super::{BASE_URL, DEFAULT_MODEL, WEB_QUERY};
 
@@ -79,7 +79,10 @@ pub fn list() -> Vec<Value> {
         }
     }
     drop(guard);
-    FALLBACK_MODEL_IDS.iter().map(|id| listing_entry(id)).collect()
+    FALLBACK_MODEL_IDS
+        .iter()
+        .map(|id| listing_entry(id))
+        .collect()
 }
 
 /// 一条清单条目（聚合层 `models::list_item` 的口径：id + name）。
@@ -140,7 +143,10 @@ pub fn remote_refreshed() -> bool {
 /// 最后一次远程刷新的时刻（毫秒；没刷过给 0）。
 pub fn last_refreshed_at() -> i64 {
     let guard = remote_guard();
-    guard.as_ref().map(|catalog| catalog.fetched_at_ms).unwrap_or(0)
+    guard
+        .as_ref()
+        .map(|catalog| catalog.fetched_at_ms)
+        .unwrap_or(0)
 }
 
 /// 刷新远程目录（`force = true` 跳过 TTL；失败不返回错误，保留现有清单）。
@@ -212,7 +218,8 @@ async fn fetch_remote(
         session::token_query(&triple)
     );
     let headers = request_headers(credentials);
-    let value = super::http::get_json_value(&url, &headers, proxy, Some(CATALOG_TIMEOUT_MS)).await?;
+    let value =
+        super::http::get_json_value(&url, &headers, proxy, Some(CATALOG_TIMEOUT_MS)).await?;
     // 顶层包络（与余额接口同款，2026-10-07 实测）：判据在 status.code，
     // 业务字段在 data.model_list（`errno` 顶层是旧版/其他接口的形态）。
     let status = value.get("status").cloned().unwrap_or(Value::Null);
@@ -241,7 +248,10 @@ async fn fetch_remote(
     }
     if models.is_empty() {
         // 认不出结构 → 回落静态兜底（保底：至少 auto 可用）
-        models = FALLBACK_MODEL_IDS.iter().map(|id| listing_entry(id)).collect();
+        models = FALLBACK_MODEL_IDS
+            .iter()
+            .map(|id| listing_entry(id))
+            .collect();
     }
     Ok(models)
 }
@@ -262,7 +272,12 @@ pub fn resolve_model(name: &str) -> String {
         let guard = remote_guard();
         let remote_known = guard
             .as_ref()
-            .map(|catalog| catalog.models.iter().any(|m| m.get("id").and_then(Value::as_str) == Some(name.as_str())))
+            .map(|catalog| {
+                catalog
+                    .models
+                    .iter()
+                    .any(|m| m.get("id").and_then(Value::as_str) == Some(name.as_str()))
+            })
             .unwrap_or(false);
         drop(guard);
         remote_known || FALLBACK_MODEL_IDS.contains(&name.as_str())

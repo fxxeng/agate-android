@@ -37,15 +37,60 @@ use serde_json::{json, Map, Value};
 /// 上游不认的 JSON Schema 键（9router `UNSUPPORTED_SCHEMA_CONSTRAINTS` 逐字；
 /// `x-` 前缀的厂商扩展也一律去掉）。
 const UNSUPPORTED_SCHEMA_KEYS: &[&str] = &[
-    "minLength", "maxLength", "exclusiveMinimum", "exclusiveMaximum", "minItems", "maxItems",
-    "format", "multipleOf", "uniqueItems", "contains", "unevaluatedProperties",
-    "unevaluatedItems", "contentSchema", "prefixItems", "additionalItems", "default", "examples",
-    "$schema", "$defs", "definitions", "const", "$ref", "$comment", "deprecated", "readOnly",
-    "writeOnly", "additionalProperties", "propertyNames", "patternProperties", "enumDescriptions",
-    "anyOf", "oneOf", "allOf", "not", "dependencies", "dependentSchemas", "dependentRequired",
-    "title", "optional", "if", "then", "else", "contentMediaType", "contentEncoding",
-    "cornerRadius", "fillColor", "fontFamily", "fontSize", "fontWeight", "gap", "padding",
-    "strokeColor", "strokeThickness", "textColor",
+    "minLength",
+    "maxLength",
+    "exclusiveMinimum",
+    "exclusiveMaximum",
+    "minItems",
+    "maxItems",
+    "format",
+    "multipleOf",
+    "uniqueItems",
+    "contains",
+    "unevaluatedProperties",
+    "unevaluatedItems",
+    "contentSchema",
+    "prefixItems",
+    "additionalItems",
+    "default",
+    "examples",
+    "$schema",
+    "$defs",
+    "definitions",
+    "const",
+    "$ref",
+    "$comment",
+    "deprecated",
+    "readOnly",
+    "writeOnly",
+    "additionalProperties",
+    "propertyNames",
+    "patternProperties",
+    "enumDescriptions",
+    "anyOf",
+    "oneOf",
+    "allOf",
+    "not",
+    "dependencies",
+    "dependentSchemas",
+    "dependentRequired",
+    "title",
+    "optional",
+    "if",
+    "then",
+    "else",
+    "contentMediaType",
+    "contentEncoding",
+    "cornerRadius",
+    "fillColor",
+    "fontFamily",
+    "fontSize",
+    "fontWeight",
+    "gap",
+    "padding",
+    "strokeColor",
+    "strokeThickness",
+    "textColor",
 ];
 
 /// 工具参数 schema 清洗：结构归并 → 去不支持键 → 补 Gemini 要求的形态。
@@ -67,10 +112,7 @@ pub fn clean_schema(schema: &Value) -> Value {
 /// 刻意不遍历其它对象值：`properties` / `items` 之外的键要么是标量容器
 /// （`required`、`enum`），要么已被 [`strip_keys`] 删掉（见模块头末条）。
 fn for_each_child_schema(object: &mut Map<String, Value>, visit: &mut dyn FnMut(&mut Value)) {
-    if let Some(properties) = object
-        .get_mut("properties")
-        .and_then(Value::as_object_mut)
-    {
+    if let Some(properties) = object.get_mut("properties").and_then(Value::as_object_mut) {
         for schema in properties.values_mut() {
             visit(schema);
         }
@@ -193,7 +235,9 @@ fn merge_structure(value: &mut Value) {
                     }
                 }
                 if let Some(required) = fields.get("required").and_then(Value::as_array) {
-                    let entry = object.entry("required".to_string()).or_insert_with(|| json!([]));
+                    let entry = object
+                        .entry("required".to_string())
+                        .or_insert_with(|| json!([]));
                     if let Some(target) = entry.as_array_mut() {
                         for item in required {
                             if !target.contains(item) {
@@ -227,7 +271,10 @@ fn best_branch(items: &[Value]) -> Option<&Value> {
         } else {
             1
         };
-        if best.map(|(_, best_score)| score > best_score).unwrap_or(true) {
+        if best
+            .map(|(_, best_score)| score > best_score)
+            .unwrap_or(true)
+        {
             best = Some((item, score));
         }
     }
@@ -267,7 +314,8 @@ fn finalize_structure(value: &mut Value) {
     if object.get("properties").is_some() && object.get("type").is_none() {
         object.insert("type".to_string(), json!("object"));
     }
-    if object.get("type").and_then(Value::as_str) == Some("array") && object.get("items").is_none() {
+    if object.get("type").and_then(Value::as_str) == Some("array") && object.get("items").is_none()
+    {
         object.insert("items".to_string(), json!({ "type": "string" }));
     }
     if let Some(required) = object.get("required").and_then(Value::as_array) {

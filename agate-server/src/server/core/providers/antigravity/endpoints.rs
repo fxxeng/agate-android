@@ -54,7 +54,8 @@
 ///
 /// 它是**公开**客户端凭证（随官方客户端分发），不是用户机密 —— 但仍只出现在
 /// form 请求体里，不进日志（见 `oauth.rs` 的日志口径）。
-pub const CLIENT_ID: &str = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com";
+pub const CLIENT_ID: &str =
+    "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com";
 
 /// 与 [`CLIENT_ID`] 配套的 client secret（同上，公开值）。
 pub const CLIENT_SECRET: &str = "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";
@@ -89,7 +90,8 @@ pub const GRANT_TYPE_REFRESH: &str = "refresh_token";
 pub const GRANT_TYPE_AUTHORIZATION_CODE: &str = "authorization_code";
 
 /// Cloud Code Assist 的三个环境基址（顺序 = 优先级，见模块头）。
-pub const V1_BASE_URL_SANDBOX: &str = "https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal";
+pub const V1_BASE_URL_SANDBOX: &str =
+    "https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal";
 /// daily（9router 的聊天流量固定用这一条）
 pub const V1_BASE_URL_DAILY: &str = "https://daily-cloudcode-pa.googleapis.com/v1internal";
 /// prod（兜底；429 比另外两个多）
@@ -275,7 +277,10 @@ pub fn onboard_user_url() -> String {
 /// 规格 §7.5：token **必须**放 Bearer 头，不能塞 query（`?key=` 那套是
 /// `generativelanguage.googleapis.com` 的形态，本家不适用）。
 pub fn bearer_header(access_token: &str) -> (String, String) {
-    ("Authorization".to_string(), format!("Bearer {}", access_token.trim()))
+    (
+        "Authorization".to_string(),
+        format!("Bearer {}", access_token.trim()),
+    )
 }
 
 /// 推理 / 模型目录这类 **content** 请求的头集合。

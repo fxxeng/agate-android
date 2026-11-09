@@ -31,11 +31,11 @@ pub mod adapter;
 pub mod growth;
 pub mod keepalive;
 pub mod normalize;
-pub mod region;
 pub mod reconcile;
+pub mod region;
 
 pub use adapter::{
     ensure_leading_system_message, WorkBuddyAdapter, WORKBUDDY_ADAPTER, WORKBUDDY_INTL_ADAPTER,
 };
-pub use keepalive::{DEFAULT_FREE_MODELS, build_daily_activity_request};
+pub use keepalive::{build_daily_activity_request, DEFAULT_FREE_MODELS};
 pub use region::{is_workbuddy_family, Region};

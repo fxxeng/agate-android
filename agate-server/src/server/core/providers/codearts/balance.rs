@@ -32,7 +32,7 @@
 use std::collections::HashMap;
 
 use serde::Serialize;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use crate::server::core::egress;
 use crate::server::errors::GatewayError;
@@ -98,7 +98,11 @@ impl Meter {
     /// 「剩 x / y 积分」，是上游这张表的知识，不是界面该猜的。
     fn view(&self) -> Option<String> {
         if let (Some(remaining), Some(total)) = (self.credit_remaining, self.credit_total) {
-            return Some(format!("剩 {} / {} 积分", compact(remaining), compact(total)));
+            return Some(format!(
+                "剩 {} / {} 积分",
+                compact(remaining),
+                compact(total)
+            ));
         }
         // 总量 >1 才当真配额：上游给过 `package_token_amount=1`（2026-10-09 实测，
         // 试用版账号周期内没下发过对话 token 包时的占位形状）—— 1 个 token 的
@@ -106,14 +110,21 @@ impl Meter {
         // 退回「已用 N token」（官方同款取向：它的 `calculateTokenPercent` 对
         // `amount <= 0` 返回空，不拿小占位值当真）。
         if self.allowance_tokens > 1 {
-            let percent = self.used_percent.map(|value| format!("（{}%）", compact(value))).unwrap_or_default();
-            return Some(format!("已用 {} / {} token{}", self.used_tokens, self.allowance_tokens, percent));
+            let percent = self
+                .used_percent
+                .map(|value| format!("（{}%）", compact(value)))
+                .unwrap_or_default();
+            return Some(format!(
+                "已用 {} / {} token{}",
+                self.used_tokens, self.allowance_tokens, percent
+            ));
         }
         if self.used_tokens > 0 {
             return Some(format!("已用 {} token", self.used_tokens));
         }
         // 只有百分比没有量的行（上游确实给过这种）：0% 是**真信息**，不能又变回「—」
-        self.used_percent.map(|value| format!("已用 {}%", compact(value)))
+        self.used_percent
+            .map(|value| format!("已用 {}%", compact(value)))
     }
 }
 
@@ -203,8 +214,10 @@ async fn signed_request(
     if domainless {
         signing.domain_id = String::new();
     }
-    let signed = signer::sign(method, url, headers, payload, &signing, host_signed)
-        .map_err(|reason| GatewayError::with_status(500, format!("CodeArts 余额请求签名失败：{reason}")))?;
+    let signed =
+        signer::sign(method, url, headers, payload, &signing, host_signed).map_err(|reason| {
+            GatewayError::with_status(500, format!("CodeArts 余额请求签名失败：{reason}"))
+        })?;
     let is_post = method.eq_ignore_ascii_case("post");
     let verb = reqwest::Method::from_bytes(method.as_bytes()).unwrap_or(reqwest::Method::GET);
     let mut request = egress::client_for(None)
@@ -219,7 +232,10 @@ async fn signed_request(
     let response = request.send().await.map_err(|error| {
         GatewayError::with_status(
             502,
-            format!("CodeArts 余额请求失败：{}", egress::describe_error_detail(&error)),
+            format!(
+                "CodeArts 余额请求失败：{}",
+                egress::describe_error_detail(&error)
+            ),
         )
     })?;
     let status = response.status().as_u16();
@@ -231,7 +247,10 @@ fn statistics_headers(language: &str, plugin_version: &str) -> Vec<(String, Stri
     vec![
         ("Accept".to_string(), "application/json".to_string()),
         ("X-Language".to_string(), language.to_string()),
-        ("plugin-name".to_string(), chat::DEFAULT_PLUGIN_NAME.to_string()),
+        (
+            "plugin-name".to_string(),
+            chat::DEFAULT_PLUGIN_NAME.to_string(),
+        ),
         ("plugin-version".to_string(), plugin_version.to_string()),
     ]
 }
@@ -247,7 +266,13 @@ fn benefit_headers(credential: &Credential) -> Vec<(String, String)> {
         ("X-Language".to_string(), chat::DEFAULT_LANGUAGE.to_string()),
     ];
     if !credential.security_token.is_empty() {
-        headers.insert(0, ("X-Security-Token".to_string(), credential.security_token.clone()));
+        headers.insert(
+            0,
+            (
+                "X-Security-Token".to_string(),
+                credential.security_token.clone(),
+            ),
+        );
     }
     headers
 }
@@ -273,7 +298,10 @@ pub async fn fetch_statistics(
     if status != 200 {
         return Err(GatewayError::with_status(
             i32::from(status),
-            format!("CodeArts 统计接口返回 HTTP {status}：{}", excerpt(&body, credential)),
+            format!(
+                "CodeArts 统计接口返回 HTTP {status}：{}",
+                excerpt(&body, credential)
+            ),
         ));
     }
     parse_statistics(&body)
@@ -281,13 +309,26 @@ pub async fn fetch_statistics(
 
 /// 解析统计文档。字段名逐个照上游（`metrics[].usage_token_num` 这类拼写不能改）。
 pub fn parse_statistics(body: &str) -> Result<Statistics, GatewayError> {
-    let parsed: Value = serde_json::from_str(body)
-        .map_err(|error| GatewayError::with_status(502, format!("CodeArts 统计响应不是合法 JSON：{error}")))?;
-    let text = |value: &Value, key: &str| value.get(key).and_then(Value::as_str).unwrap_or("").trim().to_string();
+    let parsed: Value = serde_json::from_str(body).map_err(|error| {
+        GatewayError::with_status(502, format!("CodeArts 统计响应不是合法 JSON：{error}"))
+    })?;
+    let text = |value: &Value, key: &str| {
+        value
+            .get(key)
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string()
+    };
     let number = |value: &Value, key: &str| value.get(key).and_then(Value::as_i64).unwrap_or(0);
     let float = |value: &Value, key: &str| value.get(key).and_then(Value::as_f64);
     let mut meters = Vec::new();
-    for metric in parsed.get("metrics").and_then(Value::as_array).into_iter().flatten() {
+    for metric in parsed
+        .get("metrics")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
         let name = text(metric, "name");
         // `show:false` 是上游的「这行别显示」指令（退役指标带着 value:-1 走这条路）
         if name.is_empty() || !metric.get("show").and_then(Value::as_bool).unwrap_or(false) {
@@ -316,24 +357,45 @@ pub fn parse_statistics(body: &str) -> Result<Statistics, GatewayError> {
     let package = parsed.get("package").filter(|value| !value.is_null());
     let mut features = HashMap::new();
     if let Some(package) = &package {
-        for feature in package.get("features").and_then(Value::as_array).into_iter().flatten() {
+        for feature in package
+            .get("features")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
             let name = text(feature, "name");
             if !name.is_empty() {
-                features.insert(name, feature.get("enable").and_then(Value::as_bool).unwrap_or(false));
+                features.insert(
+                    name,
+                    feature
+                        .get("enable")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
+                );
             }
         }
     }
     Ok(Statistics {
         reset_date: text(&parsed, "end_date"),
-        plan: package.as_ref().map(|value| text(value, "spec_code")).unwrap_or_default(),
+        plan: package
+            .as_ref()
+            .map(|value| text(value, "spec_code"))
+            .unwrap_or_default(),
         plan_name: package
             .as_ref()
             .map(|value| {
                 let en = text(value, "package_name_en");
-                if en.is_empty() { text(value, "package_name_cn") } else { en }
+                if en.is_empty() {
+                    text(value, "package_name_cn")
+                } else {
+                    en
+                }
             })
             .unwrap_or_default(),
-        plan_url: package.as_ref().map(|value| text(value, "package_url")).unwrap_or_default(),
+        plan_url: package
+            .as_ref()
+            .map(|value| text(value, "package_url"))
+            .unwrap_or_default(),
         meters,
         features,
     })
@@ -347,17 +409,19 @@ pub fn parse_statistics(body: &str) -> Result<Statistics, GatewayError> {
 /// `usageTokenChatMessages` / `usageTotalPackageCredit` 那一族名字 —— 三条全是死码，
 /// 而界面上每一行都显示成英文原名。教训：这类对照表只能抄，不能推。
 fn quota_meter_label(name: &str) -> Option<String> {
-    Some(match name {
-        "usageDataCodeCompletions" => "代码补全额度",
-        "usageDataChatMessages" => "对话消息额度",
-        "usageTokenChatMessages" => "对话 token 额度",
-        "usageTotalPackageCredit" => "套餐积分",
-        "usageBasicPackageCredit" => "基础包积分",
-        "usageOnDemandPackageCredit" => "按需付费积分",
-        "usageBonusPackageCredit" => "赠送积分",
-        _ => return None,
-    }
-    .to_string())
+    Some(
+        match name {
+            "usageDataCodeCompletions" => "代码补全额度",
+            "usageDataChatMessages" => "对话消息额度",
+            "usageTokenChatMessages" => "对话 token 额度",
+            "usageTotalPackageCredit" => "套餐积分",
+            "usageBasicPackageCredit" => "基础包积分",
+            "usageOnDemandPackageCredit" => "按需付费积分",
+            "usageBonusPackageCredit" => "赠送积分",
+            _ => return None,
+        }
+        .to_string(),
+    )
 }
 
 /// 读福利池余额（第二个网关）。
@@ -367,7 +431,10 @@ fn quota_meter_label(name: &str) -> Option<String> {
 ///
 /// 返回 `Ok(None)` = 上游明说「该账号没有福利数据」（见 `BENEFIT_ABSENT_CODE`），
 /// 与「读取失败」（`Err`）分开 —— 界面才能把「没有福利」和「没读到」分得开。
-pub async fn fetch_benefit_balance(gateway: &str, credential: &Credential) -> Result<Option<BenefitBalance>, GatewayError> {
+pub async fn fetch_benefit_balance(
+    gateway: &str,
+    credential: &Credential,
+) -> Result<Option<BenefitBalance>, GatewayError> {
     let url = format!("{}{BENEFIT_BALANCE_PATH}", trim(gateway));
     // 头集合维持**实测通过**的那一套（统计四件套；2026-09-27 现网 trial/Free 账号
     // 都拿回过 envelope）—— claim 才用官方 BenefitService 的头集合，两个端点各按
@@ -375,7 +442,10 @@ pub async fn fetch_benefit_balance(gateway: &str, credential: &Credential) -> Re
     let headers = statistics_headers(chat::DEFAULT_LANGUAGE, chat::DEFAULT_PLUGIN_VERSION);
     let (status, body) = signed_request("GET", &url, &headers, b"", credential, true, true).await?;
     if status != 200 {
-        return Err(GatewayError::with_status(i32::from(status), format!("CodeArts 福利余额返回 HTTP {status}")));
+        return Err(GatewayError::with_status(
+            i32::from(status),
+            format!("CodeArts 福利余额返回 HTTP {status}"),
+        ));
     }
     parse_benefit_balance(&body, credential)
 }
@@ -391,9 +461,13 @@ pub async fn fetch_benefit_balance(gateway: &str, credential: &Credential) -> Re
 pub async fn claim_benefit(gateway: &str, credential: &Credential) -> Result<String, GatewayError> {
     let url = format!("{}{BENEFIT_CLAIM_PATH}", trim(gateway));
     let headers = benefit_headers(credential);
-    let (status, body) = signed_request("POST", &url, &headers, b"{}", credential, true, true).await?;
+    let (status, body) =
+        signed_request("POST", &url, &headers, b"{}", credential, true, true).await?;
     if status != 200 {
-        return Err(GatewayError::with_status(i32::from(status), format!("CodeArts benefit 领取返回 HTTP {status}")));
+        return Err(GatewayError::with_status(
+            i32::from(status),
+            format!("CodeArts benefit 领取返回 HTTP {status}"),
+        ));
     }
     parse_benefit_claim(&body, credential)
 }
@@ -401,21 +475,37 @@ pub async fn claim_benefit(gateway: &str, credential: &Credential) -> Result<Str
 /// claim 的解析：`0000` 成功（`result` 可能是空对象或一句说明，转成人话返回），
 /// 其余码如实报错。独立于 `parse_benefit_claim` 的**网络**半边以便单测。
 pub fn parse_benefit_claim(body: &str, credential: &Credential) -> Result<String, GatewayError> {
-    let parsed: Value = serde_json::from_str(body)
-        .map_err(|error| GatewayError::with_status(502, format!("CodeArts benefit 领取响应不是合法 JSON：{error}")))?;
-    let code = parsed.get("error_code").and_then(Value::as_str).unwrap_or("");
+    let parsed: Value = serde_json::from_str(body).map_err(|error| {
+        GatewayError::with_status(
+            502,
+            format!("CodeArts benefit 领取响应不是合法 JSON：{error}"),
+        )
+    })?;
+    let code = parsed
+        .get("error_code")
+        .and_then(Value::as_str)
+        .unwrap_or("");
     if code != "0000" {
-        let message = parsed.get("error_msg").and_then(Value::as_str).unwrap_or("");
+        let message = parsed
+            .get("error_msg")
+            .and_then(Value::as_str)
+            .unwrap_or("");
         return Err(GatewayError::with_status(
             502,
-            format!("CodeArts benefit 领取返回 {code}：{}", excerpt(message, credential)),
+            format!(
+                "CodeArts benefit 领取返回 {code}：{}",
+                excerpt(message, credential)
+            ),
         ));
     }
     let result = parsed.get("result").cloned().unwrap_or(Value::Null);
     let text = result.as_str().map(str::to_string).unwrap_or_else(|| {
         // result 常见是 `{"claimed":true,...}` 一类；取不到字段就照实给一句中性的
-        result.get("msg").or_else(|| result.get("message"))
-            .and_then(Value::as_str).map(str::to_string)
+        result
+            .get("msg")
+            .or_else(|| result.get("message"))
+            .and_then(Value::as_str)
+            .map(str::to_string)
             .unwrap_or_else(|| "官方已确认 benefit 档案".to_string())
     });
     Ok(text)
@@ -425,12 +515,22 @@ pub fn parse_benefit_claim(body: &str, credential: &Credential) -> Result<String
 ///
 /// 三种结局：`Ok(Some)` 读到福利；`Ok(None)` 上游明说没有该账号的福利数据
 /// （`4004 benefit not found`，正常状态）；`Err` 才是真失败。
-pub fn parse_benefit_balance(body: &str, credential: &Credential) -> Result<Option<BenefitBalance>, GatewayError> {
-    let parsed: Value = serde_json::from_str(body)
-        .map_err(|error| GatewayError::with_status(502, format!("CodeArts 福利余额响应不是合法 JSON：{error}")))?;
-    let code = parsed.get("error_code").and_then(Value::as_str).unwrap_or("");
+pub fn parse_benefit_balance(
+    body: &str,
+    credential: &Credential,
+) -> Result<Option<BenefitBalance>, GatewayError> {
+    let parsed: Value = serde_json::from_str(body).map_err(|error| {
+        GatewayError::with_status(502, format!("CodeArts 福利余额响应不是合法 JSON：{error}"))
+    })?;
+    let code = parsed
+        .get("error_code")
+        .and_then(Value::as_str)
+        .unwrap_or("");
     if code != "0000" {
-        let message = parsed.get("error_msg").and_then(Value::as_str).unwrap_or("");
+        let message = parsed
+            .get("error_msg")
+            .and_then(Value::as_str)
+            .unwrap_or("");
         // 「没有福利数据」与「查询失败」是两回事：前者是账号的正常状态
         // （福利按活动下发，Free 账号常常没有），后者才该冒到界面当警告。
         // 码与文案**都**命中才算 —— 只认码的话，4004 将来承载别的语义时
@@ -440,7 +540,10 @@ pub fn parse_benefit_balance(body: &str, credential: &Credential) -> Result<Opti
         }
         return Err(GatewayError::with_status(
             502,
-            format!("CodeArts 福利余额返回 {code}：{}", excerpt(message, credential)),
+            format!(
+                "CodeArts 福利余额返回 {code}：{}",
+                excerpt(message, credential)
+            ),
         ));
     }
     let result = parsed
@@ -449,7 +552,11 @@ pub fn parse_benefit_balance(body: &str, credential: &Credential) -> Result<Opti
         .ok_or_else(|| GatewayError::with_status(502, "CodeArts 福利余额响应没有 result"))?;
     let number = |key: &str| result.get(key).and_then(Value::as_i64).unwrap_or(0);
     Ok(Some(BenefitBalance {
-        channel: result.get("channel").and_then(Value::as_str).unwrap_or("").to_string(),
+        channel: result
+            .get("channel")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
         daily_token_limit: number("daily_token_limit"),
         daily_tokens_used: number("daily_tokens_used"),
         monthly_token_limit: number("monthly_token_limit"),
@@ -473,7 +580,10 @@ pub async fn fetch_both(
     credential: &Credential,
     language: &str,
     plugin_version: &str,
-) -> (Result<Statistics, GatewayError>, Result<Option<BenefitBalance>, GatewayError>) {
+) -> (
+    Result<Statistics, GatewayError>,
+    Result<Option<BenefitBalance>, GatewayError>,
+) {
     futures::future::join(
         fetch_statistics(base, credential, language, plugin_version),
         fetch_benefit_balance(gateway, credential),
@@ -527,9 +637,12 @@ pub fn usage_document(statistics: Option<&Statistics>, benefit: Option<&BenefitB
                 "creditUsed": meter.credit_used,
                 "creditRemaining": meter.credit_remaining,
             }));
-            let Some(left) = meter.credit_remaining else { continue };
+            let Some(left) = meter.credit_remaining else {
+                continue;
+            };
             let duplicated = meter.name == "usageTotalPackageCredit"
-                && parts_sum.is_some_and(|sum| (sum - left).abs() <= f64::EPSILON.max(left.abs() * 1e-6));
+                && parts_sum
+                    .is_some_and(|sum| (sum - left).abs() <= f64::EPSILON.max(left.abs() * 1e-6));
             if !duplicated {
                 credit_left = Some(credit_left.unwrap_or(0.0) + left);
             }
@@ -544,10 +657,7 @@ pub fn usage_document(statistics: Option<&Statistics>, benefit: Option<&BenefitB
         let view = if uncapped {
             format!("无上限（已用 {} token）", benefit.daily_tokens_used)
         } else {
-            format!(
-                "剩 {} / {} token",
-                remaining, benefit.daily_token_limit
-            )
+            format!("剩 {} / {} token", remaining, benefit.daily_token_limit)
         };
         wallets.push(json!({
             "type": "benefit_daily_tokens",
@@ -618,7 +728,11 @@ mod tests {
     #[test]
     fn hidden_and_empty_rows_are_dropped_but_real_ones_kept() {
         let parsed = parse_statistics(STATISTICS).expect("真形状应当能解");
-        let names: Vec<&str> = parsed.meters.iter().map(|meter| meter.name.as_str()).collect();
+        let names: Vec<&str> = parsed
+            .meters
+            .iter()
+            .map(|meter| meter.name.as_str())
+            .collect();
         assert_eq!(
             vec!["chat_token", "zero_percent", "code_completion"],
             names,
@@ -633,9 +747,19 @@ mod tests {
     #[test]
     fn a_negative_value_is_a_sentinel_while_zero_is_a_real_percentage() {
         let parsed = parse_statistics(STATISTICS).unwrap();
-        let percent = |name: &str| parsed.meters.iter().find(|meter| meter.name == name).map(|meter| meter.used_percent);
+        let percent = |name: &str| {
+            parsed
+                .meters
+                .iter()
+                .find(|meter| meter.name == name)
+                .map(|meter| meter.used_percent)
+        };
         assert_eq!(Some(Some(42.5)), percent("chat_token"));
-        assert_eq!(Some(Some(0.0)), percent("zero_percent"), "0% 是「一点没用」，要显示");
+        assert_eq!(
+            Some(Some(0.0)),
+            percent("zero_percent"),
+            "0% 是「一点没用」，要显示"
+        );
         // 那行 `value:-1` 同时带着 show:false 被丢掉了；单独再验一次
         // 「即便 show:true，-1 也不能进 used_percent」
         let negative_only = r#"{"metrics":[{"name":"m","value":-1,"usage_token_num":7,"package_token_amount":9,"show":true}]}"#;
@@ -646,9 +770,17 @@ mod tests {
 
     #[test]
     fn an_unknown_meter_label_falls_back_to_the_upstream_name() {
-        let parsed = parse_statistics(&STATISTICS.replace("code_completion", "brand_new_thing")).unwrap();
-        let row = parsed.meters.iter().find(|meter| meter.name == "brand_new_thing").expect("行还在");
-        assert_eq!("brand_new_thing", row.label, "认不出就照上游原名，别编一个中文标签");
+        let parsed =
+            parse_statistics(&STATISTICS.replace("code_completion", "brand_new_thing")).unwrap();
+        let row = parsed
+            .meters
+            .iter()
+            .find(|meter| meter.name == "brand_new_thing")
+            .expect("行还在");
+        assert_eq!(
+            "brand_new_thing", row.label,
+            "认不出就照上游原名，别编一个中文标签"
+        );
     }
 
     /// `package_token_amount=1` 是**占位**不是配额（2026-10-09 实测于试用版账号
@@ -658,7 +790,11 @@ mod tests {
     fn a_placeholder_token_amount_of_one_is_not_a_real_quota() {
         let body = r#"{"metrics":[{"name":"usageTokenChatMessages","value":0,"usage_token_num":0,"package_token_amount":1,"show":true}]}"#;
         let row = &parse_statistics(body).unwrap().meters[0];
-        assert_eq!(Some("已用 0%".to_string()), row.view(), "占位包不该拼出「0 / 1 token」");
+        assert_eq!(
+            Some("已用 0%".to_string()),
+            row.view(),
+            "占位包不该拼出「0 / 1 token」"
+        );
         let real = r#"{"metrics":[{"name":"usageTokenChatMessages","value":42.5,"usage_token_num":85000,"package_token_amount":200000,"show":true}]}"#;
         assert_eq!(
             Some("已用 85000 / 200000 token（42.5%）".to_string()),
@@ -688,7 +824,11 @@ mod tests {
         assert_eq!(5, parsed.meters.len(), "五行都该留下");
         for meter in &parsed.meters {
             assert!(
-                meter.label.chars().next().map_or(false, |c| !c.is_ascii_alphabetic()),
+                meter
+                    .label
+                    .chars()
+                    .next()
+                    .map_or(false, |c| !c.is_ascii_alphabetic()),
                 "{} 没拿到中文标签（label={:?}）—— 对照表漏了这一条",
                 meter.name,
                 meter.label
@@ -702,7 +842,12 @@ mod tests {
         // （5172.57）恰好是这两行的汇总口径，命中包含关系后不再重复累加 ——
         // 旧行为三行全加得 10345.14 = 真值的 2 倍（issue #225 的形状）。
         let document = usage_document(Some(&parsed), None);
-        assert_eq!(Some(5_172.57), document["available"].as_f64().map(|v| (v * 100.0).round() / 100.0));
+        assert_eq!(
+            Some(5_172.57),
+            document["available"]
+                .as_f64()
+                .map(|v| (v * 100.0).round() / 100.0)
+        );
     }
 
     /// 「套餐积分」是汇总口径不是独立分账：它的剩余 = 基础包 + 赠送时，合计
@@ -720,7 +865,10 @@ mod tests {
           ]
         }"#;
         let parsed = parse_statistics(body).unwrap();
-        assert_eq!(Some(8500.0), usage_document(Some(&parsed), None)["available"].as_f64());
+        assert_eq!(
+            Some(8500.0),
+            usage_document(Some(&parsed), None)["available"].as_f64()
+        );
     }
 
     /// 按需付费行**非零**的账号：点名「基础包 + 赠送」的旧判据下，两行之和 ≠ 汇总行，
@@ -738,7 +886,10 @@ mod tests {
         }"#;
         let parsed = parse_statistics(body).unwrap();
         // 分项之和 500 + 300 + 8000 = 8800 = 汇总行 ⇒ 命中包含关系，只取分项
-        assert_eq!(Some(8800.0), usage_document(Some(&parsed), None)["available"].as_f64());
+        assert_eq!(
+            Some(8800.0),
+            usage_document(Some(&parsed), None)["available"].as_f64()
+        );
 
         // 反对照：若汇总行**不含**按需（8500 = 500 + 8000）而按需另有一笔，包含关系
         // 认不出来 ⇒ 照旧全加（17300）。这条钉住「宁加错不少算」的取舍没被顺手改掉 ——
@@ -752,7 +903,10 @@ mod tests {
           ]
         }"#;
         let parsed = parse_statistics(excluding).unwrap();
-        assert_eq!(Some(17300.0), usage_document(Some(&parsed), None)["available"].as_f64());
+        assert_eq!(
+            Some(17300.0),
+            usage_document(Some(&parsed), None)["available"].as_f64()
+        );
     }
 
     /// 包含关系不成立（数值对不上 / 分项行缺席）时不得剔除：「套餐积分」万一
@@ -768,7 +922,10 @@ mod tests {
           ]
         }"#;
         let parsed = parse_statistics(mismatch).unwrap();
-        assert_eq!(Some(17500.0), usage_document(Some(&parsed), None)["available"].as_f64());
+        assert_eq!(
+            Some(17500.0),
+            usage_document(Some(&parsed), None)["available"].as_f64()
+        );
 
         // 缺「赠送」行：组合判据不成立，汇总行照旧计入
         let missing = r#"{
@@ -778,7 +935,10 @@ mod tests {
           ]
         }"#;
         let parsed = parse_statistics(missing).unwrap();
-        assert_eq!(Some(9000.0), usage_document(Some(&parsed), None)["available"].as_f64());
+        assert_eq!(
+            Some(9000.0),
+            usage_document(Some(&parsed), None)["available"].as_f64()
+        );
     }
 
     #[test]
@@ -790,12 +950,23 @@ mod tests {
         assert_eq!(10_000_000, balance.daily_token_limit);
         // 超额：如实报，不藏
         assert_eq!(0, balance.remaining_daily(), "用超了剩余就是 0");
-        assert!(balance.daily_percent() > 100.0, "超额要显示成 >100%，实际 {}", balance.daily_percent());
+        assert!(
+            balance.daily_percent() > 100.0,
+            "超额要显示成 >100%，实际 {}",
+            balance.daily_percent()
+        );
 
         let failed = r#"{"error_code":"9001","error_msg":"channel not found"}"#;
         let error = parse_benefit_balance(failed, &credential()).expect_err("200 + 非 0000 是失败");
-        assert!(error.message.contains("9001"), "错误里要带上游的码：{}", error.message);
-        assert!(parse_benefit_balance(r#"{"error_code":"0000"}"#, &credential()).is_err(), "缺 result 不能当成功");
+        assert!(
+            error.message.contains("9001"),
+            "错误里要带上游的码：{}",
+            error.message
+        );
+        assert!(
+            parse_benefit_balance(r#"{"error_code":"0000"}"#, &credential()).is_err(),
+            "缺 result 不能当成功"
+        );
     }
 
     /// claim 的 envelope 判据与余额同一家（`0000` 才是成功，HTTP 一律 200）。
@@ -804,15 +975,31 @@ mod tests {
     #[test]
     fn benefit_claim_successes_all_read_as_confirmed() {
         let credential = credential();
-        let confirmed = parse_benefit_claim(r#"{"error_code":"0000","error_msg":"success","result":{}}"#, &credential)
-            .expect("0000 + 空 result 也是成功");
-        assert!(confirmed.contains("benefit"), "取不到字段要有中性确认句：{confirmed}");
-        let with_msg = parse_benefit_claim(r#"{"error_code":"0000","result":"already claimed"}"#, &credential)
-            .expect("字符串 result 原样转述");
+        let confirmed = parse_benefit_claim(
+            r#"{"error_code":"0000","error_msg":"success","result":{}}"#,
+            &credential,
+        )
+        .expect("0000 + 空 result 也是成功");
+        assert!(
+            confirmed.contains("benefit"),
+            "取不到字段要有中性确认句：{confirmed}"
+        );
+        let with_msg = parse_benefit_claim(
+            r#"{"error_code":"0000","result":"already claimed"}"#,
+            &credential,
+        )
+        .expect("字符串 result 原样转述");
         assert_eq!("already claimed", with_msg);
-        let failed = parse_benefit_claim(r#"{"error_code":"9001","error_msg":"auth failed"}"#, &credential)
-            .expect_err("非 0000 如实报错");
-        assert!(failed.message.contains("9001") && failed.message.contains("auth failed"), "{}", failed.message);
+        let failed = parse_benefit_claim(
+            r#"{"error_code":"9001","error_msg":"auth failed"}"#,
+            &credential,
+        )
+        .expect_err("非 0000 如实报错");
+        assert!(
+            failed.message.contains("9001") && failed.message.contains("auth failed"),
+            "{}",
+            failed.message
+        );
     }
 
     /// 「该账号没有福利数据」是**正常状态**，不是错误：上游回
@@ -822,28 +1009,48 @@ mod tests {
     #[test]
     fn a_missing_benefit_is_an_absence_not_a_failure() {
         let absent = r#"{"error_code":"4004","error_msg":"benefit not found"}"#;
-        assert!(matches!(parse_benefit_balance(absent, &credential()), Ok(None)), "4004 + benefit not found 是「没有福利」");
+        assert!(
+            matches!(parse_benefit_balance(absent, &credential()), Ok(None)),
+            "4004 + benefit not found 是「没有福利」"
+        );
 
         // 码与文案**都**要命中：只认码会让 4004 将来承载别的语义时被静默吞掉，
         // 只认文案会让换码（比如 4005）失效 —— 两条负向都钉住。
         let other_message = r#"{"error_code":"4004","error_msg":"something else"}"#;
-        assert!(parse_benefit_balance(other_message, &credential()).is_err(), "4004 配别的文案要如实报错");
+        assert!(
+            parse_benefit_balance(other_message, &credential()).is_err(),
+            "4004 配别的文案要如实报错"
+        );
         let other_code = r#"{"error_code":"4005","error_msg":"benefit not found"}"#;
-        assert!(parse_benefit_balance(other_code, &credential()).is_err(), "别的码配同一文案也要如实报错");
+        assert!(
+            parse_benefit_balance(other_code, &credential()).is_err(),
+            "别的码配同一文案也要如实报错"
+        );
     }
 
     #[test]
     fn an_uncapped_pool_reports_uncapped_not_zero() {
-        let balance = BenefitBalance { daily_token_limit: 0, daily_tokens_used: 5, ..Default::default() };
+        let balance = BenefitBalance {
+            daily_token_limit: 0,
+            daily_tokens_used: 5,
+            ..Default::default()
+        };
         assert_eq!(UNCAPPED, balance.remaining_daily(), "无上限 ≠ 剩 0");
         assert_eq!(-1.0, balance.daily_percent());
-        let negative = BenefitBalance { daily_token_limit: -1, ..Default::default() };
+        let negative = BenefitBalance {
+            daily_token_limit: -1,
+            ..Default::default()
+        };
         assert_eq!(UNCAPPED, negative.remaining_daily());
     }
 
     #[test]
     fn the_usage_document_keeps_uncapped_distinguishable_from_exhausted() {
-        let uncapped = BenefitBalance { daily_token_limit: 0, daily_tokens_used: 5, ..Default::default() };
+        let uncapped = BenefitBalance {
+            daily_token_limit: 0,
+            daily_tokens_used: 5,
+            ..Default::default()
+        };
         let document = usage_document(None, Some(&uncapped));
         let wallet = &document["wallets"][0];
         assert_eq!(Value::Null, wallet["balance"], "无上限不能显示成一个数");
@@ -854,7 +1061,11 @@ mod tests {
             "无上限也得给一句展示串：界面明细只认 balanceView / balance，光有 unlimited 标记会画成「—」"
         );
 
-        let exhausted = BenefitBalance { daily_token_limit: 100, daily_tokens_used: 100, ..Default::default() };
+        let exhausted = BenefitBalance {
+            daily_token_limit: 100,
+            daily_tokens_used: 100,
+            ..Default::default()
+        };
         let wallet = usage_document(None, Some(&exhausted))["wallets"][0].clone();
         assert_eq!(Some(false), wallet["unlimited"].as_bool());
         assert_eq!(Some(0), wallet["balance"].as_i64(), "真的用完了才显示 0");
@@ -863,10 +1074,18 @@ mod tests {
         // 两边都没读到 → available 是 null，不是 0
         assert!(usage_document(None, None)["available"].is_null());
         let statistics = Statistics {
-            meters: vec![Meter { name: "code_completion".into(), label: "代码补全".into(), credit_remaining: Some(300.0), ..Default::default() }],
+            meters: vec![Meter {
+                name: "code_completion".into(),
+                label: "代码补全".into(),
+                credit_remaining: Some(300.0),
+                ..Default::default()
+            }],
             ..Default::default()
         };
-        assert_eq!(Some(300.0), usage_document(Some(&statistics), None)["available"].as_f64());
+        assert_eq!(
+            Some(300.0),
+            usage_document(Some(&statistics), None)["available"].as_f64()
+        );
     }
 
     /// 订阅统计的每一行都要带一句展示串。
@@ -899,14 +1118,27 @@ mod tests {
                 ..Default::default()
             },
         ];
-        let document = usage_document(Some(&Statistics { meters: rows, ..Default::default() }), None);
+        let document = usage_document(
+            Some(&Statistics {
+                meters: rows,
+                ..Default::default()
+            }),
+            None,
+        );
         let views: Vec<&str> = document["wallets"]
             .as_array()
             .expect("wallets 是数组")
             .iter()
             .map(|wallet| wallet["balanceView"].as_str().unwrap_or("<空>"))
             .collect();
-        assert_eq!(vec!["已用 85000 / 200000 token（42.5%）", "剩 300 / 500 积分", "已用 0%"], views,
-            "300.0 要写成 300（尾随的 .0 看着像不精确的量），只有百分比时也不能回落到「—」");
+        assert_eq!(
+            vec![
+                "已用 85000 / 200000 token（42.5%）",
+                "剩 300 / 500 积分",
+                "已用 0%"
+            ],
+            views,
+            "300.0 要写成 300（尾随的 .0 看着像不精确的量），只有百分比时也不能回落到「—」"
+        );
     }
 }

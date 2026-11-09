@@ -156,7 +156,10 @@ impl RouteState {
 
     /// 内容哈希兜底（上游原实现，逐字保留）：模型 + 首条用户消息（截断 4KB）。
     fn content_conversation_key(body: &serde_json::Value) -> String {
-        let model = body.get("model").and_then(serde_json::Value::as_str).unwrap_or("");
+        let model = body
+            .get("model")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
         let first_user = body
             .get("messages")
             .and_then(serde_json::Value::as_array)
@@ -165,7 +168,12 @@ impl RouteState {
                     message.get("role").and_then(serde_json::Value::as_str) == Some("user")
                 })
             })
-            .map(|message| message.get("content").cloned().unwrap_or(serde_json::Value::Null));
+            .map(|message| {
+                message
+                    .get("content")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null)
+            });
         let Some(content) = first_user else {
             return String::new();
         };
@@ -300,9 +308,15 @@ impl RouteState {
         // v2：JSON 形态
         if raw.starts_with('{') {
             let payload: serde_json::Value = serde_json::from_str(raw).ok()?;
-            let session = payload.get("session_id").and_then(serde_json::Value::as_str)?;
+            let session = payload
+                .get("session_id")
+                .and_then(serde_json::Value::as_str)?;
             let session = session.trim();
-            return if session.is_empty() { None } else { Some(session.to_string()) };
+            return if session.is_empty() {
+                None
+            } else {
+                Some(session.to_string())
+            };
         }
         // legacy：user_<64hex>_account__session_<uuid>
         let rest = raw.strip_prefix("user_")?;
@@ -564,7 +578,8 @@ mod tests {
     #[test]
     fn an_explicit_id_beats_the_content_hash() {
         let body = chat_body();
-        let keyed = RouteState::conversation_key(&headers(&[("ah-thread-id", "thread-abc")]), &body);
+        let keyed =
+            RouteState::conversation_key(&headers(&[("ah-thread-id", "thread-abc")]), &body);
         let hashed = RouteState::conversation_key(&HeaderMap::new(), &body);
         assert_eq!(keyed, "id:thread-abc");
         assert_ne!(keyed, hashed);
@@ -598,17 +613,41 @@ mod tests {
     fn every_source_of_an_explicit_id_is_recognised() {
         let body = chat_body();
         let cases: Vec<(HeaderMap, serde_json::Value, &str)> = vec![
-            (headers(&[("ah-thread-id", "thread-abc")]), body.clone(), "id:thread-abc"),
-            (headers(&[("x-opencode-session", "sess-opencode")]), body.clone(), "id:sess-opencode"),
-            (headers(&[("x-session-id", "sess-x")]), body.clone(), "id:sess-x"),
-            (headers(&[("x-session-affinity", "sess-affinity")]), body.clone(), "id:sess-affinity"),
-            (headers(&[("session-id", "sess-codex")]), body.clone(), "id:sess-codex"),
+            (
+                headers(&[("ah-thread-id", "thread-abc")]),
+                body.clone(),
+                "id:thread-abc",
+            ),
+            (
+                headers(&[("x-opencode-session", "sess-opencode")]),
+                body.clone(),
+                "id:sess-opencode",
+            ),
+            (
+                headers(&[("x-session-id", "sess-x")]),
+                body.clone(),
+                "id:sess-x",
+            ),
+            (
+                headers(&[("x-session-affinity", "sess-affinity")]),
+                body.clone(),
+                "id:sess-affinity",
+            ),
+            (
+                headers(&[("session-id", "sess-codex")]),
+                body.clone(),
+                "id:sess-codex",
+            ),
             (
                 headers(&[("x-codex-turn-metadata", "{\"session_id\":\"sess-turn\"}")]),
                 body.clone(),
                 "id:sess-turn",
             ),
-            (HeaderMap::new(), json!({ "prompt_cache_key": "sess-cache" }), "id:sess-cache"),
+            (
+                HeaderMap::new(),
+                json!({ "prompt_cache_key": "sess-cache" }),
+                "id:sess-cache",
+            ),
             (
                 HeaderMap::new(),
                 json!({ "metadata": { "user_id": "{\"session_id\":\"sess-claude\"}" } }),
@@ -643,9 +682,7 @@ mod tests {
     fn rotation_counters_are_not_wrapped_inside_the_state() {
         let state = RouteState::new();
         // 候选 3 个、可见 2 个：每次取计数，按可见的 2 定位次
-        let positions: Vec<usize> = (0..6)
-            .map(|_| state.rotate_take("m") % 2)
-            .collect();
+        let positions: Vec<usize> = (0..6).map(|_| state.rotate_take("m") % 2).collect();
         // 计数 0..5 取模 = 0,1,0,1,0,1 —— 严格轮流（旧实现会是 0,1,0,0,1,0）
         assert_eq!(positions, vec![0, 1, 0, 1, 0, 1]);
     }
@@ -663,7 +700,10 @@ mod tests {
         assert_eq!(second.get("A"), Some(&1));
         assert_eq!(second.get("B"), Some(&1));
         // 换模型 → 另一套键
-        assert_eq!(state.rotate_take_per_provider("m2", &sizes).get("A"), Some(&0));
+        assert_eq!(
+            state.rotate_take_per_provider("m2", &sizes).get("A"),
+            Some(&0)
+        );
     }
 
     /// 垫底必须**到点自动失效**。

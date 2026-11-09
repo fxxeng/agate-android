@@ -78,7 +78,9 @@ pub async fn refresh_control_plane(
     let (credential, expires_at, user_name, next_refresh) =
         oauth::LoginFlow::refresh(&dpop, &refresh_token)
             .await
-            .map_err(|reason| GatewayError::with_status(502, format!("OfficeAce 续期失败：{reason}")))?;
+            .map_err(|reason| {
+                GatewayError::with_status(502, format!("OfficeAce 续期失败：{reason}"))
+            })?;
     store
         .update_officeace_control_plane(
             account_id,

@@ -43,7 +43,7 @@
 
 use std::time::Duration;
 
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use crate::server::core::account_store::AccountStore;
 use crate::server::errors::GatewayError;
@@ -52,7 +52,7 @@ use super::adapter::{account_proxy, read_record, renew_forced, renew_if_due};
 use super::credentials::Credential;
 use super::errors::classify;
 use super::http::post_json;
-use super::usage::{UG_HOST, ug_headers};
+use super::usage::{ug_headers, UG_HOST};
 
 /// 签到状态查询（参考实现 `EpCheckinStatus`）。
 const EP_CHECKIN_STATUS: &str = "/trae/api/v2/ug/checkin_credits/status";
@@ -184,7 +184,10 @@ impl Status {
 
     /// 今日奖励的两个分量（合计见 [`Award::total`]）。
     pub fn award(&self) -> Award {
-        Award { credits: self.credits, extra_credits: self.extra_credits }
+        Award {
+            credits: self.credits,
+            extra_credits: self.extra_credits,
+        }
     }
 }
 
@@ -198,7 +201,10 @@ pub fn status_of(payload: &Value) -> Status {
         enable: flag(payload, "enable"),
         credits: number("credits"),
         extra_credits: number("extra_credits"),
-        code: payload.get("code").and_then(Value::as_i64).unwrap_or(CODE_OK),
+        code: payload
+            .get("code")
+            .and_then(Value::as_i64)
+            .unwrap_or(CODE_OK),
         message: payload
             .get("message")
             .and_then(Value::as_str)
@@ -335,10 +341,17 @@ pub async fn claim_daily_checkin(
             if let Some(map) = row.as_object_mut() {
                 map.insert("reauthAttempted".to_string(), json!(true));
                 map.insert("reauthFailed".to_string(), json!(true));
-                let head = map.get("msg").and_then(Value::as_str).unwrap_or_default().to_string();
+                let head = map
+                    .get("msg")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
                 map.insert(
                     "msg".to_string(),
-                    json!(format!("{head}；换发新令牌也失败（{}），请在「账号」页重新登录", error.message)),
+                    json!(format!(
+                        "{head}；换发新令牌也失败（{}），请在「账号」页重新登录",
+                        error.message
+                    )),
                 );
             }
             return Ok(row);
@@ -369,7 +382,10 @@ async fn run(
         }));
     }
     if credential.access_token.trim().is_empty() {
-        return Err(GatewayError::with_status(401, "该 Trae 账号没有可用凭证，无法签到"));
+        return Err(GatewayError::with_status(
+            401,
+            "该 Trae 账号没有可用凭证，无法签到",
+        ));
     }
     if credential.device_id.trim().is_empty() {
         // 参考实现对缺 deviceId 的凭据是**硬拦**：这类凭据多半是手工粘贴的，
@@ -396,7 +412,10 @@ async fn run(
     }
     if !before.enable || before.done_today() {
         // 这一条分支根本没打领取；`decide` 在读 claim 之前就返回了，给一个空响应占位。
-        return Ok(complete(decide(&before, &Status::default(), None), &device_id));
+        return Ok(complete(
+            decide(&before, &Status::default(), None),
+            &device_id,
+        ));
     }
     let claim = claim(base, credential, &variant, &device_id, proxy).await?;
     if claim.code != CODE_OK {
@@ -409,8 +428,13 @@ async fn run(
     }
     // 同设备号回查。回查本身失败（网络/会话）时按"未确认"处理 ——
     // 一发没被确认的 claim 报成成功，就是给用户一个假成功。
-    let after = status(base, credential, &variant, &device_id, proxy).await.ok();
-    Ok(complete(decide(&before, &claim, after.as_ref()), &device_id))
+    let after = status(base, credential, &variant, &device_id, proxy)
+        .await
+        .ok();
+    Ok(complete(
+        decide(&before, &claim, after.as_ref()),
+        &device_id,
+    ))
 }
 
 /// 判定 → 界面与日志消费的 `{success, msg, ...}`。
@@ -545,7 +569,15 @@ async fn status(
     device_id: &str,
     proxy: Option<&crate::server::core::proxies::ResolvedProxy>,
 ) -> Result<Status, GatewayError> {
-    let payload = round_trip(base, EP_CHECKIN_STATUS, variant, device_id, credential, proxy).await?;
+    let payload = round_trip(
+        base,
+        EP_CHECKIN_STATUS,
+        variant,
+        device_id,
+        credential,
+        proxy,
+    )
+    .await?;
     Ok(status_of(&payload))
 }
 
@@ -558,7 +590,15 @@ async fn claim(
     device_id: &str,
     proxy: Option<&crate::server::core::proxies::ResolvedProxy>,
 ) -> Result<Status, GatewayError> {
-    let payload = round_trip(base, EP_CHECKIN_CLAIM, variant, device_id, credential, proxy).await?;
+    let payload = round_trip(
+        base,
+        EP_CHECKIN_CLAIM,
+        variant,
+        device_id,
+        credential,
+        proxy,
+    )
+    .await?;
     Ok(status_of(&payload))
 }
 
@@ -582,14 +622,24 @@ async fn round_trip(
     let mut last = json!({});
     loop {
         for (index, body) in bodies.iter().enumerate() {
-            let reply =
-                post_checkin(&url, body, variant, device_id, &credential.access_token, scheme, proxy)
-                    .await?;
+            let reply = post_checkin(
+                &url,
+                body,
+                variant,
+                device_id,
+                &credential.access_token,
+                scheme,
+                proxy,
+            )
+            .await?;
             // 不能把空响应、HTML 错误页或缺少业务码的 JSON 当成 code:0。
             // 否则 claim 响应解析失败后，只要回查恰好显示已签到（例如另一端
             // 并发完成），就可能把本次未确认的领取误报为成功。
             let payload = parse_checkin_payload(&reply.body)?;
-            let code = payload.get("code").and_then(Value::as_i64).unwrap_or(CODE_OK);
+            let code = payload
+                .get("code")
+                .and_then(Value::as_i64)
+                .unwrap_or(CODE_OK);
             last = payload;
             match probe_for(code) {
                 Probe::Accept => return Ok(last),
@@ -621,9 +671,8 @@ async fn round_trip(
 /// 后续状态回查可能受并发客户端影响。协议向量中的 status 与 claim 响应都带
 /// `code`，因此缺失时按上游协议错误处理，不猜成功。
 fn parse_checkin_payload(body: &str) -> Result<Value, GatewayError> {
-    let payload: Value = serde_json::from_str(body).map_err(|_| {
-        GatewayError::with_status(502, "Trae 签到接口返回了无效 JSON 响应")
-    })?;
+    let payload: Value = serde_json::from_str(body)
+        .map_err(|_| GatewayError::with_status(502, "Trae 签到接口返回了无效 JSON 响应"))?;
     if !payload.is_object() || payload.get("code").and_then(Value::as_i64).is_none() {
         return Err(GatewayError::with_status(
             502,
@@ -678,21 +727,46 @@ mod response_tests {
 
     #[test]
     fn parses_valid_checkin_business_response() {
-        let payload = parse_checkin_payload(r#"{"code":0,"enable":true}"#)
-            .expect("valid protocol response");
+        let payload =
+            parse_checkin_payload(r#"{"code":0,"enable":true}"#).expect("valid protocol response");
         assert_eq!(payload.get("code").and_then(Value::as_i64), Some(0));
     }
 
     #[test]
     fn rejects_empty_or_non_json_checkin_response() {
-        assert_eq!(parse_checkin_payload("").err().map(|error| error.status_code), Some(502));
-        assert_eq!(parse_checkin_payload("<html>upstream error</html>").err().map(|error| error.status_code), Some(502));
+        assert_eq!(
+            parse_checkin_payload("")
+                .err()
+                .map(|error| error.status_code),
+            Some(502)
+        );
+        assert_eq!(
+            parse_checkin_payload("<html>upstream error</html>")
+                .err()
+                .map(|error| error.status_code),
+            Some(502)
+        );
     }
 
     #[test]
     fn rejects_json_without_integer_business_code() {
-        assert_eq!(parse_checkin_payload("{}").err().map(|error| error.status_code), Some(502));
-        assert_eq!(parse_checkin_payload(r#"{"code":"0"}"#).err().map(|error| error.status_code), Some(502));
-        assert_eq!(parse_checkin_payload(r#"[{"code":0}]"#).err().map(|error| error.status_code), Some(502));
+        assert_eq!(
+            parse_checkin_payload("{}")
+                .err()
+                .map(|error| error.status_code),
+            Some(502)
+        );
+        assert_eq!(
+            parse_checkin_payload(r#"{"code":"0"}"#)
+                .err()
+                .map(|error| error.status_code),
+            Some(502)
+        );
+        assert_eq!(
+            parse_checkin_payload(r#"[{"code":0}]"#)
+                .err()
+                .map(|error| error.status_code),
+            Some(502)
+        );
     }
 }

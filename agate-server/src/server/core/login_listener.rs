@@ -84,10 +84,7 @@ pub fn release() {
     };
     let _ = shutdown_tx.send(());
     wait_until_released(port);
-    crate::server::logging::log(
-        "[Server]",
-        &format!("登录临时监听已释放（:{}）", port),
-    );
+    crate::server::logging::log("[Server]", &format!("登录临时监听已释放（:{}）", port));
 }
 
 /// 等端口真的归还（`stop_gateway` 同款：连续两次探测成功才算释放）。

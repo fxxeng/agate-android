@@ -35,13 +35,13 @@ use serde_json::Value;
 /// 匹配是**大小写敏感**的（对应 Go 的 `strings.Contains`）：这里列的都是
 /// 小写/原样形态，混合大小写变体由 [`bare_hdr_re`] 兜底。
 const SANITIZE_FEATURES: &[&str] = &[
-    "x-anthropic-billing-header", // header 键值段键名
-    "cc_entrypoint=",             // 尾随裸键值（截断前缀即可命中）
-    "You are Claude Code",        // 身份句（截断前缀即可命中）
-    "Main branch (",              // 注入指令句（截断前缀即可命中）
+    "x-anthropic-billing-header",                      // header 键值段键名
+    "cc_entrypoint=",                                  // 尾随裸键值（截断前缀即可命中）
+    "You are Claude Code",                             // 身份句（截断前缀即可命中）
+    "Main branch (",                                   // 注入指令句（截断前缀即可命中）
     "You are a coding agent running in the Codex CLI", // Codex instructions 首段（截断前缀即可命中）
-    "github.com/anthropics/",     // 反馈句里的 Anthropic 仓库链接
-    "11128",                      // 上游反探测：裸数字错误码
+    "github.com/anthropics/",                          // 反馈句里的 Anthropic 仓库链接
+    "11128",                                           // 上游反探测：裸数字错误码
 ];
 
 /// 改写层：全模板句逐字替换（每句只改一个词，语义不变）。
@@ -253,7 +253,9 @@ fn kv_re() -> &'static Regex {
 /// 必须再用不要求冒号的 `(?i)` 正则兜底（[`bare_hdr_re`]），否则整条净化被跳过。
 /// `bare_hdr_re` 不要求冒号，是 `hdr_re` 的超集，故无需再单独匹配后者。
 pub fn has_fingerprint(text: &str) -> bool {
-    SANITIZE_FEATURES.iter().any(|feature| text.contains(feature))
+    SANITIZE_FEATURES
+        .iter()
+        .any(|feature| text.contains(feature))
         || bare_hdr_re().is_match(text)
 }
 
@@ -341,7 +343,9 @@ pub fn sanitize_text(text: &str, words: &[String], hits: &mut Hits) -> String {
     // 兜底：键值形态已在上面整段删除，这里只剩裸键名（引用/示例文本形态）。
     if bare_hdr_re().is_match(&out) {
         hits.bump(LABEL_BARE_HDR);
-        out = bare_hdr_re().replace_all(&out, "x-anthropic-billing-hdr").into_owned();
+        out = bare_hdr_re()
+            .replace_all(&out, "x-anthropic-billing-hdr")
+            .into_owned();
     }
     // 层 B：跑在层 A 的**结果**上（不是原始 text —— 那样会把上面所有改写冲掉）
     if let Some(next) = insert_zwsp(&out, words, hits) {
@@ -499,8 +503,7 @@ mod zwsp_tests {
         let next = insert_zwsp("甲敏感乙敏感丙", &["敏感".to_string()], &mut hits)
             .expect("命中了就不能返回 None");
         assert_eq!(
-            next,
-            "甲敏感\u{200B}乙敏感\u{200B}丙",
+            next, "甲敏感\u{200B}乙敏感\u{200B}丙",
             "两处命中、两个标记，位置在词尾"
         );
     }
@@ -554,7 +557,11 @@ mod zwsp_tests {
         let mut hits = Hits::default();
         let next = insert_zwsp("先说甲再说乙", &words, &mut hits).expect("两个词都命中");
         assert_eq!(next, "先说甲\u{200B}再说乙\u{200B}");
-        let labels: Vec<String> = hits.into_sorted().into_iter().map(|(word, _)| word).collect();
+        let labels: Vec<String> = hits
+            .into_sorted()
+            .into_iter()
+            .map(|(word, _)| word)
+            .collect();
         assert_eq!(labels.len(), 2, "两个词各记一条");
     }
 
@@ -587,7 +594,9 @@ mod zwsp_tests {
         });
         let words = vec!["敏感".to_string()];
         let (next, hits) = sanitize_body(&body, &words).expect("命中后必须返回 Some");
-        let text = next["messages"][0]["content"].as_str().expect("content 是字符串");
+        let text = next["messages"][0]["content"]
+            .as_str()
+            .expect("content 是字符串");
         assert_eq!(text, "这里有敏感\u{200B}词");
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].0, "敏感");

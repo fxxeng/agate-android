@@ -50,14 +50,54 @@ pub struct Task {
 /// 8 个任务（合计 10000 积分）。key 与分值来自客户端 `TASK_POINTS`，一个都不能改
 /// —— 改了服务端就不认（未知 key 上报会稳定报「未知的 task key」形态的业务错）。
 pub const TASKS: [Task; 8] = [
-    Task { group: "初识 Loomy", key: "first_message", title: "发送你的第一条消息", points: 500 },
-    Task { group: "初识 Loomy", key: "pick_skill", title: "试试选择一个技能", points: 1000 },
-    Task { group: "初识 Loomy", key: "generate_ppt", title: "生成第一份 PPT", points: 1500 },
-    Task { group: "打造你的专属 Loomy", key: "set_schedule", title: "设置定时任务", points: 1000 },
-    Task { group: "打造你的专属 Loomy", key: "install_skill", title: "在技能广场安装一个技能", points: 1500 },
-    Task { group: "打造你的专属 Loomy", key: "configure_remote", title: "配置远程控制", points: 1000 },
-    Task { group: "遇见你的 AI 搭子", key: "create_soul", title: "创建你的第一个搭子", points: 1500 },
-    Task { group: "遇见你的 AI 搭子", key: "share_soul", title: "把搭子分享给朋友", points: 2000 },
+    Task {
+        group: "初识 Loomy",
+        key: "first_message",
+        title: "发送你的第一条消息",
+        points: 500,
+    },
+    Task {
+        group: "初识 Loomy",
+        key: "pick_skill",
+        title: "试试选择一个技能",
+        points: 1000,
+    },
+    Task {
+        group: "初识 Loomy",
+        key: "generate_ppt",
+        title: "生成第一份 PPT",
+        points: 1500,
+    },
+    Task {
+        group: "打造你的专属 Loomy",
+        key: "set_schedule",
+        title: "设置定时任务",
+        points: 1000,
+    },
+    Task {
+        group: "打造你的专属 Loomy",
+        key: "install_skill",
+        title: "在技能广场安装一个技能",
+        points: 1500,
+    },
+    Task {
+        group: "打造你的专属 Loomy",
+        key: "configure_remote",
+        title: "配置远程控制",
+        points: 1000,
+    },
+    Task {
+        group: "遇见你的 AI 搭子",
+        key: "create_soul",
+        title: "创建你的第一个搭子",
+        points: 1500,
+    },
+    Task {
+        group: "遇见你的 AI 搭子",
+        key: "share_soul",
+        title: "把搭子分享给朋友",
+        points: 2000,
+    },
 ];
 
 /// 任务总分（界面「已获得 x / 共 y」的分母）
@@ -65,7 +105,10 @@ pub const TOTAL_POINTS: i64 = 10000;
 
 /// 404 + 凭证装载：账号必须存在且确实是 Loomy 家（`loomy_account_record` 已按
 /// provider 过滤，别家 id 传进来同样 404）。
-fn load_credentials(store: &AccountStore, account_id: &str) -> Result<LoomyCredentials, GatewayError> {
+fn load_credentials(
+    store: &AccountStore,
+    account_id: &str,
+) -> Result<LoomyCredentials, GatewayError> {
     if account_id.is_empty() {
         return Err(GatewayError::with_status(400, "缺少账号 id"));
     }
@@ -103,13 +146,27 @@ fn ensure_success(payload: &Value, what: &str) -> Result<(), GatewayError> {
 /// 拉一次任务完成表：返回值按 [`TASKS`] 顺序对齐（未知 key 忽略，缺省未完成 ——
 /// 与客户端「以注册中心为准归一」同一口径，earned 不信任上游回传、自己算）。
 async fn fetch_done(credentials: &LoomyCredentials) -> Result<Vec<bool>, GatewayError> {
-    let payload =
-        client::token_request("GET", TASKS_PATH, &credentials.session, None, "新手任务查询").await?;
+    let payload = client::token_request(
+        "GET",
+        TASKS_PATH,
+        &credentials.session,
+        None,
+        "新手任务查询",
+    )
+    .await?;
     ensure_success(&payload, "新手任务查询")?;
-    let tasks = payload.pointer("/data/tasks").cloned().unwrap_or(Value::Null);
+    let tasks = payload
+        .pointer("/data/tasks")
+        .cloned()
+        .unwrap_or(Value::Null);
     Ok(TASKS
         .iter()
-        .map(|task| tasks.get(task.key).and_then(Value::as_bool).unwrap_or(false))
+        .map(|task| {
+            tasks
+                .get(task.key)
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+        })
         .collect())
 }
 
@@ -167,7 +224,9 @@ pub async fn get_tasks(
     let previous = settled_snapshot(store, account_id);
     if !refresh {
         if let Some(snapshot) = previous.as_ref() {
-            return Ok(crate::server::core::providers::onboarding_memory::serve(snapshot));
+            return Ok(crate::server::core::providers::onboarding_memory::serve(
+                snapshot,
+            ));
         }
     }
     let credentials = load_credentials(store, account_id)?;
@@ -252,12 +311,18 @@ pub async fn claim_all(store: &AccountStore, account_id: &str) -> Result<Value, 
                 if already {
                     crate::server::logging::log(
                         "[Onboarding]",
-                        &format!("账号 {}: 「{}」此前已完成，跳过重复加分", credentials.name, task.title),
+                        &format!(
+                            "账号 {}: 「{}」此前已完成，跳过重复加分",
+                            credentials.name, task.title
+                        ),
                     );
                 } else {
                     crate::server::logging::log(
                         "[Onboarding]",
-                        &format!("账号 {}: 领取「{}」+{} 积分", credentials.name, task.title, task.points),
+                        &format!(
+                            "账号 {}: 领取「{}」+{} 积分",
+                            credentials.name, task.title, task.points
+                        ),
                     );
                 }
             }
@@ -268,7 +333,10 @@ pub async fn claim_all(store: &AccountStore, account_id: &str) -> Result<Value, 
                 failed += 1;
                 crate::server::logging::verbose(
                     "[Onboarding]",
-                    &format!("账号 {}: 领取「{}」失败: {}", credentials.name, task.title, error.message),
+                    &format!(
+                        "账号 {}: 领取「{}」失败: {}",
+                        credentials.name, task.title, error.message
+                    ),
                 );
                 rows.push(json!({
                     "key": task.key, "ok": false, "error": error.message,

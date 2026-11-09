@@ -142,9 +142,8 @@ pub(super) async fn query(
         }
         return unpack(&source, response);
     }
-    Err(auth_error.unwrap_or_else(|| {
-        GatewayError::with_status(401, "ZCode 窗口限额查询被上游拒绝")
-    }))
+    Err(auth_error
+        .unwrap_or_else(|| GatewayError::with_status(401, "ZCode 窗口限额查询被上游拒绝")))
 }
 
 /// 传输层错误 → 可读错误（超时与其它失败分开，与其它各家同一口径）
@@ -180,7 +179,11 @@ fn unpack(source: &str, response: ApiResponse) -> Result<Value, GatewayError> {
             .unwrap_or_else(|| format!("HTTP {}", response.status));
         // 业务码为 0 表示「响应体里没有 code」（HTTP 层错误）—— 那种情况别拼一个
         // 读起来莫名其妙的「（0）」
-        let label = if code == 0 { String::new() } else { format!("（{code}）") };
+        let label = if code == 0 {
+            String::new()
+        } else {
+            format!("（{code}）")
+        };
         return Err(GatewayError::with_status(
             502,
             format!("ZCode 窗口限额查询失败{label}：{detail}"),
@@ -227,10 +230,14 @@ fn normalize(source: &str, data: &Value) -> Value {
         let total = limit.get("usage").and_then(number_of);
         let used = limit.get("currentValue").and_then(number_of);
         // 剩余量的取值链：`remaining` → 总额 − 已用（与 billing 通道同一条口径）
-        let remaining = limit.get("remaining").and_then(number_of).or_else(|| match (total, used) {
-            (Some(total), Some(used)) => Some(total - used),
-            _ => None,
-        });
+        let remaining =
+            limit
+                .get("remaining")
+                .and_then(number_of)
+                .or_else(|| match (total, used) {
+                    (Some(total), Some(used)) => Some(total - used),
+                    _ => None,
+                });
         // 已用百分比：`percentage` → 总额与已用现算（2026-02 之后上游只回比例，
         // 因此绝对量这条路只是兜底）
         let percent_used = limit
@@ -244,7 +251,8 @@ fn normalize(source: &str, data: &Value) -> Value {
                 _ => None,
             });
         // 剩余占比（0~100）：换算是**在这里一次做完**的（读数方向见本函数的文档）
-        let remaining_percent = percent_used.map(|value| (PERCENT_MAX - value).clamp(0.0, PERCENT_MAX));
+        let remaining_percent =
+            percent_used.map(|value| (PERCENT_MAX - value).clamp(0.0, PERCENT_MAX));
         let view = wallet_view(total, used, remaining, remaining_percent, &unit_text, limit);
         // 窗口期标识（type 字段）：单位决定档位，认不出落 cycle
         let window = window_code(unit);
@@ -276,8 +284,8 @@ fn normalize(source: &str, data: &Value) -> Value {
             "planName": plan_name,
         }));
     }
-    let available_view = headline_of(tightest, absolute, wallets.len())
-        .unwrap_or_else(|| "无额度窗口".to_string());
+    let available_view =
+        headline_of(tightest, absolute, wallets.len()).unwrap_or_else(|| "无额度窗口".to_string());
     let mut subscription = Map::new();
     if let Some(name) = plan_name {
         subscription.insert("planName".to_string(), Value::String(name));

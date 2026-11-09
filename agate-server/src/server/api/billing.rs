@@ -24,7 +24,7 @@ use axum::extract::State;
 use axum::response::{IntoResponse, Response};
 use serde_json::{json, Value};
 
-use crate::server::core::billing::{WorkbuddyActivity, BillingError};
+use crate::server::core::billing::{BillingError, WorkbuddyActivity};
 use crate::server::core::providers::workbuddy::Region;
 use crate::server::errors::GatewayError;
 use crate::server::http::ok_json;
@@ -75,7 +75,10 @@ pub async fn claim_checkin(State(state): State<ServerState>) -> Response {
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(false);
     if !success {
-        let detail = result.get("msg").and_then(serde_json::Value::as_str).unwrap_or("");
+        let detail = result
+            .get("msg")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
         logging::log("[Billing]", &format!("签到未领取（{detail}）"));
     }
     // 状态码与 body 的 success 都由结果决定，不能用 ok_json（它恒为 200/true）
@@ -84,7 +87,11 @@ pub async fn claim_checkin(State(state): State<ServerState>) -> Response {
     } else {
         axum::http::StatusCode::CONFLICT
     };
-    (status, axum::Json(json!({ "success": success, "data": result }))).into_response()
+    (
+        status,
+        axum::Json(json!({ "success": success, "data": result })),
+    )
+        .into_response()
 }
 
 /// POST /api/checkin/claim-and-report —— 签到 + 查余额
@@ -171,26 +178,34 @@ pub async fn run_activity(State(state): State<ServerState>, body: Bytes) -> Resp
     // 签到门，防止它与批量/定时签到同时操作同一账号。
     let _run_guard = match crate::server::core::billing::checkin::try_acquire_checkin_gate() {
         Ok(guard) => guard,
-        Err(error) => return GatewayError::with_status(error.status_code, error.message).into_response(),
+        Err(error) => {
+            return GatewayError::with_status(error.status_code, error.message).into_response()
+        }
     };
     let Some(db) = state.store().db() else {
-        return GatewayError::with_status(503, "签到执行台账数据库不可用，已阻止活动请求").into_response();
+        return GatewayError::with_status(503, "签到执行台账数据库不可用，已阻止活动请求")
+            .into_response();
     };
-    if let Err(error) = crate::server::core::checkin_run_ledger::recover_startup(db, state.store()) {
-        return GatewayError::with_status(503, format!("签到恢复尚未完成：{error}")).into_response();
+    if let Err(error) = crate::server::core::checkin_run_ledger::recover_startup(db, state.store())
+    {
+        return GatewayError::with_status(503, format!("签到恢复尚未完成：{error}"))
+            .into_response();
     }
     if let Err(error) = crate::server::core::checkin_run_ledger::ensure_recovered(db) {
-        return GatewayError::with_status(503, format!("签到恢复尚未完成：{error}")).into_response();
+        return GatewayError::with_status(503, format!("签到恢复尚未完成：{error}"))
+            .into_response();
     }
     match crate::server::core::checkin_run_ledger::uncertain_accounts_today(db) {
         Ok(accounts) if accounts.contains(&id) => {
             return GatewayError::with_status(
                 409,
                 format!("账号 {id} 今天存在结果不确定的签到请求，为避免重复领取已暂停；请明天再试"),
-            ).into_response();
+            )
+            .into_response();
         }
         Err(error) => {
-            return GatewayError::with_status(503, format!("无法检查签到不确定状态：{error}")).into_response();
+            return GatewayError::with_status(503, format!("无法检查签到不确定状态：{error}"))
+                .into_response();
         }
         _ => {}
     }
@@ -215,7 +230,8 @@ pub async fn run_activity(State(state): State<ServerState>, body: Bytes) -> Resp
             auto_checkin: false,
         },
     ) {
-        return GatewayError::with_status(500, format!("无法创建活动执行台账：{error}")).into_response();
+        return GatewayError::with_status(500, format!("无法创建活动执行台账：{error}"))
+            .into_response();
     }
     if let Err(error) = crate::server::core::checkin_run_ledger::begin_account(
         db,
@@ -223,12 +239,16 @@ pub async fn run_activity(State(state): State<ServerState>, body: Bytes) -> Resp
             run_id: &run_id,
             account_id: &id,
             account_name: name.as_str().unwrap_or(&id),
-            provider: account.get("provider").and_then(Value::as_str).unwrap_or(""),
+            provider: account
+                .get("provider")
+                .and_then(Value::as_str)
+                .unwrap_or(""),
             ordinal: 0,
             started_at,
         },
     ) {
-        return GatewayError::with_status(500, format!("无法记录活动执行意图：{error}")).into_response();
+        return GatewayError::with_status(500, format!("无法记录活动执行意图：{error}"))
+            .into_response();
     }
     let activity = state
         .billing()
@@ -245,32 +265,51 @@ pub async fn run_activity(State(state): State<ServerState>, body: Bytes) -> Resp
     let result_saved_at = crate::server::logging::now_ms();
     let result_json = match serde_json::to_string(&row) {
         Ok(json) => json,
-        Err(error) => return GatewayError::new(format!("活动结果无法序列化：{error}")).into_response(),
+        Err(error) => {
+            return GatewayError::new(format!("活动结果无法序列化：{error}")).into_response()
+        }
     };
     if let Err(error) = crate::server::core::checkin_run_ledger::save_result(
-        db, &run_id, &id, result_saved_at, &result_json,
+        db,
+        &run_id,
+        &id,
+        result_saved_at,
+        &result_json,
     ) {
-        return GatewayError::with_status(500, format!("活动结果未能持久化：{error}")).into_response();
+        return GatewayError::with_status(500, format!("活动结果未能持久化：{error}"))
+            .into_response();
     }
     // 落 `checkinAt`：与常规签到共用 day_completed 判据和原始结果时间戳。
     if crate::server::core::billing::checkin::day_completed(&row)
         && !state.store().mark_checkin(&id, result_saved_at)
     {
-        return GatewayError::with_status(500, format!("账号 {id} 的签到时间未能持久化；结果已保存在执行台账")).into_response();
+        return GatewayError::with_status(
+            500,
+            format!("账号 {id} 的签到时间未能持久化；结果已保存在执行台账"),
+        )
+        .into_response();
     }
     if let Err(error) = crate::server::core::checkin_records::record_activity_for_run_at(
         &row,
-        account.get("provider").and_then(Value::as_str).unwrap_or(""),
+        account
+            .get("provider")
+            .and_then(Value::as_str)
+            .unwrap_or(""),
         mode.as_str(),
         Some(&run_id),
         Some(result_saved_at),
     ) {
-        return GatewayError::with_status(500, format!("活动历史未能持久化：{error}")).into_response();
+        return GatewayError::with_status(500, format!("活动历史未能持久化：{error}"))
+            .into_response();
     }
     if let Err(error) = crate::server::core::checkin_run_ledger::mark_projected(
-        db, &run_id, &id, crate::server::logging::now_ms(),
+        db,
+        &run_id,
+        &id,
+        crate::server::logging::now_ms(),
     ) {
-        return GatewayError::with_status(500, format!("活动投影状态未能提交：{error}")).into_response();
+        return GatewayError::with_status(500, format!("活动投影状态未能提交：{error}"))
+            .into_response();
     }
     if let Err(error) = crate::server::core::checkin_run_ledger::finish_run(
         db,
@@ -281,7 +320,8 @@ pub async fn run_activity(State(state): State<ServerState>, body: Bytes) -> Resp
         1,
         0,
     ) {
-        return GatewayError::with_status(500, format!("活动批次状态未能关闭：{error}")).into_response();
+        return GatewayError::with_status(500, format!("活动批次状态未能关闭：{error}"))
+            .into_response();
     }
     ok_json(row)
 }

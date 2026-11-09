@@ -57,7 +57,9 @@ fn state() -> &'static Mutex<Option<CatalogState>> {
 /// 在锁内执行一段取值，并在首次访问时把落盘缓存装回内存
 fn with_state<R>(f: impl FnOnce(&mut Option<CatalogState>) -> R) -> R {
     let mutex = state();
-    let mut guard = mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut guard = mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if guard.is_none() {
         if let Some(cached) = catalog_cache::load(SCOPE) {
             *guard = Some(CatalogState {
@@ -141,7 +143,9 @@ fn caps_modal(caps: Option<&serde_json::Map<String, Value>>, modal: &str) -> boo
         .and_then(Value::as_array)
         .is_some_and(|items| {
             items.iter().any(|value| {
-                value.as_str().is_some_and(|text| text.eq_ignore_ascii_case(modal))
+                value
+                    .as_str()
+                    .is_some_and(|text| text.eq_ignore_ascii_case(modal))
             })
         })
 }
@@ -245,7 +249,11 @@ pub fn parse_models(payload: &Value) -> Vec<Value> {
 
 /// 当前模型清单（内存 → 落盘缓存；都没有时为空，由刷新路径填）
 pub fn list() -> Vec<Value> {
-    with_state(|slot| slot.as_ref().map(|state| state.models.clone()).unwrap_or_default())
+    with_state(|slot| {
+        slot.as_ref()
+            .map(|state| state.models.clone())
+            .unwrap_or_default()
+    })
 }
 
 /// 这份清单是否来自**远程拉取**（`catalog::refresh_meta` 的「来源」列判据）。
@@ -279,10 +287,11 @@ pub async fn refresh(session: &str, force: bool) -> ModelRefreshOutcome {
             return ModelRefreshOutcome::unchanged();
         }
     }
-    let payload = match client::token_request("GET", MODELS_PATH, session, None, "模型目录查询").await {
-        Ok(payload) => payload,
-        Err(error) => return ModelRefreshOutcome::failed(error.message),
-    };
+    let payload =
+        match client::token_request("GET", MODELS_PATH, session, None, "模型目录查询").await {
+            Ok(payload) => payload,
+            Err(error) => return ModelRefreshOutcome::failed(error.message),
+        };
     let models = parse_models(&payload);
     if models.is_empty() {
         return ModelRefreshOutcome::failed("Loomy 模型目录为空或格式不认识（保留现有清单）");
@@ -303,5 +312,8 @@ pub use crate::server::core::providers::adapter::ModelRefreshOutcome;
 
 /// 由 `GatewayError` 起一个「目录不可用」的占位（供目录为空时的适配器兜底）
 pub fn unavailable_error() -> GatewayError {
-    GatewayError::with_status(503, "Loomy 模型目录尚未拉取：请先在模型管理页点「刷新模型清单」")
+    GatewayError::with_status(
+        503,
+        "Loomy 模型目录尚未拉取：请先在模型管理页点「刷新模型清单」",
+    )
 }

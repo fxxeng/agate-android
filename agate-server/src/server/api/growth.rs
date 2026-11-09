@@ -76,8 +76,16 @@ fn parse_request(body: &Bytes) -> GrowthRequest {
                 .collect()
         })
         .unwrap_or_default();
-    let lottery = payload.get("lottery").and_then(Value::as_bool).unwrap_or(false);
-    GrowthRequest { code, mode, only, lottery }
+    let lottery = payload
+        .get("lottery")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    GrowthRequest {
+        code,
+        mode,
+        only,
+        lottery,
+    }
 }
 
 /// 取账号记录（找不到报 404）。
@@ -238,7 +246,9 @@ pub async fn status(state: &ServerState, account_id: &str) -> Response {
                 "error": Value::Null,
             })
         }
-        Err(error) => json!({ "inPeriod": false, "tasks": [], "lottery": Value::Null, "error": error }),
+        Err(error) => {
+            json!({ "inPeriod": false, "tasks": [], "lottery": Value::Null, "error": error })
+        }
     };
 
     ok_json(json!({
@@ -271,7 +281,9 @@ pub async fn run_task(state: &ServerState, account_id: &str, body: &Bytes) -> Re
     }
     // 拉当前任务状态（写之前先看现状：已领的走幂等 claim，未接单的先 accept）。
     // 列表口径按任务的域走：小程序任务只在带 mp 头的列表里下发（见 status 的说明）。
-    let mp = spec::spec_of(&request.code).map(|spec| spec.mp).unwrap_or(false);
+    let mp = spec::spec_of(&request.code)
+        .map(|spec| spec.mp)
+        .unwrap_or(false);
     let tasks = match growth::list_tasks(&account, mp).await {
         Ok(tasks) => tasks,
         Err(error) => return management_error(502, error),
@@ -288,7 +300,10 @@ pub async fn run_task(state: &ServerState, account_id: &str, body: &Bytes) -> Re
     };
     let report = if request.mode == "claim" {
         // 只领奖：未完成的任务不动（服务端对未完成任务 claim 返回 not completed）
-        let accept_status = task.get("accept_status").and_then(Value::as_str).unwrap_or("");
+        let accept_status = task
+            .get("accept_status")
+            .and_then(Value::as_str)
+            .unwrap_or("");
         let progress = task.get("progress").cloned().unwrap_or(Value::Null);
         let current = progress.get("current").and_then(Value::as_i64).unwrap_or(0);
         let target = progress.get("target").and_then(Value::as_i64).unwrap_or(1);
@@ -343,8 +358,7 @@ pub async fn school_run(state: &ServerState, account_id: &str, body: &Bytes) -> 
         Err(response) => return response,
     };
     let request = parse_request(body);
-    let (reports, lottery) =
-        school::run_all(&account, &request.only, request.lottery).await;
+    let (reports, lottery) = school::run_all(&account, &request.only, request.lottery).await;
     let rows: Vec<Value> = reports
         .iter()
         .map(|report| {

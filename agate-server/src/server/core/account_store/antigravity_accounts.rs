@@ -75,7 +75,11 @@ fn pick(payload: &Value, keys: &[&str]) -> String {
 
 /// 身份 + 令牌 → 稳定的账号 id（见模块头）
 fn account_id_for(identity: &str, refresh_token: &str) -> String {
-    let seed = if identity.is_empty() { refresh_token } else { identity };
+    let seed = if identity.is_empty() {
+        refresh_token
+    } else {
+        identity
+    };
     let mut hasher = Sha256::new();
     hasher.update(b"antigravity:account-id:v1\0");
     hasher.update(seed.as_bytes());
@@ -143,8 +147,14 @@ impl AccountStore {
         }
         let email = truncate_chars(&pick(payload, &["email"]), MAX_IDENTITY_LENGTH);
         let identity = email.trim().to_ascii_lowercase();
-        let access_token = truncate_chars(&pick(payload, &["accessToken", "access_token"]), MAX_TOKEN_LENGTH);
-        let project_id = truncate_chars(&pick(payload, &["projectId", "project_id"]), MAX_IDENTITY_LENGTH);
+        let access_token = truncate_chars(
+            &pick(payload, &["accessToken", "access_token"]),
+            MAX_TOKEN_LENGTH,
+        );
+        let project_id = truncate_chars(
+            &pick(payload, &["projectId", "project_id"]),
+            MAX_IDENTITY_LENGTH,
+        );
         let expires_at = payload
             .get("expiresAt")
             .and_then(Value::as_i64)
@@ -158,7 +168,8 @@ impl AccountStore {
             .records_for_provider(&guard, provider_id)
             .into_iter()
             .find(|record| {
-                let same_email = !identity.is_empty() && user_id_of(record).eq_ignore_ascii_case(&identity);
+                let same_email =
+                    !identity.is_empty() && user_id_of(record).eq_ignore_ascii_case(&identity);
                 same_email || (!refresh_token.is_empty() && record.refresh_token() == refresh_token)
             });
         let id = match existing.as_ref() {
@@ -206,15 +217,24 @@ impl AccountStore {
         let now = logging::now_ms();
         let mut record = Map::new();
         record.insert("id".to_string(), Value::String(id.clone()));
-        record.insert("provider".to_string(), Value::String(provider_id.to_string()));
+        record.insert(
+            "provider".to_string(),
+            Value::String(provider_id.to_string()),
+        );
         record.insert("name".to_string(), Value::String(record_name.clone()));
         mark_name_custom(
             &mut record,
             name.is_some_and(|value| !value.trim().is_empty()),
             existing.as_ref(),
         );
-        record.insert("refreshToken".to_string(), Value::String(refresh_token.clone()));
-        record.insert("tokenTail".to_string(), Value::String(token_tail_of(&refresh_token)));
+        record.insert(
+            "refreshToken".to_string(),
+            Value::String(refresh_token.clone()),
+        );
+        record.insert(
+            "tokenTail".to_string(),
+            Value::String(token_tail_of(&refresh_token)),
+        );
         // 空值**不写**：重新粘贴一枚令牌不该把上次刷新到的 access_token /
         // expiresAt / projectId 洗掉（与 ZCode 的 jwt / MonkeyCode 的 imageId 同一条规则）
         let previous = existing.as_ref().map(StoredAccount::fields);
@@ -259,7 +279,12 @@ impl AccountStore {
         record.insert("priority".to_string(), Value::from(priority));
         record.insert(
             "enabled".to_string(),
-            Value::Bool(existing.as_ref().map(StoredAccount::enabled).unwrap_or(true)),
+            Value::Bool(
+                existing
+                    .as_ref()
+                    .map(StoredAccount::enabled)
+                    .unwrap_or(true),
+            ),
         );
         record.insert(
             "addedAt".to_string(),
@@ -323,7 +348,10 @@ impl AccountStore {
         let access_token = access_token.trim();
         if !access_token.is_empty() {
             record.set("accessToken", Value::String(access_token.to_string()));
-            record.set("tokenTail", Value::String(token_tail_of(&record.refresh_token())));
+            record.set(
+                "tokenTail",
+                Value::String(token_tail_of(&record.refresh_token())),
+            );
         }
         if let Some(refresh) = refresh_token.map(str::trim).filter(|text| !text.is_empty()) {
             record.set("refreshToken", Value::String(refresh.to_string()));
@@ -373,7 +401,16 @@ impl AccountStore {
     pub fn to_antigravity_public_account(&self, record: &StoredAccount) -> Value {
         let refresh_token = record.refresh_token();
         let mut public = Map::new();
-        for key in ["id", "provider", "name", "userId", "email", "projectId", "source", "tokenTail"] {
+        for key in [
+            "id",
+            "provider",
+            "name",
+            "userId",
+            "email",
+            "projectId",
+            "source",
+            "tokenTail",
+        ] {
             public.insert(
                 key.to_string(),
                 record.get(key).cloned().unwrap_or(Value::Null),
@@ -407,7 +444,10 @@ impl AccountStore {
         );
         public.insert(
             "rateLimits".to_string(),
-            record.get("rateLimits").cloned().unwrap_or_else(|| json!({})),
+            record
+                .get("rateLimits")
+                .cloned()
+                .unwrap_or_else(|| json!({})),
         );
         // 可用 = 有主凭证（refresh token 是这家唯一的续期手段）
         public.insert(

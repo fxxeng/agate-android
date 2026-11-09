@@ -44,8 +44,8 @@ pub mod accounts_usage;
 pub mod assistant;
 // 整库备份 / 恢复（设置页「整库备份 / 恢复」，SQL 文本形态；核心在
 // `db::backup`，替换语义与账号 JSON 导入的 merge 是两条独立通道）
-pub mod backup_api;
 pub mod auto_checkin;
+pub mod backup_api;
 // 长度截断的自动续写（开关 + 轮数上限）：`GET/PUT /api/auto-continue`。
 // 判据与执行链在 `core::upstream::continuation`，这里只是那两个数的读写入口；
 // 独立成文件而不是塞进 config_api —— 理由见该模块头。
@@ -87,10 +87,10 @@ pub mod health;
 // 「从其他工具导入」的扫描接口（当前来源：cc-switch；存储读取见
 // `core::import_ccswitch`）
 pub mod import_sources;
-pub mod keys_api;
 /// 保活换行丢弃开关（`/api/keepalive-strip`）：与 `/api/sanitize`、`/api/debug`
 /// 同形的单开关端点，独立成文件而不是塞进 config_api —— 理由见该模块头。
 pub mod keepalive;
+pub mod keys_api;
 pub mod logs_api;
 pub mod model_manage;
 // models.dev 模型元数据（开关 / 状态 / 立即刷新）：与「逐家上游目录」的
@@ -119,7 +119,6 @@ pub mod sanitize;
 // 零宽空格脱敏词表（GET/PUT /api/zwsp）：与 /api/sanitize 是**两层**，
 // 前者管内置规则集（封闭），这个管用户自己的词表（开放）。
 // 实施点在 `core::sanitize` 的 insert_zwsp，见该处文档。
-pub mod zwsp;
 pub mod scheduled_tasks;
 pub mod session;
 pub mod stats_api;
@@ -128,6 +127,7 @@ pub mod subscriptions;
 pub mod timeouts_api;
 pub mod update;
 pub mod upgrade_api;
+pub mod zwsp;
 // 活动套餐通道的人机验证令牌池（界面铸造 → 网关消费），见该文件模块头
 pub mod zcode_captcha;
 // 令牌池的**补货节奏**设置（目标 / 轮询间隔 / 单轮上限），见该文件模块头

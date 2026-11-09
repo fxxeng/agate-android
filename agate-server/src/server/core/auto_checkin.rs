@@ -52,13 +52,13 @@ use chrono::{DateTime, FixedOffset, TimeZone};
 use serde_json::{json, Map, Value};
 
 use crate::server::config;
-use crate::task_supervisor::{core_task_supervisor, TaskScope};
 use crate::server::core::account_store::AccountStore;
 use crate::server::core::beijing;
 use crate::server::core::billing::checkin;
 use crate::server::core::billing::BillingService;
 use crate::server::core::checkin_schedules::{self, Schedule};
 use crate::server::logging;
+use crate::task_supervisor::{core_task_supervisor, TaskScope};
 
 /// 轮询间隔：30 秒足够精确到分钟，又不会让计时器显得忙（Node 版 TICK_MS）
 pub const TICK_MS: u64 = 30_000;
@@ -214,10 +214,7 @@ pub fn normalize_providers(value: Option<&Value>) -> Vec<String> {
     };
     let picked: Vec<String> = CHECKIN_PROVIDERS
         .iter()
-        .filter(|id| {
-            list.iter()
-                .any(|item| item.as_str() == Some(*id))
-        })
+        .filter(|id| list.iter().any(|item| item.as_str() == Some(*id)))
         .map(|id| id.to_string())
         .collect();
     let mut picked = if picked.is_empty() {
@@ -258,7 +255,10 @@ pub const CHECKIN_BUSY_STATUS: i32 = 400;
 
 impl AutoCheckinConfigError {
     fn new(message: impl Into<String>) -> Self {
-        Self { message: message.into(), status_code: 400 }
+        Self {
+            message: message.into(),
+            status_code: 400,
+        }
     }
 }
 
@@ -313,7 +313,9 @@ pub fn normalize_time(value: Option<&Value>) -> Result<String, AutoCheckinConfig
         })
         .and_then(|(head, tail)| Some((head.parse::<u32>().ok()?, tail.parse::<u32>().ok()?)));
     let Some((hour, minute)) = parsed else {
-        return Err(AutoCheckinConfigError::new("时间格式应为 HH:MM（例如 00:01）"));
+        return Err(AutoCheckinConfigError::new(
+            "时间格式应为 HH:MM（例如 00:01）",
+        ));
     };
     if hour > 23 || minute > 59 {
         return Err(AutoCheckinConfigError::new("时间超出范围（00:00 - 23:59）"));
@@ -375,9 +377,7 @@ fn today_at(time_text: &str, now: DateTime<FixedOffset>) -> Option<DateTime<Fixe
     let hour: u32 = hour.parse().ok()?;
     let minute: u32 = minute.parse().ok()?;
     let naive = now.date_naive().and_hms_opt(hour, minute, 0)?;
-    beijing::offset()
-        .from_local_datetime(&naive)
-        .single()
+    beijing::offset().from_local_datetime(&naive).single()
 }
 
 // ─── 状态读写 ───────────────────────────────────────────────
@@ -629,7 +629,9 @@ impl AutoCheckin {
             }
             inner.running = true;
             inner.cancel_current.store(false, Ordering::SeqCst);
-            RunningGuard { inner: self.inner.clone() }
+            RunningGuard {
+                inner: self.inner.clone(),
+            }
         };
 
         let today = today_key();
@@ -670,7 +672,9 @@ impl AutoCheckin {
                     checkin_schedules::mark_result(id, Some(summary.clone()));
                 }
                 if let Some(db) = self.store.db() {
-                    if let Err(error) = crate::server::core::checkin_run_ledger::project_pending_auto_results(db) {
+                    if let Err(error) =
+                        crate::server::core::checkin_run_ledger::project_pending_auto_results(db)
+                    {
                         logging::verbose("[Checkin]", &format!("自动签到摘要投影待恢复：{error}"));
                     }
                 }
@@ -732,12 +736,7 @@ impl AutoCheckin {
 
     /// 成功分支：汇总 + 记录 lastResult + 日志（对应 Node fire 里的 try 主体）
     fn record_success(&self, result: &Value, today: &str, reason: &str) -> Value {
-        let number = |key: &str| {
-            result
-                .get(key)
-                .and_then(Value::as_u64)
-                .unwrap_or(0)
-        };
+        let number = |key: &str| result.get(key).and_then(Value::as_u64).unwrap_or(0);
         let succeeded = number("succeeded");
         let active = number("active");
         let total = number("total");
@@ -796,7 +795,11 @@ impl AutoCheckin {
                 } else {
                     "定时签到完成"
                 },
-                if skipped > 0 { format!("，跳过 {skipped} 个") } else { String::new() },
+                if skipped > 0 {
+                    format!("，跳过 {skipped} 个")
+                } else {
+                    String::new()
+                },
                 if failures.is_empty() {
                     String::new()
                 } else {
@@ -855,8 +858,10 @@ impl AutoCheckin {
             if schedule.last_fired_date.as_deref() == Some(today.as_str()) {
                 continue;
             }
-            let reason =
-                format!("到点触发（{}）", checkin_schedules::display_label(&schedule));
+            let reason = format!(
+                "到点触发（{}）",
+                checkin_schedules::display_label(&schedule)
+            );
             // fire 移出循环任务（R44b）：调度循环体内只剩 sleep/扫描，stop() 的
             // abort 因此不可能再掐掉进行中的签到。fire 落 CoreTaskSupervisor，
             // 名字携带条目 id（R47 T1.1）：同名活任务忽略 = **条目级**重入防重，
@@ -868,16 +873,14 @@ impl AutoCheckin {
             let service = self.clone();
             let schedule_id = schedule.id.clone();
             let fire_name = format!("checkin-fire:{schedule_id}");
-            match core_task_supervisor().spawn(
-                TaskScope::Core,
-                fire_name.clone(),
-                move |_| {
-                    let service = service.clone();
-                    async move {
-                        service.fire_and_settle(schedule_id, reason, "schedule").await
-                    }
-                },
-            ) {
+            match core_task_supervisor().spawn(TaskScope::Core, fire_name.clone(), move |_| {
+                let service = service.clone();
+                async move {
+                    service
+                        .fire_and_settle(schedule_id, reason, "schedule")
+                        .await
+                }
+            }) {
                 Ok(true) => {}
                 Ok(false) => logging::verbose(
                     "[Checkin]",
@@ -891,13 +894,11 @@ impl AutoCheckin {
     /// 执行一次签到并完成该条目的落账（[`Self::fire_for`] + 原 tick 的返回值
     /// 记账，两处必须同体：记账读的是 fire 的返回值）。由 supervisor 的
     /// `checkin-fire` 任务调用，见 [`Self::tick`] 注释。
-    async fn fire_and_settle(
-        &self,
-        schedule_id: String,
-        reason: String,
-        source: &'static str,
-    ) {
-        match self.fire_for(&reason, Some(&schedule_id.as_str()), source).await {
+    async fn fire_and_settle(&self, schedule_id: String, reason: String, source: &'static str) {
+        match self
+            .fire_for(&reason, Some(&schedule_id.as_str()), source)
+            .await
+        {
             Some(result) => {
                 // 领取轮次完成，但里面有「Qoder 国际版无活动」的行 → 这一条
                 // 不落账，今天窗口开了之后由后续 tick 重试
@@ -959,8 +960,7 @@ impl AutoCheckin {
         let pending: Vec<Schedule> = checkin_schedules::list()
             .into_iter()
             .filter(|schedule| {
-                schedule.enabled
-                    && schedule.last_fired_date.as_deref() != Some(today.as_str())
+                schedule.enabled && schedule.last_fired_date.as_deref() != Some(today.as_str())
             })
             .collect();
         if pending.is_empty() {
@@ -972,10 +972,8 @@ impl AutoCheckin {
         // 有的条目记账（qoderIntlPending 重试落账）——统一走 fire_and_settle。
         // 与轮询 fire 共用同一全局防重守卫。
         let service = self.clone();
-        if let Err(_) = core_task_supervisor().spawn(
-            TaskScope::Core,
-            "checkin-backfill",
-            move |_| {
+        if let Err(_) =
+            core_task_supervisor().spawn(TaskScope::Core, "checkin-backfill", move |_| {
                 let service = service.clone();
                 async move {
                     for schedule in pending {
@@ -988,8 +986,8 @@ impl AutoCheckin {
                             .await;
                     }
                 }
-            },
-        ) {
+            })
+        {
             logging::verbose("[Checkin]", "停机中，放弃启动补签");
         }
     }
@@ -1116,8 +1114,13 @@ impl AutoCheckin {
     /// 或总开关开着 —— 用户点了就是明确要跑这一条。条目不存在返回 None 与
     /// 「在跑」不可区分，路由层先查存在性（见 api::checkin_schedules）。
     pub async fn run_schedule_now(&self, id: &str) -> Option<Value> {
-        let schedule = checkin_schedules::list().into_iter().find(|entry| entry.id == id)?;
-        let reason = format!("手动触发（{}）", checkin_schedules::display_label(&schedule));
+        let schedule = checkin_schedules::list()
+            .into_iter()
+            .find(|entry| entry.id == id)?;
+        let reason = format!(
+            "手动触发（{}）",
+            checkin_schedules::display_label(&schedule)
+        );
         self.fire_for(&reason, Some(id), "manual").await
     }
 }
@@ -1145,7 +1148,6 @@ pub fn stop_global() {
         service.stop();
     }
 }
-
 
 #[cfg(test)]
 mod scheduling_tests {
@@ -1182,8 +1184,7 @@ mod scheduling_tests {
     fn isolate_state() {
         let dir = std::env::temp_dir().join(format!("agate-test-config-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("临时 config 目录应可创建");
-        crate::paths::set_config_dir_override(dir)
-            .expect("config_dir 覆盖仅允许重复设置同值");
+        crate::paths::set_config_dir_override(dir).expect("config_dir 覆盖仅允许重复设置同值");
         CONFIG_DB_GUARD.get_or_init(|| {
             let (db, guard) = crate::server::db::test_temp::TempDb::open("sched-config");
             config::init(Some(db));
@@ -1195,8 +1196,9 @@ mod scheduling_tests {
     fn fresh_service(label: &str) -> (AutoCheckin, crate::server::db::test_temp::TempDb) {
         let (db, guard) = crate::server::db::test_temp::TempDb::open(label);
         let store = AccountStore::with_db(Some(db));
-        let billing =
-            BillingService::new(crate::server::core::auth::AuthService::for_store(store.clone()));
+        let billing = BillingService::new(crate::server::core::auth::AuthService::for_store(
+            store.clone(),
+        ));
         (AutoCheckin::new(store, billing), guard)
     }
 
@@ -1243,8 +1245,9 @@ mod scheduling_tests {
     /// 确定性饥饿（R47 T1.1 根因）；负对照：已触发条目不被本轮触碰。
     #[tokio::test]
     async fn same_tick_due_entries_all_fire() {
-        let _serial =
-            SCHEDULING_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _serial = SCHEDULING_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         isolate_state();
         let (service, _guard) = fresh_service("sched-same-tick");
         set_entries(json!([
@@ -1263,13 +1266,18 @@ mod scheduling_tests {
                 && find_entry("entry-b").and_then(|s| s.last_result).is_some()
         };
         while !both_complete() {
-            assert!(std::time::Instant::now() < deadline, "两条目都应完成 fire 记账");
+            assert!(
+                std::time::Instant::now() < deadline,
+                "两条目都应完成 fire 记账"
+            );
             service.tick().await;
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
 
         assert!(
-            find_entry("entry-done").and_then(|s| s.last_result).is_none(),
+            find_entry("entry-done")
+                .and_then(|s| s.last_result)
+                .is_none(),
             "已触发条目不应被本轮触碰"
         );
         cleanup_config();
@@ -1279,8 +1287,9 @@ mod scheduling_tests {
     /// 的条目级去重吸收重入（Ok(false) 留日志），记账只落一份且不被弄乱。
     #[tokio::test]
     async fn tick_reentry_does_not_disturb_in_flight_fire() {
-        let _serial =
-            SCHEDULING_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _serial = SCHEDULING_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         isolate_state();
         let (service, _guard) = fresh_service("sched-reentry");
         set_entries(json!([entry("entry-r", "00:00", false)]));
@@ -1290,7 +1299,11 @@ mod scheduling_tests {
         service.tick().await;
         service.tick().await;
 
-        let mut fired = || find_entry("entry-r").and_then(|s| s.last_fired_date).is_some();
+        let mut fired = || {
+            find_entry("entry-r")
+                .and_then(|s| s.last_fired_date)
+                .is_some()
+        };
         wait_for(&mut fired, "条目应完成 fire 记账").await;
         assert!(
             find_entry("entry-r").and_then(|s| s.last_result).is_some(),
@@ -1303,25 +1316,32 @@ mod scheduling_tests {
     /// due，下个 tick 必须真的再执行一次（不丢），而不是留旧账等明天。
     #[tokio::test]
     async fn pending_reset_entry_is_retried_next_tick() {
-        let _serial =
-            SCHEDULING_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _serial = SCHEDULING_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         isolate_state();
         let (service, _guard) = fresh_service("sched-pending-retry");
         set_entries(json!([entry("entry-p", "00:00", false)]));
 
         service.tick().await;
         let mut first_done = || {
-            find_entry("entry-p").and_then(|s| s.last_fired_date).is_some()
+            find_entry("entry-p")
+                .and_then(|s| s.last_fired_date)
+                .is_some()
                 && find_entry("entry-p").and_then(|s| s.last_result).is_some()
         };
         wait_for(&mut first_done, "首轮 fire 应完成记账").await;
 
         crate::server::core::checkin_schedules::mark_fired("entry-p", None);
-        assert!(find_entry("entry-p").and_then(|s| s.last_fired_date).is_none());
+        assert!(find_entry("entry-p")
+            .and_then(|s| s.last_fired_date)
+            .is_none());
 
         service.tick().await;
         let mut retried = || {
-            find_entry("entry-p").and_then(|s| s.last_fired_date).is_some()
+            find_entry("entry-p")
+                .and_then(|s| s.last_fired_date)
+                .is_some()
                 && find_entry("entry-p").and_then(|s| s.last_result).is_some()
         };
         wait_for(&mut retried, "清账后的条目应在下个 tick 重试并完成记账").await;
@@ -1333,8 +1353,9 @@ mod scheduling_tests {
     /// 时已触发 ⇒ start 不派补签，后台无任务搅局。
     #[tokio::test]
     async fn stop_only_cancels_dispatch_loop() {
-        let _serial =
-            SCHEDULING_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _serial = SCHEDULING_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         isolate_state();
         let (service, _guard) = fresh_service("sched-stop");
         set_entries(json!([entry("entry-s", "00:00", true)]));
@@ -1344,7 +1365,9 @@ mod scheduling_tests {
         crate::server::core::checkin_schedules::mark_fired("entry-s", None);
         service.tick().await;
         let mut done = || {
-            find_entry("entry-s").and_then(|s| s.last_fired_date).is_some()
+            find_entry("entry-s")
+                .and_then(|s| s.last_fired_date)
+                .is_some()
                 && find_entry("entry-s").and_then(|s| s.last_result).is_some()
         };
         wait_for(&mut done, "stop 后 tick 仍应正常触发并完成记账").await;

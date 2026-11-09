@@ -1189,7 +1189,10 @@ mod tests {
             )
             .optional()
             .expect("reconciliation evidence table lookup");
-        assert_eq!(evidence_table.as_deref(), Some("checkin_reconciliation_evidence"));
+        assert_eq!(
+            evidence_table.as_deref(),
+            Some("checkin_reconciliation_evidence")
+        );
         let reconciliation_projection_column: Option<String> = conn
             .query_row(
                 "SELECT name FROM pragma_table_info('checkin_run_accounts') WHERE name = 'reconciliation_projected_at'",
@@ -1198,7 +1201,10 @@ mod tests {
             )
             .optional()
             .expect("reconciliation projection marker lookup");
-        assert_eq!(reconciliation_projection_column.as_deref(), Some("reconciliation_projected_at"));
+        assert_eq!(
+            reconciliation_projection_column.as_deref(),
+            Some("reconciliation_projected_at")
+        );
         let history_evidence_column: Option<String> = conn
             .query_row(
                 "SELECT name FROM pragma_table_info('checkin_records') WHERE name = 'reconciliation_evidence_id'",
@@ -1207,7 +1213,10 @@ mod tests {
             )
             .optional()
             .expect("history evidence id lookup");
-        assert_eq!(history_evidence_column.as_deref(), Some("reconciliation_evidence_id"));
+        assert_eq!(
+            history_evidence_column.as_deref(),
+            Some("reconciliation_evidence_id")
+        );
         conn.execute(
             "INSERT INTO checkin_runs(run_id, started_at, source, reason)
              VALUES ('migration-run', 1, 'manual', 'migration test')",

@@ -101,7 +101,9 @@ impl HeldHead {
             }
             item
         });
-        futures::stream::iter(head.into_iter().map(Ok)).chain(rest).boxed()
+        futures::stream::iter(head.into_iter().map(Ok))
+            .chain(rest)
+            .boxed()
     }
 }
 
@@ -220,7 +222,8 @@ mod tests {
     #[test]
     fn ignores_incomplete_trailing_frame_and_noise() {
         // 尾部没结束的那行不算一帧（半截 JSON 不能解析），这里因此看不到 finish
-        let text = "data: {\"choices\":[{\"delta\":{\"content\":\"x\"},\"finish_reason\":\"content_fil";
+        let text =
+            "data: {\"choices\":[{\"delta\":{\"content\":\"x\"},\"finish_reason\":\"content_fil";
         assert_eq!(None, scan_finish_reason(text));
         // 只有 null / 空串 / 非 data 行 / [DONE]：都不算终结
         let text = concat!(

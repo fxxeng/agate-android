@@ -30,7 +30,10 @@ fn transport_error(what: &str, error: reqwest::Error) -> GatewayError {
     if error.is_timeout() {
         GatewayError::with_status(504, format!("{what}超时，请稍后重试"))
     } else {
-        GatewayError::with_status(502, format!("{what}失败：{}", egress::describe_error_detail(&error)))
+        GatewayError::with_status(
+            502,
+            format!("{what}失败：{}", egress::describe_error_detail(&error)),
+        )
     }
 }
 
@@ -41,9 +44,16 @@ pub async fn get_json_value(
     proxy: Option<&ResolvedProxy>,
     timeout_ms: Option<u64>,
 ) -> Result<Value, GatewayError> {
-    let response = send_raw("GET", url, None, headers, proxy, Some(timeout_ms.unwrap_or(REQUEST_TIMEOUT_MS)))
-        .await
-        .map_err(|error| transport_error("KukuAI 请求", error))?;
+    let response = send_raw(
+        "GET",
+        url,
+        None,
+        headers,
+        proxy,
+        Some(timeout_ms.unwrap_or(REQUEST_TIMEOUT_MS)),
+    )
+    .await
+    .map_err(|error| transport_error("KukuAI 请求", error))?;
     http_json(response, url)
 }
 
@@ -55,19 +65,32 @@ pub async fn post_json_value(
     proxy: Option<&ResolvedProxy>,
     timeout_ms: Option<u64>,
 ) -> Result<Value, GatewayError> {
-    let response = send_raw("POST", url, Some(body), headers, proxy, Some(timeout_ms.unwrap_or(REQUEST_TIMEOUT_MS)))
-        .await
-        .map_err(|error| transport_error("KukuAI 请求", error))?;
+    let response = send_raw(
+        "POST",
+        url,
+        Some(body),
+        headers,
+        proxy,
+        Some(timeout_ms.unwrap_or(REQUEST_TIMEOUT_MS)),
+    )
+    .await
+    .map_err(|error| transport_error("KukuAI 请求", error))?;
     http_json(response, url)
 }
 
 /// 把 `ApiResponse` 翻译成网关错误或返回 payload。
-fn http_json(response: crate::server::core::auth_http::ApiResponse, url: &str) -> Result<Value, GatewayError> {
+fn http_json(
+    response: crate::server::core::auth_http::ApiResponse,
+    url: &str,
+) -> Result<Value, GatewayError> {
     if !response.ok {
         if response.status == 401 || response.status == 403 {
             return Err(GatewayError::with_status(
                 401,
-                format!("KukuAI 登录态已失效，请重新登录或重新导入该账号（HTTP {}，{url}）", response.status),
+                format!(
+                    "KukuAI 登录态已失效，请重新登录或重新导入该账号（HTTP {}，{url}）",
+                    response.status
+                ),
             ));
         }
         return Err(GatewayError::with_status(
@@ -75,9 +98,9 @@ fn http_json(response: crate::server::core::auth_http::ApiResponse, url: &str) -
             format!("KukuAI 返回 HTTP {}（{url}）", response.status),
         ));
     }
-    response.payload.ok_or_else(|| {
-        GatewayError::with_status(502, format!("KukuAI 返回非 JSON 响应（{url}）"))
-    })
+    response
+        .payload
+        .ok_or_else(|| GatewayError::with_status(502, format!("KukuAI 返回非 JSON 响应（{url}）")))
 }
 
 /// 非 2xx 响应的统一翻译（与 `http_json` 同一口径；正文用于排障）。
@@ -88,7 +111,10 @@ fn translate_status(status: u16, url: &str, head: &str) -> GatewayError {
             format!("KukuAI 登录态已失效，请重新登录或重新导入该账号（HTTP {status}，{url}）"),
         )
     } else {
-        GatewayError::with_status(status as i32, format!("KukuAI 返回 HTTP {status}（{url}）：{head}"))
+        GatewayError::with_status(
+            status as i32,
+            format!("KukuAI 返回 HTTP {status}（{url}）：{head}"),
+        )
     }
 }
 
@@ -134,9 +160,10 @@ pub async fn post_form_value(
         let head: String = text.chars().take(240).collect();
         return Err(translate_status(status, url, &head));
     }
-    let text = response.text().await.map_err(|error| {
-        GatewayError::with_status(502, format!("KukuAI 响应读取失败：{error}"))
-    })?;
+    let text = response
+        .text()
+        .await
+        .map_err(|error| GatewayError::with_status(502, format!("KukuAI 响应读取失败：{error}")))?;
     serde_json::from_str(&text).map_err(|error| {
         GatewayError::with_status(502, format!("KukuAI 返回非 JSON 响应（{url}）：{error}"))
     })

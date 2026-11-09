@@ -59,8 +59,8 @@ use crate::server::core::proxies::ResolvedProxy;
 use crate::server::errors::GatewayError;
 
 use super::credentials::Credentials;
-use super::{auth, endpoints, refresh, risk};
 use super::endpoints::Region;
+use super::{auth, endpoints, refresh, risk};
 
 /// 活动类型：可领取权益（促销类活动是 `VIEW_DETAILS`，不是签到，不能领）
 const ACTION_CLAIM_BENEFIT: &str = "CLAIM_BENEFIT";
@@ -91,73 +91,112 @@ pub async fn inspect_uncertain_claim(
     let run_started_at_sec = run_started_at_ms.div_euclid(1000);
     if run_started_at_ms <= 0 || run_started_at_sec <= 0 {
         return Ok(unknown_reconciliation(
-            region, observed_at_ms, "签到运行时间无效，无法匹配活动窗口",
+            region,
+            observed_at_ms,
+            "签到运行时间无效，无法匹配活动窗口",
         ));
     }
 
     let mut credentials = match refresh::ensure_fresh(store, region, account_id, false).await {
         Ok(value) => value,
-        Err(error) => return Ok(unknown_reconciliation(
-            region, observed_at_ms, &format!("凭证准备失败: {error}"),
-        )),
+        Err(error) => {
+            return Ok(unknown_reconciliation(
+                region,
+                observed_at_ms,
+                &format!("凭证准备失败: {error}"),
+            ))
+        }
     };
     let (record, _) = match refresh::snapshot(store, region, account_id) {
         Ok(value) => value,
-        Err(error) => return Ok(unknown_reconciliation(
-            region, observed_at_ms, &format!("账号快照读取失败: {error}"),
-        )),
+        Err(error) => {
+            return Ok(unknown_reconciliation(
+                region,
+                observed_at_ms,
+                &format!("账号快照读取失败: {error}"),
+            ))
+        }
     };
     let proxy = match auth::account_proxy(&record) {
         Ok(value) => value,
-        Err(error) => return Ok(unknown_reconciliation(
-            region, observed_at_ms, &format!("账号代理配置不可用: {error}"),
-        )),
+        Err(error) => {
+            return Ok(unknown_reconciliation(
+                region,
+                observed_at_ms,
+                &format!("账号代理配置不可用: {error}"),
+            ))
+        }
     };
 
     let mut first = match fetch_campaigns(&credentials, proxy.as_ref()).await {
         Ok(value) => value,
-        Err(error) => return Ok(unknown_reconciliation(
-            region, observed_at_ms, &format!("上游活动查询失败: {error}"),
-        )),
+        Err(error) => {
+            return Ok(unknown_reconciliation(
+                region,
+                observed_at_ms,
+                &format!("上游活动查询失败: {error}"),
+            ))
+        }
     };
     if first.status == 401 && credentials.can_refresh() {
         credentials = match refresh::ensure_fresh(store, region, account_id, true).await {
             Ok(value) => value,
-            Err(error) => return Ok(unknown_reconciliation(
-                region, observed_at_ms, &format!("凭证刷新失败: {error}"),
-            )),
+            Err(error) => {
+                return Ok(unknown_reconciliation(
+                    region,
+                    observed_at_ms,
+                    &format!("凭证刷新失败: {error}"),
+                ))
+            }
         };
         first = match fetch_campaigns(&credentials, proxy.as_ref()).await {
             Ok(value) => value,
-            Err(error) => return Ok(unknown_reconciliation(
-                region, observed_at_ms, &format!("凭证刷新后活动查询失败: {error}"),
-            )),
+            Err(error) => {
+                return Ok(unknown_reconciliation(
+                    region,
+                    observed_at_ms,
+                    &format!("凭证刷新后活动查询失败: {error}"),
+                ))
+            }
         };
     }
     let first_list = match auth::payload(first, "签到对账活动查询") {
         Ok(value) => value,
         Err(error) => {
             return Ok(unknown_reconciliation(
-                region, observed_at_ms, &format!("上游活动查询不可用: {error}"),
+                region,
+                observed_at_ms,
+                &format!("上游活动查询不可用: {error}"),
             ));
         }
     };
 
     let list = if region == Region::Global {
-        let uid = first_list.get("uid").and_then(Value::as_str).unwrap_or("").trim();
+        let uid = first_list
+            .get("uid")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim();
         if uid.is_empty() {
             return Ok(unknown_reconciliation(
-                region, observed_at_ms, "国际版活动列表缺少 uid，无法构造设备风控身份",
+                region,
+                observed_at_ms,
+                "国际版活动列表缺少 uid，无法构造设备风控身份",
             ));
         }
         let (headers, _) = risk::augment_headers(
-            endpoints::sash_headers(&credentials.access_token), region, uid,
-        ).await;
+            endpoints::sash_headers(&credentials.access_token),
+            region,
+            uid,
+        )
+        .await;
         let second = match fetch_campaigns_with(&credentials, proxy.as_ref(), &headers).await {
             Ok(response) => response,
             Err(error) => {
                 return Ok(unknown_reconciliation(
-                    region, observed_at_ms, &format!("国际版风控活动查询失败: {error}"),
+                    region,
+                    observed_at_ms,
+                    &format!("国际版风控活动查询失败: {error}"),
                 ));
             }
         };
@@ -165,7 +204,9 @@ pub async fn inspect_uncertain_claim(
             Ok(value) => value,
             Err(error) => {
                 return Ok(unknown_reconciliation(
-                    region, observed_at_ms, &format!("国际版风控活动查询不可用: {error}"),
+                    region,
+                    observed_at_ms,
+                    &format!("国际版风控活动查询不可用: {error}"),
                 ));
             }
         }
@@ -174,7 +215,10 @@ pub async fn inspect_uncertain_claim(
     };
 
     Ok(classify_campaign_reconciliation(
-        &list, run_started_at_sec, observed_at_ms, region,
+        &list,
+        run_started_at_sec,
+        observed_at_ms,
+        region,
     ))
 }
 
@@ -199,15 +243,18 @@ fn classify_campaign_reconciliation(
         return unknown_reconciliation(region, observed_at_ms, "上游响应缺少 campaigns 数组");
     };
 
-    let matching: Vec<&Value> = rows.iter().filter(|row| {
-        if row.get("actionType").and_then(Value::as_str) != Some(ACTION_CLAIM_BENEFIT) {
-            return false;
-        }
-        let start = row.get("startAt").and_then(Value::as_i64);
-        let end = row.get("endAt").and_then(Value::as_i64);
-        matches!((start, end), (Some(start), Some(end))
+    let matching: Vec<&Value> = rows
+        .iter()
+        .filter(|row| {
+            if row.get("actionType").and_then(Value::as_str) != Some(ACTION_CLAIM_BENEFIT) {
+                return false;
+            }
+            let start = row.get("startAt").and_then(Value::as_i64);
+            let end = row.get("endAt").and_then(Value::as_i64);
+            matches!((start, end), (Some(start), Some(end))
             if start > 0 && end > start && start <= run_started_at_sec && run_started_at_sec <= end)
-    }).collect();
+        })
+        .collect();
 
     if matching.len() != 1 {
         let reason = if matching.is_empty() {
@@ -219,10 +266,22 @@ fn classify_campaign_reconciliation(
     }
 
     let campaign = matching[0];
-    let status = campaign.get("claimStatus").and_then(Value::as_str).unwrap_or("");
-    let start = campaign.get("startAt").and_then(Value::as_i64).unwrap_or_default();
-    let end = campaign.get("endAt").and_then(Value::as_i64).unwrap_or_default();
-    let campaign_id = campaign.get("campaignId").and_then(Value::as_str).unwrap_or("");
+    let status = campaign
+        .get("claimStatus")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let start = campaign
+        .get("startAt")
+        .and_then(Value::as_i64)
+        .unwrap_or_default();
+    let end = campaign
+        .get("endAt")
+        .and_then(Value::as_i64)
+        .unwrap_or_default();
+    let campaign_id = campaign
+        .get("campaignId")
+        .and_then(Value::as_str)
+        .unwrap_or("");
     if campaign_id.is_empty() {
         return unknown_reconciliation(region, observed_at_ms, "匹配活动缺少 campaignId");
     }
@@ -286,7 +345,12 @@ pub async fn claim_daily_checkin(
     let mut headers = endpoints::sash_headers(&credentials.access_token);
     let mut risk_note: Option<String> = None;
     if region == Region::Global {
-        let uid = list.get("uid").and_then(Value::as_str).unwrap_or("").trim().to_string();
+        let uid = list
+            .get("uid")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string();
         let (augmented, note) = risk::augment_headers(headers, region, &uid).await;
         headers = augmented;
         risk_note = note;
@@ -295,13 +359,40 @@ pub async fn claim_daily_checkin(
             credentials = refresh::ensure_fresh(store, region, account_id, true).await?;
             let third = fetch_campaigns(&credentials, proxy.as_ref()).await?;
             let third = intl_refetch(&credentials, proxy.as_ref(), third).await?;
-            return claim_from(store, region, account_id, credentials, proxy, third, risk_note).await;
+            return claim_from(
+                store,
+                region,
+                account_id,
+                credentials,
+                proxy,
+                third,
+                risk_note,
+            )
+            .await;
         }
         let second = auth::payload(second, "签到活动查询（风控重拉）")?;
-        return claim_from(store, region, account_id, credentials, proxy, second, risk_note).await;
+        return claim_from(
+            store,
+            region,
+            account_id,
+            credentials,
+            proxy,
+            second,
+            risk_note,
+        )
+        .await;
     }
 
-    claim_from(store, region, account_id, credentials, proxy, list, risk_note).await
+    claim_from(
+        store,
+        region,
+        account_id,
+        credentials,
+        proxy,
+        list,
+        risk_note,
+    )
+    .await
 }
 
 /// 国际版的活动列表重取（叠风控头）。首段的 `uid` 缺失（上游没给）时按空
@@ -313,8 +404,18 @@ async fn intl_refetch(
     first: ApiResponse,
 ) -> Result<Value, GatewayError> {
     let first = auth::payload(first, "签到活动查询")?;
-    let uid = first.get("uid").and_then(Value::as_str).unwrap_or("").trim().to_string();
-    let (headers, _) = risk::augment_headers(endpoints::sash_headers(&credentials.access_token), credentials.region, &uid).await;
+    let uid = first
+        .get("uid")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let (headers, _) = risk::augment_headers(
+        endpoints::sash_headers(&credentials.access_token),
+        credentials.region,
+        &uid,
+    )
+    .await;
     let second = fetch_campaigns_with(credentials, proxy, &headers).await?;
     auth::payload(second, "签到活动查询（风控重拉）")
 }
@@ -351,9 +452,15 @@ async fn claim_from(
     let Some(target) = claimable else {
         return Ok(no_claim(region, claimed, risk_note));
     };
-    let campaign_id = target.get("campaignId").and_then(Value::as_str).unwrap_or("");
+    let campaign_id = target
+        .get("campaignId")
+        .and_then(Value::as_str)
+        .unwrap_or("");
     if campaign_id.is_empty() {
-        return Err(GatewayError::with_status(502, "Qoder 签到活动缺少活动标识，无法领取"));
+        return Err(GatewayError::with_status(
+            502,
+            "Qoder 签到活动缺少活动标识，无法领取",
+        ));
     }
 
     let url = format!(
@@ -364,7 +471,12 @@ async fn claim_from(
     );
     let mut headers = endpoints::sash_headers(&credentials.access_token);
     if region == Region::Global {
-        let uid = list.get("uid").and_then(Value::as_str).unwrap_or("").trim().to_string();
+        let uid = list
+            .get("uid")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string();
         let (augmented, _) = risk::augment_headers(headers, region, &uid).await;
         headers = augmented;
     }
@@ -379,7 +491,12 @@ async fn claim_from(
         // 重签一个新头束（令牌换了，旧头的 Bearer 已失效）
         let mut fresh_headers = endpoints::sash_headers(&credentials.access_token);
         if region == Region::Global {
-            let uid = list.get("uid").and_then(Value::as_str).unwrap_or("").trim().to_string();
+            let uid = list
+                .get("uid")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim()
+                .to_string();
             let (augmented, _) = risk::augment_headers(fresh_headers, region, &uid).await;
             fresh_headers = augmented;
         }
@@ -397,7 +514,11 @@ async fn claim_from(
         let status = body.get("status").and_then(Value::as_str).unwrap_or("未知");
         return Ok(json!({ "success": false, "msg": format!("签到未完成（上游状态 {status}）") }));
     }
-    if body.get("replayed").and_then(Value::as_bool).unwrap_or(false) {
+    if body
+        .get("replayed")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
         return Ok(json!({
             "success": false,
             "alreadyCompleted": true,
@@ -463,7 +584,10 @@ async fn claim_campaign(
 ) -> Result<ApiResponse, GatewayError> {
     let mut headers = headers.to_vec();
     headers.push(("content-type".to_string(), "application/json".to_string()));
-    headers.push(("origin".to_string(), credentials.region.open_api().to_string()));
+    headers.push((
+        "origin".to_string(),
+        credentials.region.open_api().to_string(),
+    ));
     auth::request("POST", url, Some(&json!({})), &headers, proxy).await
 }
 
@@ -547,9 +671,8 @@ mod tests {
             campaign("CLAIMED", ACTION_CLAIM_BENEFIT, 1_800_000_000, 1_800_086_399),
             campaign("CLAIMABLE", "VIEW_DETAILS", 1_800_000_000, 1_800_086_399),
         ]});
-        let result = classify_campaign_reconciliation(
-            &list, 1_800_000_001, 1_800_000_100_000, Region::Cn,
-        );
+        let result =
+            classify_campaign_reconciliation(&list, 1_800_000_001, 1_800_000_100_000, Region::Cn);
         assert_eq!(result["verdict"], "confirmed");
         assert_eq!(result["upstreamStatus"], "CLAIMED");
     }
@@ -559,9 +682,8 @@ mod tests {
         let list = json!({ "campaigns": [
             campaign("CLAIMABLE", ACTION_CLAIM_BENEFIT, 1_800_000_000, 1_800_086_399),
         ]});
-        let result = classify_campaign_reconciliation(
-            &list, 1_800_000_001, 1_800_000_100_000, Region::Cn,
-        );
+        let result =
+            classify_campaign_reconciliation(&list, 1_800_000_001, 1_800_000_100_000, Region::Cn);
         assert_eq!(result["verdict"], "unknown");
         assert_eq!(result["upstreamStatus"], "CLAIMABLE");
     }
@@ -577,7 +699,10 @@ mod tests {
         ]});
         for list in [&missing, &ambiguous] {
             let result = classify_campaign_reconciliation(
-                list, 1_800_000_001, 1_800_000_100_000, Region::Cn,
+                list,
+                1_800_000_001,
+                1_800_000_100_000,
+                Region::Cn,
             );
             assert_eq!(result["verdict"], "unknown");
         }

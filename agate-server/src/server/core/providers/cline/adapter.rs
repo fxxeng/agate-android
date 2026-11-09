@@ -73,10 +73,10 @@ use axum::http::HeaderMap;
 use serde_json::Value;
 
 use crate::server::core::account_store::AccountStore;
-use crate::server::core::providers::content_block;
 use crate::server::core::providers::adapter::{
     ChatRequestPlan, ModelRefreshOutcome, ProviderAdapter, UpstreamErrorClass,
 };
+use crate::server::core::providers::content_block;
 use crate::server::core::providers::ProviderKind;
 use crate::server::errors::GatewayError;
 use crate::server::logging;
@@ -302,9 +302,7 @@ impl ProviderAdapter for ClineAdapter {
         // 去拉」这一维 —— 弹窗里那一列对它显示为空，参数照收不用
         _account_id: &'a str,
         _force: bool,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = ModelRefreshOutcome> + Send + 'a>,
-    > {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ModelRefreshOutcome> + Send + 'a>> {
         Box::pin(async move {
             match models::refresh().await {
                 Ok(count) => {
@@ -318,10 +316,7 @@ impl ProviderAdapter for ClineAdapter {
                     ModelRefreshOutcome::refreshed(count)
                 }
                 Err(reason) => {
-                    logging::verbose(
-                        "[Models]",
-                        &format!("Cline 模型目录刷新失败：{reason}"),
-                    );
+                    logging::verbose("[Models]", &format!("Cline 模型目录刷新失败：{reason}"));
                     ModelRefreshOutcome::failed(format!("Cline 目录刷新失败：{reason}"))
                 }
             }
@@ -429,9 +424,8 @@ impl ProviderAdapter for ClineAdapter {
         &'a self,
         store: &'a AccountStore,
         account_id: &'a str,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<Value, GatewayError>> + Send + 'a>,
-    > {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value, GatewayError>> + Send + 'a>>
+    {
         Box::pin(async move { super::balance::query_usage(store, account_id).await })
     }
 }
@@ -671,7 +665,9 @@ fn parse_human_duration_ms(text: &str) -> Option<i64> {
     while index < bytes.len() {
         match bytes[index] {
             b'0'..=b'9' => {
-                num = num.saturating_mul(10).saturating_add((bytes[index] - b'0') as i64);
+                num = num
+                    .saturating_mul(10)
+                    .saturating_add((bytes[index] - b'0') as i64);
             }
             b'd' => {
                 total_ms = total_ms.saturating_add(num.saturating_mul(86_400_000));
@@ -716,7 +712,10 @@ mod tests {
 
     #[test]
     fn a_bare_body_gets_session_id_max_tokens_and_effort_defaults() {
-        let out = build_upstream_body(&json!({"model": "cline-free/deepseek-v4.1-flash", "messages": []}), "sess_1");
+        let out = build_upstream_body(
+            &json!({"model": "cline-free/deepseek-v4.1-flash", "messages": []}),
+            "sess_1",
+        );
         assert_eq!(out["model"], "cline-free/deepseek-v4.1-flash");
         assert_eq!(out["session_id"], "sess_1");
         assert_eq!(out["max_tokens"], 128_000);
@@ -766,7 +765,10 @@ mod tests {
     fn fixed_headers_come_first_and_disguise_headers_follow() {
         let headers = build_chat_headers("tok", "sess_9");
         let names: Vec<&str> = headers.iter().map(|(key, _)| key.as_str()).collect();
-        assert_eq!(&names[..4], &["Content-Type", "Accept", "Authorization", "X-Task-ID"][..]);
+        assert_eq!(
+            &names[..4],
+            &["Content-Type", "Accept", "Authorization", "X-Task-ID"][..]
+        );
         assert!(names.contains(&"X-CLIENT-TYPE"));
         assert!(names.contains(&"X-PLATFORM"));
         let task_id = headers.iter().find(|(key, _)| key == "X-Task-ID");
@@ -778,10 +780,21 @@ mod tests {
         // 覆盖合并的语义：同名（大小写不敏感）替换。追加的话 reqwest 会发出
         // 多值头（`headers_mut().append()`），上游看到的是两个值
         let mut headers = vec![("X-PLATFORM".to_string(), "terminal".to_string())];
-        upsert_header(&mut headers, "x-platform".to_string(), "extension".to_string());
-        assert_eq!(headers, vec![("X-PLATFORM".to_string(), "extension".to_string())]);
+        upsert_header(
+            &mut headers,
+            "x-platform".to_string(),
+            "extension".to_string(),
+        );
+        assert_eq!(
+            headers,
+            vec![("X-PLATFORM".to_string(), "extension".to_string())]
+        );
         // 默认清单之外的新头是追加
-        upsert_header(&mut headers, "X-Custom-Trace".to_string(), "abc".to_string());
+        upsert_header(
+            &mut headers,
+            "X-Custom-Trace".to_string(),
+            "abc".to_string(),
+        );
         assert_eq!(headers.len(), 2);
     }
 
@@ -803,15 +816,24 @@ mod tests {
             CLINE_FREE_ADAPTER.outbound_reasoning(&explicit).as_deref(),
             Some("low")
         );
-        assert_eq!(build_upstream_body(&explicit, "sess_5")["reasoning_effort"], "low");
+        assert_eq!(
+            build_upstream_body(&explicit, "sess_5")["reasoning_effort"],
+            "low"
+        );
     }
 
     // ── 429 人话时长 ──
 
     #[test]
     fn try_again_durations_in_all_unit_combinations_are_parsed() {
-        assert_eq!(parse_human_duration_ms("17h 59m"), Some(17 * 3_600_000 + 59 * 60_000));
-        assert_eq!(parse_human_duration_ms("1d 2h 30m"), Some(86_400_000 + 2 * 3_600_000 + 30 * 60_000));
+        assert_eq!(
+            parse_human_duration_ms("17h 59m"),
+            Some(17 * 3_600_000 + 59 * 60_000)
+        );
+        assert_eq!(
+            parse_human_duration_ms("1d 2h 30m"),
+            Some(86_400_000 + 2 * 3_600_000 + 30 * 60_000)
+        );
         assert_eq!(parse_human_duration_ms("30s"), Some(30_000));
         assert_eq!(parse_human_duration_ms("17h"), Some(17 * 3_600_000));
         assert_eq!(parse_human_duration_ms("500ms"), Some(500));
@@ -824,7 +846,10 @@ mod tests {
         let body = json!({"error": {"code": "INFERENCE_CAP_ERROR", "message": "Rate limited. Try again in 17h 59m."}});
         let text = serde_json::to_string(&body).unwrap_or_default();
         // 引号/句点截断不吞字：`59m.` 的句点落在单位字母之后，m 已结算
-        assert_eq!(parse_try_again_ms(&text), Some(17 * 3_600_000 + 59 * 60_000));
+        assert_eq!(
+            parse_try_again_ms(&text),
+            Some(17 * 3_600_000 + 59 * 60_000)
+        );
     }
 
     #[test]

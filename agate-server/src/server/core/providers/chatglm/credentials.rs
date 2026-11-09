@@ -255,12 +255,7 @@ pub fn from_record(record: Option<&Value>) -> Result<ChatglmCredentials, Gateway
         ));
     }
     // 设备号：记录里有就复用，没有则现生成（上层负责写回，见账号层）
-    let device_id = resolve_device_id(
-        record
-            .get("deviceId")
-            .and_then(Value::as_str)
-            .unwrap_or(""),
-    );
+    let device_id = resolve_device_id(record.get("deviceId").and_then(Value::as_str).unwrap_or(""));
     // 访客判定：先看记录里显式标的（添加时判定过），再退回读 JWT 声明
     let is_guest = match record.get("isGuest").and_then(Value::as_bool) {
         Some(flag) => flag,
@@ -356,7 +351,10 @@ mod tests {
         });
         let credentials = from_record(Some(&record)).expect("应当解析成功");
         assert_eq!(credentials.access_token, "aaaaaaaaaaaaaaaaaaaa");
-        assert_eq!(credentials.device_id, "c9074ab1-208b-4255-8f71-09cc2ce32278");
+        assert_eq!(
+            credentials.device_id,
+            "c9074ab1-208b-4255-8f71-09cc2ce32278"
+        );
         assert!(credentials.is_guest);
         assert_eq!(credentials.uid, "6ad26bd46976b1c1ab1c2cb2");
         // 尾段是令牌最后 8 个字符

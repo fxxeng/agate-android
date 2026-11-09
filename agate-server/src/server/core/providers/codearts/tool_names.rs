@@ -71,7 +71,11 @@ pub fn shorten(body: &mut Value) -> Option<Restorer> {
     let tools = body.get_mut("tools").and_then(Value::as_array_mut)?;
     // 判重的底账：客户端本来就有的名字一个都不许占用 —— 生成的短名撞上真名，
     // 等于把两个不同工具并成一个，而上游不报错（见模块头第二条）
-    let mut taken: HashSet<String> = tools.iter().filter_map(function_name).map(str::to_owned).collect();
+    let mut taken: HashSet<String> = tools
+        .iter()
+        .filter_map(function_name)
+        .map(str::to_owned)
+        .collect();
     let mut sent_to_original = HashMap::new();
     for tool in tools.iter_mut() {
         let Some(original) = function_name(tool).map(str::to_owned) else {
@@ -141,7 +145,8 @@ impl Restorer {
                     continue;
                 };
                 for call in calls.iter_mut() {
-                    let Some(object) = call.get_mut("function").and_then(Value::as_object_mut) else {
+                    let Some(object) = call.get_mut("function").and_then(Value::as_object_mut)
+                    else {
                         continue;
                     };
                     // 先借出去查，拿到所有权再写回：同一处两次借用会打架
@@ -207,7 +212,11 @@ impl Restorer {
                 None => out.extend_from_slice(line.as_bytes()),
             }
         }
-        if touched { out } else { event.to_vec() }
+        if touched {
+            out
+        } else {
+            event.to_vec()
+        }
     }
 }
 
@@ -222,7 +231,10 @@ pub struct StreamFixer {
 
 impl StreamFixer {
     pub fn new(restorer: Option<Restorer>) -> Self {
-        Self { restorer, pending: Vec::new() }
+        Self {
+            restorer,
+            pending: Vec::new(),
+        }
     }
 
     /// 有没有活要干。`true` 时调用方可以照旧逐字节透传，不必走 [`Self::push`]。
@@ -256,7 +268,10 @@ impl StreamFixer {
 
 /// 事件结尾（空行）之后的位置；`None` = 还没收全。
 fn find_event_end(bytes: &[u8]) -> Option<usize> {
-    bytes.windows(2).position(|pair| pair == b"\n\n").map(|at| at + 2)
+    bytes
+        .windows(2)
+        .position(|pair| pair == b"\n\n")
+        .map(|at| at + 2)
 }
 
 #[cfg(test)]
@@ -315,7 +330,11 @@ mod name_limit {
         let sent = names_of(&body);
         assert_eq!(exactly, sent[0], "到线值不该被动");
         assert_eq!(1, restorer.sent_to_original.len(), "只改那一个超限的");
-        assert!(sent[1].chars().count() <= MAX_NAME_CHARS, "改完必须落在上限内：{}", sent[1]);
+        assert!(
+            sent[1].chars().count() <= MAX_NAME_CHARS,
+            "改完必须落在上限内：{}",
+            sent[1]
+        );
         assert_eq!(over, restorer.sent_to_original[&sent[1]]);
     }
 
@@ -324,12 +343,22 @@ mod name_limit {
         // 上游不判重名：截断撞名不会报错，只会让模型无从区分 —— 所以必须自己分开
         let a = format!("{PREFIX}android_start_emulator");
         let b = format!("{PREFIX}android_stop_emulator");
-        assert_eq!(a[..47], b[..47], "夹具得真的共享前缀，否则这条测的是别的东西");
+        assert_eq!(
+            a[..47],
+            b[..47],
+            "夹具得真的共享前缀，否则这条测的是别的东西"
+        );
         let mut body = body_with(&[&a, &b]);
         let restorer = shorten(&mut body).expect("两个都超限");
         let sent = names_of(&body);
-        assert_ne!(sent[0], sent[1], "共享前缀的两个名字改完必须还彼此不同：{sent:?}");
-        assert_eq!(a, restorer.sent_to_original[&sent[0]], "还原要各回各自的原名");
+        assert_ne!(
+            sent[0], sent[1],
+            "共享前缀的两个名字改完必须还彼此不同：{sent:?}"
+        );
+        assert_eq!(
+            a, restorer.sent_to_original[&sent[0]],
+            "还原要各回各自的原名"
+        );
         assert_eq!(b, restorer.sent_to_original[&sent[1]]);
     }
 
@@ -338,7 +367,11 @@ mod name_limit {
         // 真实风险：客户端自己就有一个 64 字符的名字，恰好等于我们会给别的名字生成的那个。
         // 先按算法算出「victim 会生成成什么」，再把它当成客户端已有名塞回去 —— 于是判重
         // 必须把它绕开（换成更长的哈希档）。
-        let victim = format!("{}{}", "p".repeat(MAX_NAME_CHARS - 8), "over_the_limit_name_here");
+        let victim = format!(
+            "{}{}",
+            "p".repeat(MAX_NAME_CHARS - 8),
+            "over_the_limit_name_here"
+        );
         assert!(victim.chars().count() > MAX_NAME_CHARS);
         let first_choice = short_name(&victim, &mut HashSet::new()).expect("单次生成不该失败");
         assert_eq!(MAX_NAME_CHARS, first_choice.chars().count());
@@ -346,8 +379,14 @@ mod name_limit {
         let restorer = shorten(&mut body).expect("victim 超限");
         let sent = names_of(&body);
         assert_eq!(first_choice, sent[0], "没超限的真名原样留着");
-        assert_ne!(sent[0], sent[1], "生成的名字不许撞上客户端本来就有的名字：{sent:?}");
-        assert_eq!(victim, restorer.sent_to_original[&sent[1]], "换了哈希档也要能还原回去");
+        assert_ne!(
+            sent[0], sent[1],
+            "生成的名字不许撞上客户端本来就有的名字：{sent:?}"
+        );
+        assert_eq!(
+            victim, restorer.sent_to_original[&sent[1]],
+            "换了哈希档也要能还原回去"
+        );
     }
 
     #[test]
@@ -356,12 +395,21 @@ mod name_limit {
         let restorer = shorten(&mut body).expect("该改");
         let sent = names_of(&body)[0].clone();
         let frame = delta_frame(&sent);
-        assert!(serde_json::from_str::<Value>(frame[6..].trim_end()).is_ok(), "夹具自己得是合法 JSON：{frame}");
+        assert!(
+            serde_json::from_str::<Value>(frame[6..].trim_end()).is_ok(),
+            "夹具自己得是合法 JSON：{frame}"
+        );
         let out = String::from_utf8(restorer.rewrite_event(frame.as_bytes())).unwrap();
         assert!(out.contains(LONG), "还原后要看见客户端原来的名字：{out}");
-        assert!(!out.contains(&format!("\"{sent}\"")), "改短的那个名字不许留在流里");
+        assert!(
+            !out.contains(&format!("\"{sent}\"")),
+            "改短的那个名字不许留在流里"
+        );
         assert!(out.contains("ok"), "同帧里的 arguments 不能被弄丢");
-        assert!(out.starts_with("data: "), "`data: ` 的空格形状要保持（上游就是这么写的）");
+        assert!(
+            out.starts_with("data: "),
+            "`data: ` 的空格形状要保持（上游就是这么写的）"
+        );
     }
 
     #[test]
@@ -376,7 +424,11 @@ mod name_limit {
             "含 tool_calls 字样但没有真名字命中 —— 必须逐字节原样"
         );
         let done = b"data: [DONE]\n\n";
-        assert_eq!(restorer.rewrite_event(done).as_slice(), done, "[DONE] 不该被重新序列化");
+        assert_eq!(
+            restorer.rewrite_event(done).as_slice(),
+            done,
+            "[DONE] 不该被重新序列化"
+        );
     }
 
     #[test]
@@ -384,10 +436,12 @@ mod name_limit {
         let mut body = body_with(&[LONG]);
         let restorer = shorten(&mut body).expect("该改");
         let sent = names_of(&body)[0].clone();
-        let mut completion: Value =
-            serde_json::json!({"choices": [{"message": {"tool_calls": [{"function": {"name": sent}}]}}]});
+        let mut completion: Value = serde_json::json!({"choices": [{"message": {"tool_calls": [{"function": {"name": sent}}]}}]});
         restorer.apply_completion(&mut completion);
-        assert_eq!(LONG, completion["choices"][0]["message"]["tool_calls"][0]["function"]["name"]);
+        assert_eq!(
+            LONG,
+            completion["choices"][0]["message"]["tool_calls"][0]["function"]["name"]
+        );
     }
 
     #[test]
@@ -404,9 +458,15 @@ mod name_limit {
         assert!(out.is_empty(), "半帧不该先放出去（客户端会看到半条 JSON）");
         out.extend(fixer.push(&bytes[cut..]).into_owned());
         out.extend(fixer.finish());
-        assert!(out.starts_with(b"data: ") && out.ends_with(b"\n\n"), "成帧形状要保持原样");
+        assert!(
+            out.starts_with(b"data: ") && out.ends_with(b"\n\n"),
+            "成帧形状要保持原样"
+        );
         let restored = String::from_utf8(out).unwrap();
-        assert!(restored.contains(LONG) && !restored.contains(&format!("\"{sent}\"")), "{restored}");
+        assert!(
+            restored.contains(LONG) && !restored.contains(&format!("\"{sent}\"")),
+            "{restored}"
+        );
     }
 
     #[test]
@@ -416,7 +476,10 @@ mod name_limit {
         assert!(fixer.idle());
         let bytes = b"data: {\"x\":1}\n\ndata: partial";
         let out = fixer.push(bytes);
-        assert!(matches!(out, Cow::Borrowed(inner) if inner == &bytes[..]), "idle 时不该走缓冲那条路");
+        assert!(
+            matches!(out, Cow::Borrowed(inner) if inner == &bytes[..]),
+            "idle 时不该走缓冲那条路"
+        );
         assert!(fixer.finish().is_empty(), "idle 时不该攥着任何字节");
     }
 
@@ -453,17 +516,25 @@ mod name_limit {
         ];
         let names: Vec<String> = tails.iter().map(|tail| format!("{PREFIX}{tail}")).collect();
         let refs: Vec<&str> = names.iter().map(String::as_str).collect();
-        let over = names.iter().filter(|name| name.chars().count() > MAX_NAME_CHARS).count();
+        let over = names
+            .iter()
+            .filter(|name| name.chars().count() > MAX_NAME_CHARS)
+            .count();
         assert_eq!(13, over, "夹具要真的是那 13 个超限名");
         let mut body = body_with(&refs);
         let restorer = shorten(&mut body).expect("这一组里确有超限名");
         let sent = names_of(&body);
-        assert!(sent.iter().all(|name| name.chars().count() <= MAX_NAME_CHARS));
+        assert!(sent
+            .iter()
+            .all(|name| name.chars().count() <= MAX_NAME_CHARS));
         let unique: HashSet<&String> = sent.iter().collect();
         assert_eq!(refs.len(), unique.len(), "改完的名字两两不许相同：{sent:?}");
         for (index, name) in names.iter().enumerate() {
             if name.chars().count() > MAX_NAME_CHARS {
-                assert_eq!(*name, restorer.sent_to_original[&sent[index]], "{name} 还原不回去");
+                assert_eq!(
+                    *name, restorer.sent_to_original[&sent[index]],
+                    "{name} 还原不回去"
+                );
             } else {
                 assert_eq!(name, &sent[index], "到线的名字不许被改");
             }

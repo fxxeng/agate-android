@@ -78,7 +78,12 @@ impl HeaderProfile {
             ("X-Language".to_string(), self.language.clone()),
             (
                 "is_confidential".to_string(),
-                if self.is_confidential { "true" } else { "false" }.to_string(),
+                if self.is_confidential {
+                    "true"
+                } else {
+                    "false"
+                }
+                .to_string(),
             ),
             ("plugin-name".to_string(), self.plugin_name.clone()),
             ("plugin-version".to_string(), self.plugin_version.clone()),
@@ -116,7 +121,10 @@ pub fn build_upstream_request(
 ) -> Result<(String, Vec<(String, String)>, Vec<u8>), GatewayError> {
     let model = model.trim();
     if model.is_empty() {
-        return Err(GatewayError::with_status(400, "CodeArts 模型名为空，请从 /v1/models 里选一个"));
+        return Err(GatewayError::with_status(
+            400,
+            "CodeArts 模型名为空，请从 /v1/models 里选一个",
+        ));
     }
     if payload.get("messages").and_then(Value::as_array).is_none() {
         return Err(GatewayError::with_status(400, "请求体缺少 messages 数组"));
@@ -129,7 +137,10 @@ pub fn build_upstream_request(
     object.insert("stream".to_string(), Value::Bool(stream));
     if stream {
         // 让上游在最后一帧带上 usage（不要求它就永远不会给）
-        object.insert("stream_options".to_string(), json!({ "include_usage": true }));
+        object.insert(
+            "stream_options".to_string(),
+            json!({ "include_usage": true }),
+        );
     }
     // 「关思考」在本家没有可发送的表达：始终思考的名字收到 `reasoning_effort:"none"`
     // 会被上游整条拒掉（dev 一手：Qoder 的侧路调用每发都撞，错误是
@@ -172,8 +183,15 @@ pub fn build_upstream_request(
         // 无凭据不发签名请求：这是排障用的逃生口，正常路径不该走到
         return Ok((endpoint, headers, body));
     };
-    let signed = signer::sign("POST", &endpoint, &headers, &body, &signer_credential(credential), false)
-        .map_err(|reason| GatewayError::with_status(500, reason))?;
+    let signed = signer::sign(
+        "POST",
+        &endpoint,
+        &headers,
+        &body,
+        &signer_credential(credential),
+        false,
+    )
+    .map_err(|reason| GatewayError::with_status(500, reason))?;
     Ok((endpoint, signed, body))
 }
 
@@ -280,7 +298,10 @@ mod thinking_off_switches {
             "enable_thinking": false,
         });
         assert_eq!(
-            vec!["reasoning_effort".to_string(), "enable_thinking".to_string()],
+            vec![
+                "reasoning_effort".to_string(),
+                "enable_thinking".to_string()
+            ],
             drop_thinking_off(&mut payload)
         );
         assert_eq!(payload, json!({}), "摘完不该留下空壳之外的东西");
@@ -300,7 +321,11 @@ mod thinking_off_switches {
         // 与 `enable_thinking:true` 都是客户端的有效意图，删掉就是替客户端做主。
         for level in ["low", "medium", "high", "max"] {
             let mut payload = json!({"reasoning_effort": level, "enable_thinking": true});
-            assert_eq!(Vec::<String>::new(), drop_thinking_off(&mut payload), "{level}");
+            assert_eq!(
+                Vec::<String>::new(),
+                drop_thinking_off(&mut payload),
+                "{level}"
+            );
             assert_eq!(
                 json!({"reasoning_effort": level, "enable_thinking": true}),
                 payload
@@ -333,8 +358,14 @@ mod thinking_off_switches {
         )
         .expect("构造出站请求");
         let text = String::from_utf8_lossy(&body).to_string();
-        assert!(!text.contains("reasoning_effort"), "出门字节里不该有它：{text}");
-        assert!(!text.contains("enable_thinking"), "出门字节里不该有它：{text}");
+        assert!(
+            !text.contains("reasoning_effort"),
+            "出门字节里不该有它：{text}"
+        );
+        assert!(
+            !text.contains("enable_thinking"),
+            "出门字节里不该有它：{text}"
+        );
     }
 }
 
@@ -510,10 +541,18 @@ fn merge_chunk(aggregated: &mut Aggregated, payload: &str) {
     let Ok(chunk) = serde_json::from_str::<Value>(payload) else {
         return;
     };
-    if let Some(id) = chunk.get("id").and_then(Value::as_str).filter(|value| !value.is_empty()) {
+    if let Some(id) = chunk
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+    {
         aggregated.id = Some(id.to_string());
     }
-    if let Some(model) = chunk.get("model").and_then(Value::as_str).filter(|value| !value.is_empty()) {
+    if let Some(model) = chunk
+        .get("model")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+    {
         aggregated.model = Some(model.to_string());
     }
     if let Some(usage) = chunk.get("usage").filter(|value| !value.is_null()) {
@@ -564,14 +603,26 @@ fn merge_tool_call(calls: &mut Vec<Value>, incoming: &Value) {
         calls.push(json!({ "index": calls.len(), "type": "function", "function": { "name": "", "arguments": "" } }));
     }
     let target = &mut calls[index];
-    if let Some(id) = incoming.get("id").and_then(Value::as_str).filter(|value| !value.is_empty()) {
+    if let Some(id) = incoming
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+    {
         target["id"] = Value::String(id.to_string());
     }
-    if let Some(kind) = incoming.get("type").and_then(Value::as_str).filter(|value| !value.is_empty()) {
+    if let Some(kind) = incoming
+        .get("type")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+    {
         target["type"] = Value::String(kind.to_string());
     }
     if let Some(function) = incoming.get("function").and_then(Value::as_object) {
-        if let Some(name) = function.get("name").and_then(Value::as_str).filter(|value| !value.is_empty()) {
+        if let Some(name) = function
+            .get("name")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+        {
             target["function"]["name"] = Value::String(name.to_string());
         }
         if let Some(arguments) = function.get("arguments").and_then(Value::as_str) {
@@ -787,7 +838,9 @@ fn truncate(text: &str, limit: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::server::core::providers::codearts::credentials::{DpopKeyPair, Jwk, OAuthContext, PkcePair};
+    use crate::server::core::providers::codearts::credentials::{
+        DpopKeyPair, Jwk, OAuthContext, PkcePair,
+    };
 
     fn credential() -> Credential {
         Credential {
@@ -796,9 +849,17 @@ mod tests {
             security_token: "sts-probe+token/0000".to_string(),
             domain_id: "dom".to_string(),
             oauth_context: Some(OAuthContext {
-                pkce_pair: PkcePair { code_verifier: "verifier".to_string(), ..PkcePair::default() },
+                pkce_pair: PkcePair {
+                    code_verifier: "verifier".to_string(),
+                    ..PkcePair::default()
+                },
                 dpop_key_pair: DpopKeyPair {
-                    private_key_jwk: Jwk { kty: "EC".into(), crv: "P-256".into(), d: "AQ".into(), ..Jwk::default() },
+                    private_key_jwk: Jwk {
+                        kty: "EC".into(),
+                        crv: "P-256".into(),
+                        d: "AQ".into(),
+                        ..Jwk::default()
+                    },
                     ..DpopKeyPair::default()
                 },
             }),
@@ -823,7 +884,10 @@ mod tests {
             Some(&credential()),
         )
         .expect("应当能构造请求");
-        assert_eq!("https://snap-access.cn-north-4.myhuaweicloud.com/api/v2/chat/completions", endpoint);
+        assert_eq!(
+            "https://snap-access.cn-north-4.myhuaweicloud.com/api/v2/chat/completions",
+            endpoint
+        );
         let find = |name: &str| {
             headers
                 .iter()
@@ -838,12 +902,18 @@ mod tests {
         assert_eq!("benefit", find("maas_type"), "福利模型要显式带 maas_type");
         assert_eq!("ChatAgent", find("Agent-Type"));
         assert_eq!("Vscode_26.9.101", find("client_version"));
-        assert!(find("Authorization").starts_with("SDK-HMAC-SHA256 Access="), "必须签过名");
+        assert!(
+            find("Authorization").starts_with("SDK-HMAC-SHA256 Access="),
+            "必须签过名"
+        );
         // body：模型名与服务端收到的 stream 必须被写进去
         let sent: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!("GLM-5.2", sent["model"]);
         assert_eq!(true, sent["stream"]);
-        assert_eq!(true, sent["stream_options"]["include_usage"], "流式要请求 usage");
+        assert_eq!(
+            true, sent["stream_options"]["include_usage"],
+            "流式要请求 usage"
+        );
     }
 
     #[test]
@@ -858,9 +928,13 @@ mod tests {
             None,
         )
         .unwrap();
-        assert!(!headers.iter().any(|(key, _)| key.eq_ignore_ascii_case("maas_type")));
+        assert!(!headers
+            .iter()
+            .any(|(key, _)| key.eq_ignore_ascii_case("maas_type")));
         // 无凭据时不签名（排障逃生口）
-        assert!(!headers.iter().any(|(key, _)| key.eq_ignore_ascii_case("Authorization")));
+        assert!(!headers
+            .iter()
+            .any(|(key, _)| key.eq_ignore_ascii_case("Authorization")));
     }
 
     #[test]
@@ -905,7 +979,10 @@ mod tests {
         let body = format!("data: {frame}\n\ndata: [DONE]\n\n");
         let completion = aggregate_sse(body.as_bytes(), "m").expect("只有 reasoning 也是成功");
         assert_eq!("", completion["choices"][0]["message"]["content"]);
-        assert_eq!("让我想想", completion["choices"][0]["message"]["reasoning_content"]);
+        assert_eq!(
+            "让我想想",
+            completion["choices"][0]["message"]["reasoning_content"]
+        );
         assert_eq!("length", completion["choices"][0]["finish_reason"]);
     }
 
@@ -930,7 +1007,10 @@ mod tests {
         assert_eq!("call_1", call["id"]);
         assert_eq!("function", call["type"]);
         assert_eq!("get_weather", call["function"]["name"]);
-        assert_eq!("{\"city\":\"SF\"}", call["function"]["arguments"], "参数分片必须拼接");
+        assert_eq!(
+            "{\"city\":\"SF\"}", call["function"]["arguments"],
+            "参数分片必须拼接"
+        );
     }
 
     /// 首包门：三种结局都要分得清。
@@ -959,7 +1039,10 @@ mod tests {
         );
         let error = upstream_http_error(400, body.as_bytes(), &credential, false);
         assert_eq!(400, error.status_code, "上游的 400 不能被改成 502");
-        assert!(!error.message.contains(&credential.secret_access_key), "诊断体必须脱敏");
+        assert!(
+            !error.message.contains(&credential.secret_access_key),
+            "诊断体必须脱敏"
+        );
         assert!(!error.message.contains(&credential.access_key_id));
         assert!(error.message.contains("[REDACTED]"));
         // URL 转义的秘密（STS 里带 + 与 /）也要盖住
@@ -994,7 +1077,12 @@ mod tests {
         let mut given = 0;
         let mut pick = |key: &str| {
             let value = std::env::var(key).unwrap_or_default();
-            if value.is_empty() { value } else { given += 1; value }
+            if value.is_empty() {
+                value
+            } else {
+                given += 1;
+                value
+            }
         };
         let credential = Credential {
             access_key_id: pick("CODEARTS_AK"),
@@ -1024,10 +1112,17 @@ mod tests {
         for (name, value) in headers {
             request = request.header(name.as_str(), value.as_str());
         }
-        let response = request.body(body).send().await.expect("请求发不出去（网络或代理）");
+        let response = request
+            .body(body)
+            .send()
+            .await
+            .expect("请求发不出去（网络或代理）");
         let status = response.status().as_u16();
         let text = response.text().await.unwrap_or_default();
-        println!("HTTP {status}\n{}", text.chars().take(400).collect::<String>());
+        println!(
+            "HTTP {status}\n{}",
+            text.chars().take(400).collect::<String>()
+        );
         assert!(
             text.contains("002002009") || text.contains("not registered"),
             "期望上游说「模型没注册」—— 若报的是签名/DPoP/缺字段，说明请求形状不对：HTTP {status} {text}"
@@ -1066,7 +1161,12 @@ mod tests {
         let mut given = 0;
         let mut pick = |key: &str| {
             let value = std::env::var(key).unwrap_or_default();
-            if value.is_empty() { value } else { given += 1; value }
+            if value.is_empty() {
+                value
+            } else {
+                given += 1;
+                value
+            }
         };
         let credential = Credential {
             access_key_id: pick("CODEARTS_AK"),
@@ -1141,7 +1241,9 @@ mod tests {
             ("A 裸 body", headers.clone(), raw.clone()),
             ("B gzip body", gzip_signed, gzipped.clone()),
         ] {
-            let mut request = client.post(&endpoint).timeout(std::time::Duration::from_secs(40));
+            let mut request = client
+                .post(&endpoint)
+                .timeout(std::time::Duration::from_secs(40));
             for (name, value) in headers {
                 request = request.header(name.as_str(), value.as_str());
             }
@@ -1149,14 +1251,21 @@ mod tests {
                 Ok(response) => {
                     let status = response.status().as_u16();
                     let text = response.text().await.unwrap_or_default();
-                    format!("HTTP {status} :: {}", text.chars().take(220).collect::<String>())
+                    format!(
+                        "HTTP {status} :: {}",
+                        text.chars().take(220).collect::<String>()
+                    )
                 }
                 Err(error) => format!("发送失败 :: {error}"),
             };
             println!("{label} → {outcome}");
             shots.push(outcome);
         }
-        assert_eq!(shots.len(), 2, "两发都应当拿到上游的答复（否则本探针没有对照）");
+        assert_eq!(
+            shots.len(),
+            2,
+            "两发都应当拿到上游的答复（否则本探针没有对照）"
+        );
         println!(
             "结论读法：A 是 413 而 B 是 not-registered ⇒ 墙量线字节；两发都 413 ⇒ 墙量解压后的字节；\
              B 报签名/鉴权 ⇒ 上游按解压后的体重算摘要。"
@@ -1196,14 +1305,19 @@ mod tests {
             &serde_json::from_slice::<serde_json::Value>(&raw).expect("凭据文件不是 JSON"),
         )
         .expect("凭据文件解析失败");
-        assert!(original.can_refresh(), "这份凭据没有完整的 oauth_context，刷不了");
+        assert!(
+            original.can_refresh(),
+            "这份凭据没有完整的 oauth_context，刷不了"
+        );
 
         // ① 基线：现有材料还能签出 200 的只读目录
         let catalog = "https://snap-access.cn-north-4.myhuaweicloud.com/v1/model/builtin";
         // 基线**不做断言**：临期与已过期正是这条路径要处理的常态 —— 拿"刷新前
         // 材料必须可用"当断言，等于在最该测的场景（凭据已过期）下先把测试弄崩。
         let status = signed_catalog_status(catalog, &original).await;
-        println!("① 刷新前目录：HTTP {status}（200 = 材料尚可用；401/400 = 已过期，正是要刷的场合）");
+        println!(
+            "① 刷新前目录：HTTP {status}（200 = 材料尚可用；401/400 = 已过期，正是要刷的场合）"
+        );
 
         // ② 真刷新（M1 的验收）：换一套新的 AK/SK/STS，refresh_token 可能轮换
         let fresh = super::super::oauth::refresh_credential(&original, None)
@@ -1222,7 +1336,10 @@ mod tests {
             fresh.expires_at_ms().unwrap_or(0) > original.expires_at_ms().unwrap_or(i64::MAX),
             "刷新后的到期时刻应当更晚"
         );
-        assert!(fresh.can_refresh(), "刷新后的凭据必须还能再刷（oauth_context 要原样保留）");
+        assert!(
+            fresh.can_refresh(),
+            "刷新后的凭据必须还能再刷（oauth_context 要原样保留）"
+        );
         // **先落盘再继续**：后面任何一步失败，都不能丢掉这份新 refresh_token
         if let Ok(path) = std::env::var("CODEARTS_SAVE_TO") {
             let payload = json!({ "codearts_provider_credential": fresh.to_value() });
@@ -1262,7 +1379,12 @@ mod tests {
         let status = response.status().as_u16();
         let text = response.text().await.expect("读不到对话响应体");
         println!("④ 对话：HTTP {status}，{} 字节", text.len());
-        assert_eq!(200, status, "对话被拒：{}", text.chars().take(400).collect::<String>());
+        assert_eq!(
+            200,
+            status,
+            "对话被拒：{}",
+            text.chars().take(400).collect::<String>()
+        );
 
         // 首包门在真流上走一遍：要么答了，要么是带分类的故障（不该是空回答）
         let frames: Vec<&str> = text
@@ -1271,18 +1393,28 @@ mod tests {
             .collect();
         match head_verdict(frames.iter().copied()) {
             HeadVerdict::Answered => println!("   首包门：有内容"),
-            HeadVerdict::Fault(fault) => panic!("首包门判成故障（{fault:?}）—— 这条用例预期是成功对话"),
+            HeadVerdict::Fault(fault) => {
+                panic!("首包门判成故障（{fault:?}）—— 这条用例预期是成功对话")
+            }
             HeadVerdict::Empty => panic!("真对话居然是空回答 —— 这正是 M2 要拦的情形"),
         }
         let completion = aggregate_sse(text.as_bytes(), "GLM-5.2").expect("应当能折叠出回答");
-        let content = completion["choices"][0]["message"]["content"].as_str().unwrap_or("");
-        let reasoning = completion["choices"][0]["message"]["reasoning_content"].as_str().unwrap_or("");
+        let content = completion["choices"][0]["message"]["content"]
+            .as_str()
+            .unwrap_or("");
+        let reasoning = completion["choices"][0]["message"]["reasoning_content"]
+            .as_str()
+            .unwrap_or("");
         println!(
             "   折叠结果：content {} 字 / reasoning {} 字 / finish_reason {} / usage {}",
             content.chars().count(),
             reasoning.chars().count(),
             completion["choices"][0]["finish_reason"],
-            if completion["usage"].is_null() { "无" } else { "有" }
+            if completion["usage"].is_null() {
+                "无"
+            } else {
+                "有"
+            }
         );
         assert!(
             !content.is_empty() || !reasoning.is_empty(),
@@ -1302,8 +1434,15 @@ mod tests {
             ("client_version".to_string(), "Vscode_26.9.101".to_string()),
             ("is_confidential".to_string(), "false".to_string()),
         ];
-        let signed = super::super::signer::sign("GET", catalog, &headers, b"", &super::super::oauth::signer_credential(credential), false)
-            .expect("签名应当成功");
+        let signed = super::super::signer::sign(
+            "GET",
+            catalog,
+            &headers,
+            b"",
+            &super::super::oauth::signer_credential(credential),
+            false,
+        )
+        .expect("签名应当成功");
         let mut request = reqwest::Client::new()
             .get(catalog)
             .timeout(std::time::Duration::from_secs(30));
@@ -1312,7 +1451,10 @@ mod tests {
         }
         match request.send().await {
             Ok(response) => response.status().as_u16(),
-            Err(error) => panic!("目录请求发不出去：{}", crate::server::core::egress::describe_error_detail(&error)),
+            Err(error) => panic!(
+                "目录请求发不出去：{}",
+                crate::server::core::egress::describe_error_detail(&error)
+            ),
         }
     }
     /// 尺寸判据：两道墙的**原文**都要认，两种"看着像但不是"的都不能认。
@@ -1337,8 +1479,11 @@ mod tests {
         assert!(size_rejection(413, br#"{"error_msg":"something else"}"#).is_none());
         // 同码不同面孔（APIG.0201 也用于 414/494 之类）⇒ 只凭码会连坐
         assert!(
-            size_rejection(413, br#"{"error_code":"APIG.0201","error_msg":"too many headers"}"#)
-                .is_none(),
+            size_rejection(
+                413,
+                br#"{"error_code":"APIG.0201","error_msg":"too many headers"}"#
+            )
+            .is_none(),
             "判据取文案，不取错误码"
         );
         let unregistered = br#"{"error_code":"InferHub.002002009.404","error_msg":"The model is not registered, please request other model","details":[{"error_code":"InferHub.002002009.404"}]}"#;
@@ -1393,13 +1538,24 @@ mod tests {
         // 我们无权改写；思考只可能出现在 assistant 轮，那种输入本来就是异常的）
         assert_eq!(2, strip_historical_reasoning(&mut body));
         let messages = body["messages"].as_array().unwrap();
-        assert_eq!(3, messages.len(), "条数必须一条不少：条数是别家（catpaw）的主变量");
-        assert_eq!(2, messages[0]["content"].as_array().unwrap().len(), "user 轮不碰");
+        assert_eq!(
+            3,
+            messages.len(),
+            "条数必须一条不少：条数是别家（catpaw）的主变量"
+        );
+        assert_eq!(
+            2,
+            messages[0]["content"].as_array().unwrap().len(),
+            "user 轮不碰"
+        );
         let assistant = messages[1]["content"].as_array().unwrap();
         assert_eq!(2, assistant.len());
         assert_eq!(assistant[0]["text"], "答案是 42");
         assert_eq!(assistant[1]["name"], "read", "tool_use 必须原样留着");
-        assert_eq!(messages[2]["content"], "", "只剩思考的那条改成空内容，不删整条");
+        assert_eq!(
+            messages[2]["content"], "",
+            "只剩思考的那条改成空内容，不删整条"
+        );
 
         // OpenAI 形状：思考挂在消息字段上
         let mut openai = json!({"messages": [
@@ -1438,10 +1594,16 @@ mod tests {
     #[test]
     fn the_retain_switch_only_accepts_the_three_documented_values() {
         for value in ["1", "true", "yes"] {
-            assert!(keep_historical_reasoning_from(Some(value)), "{value} 应当认");
+            assert!(
+                keep_historical_reasoning_from(Some(value)),
+                "{value} 应当认"
+            );
         }
         for value in ["0", "", "no", "TRUE", "Yes"] {
-            assert!(!keep_historical_reasoning_from(Some(value)), "{value} 不该开");
+            assert!(
+                !keep_historical_reasoning_from(Some(value)),
+                "{value} 不该开"
+            );
         }
         assert!(!keep_historical_reasoning_from(None), "没设 env = 默认丢");
     }
@@ -1467,24 +1629,23 @@ mod tests {
             "小体撞上同一个码是参数错，不是体积"
         );
         // 越界但错误码无关 ⇒ 也不记（额度那种码别想关这一家的门）
-        assert!(
-            size_rejection_by_shape(
-                r#"{"error_code":"InferHub.4291.200","error_msg":"insufficient quota"}"#,
-                above
-            )
-            .is_none()
-        );
+        assert!(size_rejection_by_shape(
+            r#"{"error_code":"InferHub.4291.200","error_msg":"insufficient quota"}"#,
+            above
+        )
+        .is_none());
         // 合成入口：标记版命中时不需要体积；两条都不命中才返回 None
         let marked = r#"{"error_code":"InferHub.001001005.400","details":[{"error_code":"PARSE_REQUEST_DATA_EXCEPTION"}]}"#;
         assert!(size_rejection_any(0, marked, 1_000).is_some());
         assert!(
             size_rejection_any(413, r#"{"error_msg":"Request entity too large"}"#, 1_000).is_some()
         );
-        assert!(size_rejection_any(0, r#"{"error_code":"InferHub.002002009.404"}"#, 1_000).is_none());
+        assert!(
+            size_rejection_any(0, r#"{"error_code":"InferHub.002002009.404"}"#, 1_000).is_none()
+        );
         assert!(size_rejection_any(0, generic, 1_000).is_none());
         assert!(size_rejection_any(0, generic, above).is_some());
     }
-
 }
 
 /// 首包门在「拿到内容」之前最多缓冲多少字节。
@@ -1521,7 +1682,9 @@ pub async fn prefetch_head(
         match head_verdict(frames.iter().copied()) {
             HeadVerdict::Answered => {
                 let rest = source.map(|item| {
-                    item.map_err(|error| std::io::Error::other(egress::describe_error_detail(&error)))
+                    item.map_err(|error| {
+                        std::io::Error::other(egress::describe_error_detail(&error))
+                    })
                 });
                 // `seen` 里已经是"读到的全部字节"，直接交回 —— **不能再追加 text**
                 // （那样会把首包之前的内容整体重发一遍；客户端会看到重复的字）
@@ -1545,7 +1708,10 @@ pub async fn prefetch_head(
             Some(Err(error)) => {
                 return Err(GatewayError::with_status(
                     502,
-                    format!("CodeArts 上游流中断：{}", egress::describe_error_detail(&error)),
+                    format!(
+                        "CodeArts 上游流中断：{}",
+                        egress::describe_error_detail(&error)
+                    ),
                 ))
             }
             Some(Ok(chunk)) => {
@@ -1587,7 +1753,7 @@ fn extract_data_lines(text: &str) -> Vec<&str> {
 #[cfg(test)]
 mod head_gate_tests {
     //! 首包门的三条出口用**进程内 mock 上游**跑真流（与 session.rs 同一手法）。
-    use super::{aggregate_sse, extract_data_lines, prefetch_head, HeadVerdict, head_verdict};
+    use super::{aggregate_sse, extract_data_lines, head_verdict, prefetch_head, HeadVerdict};
     use futures::StreamExt;
 
     /// 2026-09-21 从真上游抓到的额度信封（与 `stream_fault` 的金向量同一份）。
@@ -1600,7 +1766,12 @@ mod head_gate_tests {
         let app = axum::Router::new().route(
             "/sse",
             axum::routing::get(move || async move {
-                (StatusCode::OK, [(header::CONTENT_TYPE, "text/event-stream")], body).into_response()
+                (
+                    StatusCode::OK,
+                    [(header::CONTENT_TYPE, "text/event-stream")],
+                    body,
+                )
+                    .into_response()
             }),
         );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1610,7 +1781,11 @@ mod head_gate_tests {
     }
 
     async fn open(url: &str) -> reqwest::Response {
-        reqwest::Client::new().get(url).send().await.expect("mock 上游应当可达")
+        reqwest::Client::new()
+            .get(url)
+            .send()
+            .await
+            .expect("mock 上游应当可达")
     }
 
     #[tokio::test]
@@ -1632,7 +1807,10 @@ mod head_gate_tests {
             all.extend_from_slice(&item.expect("剩余流应当可读"));
         }
         let text = String::from_utf8_lossy(&all).to_string();
-        assert!(text.contains('你') && text.contains('好') && text.contains("[DONE]"), "透传丢了字节：{text}");
+        assert!(
+            text.contains('你') && text.contains('好') && text.contains("[DONE]"),
+            "透传丢了字节：{text}"
+        );
         let completion = aggregate_sse(&all, "GLM-5.2").expect("整段应当能折叠");
         assert_eq!("你好", completion["choices"][0]["message"]["content"]);
     }
@@ -1656,17 +1834,30 @@ mod head_gate_tests {
             Ok(_) => panic!("空回答必须当失败，否则永远不会换账号"),
         };
         assert_eq!(502, error.status_code);
-        assert!(error.message.contains("空回答"), "文案要说明为什么：{}", error.message);
+        assert!(
+            error.message.contains("空回答"),
+            "文案要说明为什么：{}",
+            error.message
+        );
     }
 
     #[test]
     fn verdict_and_frame_extraction_agree_on_unterminated_tails() {
         // 成对换行结尾的两帧
-        assert_eq!(2, extract_data_lines("data: {\"a\":1}\n\ndata: {\"b\":2}\n\n").len());
+        assert_eq!(
+            2,
+            extract_data_lines("data: {\"a\":1}\n\ndata: {\"b\":2}\n\n").len()
+        );
         // 尾部没有成对换行的那一帧也取得到（JSON 本身完整，判"有无内容"不会误判）
-        assert_eq!(2, extract_data_lines("data: {\"a\":1}\n\ndata: {\"b\":2}").len());
+        assert_eq!(
+            2,
+            extract_data_lines("data: {\"a\":1}\n\ndata: {\"b\":2}").len()
+        );
         // 半截 JSON 判不出内容 → 空回答（继续等下一块，不会误放行）
-        assert_eq!(HeadVerdict::Empty, head_verdict(["{\"choices\":[{\"delta\":{\"content\":\"hu"]));
+        assert_eq!(
+            HeadVerdict::Empty,
+            head_verdict(["{\"choices\":[{\"delta\":{\"content\":\"hu"])
+        );
     }
 }
 
@@ -1682,7 +1873,14 @@ mod catalog_fixtures {
     use crate::server::core::providers::codearts::oauth::signer_credential;
     use crate::server::core::providers::codearts::signer;
 
-    async fn fetch(base: &str, path: &str, agent_type: &str, credential: &Credential, host_signed: bool, domainless: bool) -> (u16, String) {
+    async fn fetch(
+        base: &str,
+        path: &str,
+        agent_type: &str,
+        credential: &Credential,
+        host_signed: bool,
+        domainless: bool,
+    ) -> (u16, String) {
         let url = format!("{}{}", base.trim_end_matches('/'), path);
         let mut signer_credential = signer_credential(credential);
         if domainless {
@@ -1698,13 +1896,19 @@ mod catalog_fixtures {
             ("client_version".to_string(), "Vscode_26.9.101".to_string()),
             ("is_confidential".to_string(), "false".to_string()),
         ];
-        let signed = signer::sign("GET", &url, &headers, b"", &signer_credential, host_signed).expect("签名应当成功");
-        let mut request = reqwest::Client::new().get(&url).timeout(std::time::Duration::from_secs(30));
+        let signed = signer::sign("GET", &url, &headers, b"", &signer_credential, host_signed)
+            .expect("签名应当成功");
+        let mut request = reqwest::Client::new()
+            .get(&url)
+            .timeout(std::time::Duration::from_secs(30));
         for (name, value) in signed {
             request = request.header(name.as_str(), value.as_str());
         }
         let response = request.send().await.expect("请求发不出去");
-        (response.status().as_u16(), response.text().await.unwrap_or_default())
+        (
+            response.status().as_u16(),
+            response.text().await.unwrap_or_default(),
+        )
     }
 
     #[tokio::test]
@@ -1722,7 +1926,9 @@ mod catalog_fixtures {
         }
         std::fs::create_dir_all(&out).unwrap();
         let raw = std::fs::read(&path).unwrap();
-        let credential = Credential::from_payload(&serde_json::from_slice::<serde_json::Value>(&raw).unwrap()).unwrap();
+        let credential =
+            Credential::from_payload(&serde_json::from_slice::<serde_json::Value>(&raw).unwrap())
+                .unwrap();
         let base = "https://snap-access.cn-north-4.myhuaweicloud.com";
         for (name, path, agent_type, host_signed, domainless) in [
             ("builtin", "/v1/model/builtin", "PromptCenter", false, false),
@@ -1735,7 +1941,8 @@ mod catalog_fixtures {
         }
         // agent detail 需要 agent_id：从 useragents 里取第一个
         let (_, agents_body) = fetch(base, "/v1/agent-center/agents/useragents?offset=0&limit=100&is_primary_agent=true&supported_client=VSCODE&min_compatible_plugin_version=26.9.101", "AgentCenter", &credential, false, false).await;
-        let agents: serde_json::Value = serde_json::from_str(&agents_body).unwrap_or(serde_json::Value::Null);
+        let agents: serde_json::Value =
+            serde_json::from_str(&agents_body).unwrap_or(serde_json::Value::Null);
         let agent_id = agents["agents"]
             .as_array()
             .and_then(|items| items.first())
@@ -1743,22 +1950,43 @@ mod catalog_fixtures {
             .unwrap_or("NO-AGENT")
             .to_string();
         println!("第一个 agent_id: {agent_id}");
-        let (status, body) = fetch(base, &format!("/v1/agent-center/agents/detail?agent_id={agent_id}"), "AgentCenter", &credential, false, false).await;
+        let (status, body) = fetch(
+            base,
+            &format!("/v1/agent-center/agents/detail?agent_id={agent_id}"),
+            "AgentCenter",
+            &credential,
+            false,
+            false,
+        )
+        .await;
         std::fs::write(format!("{out}/agent-detail.json"), &body).unwrap();
         println!("agent-detail: HTTP {status}, {} bytes", body.len());
 
         // 福利网关是另一个主机、签名契约不同（带 Host、无 domain）
-        let gate: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(format!("{out}/benefit-gate.json")).unwrap()).unwrap_or(serde_json::Value::Null);
+        let gate: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(format!("{out}/benefit-gate.json")).unwrap(),
+        )
+        .unwrap_or(serde_json::Value::Null);
         let enabled = gate["enabled"].as_bool().unwrap_or(false);
         println!("福利网关开关: {enabled}");
         if enabled {
-            let (status, body) = fetch("https://opengw.developer.huaweicloud.com", "/api/v1/gateway/config", "", &credential, true, true).await;
+            let (status, body) = fetch(
+                "https://opengw.developer.huaweicloud.com",
+                "/api/v1/gateway/config",
+                "",
+                &credential,
+                true,
+                true,
+            )
+            .await;
             std::fs::write(format!("{out}/benefit-gateway-config.json"), &body).unwrap();
-            println!("benefit-gateway-config: HTTP {status}, {} bytes", body.len());
+            println!(
+                "benefit-gateway-config: HTTP {status}, {} bytes",
+                body.len()
+            );
         }
     }
 }
-
 
 /// 透传流上的 **usage 旁路嗅探**（只读，一个字节都不改）。
 ///
@@ -2117,7 +2345,10 @@ pub fn fold_forced_tool_choice(payload: &mut Value) -> Option<String> {
         .and_then(Value::as_str)
         .filter(|name| !name.trim().is_empty())
         .map(str::to_owned)?;
-    object.insert("tool_choice".to_string(), Value::String("required".to_string()));
+    object.insert(
+        "tool_choice".to_string(),
+        Value::String("required".to_string()),
+    );
     Some(named)
 }
 
@@ -2133,10 +2364,22 @@ mod forced_tool_choice {
     #[test]
     fn the_object_form_is_folded_into_required_and_the_name_is_reported() {
         let mut payload = forced("alpha");
-        assert_eq!(Some("alpha".to_string()), fold_forced_tool_choice(&mut payload));
-        assert_eq!("required", payload["tool_choice"], "折完必须是字符串 required");
+        assert_eq!(
+            Some("alpha".to_string()),
+            fold_forced_tool_choice(&mut payload)
+        );
+        assert_eq!(
+            "required", payload["tool_choice"],
+            "折完必须是字符串 required"
+        );
         // 点名的名字整个从出站体里消失：这道墙与 64 字符那道叠在同一条路径上
-        assert_eq!(0, serde_json::to_string(&payload).unwrap().matches("alpha").count());
+        assert_eq!(
+            0,
+            serde_json::to_string(&payload)
+                .unwrap()
+                .matches("alpha")
+                .count()
+        );
     }
 
     #[test]
@@ -2176,7 +2419,14 @@ mod forced_tool_choice {
         )
         .expect("应当能构造请求");
         let sent: Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!("required", sent["tool_choice"], "出门的字节里不该再有对象形态：{sent}");
-        assert_eq!(1, sent["tools"].as_array().unwrap().len(), "tools 本身不该被牵连");
+        assert_eq!(
+            "required", sent["tool_choice"],
+            "出门的字节里不该再有对象形态：{sent}"
+        );
+        assert_eq!(
+            1,
+            sent["tools"].as_array().unwrap().len(),
+            "tools 本身不该被牵连"
+        );
     }
 }
