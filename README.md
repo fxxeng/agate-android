@@ -1,9 +1,9 @@
 # Agate — Android-only Mainline Candidate
 
 - Verification branch: `verify/arch-8faa5f5`
-- Current batch: R47 / 运行时正确性与所有权收口（T1–T5）
-- Latest verified: `2d210d5` — GitHub Actions Run `42558923248`（双 job 全绿；R47 T5/T6 收尾）
-- 状态：rust-tests 793 passed / 11 ignored；android-build JVM 单元测试 121/121、JNI 12 入口（符号 + Kotlin/Rust 描述符签名级互检）、双 APK 校验（debug 共享凭证指纹硬断言）、Instrumentation 2/2。
+- Current batch: R48 / 全库格式化与格式门（R47 已收口）
+- Latest verified: `b9dcaa0` — GitHub Actions Run `42562774123`（双 job 全绿；R48 格式批）
+- 状态：rust-tests 793 passed / 11 ignored + Rust 格式门阻断；android-build JVM 单元测试 121/121、JNI 12 入口（符号 + Kotlin/Rust 描述符签名级互检）、双 APK 校验（debug 共享凭证指纹硬断言）、Instrumentation 2/2。
 - 真机验收待做（APK 自取 run artifacts）；release 正式签名按委托方裁定暂缓。
 
 ## Direction
@@ -21,7 +21,14 @@ The repository already has no complete Tauri/Desktop UI Host. The remaining desk
 5. **收尾（T5）**：ChatGLM 嵌套令牌迁移补齐「仅 refresh / 多账号同批 / 落库失败原数据完整可重试」测试；README / HANDOFF / MAINLINE / JNI 与 Gateway 头注释 / `GLOBAL_RUNTIME` 注释与当前实现对齐。
 6. **Service 接线（T6）**：`runTick` 的「探测异常 → null → 策略」提为可测纯函数 `stopServiceAfterTick`（异常上报后 fail-closed），JVM 补 2 条接线测试（连同原有策略用例共 3 条）；关闭「Service 内接线无单测」遗留。
 
+## R48 changes — 格式化批
+
+1. **全库格式化**：`cargo fmt --all`（agate-server workspace）418 文件 +21475/−8800，纯格式化无逻辑改动；rustfmt 非幂等，两轮收敛后 `--check` 干净；本地 `cargo test --lib` 796/0/11。
+2. **格式门转阻断**：CI `rust-tests` 的 `cargo fmt --check` 移除 `continue-on-error`，格式漂移自此红灯。预检确认本机与 CI stable 的 rustfmt `1.10.0 (58cf8f9c35 2026-10-13)` 对同一提交输出 diff 的 SHA-256 完全一致。
+
 ## Verification state
+
+R48 代码基线 `b9dcaa0` 通过 Run `42562774123`：rust-tests 793 passed / 11 ignored（`cargo fmt --check` 已阻断并通过）；android-build 全步 success（Rust 全量重编译、Android clippy 门、JNI 符号 + 描述符、JVM 121/121、双 APK 校验、Instrumentation 2/2）。
 
 R47 代码基线 `2d210d5` 通过 Run `42558923248`：rust-tests 793 passed / 11 ignored；android-build 全步 success（Android clippy 门、JNI 符号 + 描述符、JVM 121/121、双 APK 校验、Instrumentation 2/2）。
 
