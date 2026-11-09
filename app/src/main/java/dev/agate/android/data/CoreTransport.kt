@@ -1,6 +1,8 @@
 package dev.agate.android.data
 
+import dev.agate.core.CoreRuntimeState
 import dev.agate.core.Gateway
+import dev.agate.core.RuntimeController
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -21,7 +23,8 @@ import org.json.JSONObject
  *
  * ── 三道韧性处理（对应《问题审计》§2/§3）──────────────
  * 1. `core_not_ready` 是「内核仍在 bootstrap」（`AgateApp` 后台线程初始化），
- *    不是业务错误 —— 重试 3 次、间隔 200ms，冷启动首屏不再直接报错。
+ *    不是业务错误 —— 在 15s 总预算内每 200ms 重试；观察到 Core 进入 Failed
+ *    时立刻返回可诊断的失败，而不是把 15s 耗完（R50/T8）。
  * 2. 内核 error 是英文内部串（`core_not_ready` / `timeout after 120s`），
  *    直接透给用户看不懂 —— 统一走 [humanize] 映射。
  * 3. 链路异常（JNI 抛错 / 返回非 JSON）也归 `Down`，与业务错误区分。
@@ -30,8 +33,8 @@ object CoreTransport {
 
     @Volatile private var apiKey: String = ""
 
-    /** `core_not_ready` 的重试次数与间隔（总计约 0.6s，覆盖冷启动窗口）。 */
-    private const val RETRY = 3
+    /** `core_not_ready` 的总等待预算与轮询间隔（覆盖冷启动 bootstrap）。 */
+    private const val CORE_READY_TIMEOUT_MS = 15_000L
     private const val RETRY_DELAY_MS = 200L
 
     fun configure(apiKey: String) {
@@ -48,8 +51,8 @@ object CoreTransport {
 
     suspend fun call(method: String, path: String, body: String? = null): Reply =
         withContext(Dispatchers.IO) {
-            var lastError: String? = null
-            for (attempt in 0 until RETRY) {
+            val deadlineNanos = System.nanoTime() + CORE_READY_TIMEOUT_MS * 1_000_000
+            while (true) {
                 val raw = try {
                     Gateway.apiCall(method, path, body, apiKey)
                 } catch (cancelled: kotlinx.coroutines.CancellationException) {
@@ -71,15 +74,20 @@ object CoreTransport {
                     return@withContext Reply.Ok(obj.optInt("status", 0), obj.optString("body"))
                 }
                 val error = obj.optString("error")
-                lastError = error
-                // 只有「内核还没就绪」值得重试；业务错误立即回落
-                if (error.contains("core_not_ready") && attempt < RETRY - 1) {
+                // 只有「内核还没就绪」值得等待；业务错误立即回落。
+                if (error.contains("core_not_ready")) {
+                    val core = RuntimeController.snapshot().core
+                    if (core is CoreRuntimeState.Failed) {
+                        return@withContext Reply.Down("内核初始化失败：${core.message}")
+                    }
+                    if (System.nanoTime() >= deadlineNanos) {
+                        return@withContext Reply.Down("内核启动超时，请稍后重试")
+                    }
                     delay(RETRY_DELAY_MS)
                     continue
                 }
                 return@withContext Reply.Down(humanize(error))
             }
-            Reply.Down(humanize(lastError))
         }
 
     suspend fun get(path: String): Reply = call("GET", path)
