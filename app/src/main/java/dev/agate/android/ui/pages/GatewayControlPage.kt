@@ -42,6 +42,7 @@ import dev.agate.core.AgateForegroundService
 import dev.agate.core.AlarmScheduler
 import dev.agate.core.BatteryWhitelist
 import dev.agate.core.Gateway
+import dev.agate.core.GatewayPortChoice
 import dev.agate.core.GatewayPrefs
 import dev.agate.core.GatewayRuntimeState
 import dev.agate.core.GatewayStartFailure
@@ -82,7 +83,14 @@ fun GatewayControlPage(modifier: Modifier = Modifier, onOpenDrawer: () -> Unit =
             .readTimeout(180, TimeUnit.SECONDS)
             .build()
     }
-    val port = 8787
+    // R49/T4：端口只有一个来源，不在本页复制默认值。
+    //  · 配置端口 = GatewayPrefs.port(ctx)（设置页可改，默认 8787）；
+    //  · 运行中的网关以 Native 状态里的**实际监听端口**为准 —— 用户改端口
+    //    后尚未重启网关时两者不同，探测必须打到实际在跑的那个。
+    // 5s 轮询每轮重读配置，页面重新进入也会拿到最新值，不缓存旧端口。
+    var configuredPort by remember { mutableStateOf(GatewayPrefs.port(ctx)) }
+    var runningPort by remember { mutableStateOf<Int?>(null) }
+    val port = GatewayPortChoice.probePort(configuredPort, runningPort)
     var output by remember { mutableStateOf("Agate 网关控制就绪（内核版本待加载后显示）") }
     var bindLan by remember { mutableStateOf(GatewayPrefs.bindLan(ctx)) }
     var bootStart by remember { mutableStateOf(GatewayPrefs.bootAutoStart(ctx)) }
@@ -137,7 +145,11 @@ fun GatewayControlPage(modifier: Modifier = Modifier, onOpenDrawer: () -> Unit =
         var startFailure by remember { mutableStateOf<GatewayRuntimeState.Failed?>(null) }
         LaunchedEffect(Unit) {
             while (true) {
-                startFailure = RuntimeController.snapshot().gateway as? GatewayRuntimeState.Failed
+                val snapshot = RuntimeController.snapshot()
+                startFailure = snapshot.gateway as? GatewayRuntimeState.Failed
+                // 运行中有实际端口就用它；没在跑退回配置端口（R49/T4）。
+                runningPort = (snapshot.gateway as? GatewayRuntimeState.Running)?.port
+                configuredPort = GatewayPrefs.port(ctx)
                 delay(5_000L)
             }
         }
@@ -151,9 +163,12 @@ fun GatewayControlPage(modifier: Modifier = Modifier, onOpenDrawer: () -> Unit =
                     .padding(14.dp),
             ) {
                 AgateBadge(
-                    when (failure.kind) {
-                        GatewayStartFailure.KIND_OCCUPIED -> "端口被占用"
-                        GatewayStartFailure.KIND_RESERVED -> "端口被系统拒绝"
+                    when {
+                        // R49/T1：停止失败也会落到 Failed(stage="stop")，
+                        // 不能对用户说成「上次启动失败」。
+                        failure.stage == "stop" -> "上次停止未完成"
+                        failure.kind == GatewayStartFailure.KIND_OCCUPIED -> "端口被占用"
+                        failure.kind == GatewayStartFailure.KIND_RESERVED -> "端口被系统拒绝"
                         else -> "上次启动失败"
                     },
                     BadgeTone.RED,
@@ -166,7 +181,11 @@ fun GatewayControlPage(modifier: Modifier = Modifier, onOpenDrawer: () -> Unit =
                 )
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    "更换内核端口后重新点「启动网关（前台服务）」即可。",
+                    if (failure.stage == "stop") {
+                        "网关可能仍在运行：前台服务与保活已保留，可再次点「停止网关」重试。"
+                    } else {
+                        "更换内核端口后重新点「启动网关（前台服务）」即可。"
+                    },
                     style = AgateType.BodyS,
                     color = C.textSub,
                 )

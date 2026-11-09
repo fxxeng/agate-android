@@ -427,7 +427,13 @@ private fun HealthCard(snap: GatewayRepository.ConsoleSnapshot, snapError: Strin
             if (snap.upstreamConfigured == true) "ok" else "待配置",
             snap.upstreamConfigured == true,
         )
-        HcRow("回环探活", snapError ?: "127.0.0.1:8787 /health · 正常", "通", snapError == null)
+        // R49/T4：端口来自设置（GatewayPrefs），不在文案里复制默认值。
+        HcRow(
+            "回环探活",
+            snapError ?: "127.0.0.1:${GatewayPrefs.port(ctx)} /health · 正常",
+            "通",
+            snapError == null,
+        )
         HcRow(
             "凭证状态",
             "登录态 " + (snap.loggedIn?.let { if (it) "已登录" else "未登录" } ?: "未知") + " · 模型 ${snap.modelCount}",
