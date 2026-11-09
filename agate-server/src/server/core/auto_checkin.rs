@@ -438,6 +438,9 @@ struct Inner {
     task: Option<tokio::task::JoinHandle<()>>,
     /// 调度循环停机标志：stop() 置位后循环退出（与当前签到取消分离）。
     stopped: Arc<AtomicBool>,
+    /// 调度代次（R49/T2）：stop() 与每次 start() 都推进。启动补签任务捕获
+    /// 启动时的代次，每步比对；失配即停止启动后续计划。
+    generation: u64,
     /// 当前签到轮次的合作式停止请求；只在账号边界检查，不中断在途 Provider。
     cancel_current: Arc<AtomicBool>,
 }
@@ -479,6 +482,7 @@ impl AutoCheckin {
                 running: false,
                 task: None,
                 stopped: Arc::new(AtomicBool::new(false)),
+                generation: 0,
                 cancel_current: Arc::new(AtomicBool::new(false)),
             })),
         }
@@ -491,6 +495,20 @@ impl AutoCheckin {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
         }
+    }
+
+    /// 当前调度代次（R49/T2）：stop() 与每次 start() 都会推进。
+    fn generation(&self) -> u64 {
+        self.lock().generation
+    }
+
+    /// 某代次的补签任务是否仍然有效：总开关仍开，且代次没有被 stop()/新
+    /// start() 取代。
+    ///
+    /// `master_enabled()` 这一半让 `POST /api/auto-checkin {enabled:false}`
+    /// 这条关停路径（它不经过 stop()）也能立刻阻止后续补签计划。
+    fn backfill_is_current(&self, generation: u64) -> bool {
+        master_enabled() && self.generation() == generation
     }
 
     /// 是否正在执行签到（getState().running）
@@ -956,6 +974,14 @@ impl AutoCheckin {
             return;
         }
         self.schedule();
+        // R49/T2：每次 start 开启新的调度代次。补签任务捕获启动时的代次，
+        // stop() 与再一次 start() 都会让旧代次立刻失效 —— 旧任务不会继续
+        // 执行新一代的计划（任务书 §3.3 的代次语义）。
+        let generation = {
+            let mut inner = self.lock();
+            inner.generation = inner.generation.wrapping_add(1);
+            inner.generation
+        };
         let today = today_key();
         let pending: Vec<Schedule> = checkin_schedules::list()
             .into_iter()
@@ -967,26 +993,46 @@ impl AutoCheckin {
             logging::verbose("[Checkin]", "定时签到条目均已执行，无需补签");
             return;
         }
-        // 补签整段注册进 supervisor（"checkin-backfill"，串行跑全部 pending）：
+        // 补签整段注册进 supervisor（每代一个任务名），串行跑全部 pending：
         // 此前是裸 spawn_task，stop() 既管不到、停机也无人收尾，还漏了 tick 路径
         // 有的条目记账（qoderIntlPending 重试落账）——统一走 fire_and_settle。
         // 与轮询 fire 共用同一全局防重守卫。
+        //
+        // 任务名携带代次：旧代次任务正在收尾时，新一代仍能注册自己的补签。
+        // 固定名会被 supervisor 的同名去重吃掉，「关→开」后的第一次补签
+        // 就永远不会跑（任务书 §3.4 的任务身份规则）。
         let service = self.clone();
-        if let Err(_) =
-            core_task_supervisor().spawn(TaskScope::Core, "checkin-backfill", move |_| {
-                let service = service.clone();
-                async move {
-                    for schedule in pending {
-                        let reason = format!(
-                            "启动补签（{}）",
-                            checkin_schedules::display_label(&schedule)
-                        );
-                        service
-                            .fire_and_settle(schedule.id.clone(), reason, "startup")
-                            .await;
+        if core_task_supervisor()
+            .spawn(
+                TaskScope::Core,
+                format!("checkin-backfill:{generation}"),
+                move |_| {
+                    let service = service.clone();
+                    async move {
+                        let is_current = {
+                            let service = service.clone();
+                            move || service.backfill_is_current(generation)
+                        };
+                        let fire = {
+                            let service = service.clone();
+                            move |schedule: Schedule| {
+                                let service = service.clone();
+                                async move {
+                                    let reason = format!(
+                                        "启动补签（{}）",
+                                        checkin_schedules::display_label(&schedule)
+                                    );
+                                    service
+                                        .fire_and_settle(schedule.id.clone(), reason, "startup")
+                                        .await;
+                                }
+                            }
+                        };
+                        run_backfill(pending, is_current, fire).await;
                     }
-                }
-            })
+                },
+            )
+            .is_err()
         {
             logging::verbose("[Checkin]", "停机中，放弃启动补签");
         }
@@ -1003,12 +1049,14 @@ impl AutoCheckin {
     /// 「关掉调度器不掐进行中的签到」自此语义与实现一致（旧实现把 fire await
     /// 在循环任务里，abort 会把签到掐在 HTTP await 点、lastFiredDate 未写）。
     /// 进程停机的最终收尾（有界 abort+join）在 `shutdown_core_tasks`。
+    ///
+    /// R49/T2：**无条件**推进调度代次 —— 旧实现在 `inner.task.is_none()` 时
+    /// 直接 return，而启动补签是独立注册的 Core 任务，不受 `task` 是否存在
+    /// 影响；那条路径会让「关闭调度器」对补签完全失效。
     pub fn stop(&self) {
         let task = {
             let mut inner = self.lock();
-            if inner.task.is_none() {
-                return;
-            }
+            inner.generation = inner.generation.wrapping_add(1);
             inner.stopped.store(true, Ordering::SeqCst);
             inner.task.take()
         };
@@ -1027,8 +1075,10 @@ impl AutoCheckin {
     ///     老入口没有条目 id 概念，写的就是合成的 default 条目——第一次保存会把
     ///     条目固化进 `schedules`（去重状态一并带过去，见 upsert 的存量兼容）。
     ///
-    /// 关闭时调度循环继续跑，但 tick 读到总开关关会直接返回 —— 与 Node 一致
-    /// （Node 的 configure 也只 start 不 stop，关闭靠 tick 早退生效）。
+    /// R49/T2 起，关闭总开关会直接 `stop()`（推进代次并停掉轮询），不再
+    /// 依赖「tick 读到开关关再早退」—— 那条路径管不到已经提交的启动补签，
+    /// 用户关掉签到后剩余计划仍会继续跑。tick 的早退判定保留，作为停机
+    /// 窗口与直接改 config.json 场景的兜底。
     pub fn configure(&self, payload: &Value) -> Result<Value, AutoCheckinConfigError> {
         let has_enabled = payload.get("enabled").is_some();
         let has_time = payload.get("time").is_some();
@@ -1045,6 +1095,11 @@ impl AutoCheckin {
                 "[Checkin]",
                 &format!("定时签到总开关已{}", if on { "开启" } else { "关闭" }),
             );
+            if !on {
+                // R49/T2：configure 是界面关闭签到的主路径（POST /api/auto-checkin），
+                // 必须与 schedulerSet(false) 一样让补签立刻失效。
+                self.stop();
+            }
         }
         if has_time || has_providers {
             let mut entry = Map::new();
@@ -1149,6 +1204,35 @@ pub fn stop_global() {
     }
 }
 
+/// 补签循环骨架（R49/T2）。
+///
+/// 把「依次执行全部待补签计划」与「取消语义」拆开：`is_current` 在**每条计划
+/// 启动前**和**每条计划收尾后**各查一次，失配即停止启动后续计划；已经启动的
+/// 那一条允许自然收尾，不中断在途 Provider 请求。
+///
+/// 之所以抽成自由函数：竞态矩阵（stop 落在首条之前/执行中/之后、换代重开）
+/// 需要可控的 fire 回调，才能确定性地测，不靠 sleep 猜时序，也不打真实网络。
+async fn run_backfill<F, Fut>(
+    pending: Vec<Schedule>,
+    mut is_current: impl FnMut() -> bool,
+    mut fire: F,
+) where
+    F: FnMut(Schedule) -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
+    for schedule in pending {
+        if !is_current() {
+            logging::verbose("[Checkin]", "调度已关闭或已换代，停止启动后续补签计划");
+            return;
+        }
+        fire(schedule).await;
+        if !is_current() {
+            logging::verbose("[Checkin]", "调度已关闭或已换代，停止启动后续补签计划");
+            return;
+        }
+    }
+}
+
 #[cfg(test)]
 mod scheduling_tests {
     //! T1.1（R47）tick 条目级调度的端到端验收。
@@ -1174,7 +1258,7 @@ mod scheduling_tests {
     //! 测试运行的具体时刻。
 
     use super::*;
-    use std::sync::{Mutex, OnceLock};
+    use std::sync::{Arc, Mutex, OnceLock};
     use std::time::Duration;
 
     static SCHEDULING_LOCK: Mutex<()> = Mutex::new(());
@@ -1371,6 +1455,235 @@ mod scheduling_tests {
                 && find_entry("entry-s").and_then(|s| s.last_result).is_some()
         };
         wait_for(&mut done, "stop 后 tick 仍应正常触发并完成记账").await;
+        cleanup_config();
+    }
+
+    // ─── R49/T2：启动补签的取消语义矩阵 ──────────────────────
+    //
+    // `run_backfill` 用可控 fire 回调驱动，不依赖真实 Provider、不靠 sleep
+    // 猜进度：第一条进入 fire 后由测试置取消标志并放行，断言第二条不启动。
+
+    fn backfill_schedule(id: &str) -> Schedule {
+        Schedule {
+            id: id.to_string(),
+            label: id.to_string(),
+            enabled: true,
+            time: "00:01".to_string(),
+            providers: Vec::new(),
+            last_fired_date: None,
+            last_result: None,
+        }
+    }
+
+    /// stop 落在「第一条执行中」：第一条自然收尾，第二条不启动。
+    #[tokio::test]
+    async fn backfill_stops_after_in_flight_plan_when_scheduler_closes() {
+        let active = Arc::new(AtomicBool::new(true));
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let fired = Arc::new(Mutex::new(Vec::<String>::new()));
+
+        let is_current = {
+            let active = active.clone();
+            move || active.load(Ordering::SeqCst)
+        };
+        let fire = {
+            let gate = gate.clone();
+            let fired = fired.clone();
+            move |schedule: Schedule| {
+                let gate = gate.clone();
+                let fired = fired.clone();
+                async move {
+                    fired.lock().unwrap().push(schedule.id);
+                    gate.notified().await;
+                }
+            }
+        };
+
+        let task = tokio::spawn(run_backfill(
+            vec![backfill_schedule("first"), backfill_schedule("second")],
+            is_current,
+            fire,
+        ));
+        wait_for(
+            &mut || fired.lock().unwrap().len() == 1,
+            "第一条补签应已进入 fire",
+        )
+        .await;
+
+        // 模拟用户关闭调度：代次/开关失效，然后放行第一条。
+        active.store(false, Ordering::SeqCst);
+        gate.notify_waiters();
+        task.await.expect("补签任务不应 panic");
+
+        assert_eq!(
+            vec!["first".to_string()],
+            *fired.lock().unwrap(),
+            "第一条之后的计划不得启动"
+        );
+    }
+
+    /// stop 发生在任务真正跑起来之前：一条都不执行。
+    #[tokio::test]
+    async fn backfill_starts_no_plan_when_stopped_before_task_runs() {
+        let fired = Arc::new(Mutex::new(Vec::<String>::new()));
+        let fire = {
+            let fired = fired.clone();
+            move |schedule: Schedule| {
+                let fired = fired.clone();
+                async move {
+                    fired.lock().unwrap().push(schedule.id);
+                }
+            }
+        };
+
+        run_backfill(vec![backfill_schedule("only")], || false, fire).await;
+
+        assert!(fired.lock().unwrap().is_empty(), "取消后不得启动首条计划");
+    }
+
+    /// 未取消时按 pending 顺序串行执行，且不并发。
+    #[tokio::test]
+    async fn backfill_keeps_order_and_never_overlaps_plans() {
+        let fired = Arc::new(Mutex::new(Vec::<String>::new()));
+        let active_now = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let max_active = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+        let fire = {
+            let fired = fired.clone();
+            let active_now = active_now.clone();
+            let max_active = max_active.clone();
+            move |schedule: Schedule| {
+                let fired = fired.clone();
+                let active_now = active_now.clone();
+                let max_active = max_active.clone();
+                async move {
+                    let current = active_now.fetch_add(1, Ordering::SeqCst) + 1;
+                    max_active.fetch_max(current, Ordering::SeqCst);
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                    fired.lock().unwrap().push(schedule.id);
+                    active_now.fetch_sub(1, Ordering::SeqCst);
+                }
+            }
+        };
+
+        run_backfill(
+            vec![
+                backfill_schedule("a"),
+                backfill_schedule("b"),
+                backfill_schedule("c"),
+            ],
+            || true,
+            fire,
+        )
+        .await;
+
+        assert_eq!(
+            vec!["a".to_string(), "b".to_string(), "c".to_string()],
+            *fired.lock().unwrap(),
+            "补签必须保持 pending 顺序"
+        );
+        assert_eq!(1, max_active.load(Ordering::SeqCst), "补签不得并发");
+    }
+
+    /// 旧代次失效后不得执行，新代次（重新开启）正常执行。
+    #[tokio::test]
+    async fn stale_generation_cannot_run_new_generation_plans() {
+        let generation = Arc::new(std::sync::atomic::AtomicUsize::new(2));
+        let fired = Arc::new(Mutex::new(Vec::<String>::new()));
+
+        let make_fire = |fired: Arc<Mutex<Vec<String>>>| {
+            move |schedule: Schedule| {
+                let fired = fired.clone();
+                async move {
+                    fired.lock().unwrap().push(schedule.id);
+                }
+            }
+        };
+
+        // 旧代次 2 已被 stop() 推进到 3。
+        generation.store(3, Ordering::SeqCst);
+        let old_is_current = {
+            let generation = generation.clone();
+            move || generation.load(Ordering::SeqCst) == 2
+        };
+        run_backfill(
+            vec![backfill_schedule("old")],
+            old_is_current,
+            make_fire(fired.clone()),
+        )
+        .await;
+        assert!(fired.lock().unwrap().is_empty(), "旧代次不得执行");
+
+        // 新一代 3 正常执行。
+        let new_is_current = {
+            let generation = generation.clone();
+            move || generation.load(Ordering::SeqCst) == 3
+        };
+        run_backfill(
+            vec![backfill_schedule("new")],
+            new_is_current,
+            make_fire(fired.clone()),
+        )
+        .await;
+        assert_eq!(vec!["new".to_string()], *fired.lock().unwrap());
+    }
+
+    /// stop() 没有轮询任务时也必须推进代次（旧实现的 early-return 缺陷）。
+    #[tokio::test]
+    async fn stop_advances_generation_even_without_dispatch_loop() {
+        let _serial = SCHEDULING_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        isolate_state();
+        let (service, _guard) = fresh_service("sched-generation");
+        set_entries(json!([]));
+
+        let before = service.generation();
+        // 从未 start()：inner.task 为 None，旧实现这里直接 return。
+        service.stop();
+        assert_ne!(before, service.generation(), "stop 必须推进调度代次");
+
+        let stopped = service.generation();
+        service.start();
+        assert_ne!(stopped, service.generation(), "start 必须开启新代次");
+        assert!(!service.backfill_is_current(stopped), "旧代次必须失效");
+        assert!(
+            service.backfill_is_current(service.generation()),
+            "当前代次应有效"
+        );
+
+        service.stop();
+        cleanup_config();
+    }
+
+    /// 关闭总开关（configure(false)）后补签代次失效，且轮询任务被停掉。
+    #[tokio::test]
+    async fn configure_disable_invalidates_backfill_generation() {
+        let _serial = SCHEDULING_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        isolate_state();
+        let (service, _guard) = fresh_service("sched-configure-off");
+        set_entries(json!([entry("entry-off", "00:00", true)]));
+        service.start();
+        let generation = service.generation();
+
+        let state = service
+            .configure(&json!({ "enabled": false }))
+            .expect("关闭总开关应成功");
+
+        assert_eq!(
+            false,
+            state
+                .get("enabled")
+                .and_then(Value::as_bool)
+                .unwrap_or(true)
+        );
+        assert!(
+            !service.backfill_is_current(generation),
+            "关闭后旧代次必须失效"
+        );
+        assert!(!master_enabled(), "总开关应已关闭");
         cleanup_config();
     }
 }
