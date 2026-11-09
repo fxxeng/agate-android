@@ -105,9 +105,18 @@ jobs:
         run: >-
           ./gradlew :app:testDebugUnitTest :core-gateway:testDebugUnitTest
           :app:assembleDebug :app:assembleRelease --no-daemon
-      - name: Verify APK contents and native ELF architecture
+      # T4: --apksigner enables the signature section — debug APKs must carry
+      # the shared debug keystore fingerprint; unsigned release passes until
+      # release signing is configured (see README Signing).
+      - name: Verify APK contents, native ELF architecture and signature
         run: |
+          APKSIGNER="$(ls "$ANDROID_HOME"/build-tools/*/apksigner 2>/dev/null | sort -V | tail -1)"
+          if [ -z "$APKSIGNER" ]; then
+            echo "ERROR: apksigner not found under $ANDROID_HOME/build-tools" >&2
+            exit 1
+          fi
           python3 scripts/verify-android-apks.py \
+            --apksigner "$APKSIGNER" \
             app/build/outputs/apk/debug/*.apk \
             app/build/outputs/apk/release/*.apk
       - name: Upload APKs
