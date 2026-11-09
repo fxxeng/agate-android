@@ -25,9 +25,8 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: agate-server
-      # Formatting debt is tracked separately; keep it visible but non-blocking.
-      - name: Rust formatting (legacy debt; non-blocking)
-        continue-on-error: true
+      # R48: 全库已 cargo fmt 收敛，格式门从「可见不阻断」转为阻断。
+      - name: Rust formatting
         run: cargo fmt --manifest-path agate-server/Cargo.toml --all -- --check
       - name: Portable Rust check (lib + bins)
         run: cargo check --manifest-path agate-server/Cargo.toml --locked --lib --bins
