@@ -2,8 +2,9 @@
 
 - 基线：`verify/arch-8faa5f5` @ `90418ac`
 - 范围：R49 任务书 §2–§5（T1–T4 代码 + T5 文档与门禁）
-- 本地验证：`cargo fmt --all -- --check` 干净；`cargo test --locked --lib` **805 passed / 0 failed / 11 ignored**（R48 基线 796，新增 9 条 Rust 用例）
-- CI 与真机状态见文末「验证状态」：未执行的项明确标注，不折算为通过。
+- 本地验证：`cargo fmt --all -- --check` 干净；`cargo test --locked --lib` **805 passed / 0 failed / 11 ignored**（R48 基线 796，新增 9 条 Rust 用例；宿主 CI 为 802——3 条 `jni_bridge` 用例是 `cfg(target_os = "android")`）
+- CI 验证：Run `42597312744` 双 job 全绿（JVM 136/136、Instrumentation 2/2）
+- 真机状态见文末「验证状态」：未执行的项明确标注，不折算为通过。
 
 ## 0. 四个缺陷，一句话各一条
 
@@ -94,11 +95,14 @@
 | Rust 格式门 | PASS（本地） | `cargo fmt --all -- --check` 无输出 |
 | Rust library 测试 | PASS（本地） | `cargo test --locked --lib`：805 passed / 0 failed / 11 ignored |
 | Kotlin 纯逻辑（`StopExecutionResult`/`StopLifecyclePolicy`） | PASS（本地） | `kotlinc` 编译通过 |
-| Android Kotlin 编译 / JVM 单测 / Instrumentation | 待 CI | 本机无 Android SDK/Gradle，无法本地执行 |
-| Clippy 六 deny（宿主 + Android target） | 待 CI | 本机未跑（避免再次触发设备 OOM） |
+| Android Kotlin 编译 / JVM 单测 / Instrumentation | PASS（CI） | Run `42597312744`：JVM **136/136**（+15）、Instrumentation **2/2**、双 APK 校验通过 |
+| Clippy 六 deny（宿主 + Android target） | PASS（CI） | 同一 Run：`Panic discipline gate (clippy)` 与 `Android target clippy` 均 success |
+| Rust 测试（CI 宿主口径） | PASS（CI） | Run `42597312744`：`802 passed / 0 failed / 11 ignored` |
 | 真机验收（FGS 停止失败保留、端口切换、关闭签到取消补签） | 未执行 | 见 §6，需真实设备 |
 
-本次没有执行任何真机验收，因此**不得**把上表「待 CI / 未执行」当作通过。
+本次没有执行任何真机验收，因此**不得**把上表「未执行」当作通过；CI 证据只覆盖构建、单测与模拟器 Instrumentation。
+
+> 文档收口提交标注 `[skip ci]`：R49 的**代码基线**是 `3e47d97`（Run `42597312744`），后续文档提交不改变代码。
 
 ## 6. 真机验收清单（未执行）
 

@@ -22,8 +22,10 @@ without a dispatch loop / configure-off) and the `bind → start_gateway_tasks`
 ordering contract (3 cases). The STOP four-state consumption and probe-port
 decision are Kotlin logic and run in the `android-build` JVM unit-test step
 (`StopLifecyclePolicyTest`, `GatewayPortChoiceTest`,
-`RuntimeControllerTest`). R49 adds 9 Rust cases (796 → 805) and 15 JVM cases
-(121 → 136 expected; authoritative count is the CI log, not this file).
+`RuntimeControllerTest`). R49 adds 9 Rust cases (local `--lib` 796 → 805; host runner 802 because three
+`jni_bridge` cases are Android-only) and 15 JVM cases (121 → 136). Verified by
+Run `42597312744` on `3e47d97`: `rust-tests` 802 passed / 11 ignored,
+`android-build` JVM 136/136 and Instrumentation 2/2.
 
 ## Repository settings still required
 
