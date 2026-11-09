@@ -5,10 +5,11 @@
 //!     消费）；Core 态（网关未运行）下管理面经 `apiCall` 在内核内存 Router
 //!     上直调，不经端口 —— 两条路径共用同一套 Router/handler，JNI 只传
 //!     JSON 文本，不解释任何业务数据结构；
-//!   · 控制面：本文件提供 12 个 JNI 入口 —— 电源（start/stop/status/
+//!   · 控制面：本文件提供 15 个 JNI 入口 —— 电源（start/stop/status/
 //!     coreInit）、闹钟与签到（triggerTask/schedulerSet/checkinRunNow/
 //!     checkinRunAndWait/requestCheckinStop）、日志回调（setLogCallback）、
-//!     版本（version），以及管理面直调（apiCall）。
+//!     版本（version）、管理面同步直调（apiCall），以及 R50/T10 的异步直调
+//!     （setApiCallback/apiCallAsync/apiCancel —— 超时可真正取消）。
 //!
 //! 两级启动（B 包 · 方案 v2.0 三开关），桌面壳 `ensure_ready` 的序列拆两段：
 //!   Core（随进程）：Android 显式数据目录覆盖 → `ServerState::bootstrap` →
@@ -50,7 +51,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// 随 `status_json()` 信封下发（`bridge` 字段）；Kotlin 读到 0 = 旧内核（未
 /// 携带该字段的历史版本），按 R44 `kind` 的 null 兼容先例降级。字段变更必须
 /// 同步 bump、改 Gateway.kt 两侧并更新 docs/JNI控制面契约.md。
-pub const BRIDGE_CONTRACT_VERSION: u32 = 2;
+pub const BRIDGE_CONTRACT_VERSION: u32 = 3;
 
 /// logcat 优先级（android/log.h 的数值）
 const LOG_INFO: i32 = 4;
@@ -122,6 +123,9 @@ static GATEWAY_OP: Mutex<()> = Mutex::new(());
 
 /// Kotlin 侧注册的日志回调（GlobalRef 保活）；`None` = 只写 logcat。
 static LOG_CALLBACK: Mutex<Option<GlobalRef>> = Mutex::new(None);
+/// 异步管理面直调的回调对象（Kotlin `Gateway.ApiCallCallback`）。与日志回调
+/// 一样持有 GlobalRef，保证 JNI 调用期间对象不被 GC。
+static API_CALLBACK: Mutex<Option<GlobalRef>> = Mutex::new(None);
 /// 首次注册回调时记下的 JVM 句柄，供 Tokio 工作线程回调时附着用。
 static JAVA_VM: OnceLock<JavaVM> = OnceLock::new();
 thread_local! {
@@ -506,37 +510,53 @@ type RouterCache = Option<(RouterCacheKey, axum::Router)>;
 
 static API_ROUTER: Mutex<RouterCache> = Mutex::new(None);
 
-fn api_call(method: &str, path: &str, body: Option<String>, api_key: &str) -> Value {
-    // 参数显式校验：非法参数返回明确错误，不静默兜底。
+/// 管理面直调的单次响应体上限（R50/T10：原 4 MiB，备份/日志类接口容易越界；
+/// 上调到 16 MiB，越界时返回明确的 body_too_large，而不是伪装成 body read failed）。
+const API_RESPONSE_LIMIT: usize = 16 * 1024 * 1024;
+const API_CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// 校验 method/path 并转成 axum 类型；错误直接是可回传的信封。
+fn api_validate(method: &str, path: &str) -> Result<(axum::http::Method, axum::http::Uri), Value> {
     let Ok(method) = axum::http::Method::from_bytes(method.to_uppercase().as_bytes()) else {
-        return json!({ "ok": false, "error": format!("invalid method: {method}") });
+        return Err(json!({ "ok": false, "error": format!("invalid method: {method}") }));
     };
     if !path.starts_with('/') {
-        return json!({ "ok": false, "error": "path must start with /" });
+        return Err(json!({ "ok": false, "error": "path must start with /" }));
     }
     let Ok(uri) = axum::http::Uri::try_from(path.to_owned()) else {
-        return json!({ "ok": false, "error": format!("invalid path: {path}") });
+        return Err(json!({ "ok": false, "error": format!("invalid path: {path}") }));
     };
+    Ok((method, uri))
+}
+
+/// 取当前 Core 的路由器；缓存键含 (port, host, local_panel)，Core 重建自动失效。
+fn api_router() -> Result<axum::Router, Value> {
     let Some(state) = (|| -> Option<ServerState> {
         let guard = CORE.lock().ok()?;
         Some(guard.as_ref()?.state.clone())
     })() else {
-        return json!({ "ok": false, "error": "core_not_ready" });
+        return Err(json!({ "ok": false, "error": "core_not_ready" }));
     };
     let key = (state.port, state.host, state.local_panel);
-    let router = {
-        let Ok(mut cached) = API_ROUTER.lock() else {
-            return json!({ "ok": false, "error": "router cache poisoned" });
-        };
-        match cached.as_ref() {
-            Some((cached_key, router)) if *cached_key == key => router.clone(),
-            _ => {
-                let router = server::http::router(state.clone());
-                *cached = Some((key, router.clone()));
-                router
-            }
-        }
+    let Ok(mut cached) = API_ROUTER.lock() else {
+        return Err(json!({ "ok": false, "error": "router cache poisoned" }));
     };
+    match cached.as_ref() {
+        Some((cached_key, router)) if *cached_key == key => Ok(router.clone()),
+        _ => {
+            let router = server::http::router(state.clone());
+            *cached = Some((key, router.clone()));
+            Ok(router)
+        }
+    }
+}
+
+fn api_request(
+    method: axum::http::Method,
+    uri: axum::http::Uri,
+    body: Option<String>,
+    api_key: &str,
+) -> Result<axum::http::Request<axum::body::Body>, Value> {
     let mut builder = axum::http::Request::builder().method(method).uri(uri);
     if body.is_some() {
         builder = builder.header("content-type", "application/json");
@@ -546,35 +566,157 @@ fn api_call(method: &str, path: &str, body: Option<String>, api_key: &str) -> Va
     }
     // 请求体用 axum::body::Body（上游 CORS 测试同款）——bytes::Bytes 直传会
     // 撞上 http-body 版本分裂的 trait impl 不匹配，Body 由 axum 自己的依赖树提供。
-    let Ok(request) = builder.body(match &body {
-        Some(b) => axum::body::Body::from(b.clone()),
-        None => axum::body::Body::empty(),
-    }) else {
-        return json!({ "ok": false, "error": "build request failed" });
+    builder
+        .body(match &body {
+            Some(b) => axum::body::Body::from(b.clone()),
+            None => axum::body::Body::empty(),
+        })
+        .map_err(|_| json!({ "ok": false, "error": "build request failed" }))
+}
+
+async fn api_execute(
+    router: axum::Router,
+    request: axum::http::Request<axum::body::Body>,
+) -> Value {
+    // axum Router 的 Service::Error 是 Infallible；保留分支只为错误信封语义，
+    // 用 match 而非 let-else，避免 irrefutable_let_patterns 警告。
+    let response = match router.oneshot(request).await {
+        Ok(response) => response,
+        Err(_) => return json!({ "ok": false, "error": "router dispatch failed" }),
     };
-    // oneshot 派到内核全局 runtime，mpsc 同步等结果（与 checkin_run_now 同款模式）。
-    let (tx, rx) = std::sync::mpsc::channel::<Option<(u16, String)>>();
+    let status = response.status().as_u16();
+    match axum::body::to_bytes(response.into_body(), API_RESPONSE_LIMIT).await {
+        Ok(bytes) => json!({
+            "ok": true,
+            "status": status,
+            "body": String::from_utf8_lossy(&bytes),
+        }),
+        Err(_) => json!({
+            "ok": false,
+            "status": status,
+            "error": "response body exceeds 16 MiB",
+        }),
+    }
+}
+
+/// 同步直调：保留给旧调用方/测试；超时只放弃等待，任务本身仍会跑完。
+fn api_call(method: &str, path: &str, body: Option<String>, api_key: &str) -> Value {
+    let (method, uri) = match api_validate(method, path) {
+        Ok(value) => value,
+        Err(reply) => return reply,
+    };
+    let router = match api_router() {
+        Ok(router) => router,
+        Err(reply) => return reply,
+    };
+    let request = match api_request(method, uri, body, api_key) {
+        Ok(request) => request,
+        Err(reply) => return reply,
+    };
+    let (tx, rx) = std::sync::mpsc::channel::<Value>();
     crate::spawn_task(async move {
-        let result = match router.clone().oneshot(request).await {
-            Ok(resp) => {
-                let status = resp.status().as_u16();
-                match axum::body::to_bytes(resp.into_body(), 4 * 1024 * 1024).await {
-                    Ok(bytes) => Some((status, String::from_utf8_lossy(&bytes).into_owned())),
-                    Err(_) => Some((
-                        status,
-                        "{\"success\":false,\"error\":\"body read failed\"}".to_owned(),
-                    )),
-                }
-            }
-            Err(_) => None,
-        };
-        let _ = tx.send(result);
+        let _ = tx.send(api_execute(router, request).await);
     });
-    match rx.recv_timeout(std::time::Duration::from_millis(120_000)) {
-        Ok(Some((status, text))) => json!({ "ok": true, "status": status, "body": text }),
-        Ok(None) => json!({ "ok": false, "error": "router dispatch failed" }),
+    match rx.recv_timeout(API_CALL_TIMEOUT) {
+        Ok(value) => value,
         Err(_) => json!({ "ok": false, "error": "timeout after 120s" }),
     }
+}
+
+type ApiCancelSender = oneshot::Sender<()>;
+
+fn api_tasks() -> &'static Mutex<std::collections::HashMap<i64, ApiCancelSender>> {
+    static TASKS: OnceLock<Mutex<std::collections::HashMap<i64, ApiCancelSender>>> =
+        OnceLock::new();
+    TASKS.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
+}
+
+/// 异步直调（R50/T10）：立即返回 {ok:true}，结果经 Kotlin 回调 onComplete(id, json)。
+/// 取消令牌在 spawn 前登记，避免「任务已完成/尚未登记」的竞态；任务结束时自摘。
+fn api_call_async(
+    request_id: i64,
+    method: String,
+    path: String,
+    body: Option<String>,
+    api_key: String,
+) -> Value {
+    let (method, uri) = match api_validate(&method, &path) {
+        Ok(value) => value,
+        Err(reply) => return reply,
+    };
+    let router = match api_router() {
+        Ok(router) => router,
+        Err(reply) => return reply,
+    };
+    let request = match api_request(method, uri, body, &api_key) {
+        Ok(request) => request,
+        Err(reply) => return reply,
+    };
+    let (cancel_tx, mut cancel_rx) = oneshot::channel::<()>();
+    {
+        let Ok(mut tasks) = api_tasks().lock() else {
+            return json!({ "ok": false, "error": "api task registry poisoned" });
+        };
+        if tasks.contains_key(&request_id) {
+            return json!({ "ok": false, "error": "duplicate request id" });
+        }
+        tasks.insert(request_id, cancel_tx);
+    }
+    crate::spawn_task(async move {
+        let result = tokio::select! {
+            timed = tokio::time::timeout(API_CALL_TIMEOUT, api_execute(router, request)) => {
+                match timed {
+                    Ok(value) => value,
+                    Err(_) => json!({ "ok": false, "error": "timeout after 120s" }),
+                }
+            }
+            _ = &mut cancel_rx => json!({ "ok": false, "error": "cancelled" }),
+        };
+        if let Ok(mut tasks) = api_tasks().lock() {
+            tasks.remove(&request_id);
+        }
+        deliver_api_callback(request_id, &result);
+    });
+    json!({ "ok": true })
+}
+
+fn deliver_api_callback(request_id: i64, reply: &Value) {
+    let Some(callback) = API_CALLBACK
+        .lock()
+        .ok()
+        .and_then(|guard| guard.as_ref().cloned())
+    else {
+        return;
+    };
+    let Some(vm) = JAVA_VM.get() else { return };
+    let payload = reply.to_string();
+    if let Ok(mut env) = vm.get_env() {
+        let result = call_api_callback(&mut env, callback.as_obj(), request_id, &payload);
+        if result.is_err() {
+            clear_pending_exception(&mut env);
+        }
+    } else if let Ok(mut env) = vm.attach_current_thread_permanently() {
+        let result = call_api_callback(&mut env, callback.as_obj(), request_id, &payload);
+        if result.is_err() {
+            clear_pending_exception(&mut env);
+        }
+    }
+}
+
+fn call_api_callback(
+    env: &mut JNIEnv<'_>,
+    obj: &JObject<'_>,
+    request_id: i64,
+    payload: &str,
+) -> Result<(), jni::errors::Error> {
+    let text = env.new_string(payload)?;
+    env.call_method(
+        obj,
+        "onComplete",
+        "(JLjava/lang/String;)V",
+        &[JValue::Long(request_id), JValue::Object(&text)],
+    )?;
+    Ok(())
 }
 
 /// 管理面内核直调入口（P2 通道层）：method+path+body 走内存 `Router::oneshot`，
@@ -614,6 +756,111 @@ pub extern "system" fn Java_dev_agate_core_Gateway_nativeApiCall<'local>(
         }
     };
     json_reply(&mut env, api_call(&method, &path, body, &api_key))
+}
+
+/// 注册/撤销异步直调回调。返回 {ok,cleared?}；失败保留旧回调（与日志回调同语义）。
+#[no_mangle]
+pub extern "system" fn Java_dev_agate_core_Gateway_nativeSetApiCallback<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    callback: JObject<'local>,
+) -> jstring {
+    let result = if callback.is_null() {
+        match API_CALLBACK.lock() {
+            Ok(mut guard) => {
+                *guard = None;
+                json!({ "ok": true, "cleared": true })
+            }
+            Err(_) => json!({ "ok": false, "error": "api_callback_lock_poisoned" }),
+        }
+    } else {
+        match env.get_java_vm() {
+            Ok(vm) => {
+                let _ = JAVA_VM.set(vm);
+                match env.new_global_ref(callback) {
+                    Ok(global) => match API_CALLBACK.lock() {
+                        Ok(mut guard) => {
+                            *guard = Some(global);
+                            json!({ "ok": true })
+                        }
+                        Err(_) => json!({ "ok": false, "error": "api_callback_lock_poisoned" }),
+                    },
+                    Err(error) => {
+                        let message = error.to_string();
+                        clear_pending_exception(&mut env);
+                        json!({ "ok": false, "error": message })
+                    }
+                }
+            }
+            Err(error) => json!({ "ok": false, "error": error.to_string() }),
+        }
+    };
+    json_reply(&mut env, result)
+}
+
+/// 异步直调入口（R50/T10）：立即返回受理结果，完成时回调 onComplete(id, json)。
+#[no_mangle]
+pub extern "system" fn Java_dev_agate_core_Gateway_nativeApiCallAsync<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    request_id: jlong,
+    method: JString<'local>,
+    path: JString<'local>,
+    body: JString<'local>,
+    api_key: JString<'local>,
+) -> jstring {
+    let method = match read_jstring(&mut env, &method) {
+        Ok(value) => value,
+        Err(error) => return jni_argument_error(&mut env, "method", error),
+    };
+    let path = match read_jstring(&mut env, &path) {
+        Ok(value) => value,
+        Err(error) => return jni_argument_error(&mut env, "path", error),
+    };
+    let api_key = match read_jstring(&mut env, &api_key) {
+        Ok(value) => value,
+        Err(error) => return jni_argument_error(&mut env, "api_key", error),
+    };
+    let body = if body.is_null() {
+        None
+    } else {
+        match read_jstring(&mut env, &body) {
+            Ok(value) if !value.is_empty() => Some(value),
+            Ok(_) => None,
+            Err(error) => return jni_argument_error(&mut env, "body", error),
+        }
+    };
+    json_reply(
+        &mut env,
+        api_call_async(request_id, method, path, body, api_key),
+    )
+}
+
+/// 取消未完成的异步直调；任务若已结束返回 not_found（调用方无需处理）。
+#[no_mangle]
+pub extern "system" fn Java_dev_agate_core_Gateway_nativeApiCancel<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    request_id: jlong,
+) -> jstring {
+    let removed = match api_tasks().lock() {
+        Ok(mut tasks) => tasks.remove(&request_id),
+        Err(_) => {
+            return json_reply(
+                &mut env,
+                json!({ "ok": false, "error": "api task registry poisoned" }),
+            );
+        }
+    };
+    let reply = match removed {
+        Some(cancel) => {
+            // send 失败 = 任务刚好结束并丢弃了 receiver；仍视为已取消（幂等）。
+            let _ = cancel.send(());
+            json!({ "ok": true })
+        }
+        None => json!({ "ok": false, "error": "not_found" }),
+    };
+    json_reply(&mut env, reply)
 }
 
 fn start_gateway(data_dir: &str, port: u16, bind_lan: bool, api_key: Option<&str>) -> Value {
@@ -1288,4 +1535,55 @@ pub extern "system" fn Java_dev_agate_core_Gateway_nativeSetLogCallback<'local>(
         }
     };
     json_reply(&mut env, result)
+}
+
+#[cfg(test)]
+mod api_async_tests {
+    use super::*;
+
+    #[test]
+    fn validate_rejects_bad_method_and_path() {
+        assert!(api_validate("GE T", "/x").is_err());
+        assert!(api_validate("GET", "x").is_err());
+        assert!(api_validate("GET", "/x").is_ok());
+    }
+
+    #[tokio::test]
+    async fn execute_preserves_status_and_body() {
+        let router = axum::Router::new().route("/ping", axum::routing::get(|| async { "pong" }));
+        let Ok((method, uri)) = api_validate("GET", "/ping") else {
+            assert!(false, "valid request rejected");
+            return;
+        };
+        let Ok(request) = api_request(method, uri, None, "") else {
+            assert!(false, "request build failed");
+            return;
+        };
+        let reply = api_execute(router, request).await;
+        assert_eq!(reply["ok"], json!(true));
+        assert_eq!(reply["status"], json!(200));
+        assert_eq!(reply["body"], json!("pong"));
+    }
+
+    #[tokio::test]
+    async fn body_limit_returns_explicit_error() {
+        let router = axum::Router::new().route(
+            "/huge",
+            axum::routing::get(|| async { vec![b'x'; API_RESPONSE_LIMIT + 1] }),
+        );
+        let Ok((method, uri)) = api_validate("GET", "/huge") else {
+            assert!(false, "valid request rejected");
+            return;
+        };
+        let Ok(request) = api_request(method, uri, None, "") else {
+            assert!(false, "request build failed");
+            return;
+        };
+        let reply = api_execute(router, request).await;
+        assert_eq!(reply["ok"], json!(false));
+        assert!(reply["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("exceeds 16 MiB"));
+    }
 }

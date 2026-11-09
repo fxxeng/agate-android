@@ -1,0 +1,6 @@
+# 工具链钉版本（R50/T10）：CI 与本机同版，避免 stable 漂移引入新的 lint/编译差异。
+# 注意：修改后需同步 .github/workflows/android-build.yml 的 toolchain 输入。
+[toolchain]
+channel = "1.99.1"
+components = ["rustfmt", "clippy"]
+targets = ["aarch64-linux-android", "x86_64-linux-android"]

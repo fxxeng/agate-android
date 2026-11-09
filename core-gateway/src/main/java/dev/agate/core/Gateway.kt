@@ -9,10 +9,11 @@ import org.json.JSONObject
  * 网关内核（libagate_server.so）的 Kotlin 门面。
  *
  * 双通信面（方案 §3）：数据面默认走 HTTP（127.0.0.1:8787）。本对象提供
- * 12 个 JNI 导出 —— 电源（start/stop/status/coreInit）、闹钟与签到
+ * 15 个 JNI 导出 —— 电源（start/stop/status/coreInit）、闹钟与签到
  * （triggerTask/schedulerSet/checkinRunNow/checkinRunAndWait/
- * requestCheckinStop）、日志回调（setLogCallback）、版本（version），以及
- * 管理面直调 apiCall（Core 态经内核内存 Router，不经 loopback 端口）。
+ * requestCheckinStop）、日志回调（setLogCallback）、版本（version）、管理面
+ * 同步直调 apiCall，以及 R50/T10 的异步直调（setApiCallback/apiCallAsync/
+ * apiCancel，超时可真正取消）。Core 态直调经内核内存 Router，不经 loopback。
  * 全部按 JSON 文本进出，本对象不解释业务数据结构。
  *
  * 线程：JNI 导出可在任意线程调用（bootstrap/start 是同步调用、毫秒级返回，
@@ -57,6 +58,18 @@ object Gateway {
 
     private external fun nativeApiCall(method: String, path: String, body: String?, apiKey: String): String?
 
+    private external fun nativeSetApiCallback(callback: Any?): String?
+
+    private external fun nativeApiCallAsync(
+        requestId: Long,
+        method: String,
+        path: String,
+        body: String?,
+        apiKey: String,
+    ): String?
+
+    private external fun nativeApiCancel(requestId: Long): String?
+
     /**
      * 管理面内核直调（P2 通道层）：method+path+body 经 JNI 走内核内存 Router，
      * 不经 127.0.0.1 端口 —— Core 态（网关未运行）下管理操作照常可用。
@@ -68,6 +81,36 @@ object Gateway {
     fun apiCall(method: String, path: String, body: String?, apiKey: String): String {
         ensureLoaded()
         return envelope(nativeApiCall(method, path, body, apiKey)).toString()
+    }
+
+    /**
+     * 注册/撤销异步直调回调（R50/T10）。返回结构化信封；失败时 Native 保留
+     * 旧回调，调用方不得把失败当成功。
+     */
+    fun setApiCallback(callback: ApiCallCallback?): String {
+        ensureLoaded()
+        return envelope(nativeSetApiCallback(callback)).toString()
+    }
+
+    /**
+     * 异步直调：立即返回受理信封 `{ok:true}`；结果经 [ApiCallCallback] 回调。
+     * 与 [apiCall] 共用 Router/鉴权，但调用线程不再阻塞 120s。
+     */
+    fun apiCallAsync(
+        requestId: Long,
+        method: String,
+        path: String,
+        body: String?,
+        apiKey: String,
+    ): String {
+        ensureLoaded()
+        return envelope(nativeApiCallAsync(requestId, method, path, body, apiKey)).toString()
+    }
+
+    /** 取消未完成的异步直调；已完成/未知 id 返回 `{ok:false,error:"not_found"}`。 */
+    fun cancelApiCall(requestId: Long): String {
+        ensureLoaded()
+        return envelope(nativeApiCancel(requestId)).toString()
     }
 
     data class StartResult(

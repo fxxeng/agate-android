@@ -1,7 +1,7 @@
 # JNI 控制面契约（v1 · R46 定稿）
 
 > 本文是 Kotlin 门面（`core-gateway/src/main/java/dev/agate/core/Gateway.kt`）
-> 与内核桥（`agate-server/src/jni_bridge.rs`）之间 12 个入口的稳定契约。两侧
+> 与内核桥（`agate-server/src/jni_bridge.rs`）之间 15 个入口的稳定契约。两侧
 > 文件头各有指回；字段/语义变更必须同提交改两侧并 bump
 > `BRIDGE_CONTRACT_VERSION`。历史沿革见 docs/《Agate两级内核重构-实施记录.md》。
 
@@ -19,8 +19,8 @@
   ——它等于进程死亡，靠纪律与审计预防，不靠运行时兜底。
 - **契约版本**：`nativeStatus()` 信封携带 `bridge` 字段 =
   `jni_bridge::BRIDGE_CONTRACT_VERSION`（首版 1）。Kotlin 读到 0 = 旧内核
-  （无该字段），按 R44 `kind` 的 null 兼容先例降级；≥2 = 未知新内核，消费方
-  只允许取已知字段。字段变更（增/删/改语义）必须 bump 本号。
+  （无该字段），按 R44 `kind` 的 null 兼容先例降级；大于当前版本 = 未知新内核，
+  消费方只允许取已知字段。字段变更（增/删/改语义）必须 bump 本号。
 
 ## 1. 入口一览
 
@@ -38,6 +38,9 @@
 | 10 | `nativeVersion()` | 任意 | 即返 | **裸字符串**（唯一非信封） |
 | 11 | `nativeSetLogCallback(cb\|null)` | 任意（@Synchronized） | 锁等待 | 信封 JSON |
 | 12 | `nativeApiCall(m,p,body,key)` | Dispatchers.IO 级 | 120s | 信封 `{ok,status,body}` |
+| 13 | `nativeSetApiCallback(cb\|null)` | 任意 | 锁等待 | 信封 JSON |
+| 14 | `nativeApiCallAsync(id,m,p,body,key)` | 任意（即返） | 即返 | 受理信封；结果走 `onComplete(id,json)` |
+| 15 | `nativeApiCancel(id)` | 任意 | 锁等待 | 信封 `{ok}` / `not_found` |
 
 ## 2. 错误信封规范
 
@@ -61,16 +64,19 @@
    stopping=true` 并保留 Stopping 相位：`status` 继续报 `running:false,
    stopping:true`，`start` 返回 `stopping` 错误，直到完成标记置位后自动归位。
    端口探测只作辅助信号，不再是判据。只停网关，Core/调度器不受影响。
-3. **apiCall 直调**：内存 `Router::oneshot`，完整鉴权/CORS/错误信封栈；body
-   上限 4MB；API Key 走 Bearer；Core 未就绪返回 `core_not_ready`。
+3. **apiCall 直调**：内存 `Router::oneshot`，完整鉴权/CORS/错误信封栈；响应
+   上限 16 MiB（R50/T10 由 4 MiB 上调，越界返回 `response body exceeds 16 MiB`）；
+   API Key 走 Bearer；Core 未就绪返回 `core_not_ready`。
 4. **checkin 三入口**：RunNow 超时不断任务（fire 已后台跑，返回 timeout +
    ok=true）；RunAndWait 等 CAS 抢锁的 busy 轮真实结束（FGS WakeLock），
    但等待有 15min 上限：超时返回 `done:false, error:"timeout"` 并调用
    `request_cancel_current()`（账号边界停止后续账号，不中断在途 Provider
    请求）——R50/T5 前是无限等待；RequestStop 合作式。
 5. **日志回调**：单 GlobalRef；网关运行期不换监听；Kotlin 侧固定在 AgateLog
-   HandlerThread 执行，回调内禁重活；Rust 侧回调异常一律清理不留 pending
-   exception；增补平面字符转 U+FFFD（NewStringUTF 是 modified UTF-8）。
+   HandlerThread 执行（有界队列 2048，消费慢时丢弃并限频告警），回调内禁重活；
+   Rust 侧回调异常一律清理不留 pending exception；jni 0.21 的 `JNIString`
+   已按 Java modified UTF-8（CESU-8）编码，emoji 原样保留（R50/T7 删除旧的
+   U+FFFD 替换）。
 6. **锁纪律**：Rust 侧 Mutex 全部带 poisoned 分支（abort 语义下不可达，纯
    防御；若未来翻 unwind 则变活代码）。
 7. **回复兜底链异常清理（R47/T3.2）**：`json_reply` 入口与第二层兜底分配
@@ -96,13 +102,23 @@
     `running` 互斥；`stopping=true` 表示停机已发出但 listener 尚未释放。
     Kotlin 复核必须以 `!running && !stopping` 判「已停」，不得只看 `running`。
 
-11. **网关启动顺序（R49/T3）**：`nativeStart` 先 `server::start`（bind），
+11. **异步直调（R50/T10，bridge=3）**：`nativeApiCallAsync` 登记取消令牌后
+    spawn，立即返回 `{ok:true}`；任务完成/取消/超时后经 `onComplete(id, json)`
+    恰好回调一次。`nativeApiCancel` 发送取消信号让 `select!` 立即结束任务
+    （不再出现「Kotlin 已超时、内核还在跑」）。Kotlin 侧 `CoreTransport` 用
+    `suspendCancellableCoroutine` 挂起，120s 超时 + 协程取消都会触发 cancel；
+    另有 125s `withTimeoutOrNull` 兜底防回调丢失。回调方法名由 R8 keep 规则保留。
+
+12. **网关启动顺序（R49/T3）**：`nativeStart` 先 `server::start`（bind），
     成功后才提交 `start_gateway_tasks()`（当前唯一内容 = Sidecar 自动拉起）。
     bind 失败原样返回 `port_conflict`，不产生任何 Sidecar 副作用；顺序由
     `server::run_after_successful_bind` 固定，jni_bridge 与 headless bin 同源。
 
 ## 4. 版本沿革
 
+- **v3（R50，bridge=3）**：新增 `nativeSetApiCallback` / `nativeApiCallAsync` /
+  `nativeApiCancel` 三个入口；管理面直调改为异步回调，超时可真正取消；响应
+  上限 4 MiB → 16 MiB；Kotlin `CoreTransport` 切换到异步通道。
 - **v2（R50，bridge=2）**：status 增 `stopping`；stop 判据从「端口探测」改为
   serve 任务完成标记；Stopping 相位贯穿 Rust 桥与 Kotlin 快照（复核不再把
   未确认当已停止），serve 异常退出也会被归位为 Stopped。

@@ -3,3 +3,9 @@
 # 单独集成 core-gateway 的使用方也不会把 JNI 入口裁掉（R50/T7 修正过时注释）。
 -keepclasseswithmembernames class * { native <methods>; }
 -keep class dev.agate.core.Gateway { *; }
+
+# R50/T10：Native 通过 JNI 按名字调用 onComplete，必须保留接口与实现方法名。
+-keep interface dev.agate.core.ApiCallCallback { *; }
+-keepclassmembers class * implements dev.agate.core.ApiCallCallback {
+    public void onComplete(long, java.lang.String);
+}

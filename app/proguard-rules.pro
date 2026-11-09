@@ -16,3 +16,9 @@
 # ── Compose ────────────────────────────────────────────────
 # AGP 自带 compose 规则；此处仅保留运行时反射用到的入口
 -keep class androidx.compose.runtime.** { *; }
+
+# R50/T10：异步直调回调由 Rust 按名字反射调用，R8 不得改名。
+-keep interface dev.agate.core.ApiCallCallback { *; }
+-keepclassmembers class * implements dev.agate.core.ApiCallCallback {
+    public void onComplete(long, java.lang.String);
+}
