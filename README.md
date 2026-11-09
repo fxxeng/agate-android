@@ -2,8 +2,8 @@
 
 - Verification branch: `verify/arch-8faa5f5`
 - Current batch: R47 / 运行时正确性与所有权收口（T1–T5）
-- Latest verified: `a5fb016` — GitHub Actions Run `42551225790`（双 job 全绿；R47 T5 收尾批）
-- 状态：rust-tests 793 passed / 11 ignored；android-build JVM 单元测试 119/119、JNI 12 入口（符号 + Kotlin/Rust 描述符签名级互检）、双 APK 校验（debug 共享凭证指纹硬断言）、Instrumentation 2/2。
+- Latest verified: `2d210d5` — GitHub Actions Run `42558923248`（双 job 全绿；R47 T5/T6 收尾）
+- 状态：rust-tests 793 passed / 11 ignored；android-build JVM 单元测试 121/121、JNI 12 入口（符号 + Kotlin/Rust 描述符签名级互检）、双 APK 校验（debug 共享凭证指纹硬断言）、Instrumentation 2/2。
 - 真机验收待做（APK 自取 run artifacts）；release 正式签名按委托方裁定暂缓。
 
 ## Direction
@@ -19,10 +19,11 @@ The repository already has no complete Tauri/Desktop UI Host. The remaining desk
 3. **JNI 契约**：`json_reply` 兜底前清理 pending exception；`envelope` 结构从严（只捕 `JSONException`、`ok` 必须布尔、失败必须带 error）；stop 三态（`released=false` → `StopTimeout`，不再假装 Stopped）；Kotlin/Rust 描述符签名级互检（12 入口）。
 4. **门禁与发布地基**：Android target clippy 门（首次覆盖 `cfg(target_os="android")` 与 `jni_bridge`）；APK 签名校验接入 CI（debug 共享凭证指纹硬断言；release 未签名放行，正式签名暂缓）。
 5. **收尾（T5）**：ChatGLM 嵌套令牌迁移补齐「仅 refresh / 多账号同批 / 落库失败原数据完整可重试」测试；README / HANDOFF / MAINLINE / JNI 与 Gateway 头注释 / `GLOBAL_RUNTIME` 注释与当前实现对齐。
+6. **Service 接线（T6）**：`runTick` 的「探测异常 → null → 策略」提为可测纯函数 `stopServiceAfterTick`（异常上报后 fail-closed），JVM 补 3 条接线测试；关闭「Service 内接线无单测」遗留。
 
 ## Verification state
 
-R47 代码基线 `a5fb016` 通过 Run `42551225790`：rust-tests 793 passed / 11 ignored；android-build 全步 success（Android clippy 门、JNI 符号 + 描述符、JVM 119/119、双 APK 校验、Instrumentation 2/2）。
+R47 代码基线 `2d210d5` 通过 Run `42558923248`：rust-tests 793 passed / 11 ignored；android-build 全步 success（Android clippy 门、JNI 符号 + 描述符、JVM 121/121、双 APK 校验、Instrumentation 2/2）。
 
 历史：R40 `d3e049e89b932325e49c57b5f6a5a23c825bcca8` 为 R42 之前的已验证基线（Run `42199123476`）；R41 本地候选（未推送远端；代码改动已合入 R42）；R42 完成 Android-only 范围收敛（Run `42235540958`：JVM 99/99）。
 
