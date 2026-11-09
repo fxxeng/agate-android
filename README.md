@@ -19,7 +19,7 @@ The repository already has no complete Tauri/Desktop UI Host. The remaining desk
 3. **JNI 契约**：`json_reply` 兜底前清理 pending exception；`envelope` 结构从严（只捕 `JSONException`、`ok` 必须布尔、失败必须带 error）；stop 三态（`released=false` → `StopTimeout`，不再假装 Stopped）；Kotlin/Rust 描述符签名级互检（12 入口）。
 4. **门禁与发布地基**：Android target clippy 门（首次覆盖 `cfg(target_os="android")` 与 `jni_bridge`）；APK 签名校验接入 CI（debug 共享凭证指纹硬断言；release 未签名放行，正式签名暂缓）。
 5. **收尾（T5）**：ChatGLM 嵌套令牌迁移补齐「仅 refresh / 多账号同批 / 落库失败原数据完整可重试」测试；README / HANDOFF / MAINLINE / JNI 与 Gateway 头注释 / `GLOBAL_RUNTIME` 注释与当前实现对齐。
-6. **Service 接线（T6）**：`runTick` 的「探测异常 → null → 策略」提为可测纯函数 `stopServiceAfterTick`（异常上报后 fail-closed），JVM 补 3 条接线测试；关闭「Service 内接线无单测」遗留。
+6. **Service 接线（T6）**：`runTick` 的「探测异常 → null → 策略」提为可测纯函数 `stopServiceAfterTick`（异常上报后 fail-closed），JVM 补 2 条接线测试（连同原有策略用例共 3 条）；关闭「Service 内接线无单测」遗留。
 
 ## Verification state
 
