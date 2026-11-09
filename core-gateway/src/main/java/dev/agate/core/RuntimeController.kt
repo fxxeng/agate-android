@@ -279,7 +279,7 @@ object RuntimeController {
     }
 
     /** Production STOP entry point; intent validation and JNI stop are atomic. */
-    fun stopIfAllowed(mayStopNow: () -> Boolean): StopExecutionResult = stopWith(
+    internal fun stopIfAllowed(mayStopNow: () -> Boolean): StopExecutionResult = stopWith(
         mayStopNow = mayStopNow,
         stop = {
             val result = Gateway.stop()
