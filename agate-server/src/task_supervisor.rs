@@ -244,6 +244,20 @@ impl CoreTaskSupervisor {
             .count()
     }
 
+    /// 指定作用域下是否有同名任务仍在运行（只读诊断；不触发回收）。
+    ///
+    /// 判据与 `spawn()` 的同名去重一致（scope + name + 未结束），供运行时
+    /// 排查与单测观察任务生命周期，不改变任何任务状态。
+    pub fn has_live_task(&self, scope: TaskScope, name: &str) -> bool {
+        let tasks = self
+            .tasks
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        tasks.iter().any(|entry| {
+            entry.scope == scope && &*entry.name == name && !entry.handle.is_finished()
+        })
+    }
+
     /// 最近的任务失败记录（T1.2 有限历史快照，最新在尾部）。
     ///
     /// 停机报告只覆盖停机时**仍在册**的条目；运行期被回收的 panic 落在这里。

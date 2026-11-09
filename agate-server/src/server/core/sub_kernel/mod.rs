@@ -769,6 +769,18 @@ fn kernel_effectively_running() -> bool {
     kernel_running_with(port, running)
 }
 
+/// 三重守卫的纯判定（R49/T3 补测）。
+///
+/// 用闭包入参保持原短路顺序：前置条件不满足时**不做**端口探活
+/// （`kernel_effectively_running` 会 connect 控制端口，最多 300ms）。
+fn autostart_allowed(
+    should_autostart: impl FnOnce() -> bool,
+    manually_halted: impl FnOnce() -> bool,
+    running: impl FnOnce() -> bool,
+) -> bool {
+    should_autostart() && !manually_halted() && !running()
+}
+
 /// 网关启动时的内核自动拉起（`server::start_gateway_tasks` 的唯一内容）。
 ///
 /// 三重守卫，任一命中就不拉：
@@ -783,10 +795,11 @@ fn kernel_effectively_running() -> bool {
 /// 经命令队列走（`request_restart`），与手动启动同一串行通道；run_restart
 /// 会先清理上次运行遗留的进程再重建配置。
 pub fn autostart_for_gateway() {
-    if !crate::server::core::subscriptions::should_autostart()
-        || is_manually_halted()
-        || kernel_effectively_running()
-    {
+    if !autostart_allowed(
+        crate::server::core::subscriptions::should_autostart,
+        is_manually_halted,
+        kernel_effectively_running,
+    ) {
         return;
     }
     let providers = crate::server::core::subscriptions::enabled_provider_inputs();
@@ -915,5 +928,59 @@ mod worker_shutdown_tests {
 
         assert_eq!(discard_pending_commands(&mut receiver), 3);
         assert!(receiver.try_recv().is_err());
+    }
+}
+
+#[cfg(test)]
+mod autostart_guard_tests {
+    use super::autostart_allowed;
+
+    /// 「未安装内核 / 没有启用订阅」→ `should_autostart()` 为假。
+    #[test]
+    fn autostart_requires_installed_kernel_and_enabled_subscription() {
+        assert!(!autostart_allowed(|| false, || false, || false));
+    }
+
+    /// 用户刚按下「关闭内核」→ 不拉起。
+    #[test]
+    fn manual_halt_blocks_autostart() {
+        assert!(!autostart_allowed(|| true, || true, || false));
+    }
+
+    /// 内核已在运行 → 不重复重启。
+    #[test]
+    fn running_kernel_is_not_restarted() {
+        assert!(!autostart_allowed(|| true, || false, || true));
+    }
+
+    #[test]
+    fn autostart_allowed_only_when_all_guards_pass() {
+        assert!(autostart_allowed(|| true, || false, || false));
+    }
+
+    /// 前置守卫必须短路，避免每次网关启动都做一次端口探活。
+    #[test]
+    fn earlier_guards_short_circuit_the_port_probe() {
+        let probed = std::cell::Cell::new(false);
+
+        assert!(!autostart_allowed(
+            || false,
+            || false,
+            || {
+                probed.set(true);
+                true
+            },
+        ));
+        assert!(!probed.get(), "should_autostart=false 时不应探活内核");
+
+        assert!(!autostart_allowed(
+            || true,
+            || true,
+            || {
+                probed.set(true);
+                true
+            },
+        ));
+        assert!(!probed.get(), "手动关闭内核时不应探活内核");
     }
 }

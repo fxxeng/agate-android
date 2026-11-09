@@ -1687,4 +1687,184 @@ mod scheduling_tests {
         assert!(!master_enabled(), "总开关应已关闭");
         cleanup_config();
     }
+
+    // ─── R49/T2 补测：start/stop 接线与代次生命周期 ─────────────
+    //
+    // 任务书 §3.5 的「无待补签不提交」「start() 执行全部待补签」「stop 后立即
+    // start」「多次 stop 幂等」「多次 start 不产生重复补签」用真实 start()/
+    // stop() 驱动；空账号库 ⇒ 零 Provider 网络。观察点用条目记账（fire 入口
+    // 即写 lastFiredDate）与 supervisor 的任务名，不靠固定 sleep 猜时序。
+
+    fn backfill_task_name(generation: u64) -> String {
+        format!("checkin-backfill:{generation}")
+    }
+
+    fn has_live_backfill(generation: u64) -> bool {
+        core_task_supervisor().has_live_task(TaskScope::Core, &backfill_task_name(generation))
+    }
+
+    fn fired_today(id: &str) -> bool {
+        let today = today_key();
+        find_entry(id)
+            .and_then(|schedule| schedule.last_fired_date)
+            .as_deref()
+            == Some(today.as_str())
+    }
+
+    /// §3.5 基本 #1：没有待补签计划时不提交补签任务。
+    #[tokio::test]
+    async fn start_without_pending_plans_registers_no_backfill() {
+        let _serial = SCHEDULING_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        isolate_state();
+        let (service, _guard) = fresh_service("sched-start-empty");
+        set_entries(json!([entry("entry-done", "00:00", true)]));
+
+        service.start();
+
+        assert!(
+            !has_live_backfill(service.generation()),
+            "没有待补签计划时不得注册补签任务"
+        );
+        service.stop();
+        cleanup_config();
+    }
+
+    /// §3.5 基本 #2：start() 把全部待补签计划交给补签任务执行。
+    #[tokio::test]
+    async fn start_dispatches_all_pending_plans() {
+        let _serial = SCHEDULING_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        isolate_state();
+        let (service, _guard) = fresh_service("sched-start-pending");
+        set_entries(json!([
+            entry("entry-a", "00:00", false),
+            entry("entry-b", "00:00", false),
+        ]));
+
+        service.start();
+        let generation = service.generation();
+
+        wait_for(
+            &mut || fired_today("entry-a") && fired_today("entry-b"),
+            "两条待补签计划都应被启动",
+        )
+        .await;
+
+        service.stop();
+        wait_for(
+            &mut || !has_live_backfill(generation),
+            "停止后补签任务应收尾",
+        )
+        .await;
+        cleanup_config();
+    }
+
+    /// 竞态 #4：stop 后立即 start —— 旧代次失效，新代次照常执行。
+    #[tokio::test]
+    async fn stop_then_immediate_start_runs_only_the_new_generation() {
+        let _serial = SCHEDULING_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        isolate_state();
+        let (service, _guard) = fresh_service("sched-stop-start");
+        set_entries(json!([entry("entry-next", "00:00", false)]));
+
+        service.start();
+        let previous = service.generation();
+        service.stop();
+        service.start();
+        let current = service.generation();
+
+        assert_ne!(previous, current, "start 必须开启新代次");
+        assert!(!service.backfill_is_current(previous), "旧代次必须失效");
+        assert!(service.backfill_is_current(current), "新代次应有效");
+
+        // 旧代次即使被驱动，也不得执行任何计划。
+        let old_ran = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let fire = {
+            let old_ran = old_ran.clone();
+            move |_schedule: Schedule| {
+                let old_ran = old_ran.clone();
+                async move {
+                    old_ran.fetch_add(1, Ordering::SeqCst);
+                }
+            }
+        };
+        let is_current = {
+            let service = service.clone();
+            move || service.backfill_is_current(previous)
+        };
+        run_backfill(vec![backfill_schedule("old-only")], is_current, fire).await;
+        assert_eq!(0, old_ran.load(Ordering::SeqCst), "旧代次不得执行任何计划");
+
+        wait_for(&mut || fired_today("entry-next"), "新代次应启动待补签计划").await;
+        service.stop();
+        cleanup_config();
+    }
+
+    /// 竞态 #5：多次 stop 幂等，且不影响随后的 start。
+    #[tokio::test]
+    async fn repeated_stop_is_idempotent() {
+        let _serial = SCHEDULING_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        isolate_state();
+        let (service, _guard) = fresh_service("sched-repeat-stop");
+        set_entries(json!([entry("entry-idem", "00:00", true)]));
+
+        let before = service.generation();
+        service.stop();
+        let first = service.generation();
+        service.stop();
+        let second = service.generation();
+
+        assert_ne!(before, first, "首次 stop 必须推进代次");
+        assert_ne!(first, second, "重复 stop 仍应推进且不 panic");
+        assert!(
+            service.lock().task.is_none(),
+            "重复 stop 后不应残留轮询任务"
+        );
+
+        service.start();
+        let current = service.generation();
+        assert!(
+            service.backfill_is_current(current),
+            "stop 后的 start 应正常工作"
+        );
+        service.stop();
+        cleanup_config();
+    }
+
+    /// 竞态 #6：多次 start 不产生重复补签，两个代次的任务最终全部收尾。
+    #[tokio::test]
+    async fn repeated_start_leaves_no_duplicate_backfill() {
+        let _serial = SCHEDULING_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        isolate_state();
+        let (service, _guard) = fresh_service("sched-repeat-start");
+        set_entries(json!([entry("entry-dup", "00:00", false)]));
+
+        service.start();
+        let first = service.generation();
+        service.start();
+        let second = service.generation();
+
+        assert_ne!(first, second, "每次 start 都应开启新代次");
+        assert!(!service.backfill_is_current(first), "旧代次应失效");
+        assert!(service.backfill_is_current(second), "新代次应有效");
+
+        wait_for(&mut || fired_today("entry-dup"), "新一代应启动待补签计划").await;
+
+        service.stop();
+        wait_for(
+            &mut || !has_live_backfill(first) && !has_live_backfill(second),
+            "两个代次的补签任务都应收尾，不留孤儿",
+        )
+        .await;
+        cleanup_config();
+    }
 }
