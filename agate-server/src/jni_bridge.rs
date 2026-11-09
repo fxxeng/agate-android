@@ -16,8 +16,8 @@
 //!     订阅内核 worker / zcode 配置同步 / 余额查询，见 bootstrap 末尾区块）
 //!     随 Core 常驻，不监听任何端口，也不随网关启停；
 //!   网关（手动）：重设 OAuth 回调端口 → `local_panel = true` →（bind_lan
-//!     时面板闸门 + /v1 fail-closed）→ `start_gateway_tasks` →
-//!     `server::start()` 拿 oneshot 停机通道。
+//!     时面板闸门 + /v1 fail-closed）→ `server::start()` 拿 oneshot 停机
+//!     通道 →（绑定成功后）`start_gateway_tasks` 提交 Sidecar autostart。
 //! `start()` 是同步调用，内部经 `crate::spawn_task` 落到全局惰性 Tokio 运行时
 //! （见 lib.rs），因此本桥不需要自建 Runtime —— 与 headless bin 的时序一致
 //! （那边也是先 start、再建运行时等信号）。
@@ -607,10 +607,14 @@ fn start_gateway(data_dir: &str, port: u16, bind_lan: bool, api_key: Option<&str
         } else {
             server::access::set_panel_gate(false);
         }
-        // 网关启动动作（当前只有内核 autostart；后台循环是 Core 级，已在
-        // bootstrap 拉起，见 server::start_gateway_tasks 的文档）
-        server::start_gateway_tasks();
-        match server::start(&core.state) {
+        // R49/T3：先绑定成功，再提交「随网关而生」的副作用。
+        // start_gateway_tasks() 当前唯一内容是 Sidecar 自动拉起（三重守卫在
+        // 函数内部）；旧顺序在 bind 失败时也会把它提交出去——用户看到
+        // 「网关起不来」，后台却多了一个内核进程。
+        match server::run_after_successful_bind(
+            || server::start(&core.state),
+            server::start_gateway_tasks,
+        ) {
             Ok(tx) => tx,
             Err(conflict) => {
                 crate::server::config::parse::clear_android_api_key_override();

@@ -108,10 +108,6 @@ fn main() -> ExitCode {
     // env 预置的管理员同步进库（明文在此前已转哈希，库里只存哈希）
     agate_server::server::access::sync_env_admin_to_store();
 
-    // 网关启动动作（headless = 网关常开形态；后台循环是 Core 级，已在
-    // bootstrap 拉起，这里只补内核 autostart）
-    agate_server::server::start_gateway_tasks();
-
     // ── 安全闸门：/v1/* 的 fail-closed 与注册提示 ───────────────
     // 桌面形态的安全边界是「只监听 127.0.0.1」，免鉴权语义（一把 Key 都
     // 没配 → 全放行）在此之上成立；本形态绑 0.0.0.0、对外可见：
@@ -171,7 +167,12 @@ fn main() -> ExitCode {
         let _ = restart_tx.try_send(());
     }));
 
-    let shutdown_tx = match start(&state) {
+    // R49/T3：headless 也遵守同一顺序契约——端口绑定成功后才提交
+    // Sidecar autostart（旧顺序在 bind 失败时留下多余内核进程）。
+    let shutdown_tx = match agate_server::server::run_after_successful_bind(
+        || start(&state),
+        agate_server::server::start_gateway_tasks,
+    ) {
         Ok(tx) => tx,
         Err(conflict) => {
             eprintln!("❌ 网关启动失败：{}", conflict.message);

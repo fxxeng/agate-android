@@ -1215,7 +1215,7 @@ pub fn probe_port(port: u16) -> Result<(), PortConflict> {
 }
 
 /// 网关启动路径上的非 HTTP 动作（jni_bridge 与 headless bin 在
-/// `server::start` 之前调用）。
+/// `server::start` **成功之后**调用，见 [`run_after_successful_bind`]）。
 ///
 /// ⚠ 后台循环任务**不放这里**：它们是 Core 级（进程生命周期），统一在
 /// `ServerState::bootstrap` 末尾的「Core 级后台任务」区块拉起，与网关启停
@@ -1224,4 +1224,59 @@ pub fn probe_port(port: u16) -> Result<(), PortConflict> {
 /// 订阅内核的自动拉起（判定与守卫见 `sub_kernel::autostart_for_gateway`）。
 pub fn start_gateway_tasks() {
     core::sub_kernel::autostart_for_gateway();
+}
+
+/// 网关绑定与随行任务的顺序契约（R49/T3）。
+///
+/// [`start_gateway_tasks`] 当前唯一内容是 Sidecar 自动拉起。它只能在
+/// listener 绑定**成功之后**提交：旧顺序先提交、后 bind，端口被占用时
+/// 用户看到「网关起不来」，后台却已经多了一个内核进程（任务书 §4）。
+///
+/// 抽成泛型小函数而不是靠调用点自觉，是为了用闭包在单测里验证「失败分支
+/// 不产生副作用」，且不改写 bind 返回的错误（stage/kind 由调用方原样透传）。
+pub fn run_after_successful_bind<T, E>(
+    bind: impl FnOnce() -> Result<T, E>,
+    start_gateway_tasks: impl FnOnce(),
+) -> Result<T, E> {
+    let bound = bind()?;
+    start_gateway_tasks();
+    Ok(bound)
+}
+
+#[cfg(test)]
+mod gateway_start_order_tests {
+    use super::run_after_successful_bind;
+
+    #[test]
+    fn bind_failure_does_not_submit_gateway_tasks() {
+        let mut submitted = false;
+
+        let result: Result<(), &str> =
+            run_after_successful_bind(|| Err("port occupied"), || submitted = true);
+
+        assert_eq!(Err("port occupied"), result);
+        assert!(!submitted, "bind 失败时不得提交 Sidecar autostart");
+    }
+
+    #[test]
+    fn bind_success_submits_gateway_tasks_once() {
+        let mut submitted = 0;
+
+        let result: Result<u16, ()> = run_after_successful_bind(|| Ok(8787), || submitted += 1);
+
+        assert_eq!(Ok(8787), result);
+        assert_eq!(1, submitted, "bind 成功后应恰好提交一次");
+    }
+
+    #[test]
+    fn bind_error_is_returned_unchanged() {
+        let expected = ("occupied".to_string(), "port 8787 in use".to_string());
+
+        let result: Result<(), (String, String)> = run_after_successful_bind(
+            || Err(expected.clone()),
+            || panic!("失败分支不得提交随行任务"),
+        );
+
+        assert_eq!(Err(expected), result);
+    }
 }
