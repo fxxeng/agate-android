@@ -1,6 +1,10 @@
 # Phase 2 真机验收执行单（Agate）
 
 > 适用基线：R32 / `91dd6c26e54080e266dafa0e3f3911e9a93c0754`。本文件是执行记录模板，不代表任何真机场景已经通过。
+>
+> **Android-only 范围（2026-11-10 更新）**：不考虑旧数据兼容；headless、mihomo Sidecar、内核下载属桌面/headless
+> 路径，Android 产品不交付（`sub_kernel::asset_for_platform()` 对 `android/*` 返回 `None`），对应条目标「不适用」，
+> 不计入通过率。
 > 验收对象：Android Kotlin 生命周期控制面与 Rust Core/Gateway 的协作。不要将此验收与 RapidOCR AutoJS Plugin 或 OCR Fusion Engine 混用。
 >
 > **滚动验收策略（R32 后修订）：** 本清单不再是后续代码批次的前置阻塞条件。用户可在正常安装/使用 APP 的过程中逐步覆盖场景；每次发现异常即保存日志与操作时间线，按单场景记录累积证据。开发批次与设备观察并行推进。没有实际执行的场景仍标记 NOT RUN，设备限制标记 BLOCKED；Phase 2 的最终关闭仍需真实设备证据，但不阻止继续推进独立的 Native Bridge / Rust 边界工作。
@@ -213,10 +217,14 @@ R33 GitHub Actions Run `41830352114` 的 Instrumentation 2/2 通过，其中 `na
 
 | # | 场景 | 期望 | 状态 |
 |---|---|---|---|
-| S1 | Gateway 正常启动后自动拉起 | 订阅启用且有内核时后台拉起一次 | 未执行 |
-| S2 | Gateway 端口冲突时不触发自动拉起 | `ps` 无新增内核进程 | 未执行 |
-| S3 | 手动关闭内核后 Gateway 重启不自动拉起 | `is_manually_halted` 生效 | 未执行 |
-| S4 | 已运行内核不被重复重启 | 控制端口不变、进程 PID 不变 | 未执行 |
+| S1 | Gateway 正常启动后自动拉起 | 订阅启用且有内核时后台拉起一次 | 不适用（Android 无 Sidecar） |
+| S2 | Gateway 端口冲突时不触发自动拉起 | `ps` 无新增内核进程 | 不适用（Android 无 Sidecar） |
+| S3 | 手动关闭内核后 Gateway 重启不自动拉起 | `is_manually_halted` 生效 | 不适用（Android 无 Sidecar） |
+| S4 | 已运行内核不被重复重启 | 控制端口不变、进程 PID 不变 | 不适用（Android 无 Sidecar） |
+
+> 依据：`agate-server/src/server/core/sub_kernel/mod.rs::asset_for_platform()` 只认
+> `windows/macos/linux`，`android/*` 返回 `None`；`unsupported_reason()` 明确提示
+> 「Android 暂不支持代理子内核」。这 4 项保留仅为历史追溯，不再要求真机执行。
 
 ### 11.4 端口（5）
 
@@ -224,6 +232,24 @@ R33 GitHub Actions Run `41830352114` 的 Instrumentation 2/2 通过，其中 `na
 |---|---|---|---|
 | P1 | 默认 8787 | 控制页探测 8787 | 未执行 |
 | P2 | 修改端口 | 设置页保存后 `GatewayPrefs.port` 生效 | 未执行 |
-| P3 | 重启 Gateway | 内核在新端口监听 | 未执行 |
+| P3 | 重启 Gateway | 网关在新端口监听 | 未执行 |
 | P4 | 控制页 probe 使用正确端口 | 运行态优先实际端口；停止时用配置端口 | 未执行 |
 | P5 | 其他 API 页面使用正确端口 | 控制台/KernelOps 不再访问旧端口 | 未执行 |
+
+## 12. R50 补充：运行时加固回归（2026-11-10 立项，未执行）
+
+R50 的 STOP 相位、管理面缓存、TICK、签到超时、日志、闹钟、异步 API 与 ABI 变更需要设备侧回归；
+下列 10 项不计入 §11 的 24 项。证据只能来自真实设备。
+
+| # | 场景 | 期望 | 状态 |
+|---|---|---|---|
+| R50-1 | STOP 相位 | 点停止后界面进入「停止中」，最终 Stopped；不提前报已停止 | 未执行 |
+| R50-2 | 管理面缓存失效 | 改端口 / host / 本地面板后，管理 API 立即走新目标，无需杀进程 | 未执行 |
+| R50-3 | TICK 非粘性 | 停止网关后重启手机，网关不自动复活；手动启动正常 | 未执行 |
+| R50-4 | 签到 15min 上限 | 上游挂住时 15min 返回 timeout，不无限持 WakeLock，随后可 START/STOP | 未执行 |
+| R50-5 | 日志转发 | emoji 原样；监听断开重连后继续收日志；高频日志不 ANR/OOM | 未执行 |
+| R50-6 | 精确闹钟权限 | 授予/撤销精确闹钟权限后，签到闹钟自动重排，不丢链 | 未执行 |
+| R50-7 | 异步 API 取消 | 取消长请求后 Rust 任务结束（日志/CPU 不再增长），无「Kotlin 超时、内核还在跑」 | 未执行 |
+| R50-8 | 16 MiB 响应上限 | 超限返回 `response body exceeds 16 MiB`；正常大响应可用 | 未执行 |
+| R50-9 | 进程回收重建 | `adb shell am kill dev.agate.android` 后重开：Service/Core 可重建，无崩溃循环 | 未执行 |
+| R50-10 | Release 交付形态 | Release APK 仅 `arm64-v8a`；版本页脚 `0.5.0-r50`；debug 可覆盖安装 | 未执行 |
