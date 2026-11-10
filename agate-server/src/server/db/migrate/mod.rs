@@ -1,12 +1,12 @@
 //! 旧文件 → 数据库的**一次性迁移框架**（注册表 + 公共备份工具）。
 //!
 //! ── 本文件为什么先于具体迁移存在 ─────────────────────────────
-//! 改造要迁移的旧文件有七个：`config.json`、`accounts.json`、`logs.jsonl`、
-//! `requests.jsonl`、`request-daily.jsonl`、`debug-traffic.jsonl`、
-//! `desktop-settings.json`。它们由**不同的切片**逐个
+//! 改造要迁移的旧文件有六个：`config.json`、`logs.jsonl`、`requests.jsonl`、
+//! `request-daily.jsonl`、`debug-traffic.jsonl`、`desktop-settings.json`。
+//! （`accounts.json` 已移出：账号可重新登录，不再做旧账号数据迁移。）它们由**不同的切片**逐个
 //! 接入，但「怎么判断已经迁过」「失败怎么办」「旧文件留不留」这三件事必须
 //! 一开始就统一 —— 各切片各写一套的话，迁移策略会随切片顺序漂移，而且
-//! 「重跑会不会重复导入」这个最要命的问题会变成八个不同的答案。
+//! 「重跑会不会重复导入」这个最要命的问题会变成各不相同的答案。
 //! 所以先把骨架、幂等原则与备份工具定下来，后续切片只填「读文件 → 插库」。
 //!
 //! （第八个 `desensitize.json` 曾在这份清单里：敏感词脱敏的旧词表文件。
@@ -50,7 +50,6 @@
 //!   migrate/
 //!     mod.rs      框架本体：注册表 + 遍历执行（本文件）
 //!     backup.rs   公共工具：旧文件改名备份（所有迁移项共用）
-//!     accounts.rs accounts.json → accounts 表
 //!     logs.rs     logs.jsonl    → logs 表
 //!     requests.rs requests.jsonl + request-daily.jsonl → requests / request_daily 表
 //!     debug.rs    debug-traffic.jsonl → debug_traffic 表
@@ -64,7 +63,7 @@
 //! 那是**所有项都要遵守**的东西，改一次必须让各项同时生效。
 //!
 //! ── 三种幂等判据（看注册表时先分清自己在看哪一类）─────────────
-//!   - **独占一张表**（账号 / 事件日志 / 请求明细 / 请求聚合 / 调试报文）：
+//!   - **独占一张表**（事件日志 / 请求明细 / 请求聚合 / 调试报文）：
 //!     判「表空不空」；
 //!   - **独占 `kv` 的一个键**（桌面设置）：判「自己那个键在不在」
 //!     —— 不能判表空不空，`kv` 是共享表（见 `settings.rs` 模块头）；
@@ -76,12 +75,12 @@
 //! 注册表项是一个 [`LegacyMigration`]，由三样东西组成：可读名、**旧文件定位器**、
 //! 导入函数：
 //! ```text
-//! fn import_accounts(conn: &Connection, dir: &Path) -> Option<LegacyOutcome> {
+//! fn import_logs(conn: &Connection, dir: &Path) -> Option<LegacyOutcome> {
 //!     let path = legacy_file(dir)?;                        // 定位器（与下面同源）
-//!     if count(conn, "accounts") > 0 { return None; }      // 表非空 → 已迁过
+//!     if count(conn, "logs") > 0 { return None; }          // 表非空 → 已迁过
 //!     let outcome = match 真的导入(conn, &path) {          // 整批一个事务
 //!         Ok(n) => LegacyOutcome { label: LABEL, source: path.clone(), imported: n, backup: backup_legacy_file(&path) },
-//!         Err(error) => { console_line("[Storage]", &format!("❌ 账号迁移失败: {error}")); return None; }
+//!         Err(error) => { console_line("[Storage]", &format!("❌ 日志迁移失败: {error}")); return None; }
 //!     };
 //!     Some(outcome)
 //! }
@@ -109,7 +108,6 @@
 //! 各项的定位器**由各迁移项自己提供**（文件名常量与候选目录的知识都留在那边），
 //! 本框架只负责遍历。
 
-mod accounts;
 mod backup;
 mod config;
 mod debug;
@@ -162,13 +160,13 @@ pub struct LegacyMigration {
     pub import: fn(&Connection, &Path) -> Option<LegacyOutcome>,
 }
 
-/// 迁移注册表：**逐项接入**，当前八项（网关配置、桌面设置、账号、事件日志、
-/// 请求明细、请求聚合、调试报文、脱敏词表）。
+/// 迁移注册表：**逐项接入**，当前六项（网关配置、桌面设置、事件日志、
+/// 请求明细、请求聚合、调试报文）。
 ///
 /// 用 `const` 数组而不是运行期注册（`OnceLock<Vec<...>>` / 全局可变表）：
 ///   1. 顺序即执行顺序，写在源码里一眼可见 —— 迁移之间**有依赖**
-///      （「账号」要先于「请求统计」导入，后者的 account_id 才有名字可查），
-///      可变注册表会让这个顺序散落在各个模块的初始化时机上；
+///      （请求聚合要读请求明细，见下文），可变注册表会让这个顺序散落在
+///      各个模块的初始化时机上；
 ///   2. 没有初始化时机问题：`Db::open` 之后随时可读，不必关心谁先注册；
 ///   3. 每加一项就是加一个元素，没有别的登记动作要记得做。
 ///
@@ -183,8 +181,7 @@ pub struct LegacyMigration {
 /// 顺序反了，回填会因为「明细为空」而一天都算不上，那段历史就永久留在
 /// 「未知账号」组里（安全边界「拿不准就不动」会保护数据，但也救不回来）。
 /// 其余项之间没有依赖：各写自己的表/键、各自判自己的数据单元。
-/// 顺序：网关配置 → 桌面设置 → 账号 → 事件日志 → 请求明细 → 请求聚合
-/// → 调试报文 → 脱敏词表。
+/// 顺序：网关配置 → 桌面设置 → 事件日志 → 请求明细 → 请求聚合 → 调试报文。
 ///
 /// 领头的 `import_config` / `import_settings` 排最前是**可读性**而非正确性
 /// 要求：`import_logs` / `import_requests` / `import_debug` 要读
@@ -200,8 +197,7 @@ pub struct LegacyMigration {
 /// 排在末尾只是按「数据量从大到小」的习惯：报文单条可达数 MB，放最后不会让
 /// 前面几项的日志被大文件的读取拖在后面。
 ///
-/// `import_settings` 同理无依赖（只写 `kv` 里自己的键，与账号、日志、统计都
-/// 不相干）—— 它的**判据与独占一张表的项不同**（判「自己那个键在不在」而不是
+/// `import_settings` 同理无依赖（只写 `kv` 里自己的键，与日志、统计都不相干）—— 它的**判据与独占一张表的项不同**（判「自己那个键在不在」而不是
 /// 「表空不空」，因为 `kv` 是共享表）；`import_config` 的判据是**第三种**
 /// （标记键，因为配置项是开放集合）—— 两种判据的完整论证分别见
 /// `settings.rs` / `config.rs` 的模块头。
@@ -215,11 +211,6 @@ pub const LEGACY_MIGRATIONS: &[LegacyMigration] = &[
         label: settings::LABEL,
         locate: settings::legacy_file,
         import: settings::import_settings,
-    },
-    LegacyMigration {
-        label: accounts::LABEL,
-        locate: accounts::legacy_file,
-        import: accounts::import_accounts,
     },
     LegacyMigration {
         label: logs::LABEL,
@@ -265,7 +256,7 @@ pub fn pending_items(dir: &Path) -> Vec<&'static str> {
 ///
 /// 单独给一个布尔入口而不是让调用方 `!pending_items(dir).is_empty()`：
 /// 启动路径（`ServerState::bootstrap`）只需要这个布尔值，而它每次启动都要问一次
-/// —— 少构造一个 `Vec` 是有意义的（八项定位器各自要做一次 `is_file()`）。
+/// —— 少构造一个 `Vec` 是有意义的（六项定位器各自要做一次 `is_file()`）。
 pub fn has_pending(dir: &Path) -> bool {
     LEGACY_MIGRATIONS
         .iter()

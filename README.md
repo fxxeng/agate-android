@@ -1,9 +1,9 @@
 # Agate — Android-only Mainline Candidate
 
 - Verification branch: `verify/arch-8faa5f5`
-- Current batch: R50 / 运行时加固（STOP 相位、管理面缓存、TICK、签到上限、日志、闹钟、异步管理面、ABI；R49 已收口）
+- Current batch: R51 / 旧登录与账号数据兼容移除（候选，待 CI）
 - Latest verified: `756e99d` — GitHub Actions Run `42733103334`（双 job 全绿；R50 运行时加固批）
-- 状态：rust-tests 815 passed / 11 ignored + 格式门 / 六 deny clippy（宿主 + Android target）；android-build JVM 单元测试 143/143、JNI 15 入口（符号 + Kotlin/Rust 描述符签名级互检）、双 APK 校验（均仅 arm64-v8a + AArch64 ELF；debug 共享凭证指纹硬断言）、Instrumentation 2/2。
+- 状态：R50 已验证 rust-tests 815 passed / 11 ignored、JVM 143/143、JNI 15、双 APK 仅 arm64-v8a、Instrumentation 2/2。R51 本地 `cargo test --lib` 809 passed / 11 ignored、`cargo check --lib` 0 warning；CI 待跑。
 - 真机验收待做（APK 自取 run artifacts）；release 正式签名按委托方裁定暂缓。
 
 ## Direction
@@ -48,6 +48,19 @@ The repository already has no complete Tauri/Desktop UI Host. The remaining desk
 10. **异步管理面（T10）**：管理面直调异步化并可取消（`api_call` + callback），JNI 契约升 v3；响应体上限 16 MiB；CI 工具链全钉版本。
 11. **交付 ABI（T11）**：release 仅 `arm64-v8a`，构建仍保留 x86_64 供 emulator Instrumentation；APK 校验断言仅 arm64 + AArch64 ELF。
 12. **CI（T12）**：放行 emulator-runner 的旧 `add-path` 命令，避免「测试 2/2 通过但 step 红」。
+
+## R51 changes — 旧登录/账号数据兼容移除
+
+委托方裁定：账号可以重新登录，不再维护账号登录数据相关的旧数据兼容，避免加重维护负担。旧文件原地保留、不改名、不删除，只是不再读取。
+
+1. **旧 `auth.json` 导入删除**：`account_bootstrap::import_legacy_auth_json` / `read_legacy_session`、`AccountStore::import_legacy_session`、`endpoints::legacy_auth_file` 全部移除。
+2. **三家旧账号导入删除**：`raccoon_import.rs` / `catpaw_import.rs` / `autoclaw_import.rs` 三个模块、`account_bootstrap` 调用与 HOME 门禁、对应测试全部删除。
+3. **chatglm 嵌套令牌兼容删除**：`credentials::from_record` 只读顶层 `accessToken` / `refreshToken`；`migrate_nested_tokens` 迁移与全部迁移测试删除。旧嵌套记录不再被识别，重新添加/登录即可。
+4. **`accounts.json` 迁移删除**：`db/migrate/accounts.rs` 与注册表项移除；升级流程不再导入账号，旧文件留在原处。`upgrade_items` 只剩配置/日志/统计类。
+5. **保留当前数据库形态的收敛**：`migrate_startup`（provider 补齐 / 优先级去重 / Cline 拆池 / WorkBuddy 拆家）、历史明文账号行加密、网关 Key 加密、限流冷却键清理；这些不是旧登录数据兼容。
+6. **保留当前登录/导入能力**：`account_transfer` 账号转移、WorkBuddy 桌面登录态手工导入入口（Android 平台门禁不可用）、各 provider 手动粘贴凭证的现行输入解析。
+
+净删除约 **2.3k 行**（18 文件，−2282/+94）；本地 `cargo test --lib` **809 passed / 11 ignored**，`cargo check --lib` **0 warning**。CI 结果待回填。
 
 ## Verification state
 

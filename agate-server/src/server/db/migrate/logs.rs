@@ -98,7 +98,7 @@ pub(super) fn legacy_file(dir: &Path) -> Option<PathBuf> {
 /// 的口径，这里直接复用同一个函数，见下），再按容量。
 ///
 /// ── 失败与错误处理 ──────────────────────────────────────────
-/// 与 `import_accounts` 同构：所有失败只记一行控制台日志并返回 `None`
+/// 与其他独占表的迁移项同构：所有失败只记一行控制台日志并返回 `None`
 /// （模块头的「不阻断」原则）。整批在**一个事务**里 —— 中断不会留下半份数据，
 /// 下次点「升级」能干净地重试。
 pub(super) fn import_logs(conn: &Connection, dir: &Path) -> Option<LegacyOutcome> {
@@ -142,7 +142,7 @@ pub(super) fn import_logs(conn: &Connection, dir: &Path) -> Option<LegacyOutcome
         // `imported` 报的是**解析出的条数**（旧文件里有多少条就报多少条），
         // 不是落库后的行数 —— 导入时的时间/容量两道裁剪会再删掉一些超期与
         // 超限的行（旧文件里带这些是常态，见 `write_logs` 的说明）。
-        // 与 `import_accounts` 的口径一致（那边报的是文件里的账号数）：
+        // 与其他独占表迁移项的口径一致（那边报的是文件里的行数）：
         // 启动日志要说清「从旧文件搬了多少条」，而裁剪是**存储规则**在生效、
         // 不是迁移的动作，混进这个数字里会让用户以为迁移丢数据。
         imported: entries.len(),

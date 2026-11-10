@@ -99,7 +99,7 @@ fn end_run() {
 
 /// GET /api/upgrade —— `{ pending, items }`。
 ///
-/// `items` 是待迁移项的可读名清单（如 `["网关配置","账号","事件日志"]`），
+/// `items` 是待迁移项的可读名清单（如 `["网关配置","事件日志","请求统计"]`），
 /// 供弹窗列出「将要导入哪些数据」。`pending` 为 false 时 `items` 恒为空。
 pub async fn get_upgrade(State(state): State<ServerState>) -> Response {
     let pending = state.upgrade_pending();
@@ -141,20 +141,16 @@ pub async fn run_upgrade(State(state): State<ServerState>) -> Response {
     let result = tokio::task::spawn_blocking(move || {
         let outcomes =
             db.with(|conn| crate::server::db::migrate::run_legacy_migrations(conn, &config_dir));
-        // 只有真导入了东西才补做后续动作（一项都没成时库里的配置与账号都没变）
+        // 只有真导入了东西才补做后续动作（一项都没成时库里的配置没变）
         if matches!(outcomes, Some(ref list) if !list.is_empty()) {
             // 配置快照必须重装：迁移把配置搬进库之后，库才是真相来源（见模块头）。
             crate::server::config::reload();
             // 账号侧的启动期迁移必须**补做一次**（见 `account_bootstrap` 的
-            // 模块头）：启动时它们被整块跳过了（那时 `accounts` 表还空着，
-            // 跑它们会把 `import_accounts` 的幂等闸门永久关上）。现在账号已经
-            // 进库、前提重新成立 —— 不补这一下，用户本次运行看到的是一个没整过
-            // 队、没补过 provider、也没导入过三家旧数据的账号列表（要等下次
-            // 重启才好）。
+            // 模块头）：启动时它因为「旧配置还没导入」被跳过。现在配置已进库、
+            // 快照已重装，`migrate_cline_split` / WorkBuddy 拆家才能读到最终的
+            // `modelRules` / `apiKeys`。
             //
-            // 顺序：必须排在 `config::reload()` **之后** —— 其中的
-            // `migrate_cline_split` 读 `modelRules`，而那个配置项正是这次迁移
-            // 刚从旧 `config.json` 搬进来的，快照没重装就读不到它。
+            // 顺序：必须排在 `config::reload()` **之后**。
             crate::server::account_bootstrap::run(&store);
             // 统计侧的口径订正同理补调（启动时被 upgrade_pending 跳过，
             // 见 `RequestStats::remap_model_dimension_once` 的调用时机说明）：

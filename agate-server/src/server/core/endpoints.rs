@@ -16,8 +16,6 @@
 //! 用 `&[(&str, EndpointSpec)]` 而不是 HashMap，是为了让 JSON 键顺序稳定 ——
 //! 同一份配置每次请求输出一致，比对 diff 时不会被顺序噪音干扰。
 
-use std::path::PathBuf;
-
 use serde_json::{json, Map, Value};
 
 // ─── 端点与版本 ─────────────────────────────────────────────
@@ -279,11 +277,6 @@ pub fn default_context() -> Context {
         None,
         edition.as_deref(),
     )
-}
-
-/// 旧版单账号登录态文件（仅用于首次启动迁移到账号列表，见 account_store）
-pub fn legacy_auth_file() -> PathBuf {
-    crate::server::config::config_dir().join("auth.json")
 }
 
 // ─── 匿名请求头 ─────────────────────────────────────────────

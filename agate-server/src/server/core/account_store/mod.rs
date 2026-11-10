@@ -70,17 +70,11 @@
 //!   store_admin.rs token 回写、限额标记、启动迁移（provider 补齐 + 优先级去重）
 //!   raccoon_accounts.rs 小浣熊账号（W3-T4）：手动添加、桌面端实时账号、
 //!                刷新回写、小浣熊公开形态
-//!   raccoon_import.rs   小浣熊旧数据一次性导入（旧网关 accounts.json +
-//!                桌面端登录态；架构文档 §3.3）
 //!   catpaw_accounts.rs  CatPaw 账号（W5-T-d4）：手动添加（扁平/auth.json/
 //!                原项目账号记录三种形态）、桌面端实时账号、CatPaw 公开形态
-//!   catpaw_import.rs    CatPaw 旧数据一次性导入（原项目 catpaw-proxy-accounts.json
-//!                + ~/.meituan-catpaw/auth.json；§9）
 //!   autoclaw_accounts.rs AutoClaw 账号（W4b-T-c2）：手动添加（扁平/auth.json 内容
 //!                两种形态，enc: 密文自动解密）、桌面端实时账号、刷新回写、
 //!                AutoClaw 公开形态（userId / deviceId / tokenTail）
-//!   autoclaw_import.rs   AutoClaw 旧数据一次性导入（~/.autoclaw-proxy/accounts.json
-//!                + 桌面端登录态；§10.2）
 //!   cline_accounts.rs    Cline 账号（两个额度池）：手动添加、桌面端登录态、
 //!                续期回写、Cline 公开形态
 //!   qoder_accounts.rs    Qoder 账号（地区 + userId 识别）：添加、凭证刷新回写、
@@ -100,9 +94,7 @@
 pub mod accio_accounts;
 pub mod antigravity_accounts;
 pub mod autoclaw_accounts;
-pub mod autoclaw_import;
 pub mod catpaw_accounts;
-pub mod catpaw_import;
 pub mod chatglm_accounts;
 pub mod cline_accounts;
 pub mod codearts_accounts;
@@ -116,7 +108,6 @@ pub mod orcaterm_accounts;
 pub mod priority;
 pub mod qoder_accounts;
 pub mod raccoon_accounts;
-pub mod raccoon_import;
 pub mod sql;
 pub mod state;
 pub mod store;

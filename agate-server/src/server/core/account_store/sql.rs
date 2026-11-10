@@ -189,38 +189,6 @@ pub(crate) fn load_by_provider(
     Ok(records)
 }
 
-/// 账号总数 —— 统计与管理接口用（如清空前的确认提示）。
-pub(crate) fn count_all(conn: &Connection) -> rusqlite::Result<i64> {
-    conn.query_row("SELECT COUNT(*) FROM accounts", [], |row| row.get(0))
-}
-
-/// 某个 provider 的账号数 —— 「这一家有没有账号」的判定
-/// （三家旧数据导入的触发条件就是「本家账号列表为空」）。
-///
-/// 用投影列 COUNT 而不是读记录：这里只问「有没有 / 有几条」，
-/// 不需要知道它们长什么样。
-pub(crate) fn count_by_provider(conn: &Connection, provider: &str) -> rusqlite::Result<i64> {
-    conn.query_row(
-        "SELECT COUNT(*) FROM accounts WHERE provider = ?1",
-        params![provider],
-        |row| row.get(0),
-    )
-}
-
-/// 全部账号的 id —— 旧数据导入的「同 id 跳过」判定用。
-///
-/// 与 `priorities_all` 同理：只取主键一列，不解析任何记录的 JSON。
-/// 导入过程中新加的 id 由调用方自己往集合里补（同批内也不能重号）。
-pub(crate) fn all_ids(conn: &Connection) -> rusqlite::Result<Vec<String>> {
-    let mut stmt = conn.prepare("SELECT id FROM accounts")?;
-    let mut rows = stmt.query([])?;
-    let mut values = Vec::new();
-    while let Some(row) = rows.next()? {
-        values.push(row.get(0)?);
-    }
-    Ok(values)
-}
-
 /// 全部账号的优先级数值 —— `next_free_priority` 的入参。
 ///
 /// 与 [`priorities_except`] 的区别只在于「要不要排除某个 id」：新增账号时

@@ -159,8 +159,8 @@ fn resolve_config_dir_override(primary: Option<&str>, legacy: Option<&str>) -> O
 ///
 /// 无可用 HOME 时保留历史 `./.agate` fallback，避免在没有明确迁移策略前
 /// 改变 Desktop/headless 的既有数据落点。该 fallback 仅用于默认配置存储，
-/// 不得被依赖 HOME 的旧桌面 Provider 数据发现器复用；但配置目录内的历史
-/// `auth.json` 属于 config-dir 迁移输入，仍按 `legacy_auth_file()` 读取。
+/// 不得被依赖 HOME 的旧桌面 Provider 数据发现器复用。旧登录态 `auth.json`
+/// 已不再读取（账号可重新登录，旧登录数据兼容已移除）。
 fn default_config_dir() -> PathBuf {
     default_config_dir_from_home(path_provider().user_home_dir())
 }

@@ -13,7 +13,8 @@
 //! 接过来**，所以短期内会出现「一部分数据在库里、另一部分还在旧文件里」的
 //! 并存状态，那是迁移过程中的正常中间态，不是 bug。
 //!   已接入：**账号**（`core::account_store` → `accounts` 表；旧
-//!           `accounts.json` 由 `migrate::import_accounts` 一次性搬入）、
+//!           `accounts.json` **不再导入** —— 账号可重新登录，按裁定移除旧账号
+//!           数据迁移，避免维护负担）、
 //!           **事件日志**（`logs_store` → `logs` 表；旧 `logs.jsonl`
 //!           由 `migrate::import_logs` 一次性搬入）、
 //!           **请求统计**（`request_stats` → `requests` / `request_daily`
@@ -305,7 +306,7 @@ fn apply_pragmas(conn: &Connection) -> Result<(), String> {
 /// 只作用于生产构建),所以不需要显式 cleanup 调用。
 #[cfg(test)]
 pub(crate) mod test_temp {
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
 
     use super::Db;
 

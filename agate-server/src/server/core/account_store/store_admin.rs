@@ -3,7 +3,6 @@
 //!   update_account_tokens  账号刷新成功后回写新 token
 //!   mark_rate_limited      记录账号×模型的限额状态（上游 429 / code 6004）
 //!   clear_rate_limit       清除某模型的限额记录
-//!   import_legacy_session  旧版单账号 auth.json 迁移（仅账号列表为空时）
 //!   clear_all_rate_limits  清除账号全部模型的限额记录（账号页「全部清除」）
 //!   migrate_startup        启动时一次性数据迁移（provider 惰性补齐 + 优先级全局化
 //!                          + 去重 + Cline 拆池改名）
@@ -835,75 +834,5 @@ impl AccountStore {
         }
         state.accounts = sorted;
         assignments
-    }
-
-    /// 旧版单账号 auth.json 迁移：仅当账号列表尚无任何账号时导入一次。
-    ///
-    /// 返回导入后的公开形态（未迁移时返回 None，对应 Node 版返回 null）。
-    pub fn import_legacy_session(&self, legacy: &Value) -> Option<Value> {
-        let access_token = legacy
-            .get("auth")
-            .and_then(|auth| auth.get("accessToken"))
-            .and_then(Value::as_str)
-            .unwrap_or("");
-        if access_token.is_empty() {
-            return None;
-        }
-        {
-            let _guard = self.guard();
-            // 只问「账列表是否为空」—— 投影列 COUNT，不读任何记录。
-            // 查询失败时按「非空」处理（保守跳过）：本函数是启动期的一次性迁移，
-            // 库不可用时不该顺势去写（`add_account` 会返回 500），而「跳过」与
-            // 旧实现「读不到文件就当空、于是尝试导入」的差别只在库坏掉时出现 ——
-            // 那时整条账号链路都不可用，由别处的 ❌ 日志说明。
-            match self.with_conn(&_guard, |conn| sql::count_all(conn)) {
-                Ok(count) if count == 0 => {}
-                Ok(_) => return None,
-                Err(error) => {
-                    logging::log(
-                        "[Accounts]",
-                        &format!("⚠️  读取账号数失败，跳过旧登录态迁移: {error}"),
-                    );
-                    return None;
-                }
-            }
-        }
-        let uid = legacy
-            .get("account")
-            .and_then(|account| account.get("uid"))
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string();
-        if uid.is_empty() {
-            logging::log("[Accounts]", "旧登录态缺少 uid，跳过迁移");
-            return None;
-        }
-        let nickname = legacy
-            .get("account")
-            .and_then(|account| account.get("nickname"))
-            .and_then(Value::as_str)
-            .map(str::to_string);
-        let payload = json!({
-            "auth": legacy.get("auth").cloned().unwrap_or(Value::Null),
-            "account": legacy.get("account").cloned().unwrap_or(Value::Null),
-            "prefixPath": legacy.get("prefixPath").cloned().unwrap_or(Value::Null),
-            "endpoint": legacy.get("endpoint").cloned().unwrap_or(Value::Null),
-            "platform": legacy.get("platform").cloned().unwrap_or(Value::Null),
-            "edition": legacy.get("edition").cloned().unwrap_or(Value::Null),
-        });
-        // 旧登录态（`auth.json`）是单上游时代的产物：那时进程只有一个上游，
-        // 地区由 `WORKBUDDY_EDITION` 决定，因此这里**按 payload 里的 edition
-        // 归位**（缺失回落国内版，历史行为不变）。
-        let provider = crate::server::core::providers::workbuddy::Region::from_edition_id(
-            payload.get("edition").and_then(Value::as_str),
-        )
-        .provider_id();
-        match self.add_account(&payload, nickname.as_deref(), Some(provider)) {
-            Ok(account) => Some(account),
-            Err(error) => {
-                logging::log("[Accounts]", &format!("❌ 旧登录态迁移失败: {error}"));
-                None
-            }
-        }
     }
 }
