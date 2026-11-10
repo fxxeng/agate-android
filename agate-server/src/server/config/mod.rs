@@ -2392,8 +2392,7 @@ pub fn set_prompt_provider(provider_id: &str, patch: Option<ProviderPromptPatch>
 /// 都会在下次启动被镜像到国际版，反复覆盖用户的明确意图。
 ///
 /// 因此三条迁移共用一个标记、由 `account_bootstrap` 统一编排（见那里的调用点）：
-/// 处理过一次就不再回头，与 `raccoonImported` / `autoclawImported` 那几个
-/// 一次性导入标记同一模式。
+/// 处理过一次就不再回头，与一次性导入标记同一模式。
 ///
 /// 它是**配置键**而不是 `db::schema::RESERVED_KV_KEYS` 里的保留键：那一张表
 /// 是「不归配置管的零散状态」，本键由配置 API 读写。

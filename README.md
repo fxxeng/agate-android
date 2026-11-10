@@ -1,9 +1,9 @@
 # Agate — Android-only Mainline Candidate
 
 - Verification branch: `verify/arch-8faa5f5`
-- Current batch: R51 / 旧登录与账号数据兼容移除（候选，待 CI）
-- Latest verified: `756e99d` — GitHub Actions Run `42733103334`（双 job 全绿；R50 运行时加固批）
-- 状态：R50 已验证 rust-tests 815 passed / 11 ignored、JVM 143/143、JNI 15、双 APK 仅 arm64-v8a、Instrumentation 2/2。R51 本地 `cargo test --lib` 809 passed / 11 ignored、`cargo check --lib` 0 warning；CI 待跑。
+- Current batch: R51 / 旧登录与账号数据兼容移除（已收口）
+- Latest verified: `d28588c` — GitHub Actions Run `42751468673`（双 job 全绿；R51 旧登录/账号数据兼容移除）
+- 状态：R51 已验证 rust-tests **802 passed / 11 ignored**（CI 宿主口径；本机 809，环境差异以 CI 为准）、JVM **143/143**、JNI **15**、双 APK 仅 arm64-v8a + AArch64 ELF（debug 共享凭证指纹命中，release 未签名放行）、Instrumentation **2/2**；`cargo fmt --check` 与六 deny clippy 全绿。
 - 真机验收待做（APK 自取 run artifacts）；release 正式签名按委托方裁定暂缓。
 
 ## Direction
@@ -60,7 +60,7 @@ The repository already has no complete Tauri/Desktop UI Host. The remaining desk
 5. **保留当前数据库形态的收敛**：`migrate_startup`（provider 补齐 / 优先级去重 / Cline 拆池 / WorkBuddy 拆家）、历史明文账号行加密、网关 Key 加密、限流冷却键清理；这些不是旧登录数据兼容。
 6. **保留当前登录/导入能力**：`account_transfer` 账号转移、WorkBuddy 桌面登录态手工导入入口（Android 平台门禁不可用）、各 provider 手动粘贴凭证的现行输入解析。
 
-净删除约 **2.3k 行**（18 文件，−2282/+94）；本地 `cargo test --lib` **809 passed / 11 ignored**，`cargo check --lib` **0 warning**。CI 结果待回填。
+净删除约 **2.3k 行**（21 文件，−2291/+135）；CI Run `42751468673` 双绿：Rust **802/11**（本机 809，环境差异以 CI 为准）、JVM **143/143**、JNI **15**、双 APK 仅 arm64-v8a、Instrumentation **2/2**。`cargo check --lib` 0 warning，`cargo fmt --check` 通过。
 
 ## Verification state
 

@@ -10,7 +10,7 @@ use crate::server::logging;
 
 /// 备份（改名）一个已迁移的旧文件，返回改名后的路径。
 ///
-/// 目标名是 `{原文件名}.migrated`（`accounts.json` → `accounts.json.migrated`）；
+/// 目标名是 `{原文件名}.migrated`（`config.json` → `config.json.migrated`）；
 /// 若该名字已被占用，改用 `{原文件名}.migrated-{epoch秒}`。
 ///
 /// ── 为什么是改名而不是删除 ──────────────────────────────────

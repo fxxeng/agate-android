@@ -5,13 +5,13 @@
 
 > 文档用途：供后续开发者接手、评审和持续推进 Android 架构改造。
 
-> **验证分支状态快照（R50 / 2026-11-10）**：R50 `756e99d` 已通过 GitHub Actions Run 42733103334：rust-tests 815 passed / 11 ignored；android-build JVM 143/143、JNI 15 入口、双 APK 仅 arm64-v8a、Instrumentation 2/2。R51 为旧登录/账号数据兼容移除候选（待 CI）。
+> **验证分支状态快照（R50 / 2026-11-10）**：R50 `756e99d` 已通过 GitHub Actions Run 42733103334：rust-tests 815 passed / 11 ignored；android-build JVM 143/143、JNI 15 入口、双 APK 仅 arm64-v8a、Instrumentation 2/2。R51 `d28588c` 已通过 Run `42751468673`（Rust 802/11、JVM 143/143、JNI 15、双 APK、Instrumentation 2/2）。
 >
 > 历史：R40 `d3e049e89b932325e49c57b5f6a5a23c825bcca8` 为 R42 之前的已验证基线（Run `42199123476`）；R41 本地候选（未推送远端；代码改动已合入 R42 ad1bc9cef3）。
 >
 > 当前验证分支：`verify/arch-8faa5f5`（只允许推送该分支，不修改 `main`、不合并）
 > 当前最后已验证基线：R50 `756e99d`（Run `42733103334`）；R43–R50 已把 data-dir owner lock、Kotlin Service/Core 生命周期、JNI 契约、签名门禁与运行时加固收口并经 CI 验证。
-> 当前工作候选：R51「旧登录/账号数据兼容移除」；R42 已移除 Windows Desktop/Core job；Linux job 仅执行 portable Rust library `--lib` 检查/测试，Android job 负责 Android 双 ABI、JNI（符号 + 描述符）、Gradle/JVM、APK 与 Emulator Instrumentation。
+> 当前工作候选：R51「旧登录/账号数据兼容移除」已收口（`d28588c` / Run `42751468673`）；R42 已移除 Windows Desktop/Core job；Linux job 仅执行 portable Rust library `--lib` 检查/测试，Android job 负责 Android 双 ABI、JNI（符号 + 描述符）、Gradle/JVM、APK 与 Emulator Instrumentation。
 > Agate 当前以 Android 为唯一产品交付目标；不再把桌面端功能完善作为 Android 前置任务。Rust Shared Core 保持单一实现，只隔离/删除经证明 Android 不需要且不破坏数据兼容的桌面代码。
 > 真机验收采用 APP 日常使用中的滚动证据，不作为独立架构批次的前置阻塞。
 
@@ -2674,5 +2674,5 @@ R41 当前为源码候选；尚未执行 Linux/Windows Cargo tests、Android ABI
 - 账号转移/导入（`account_transfer`）与当前登录流程的扁平/嵌套输入解析。
 
 **结果**
-- 删除约 2.3k 行（18 文件，−2282/+94 量级）；本地 `cargo test --lib` 809 passed / 11 ignored，`cargo check --lib` 0 warning。CI 待跑。
+- 删除约 2.3k 行（21 文件，−2291/+135 量级）；CI Run `42751468673` 双绿：Rust **802 passed / 11 ignored**（本机 809，环境差异以 CI 为准）、JVM **143/143**、JNI **15**、双 APK 仅 arm64-v8a、Instrumentation **2/2**；`cargo check --lib` 0 warning、`cargo fmt --check` 通过。
 - 旧 `accounts.json` / `auth.json` / 三家旧目录均不删除、不改名，只是不再读取。

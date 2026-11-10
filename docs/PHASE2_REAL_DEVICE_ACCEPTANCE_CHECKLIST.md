@@ -1,8 +1,9 @@
 # Phase 2 真机验收执行单（Agate）
 
-> 适用基线：R32 / `91dd6c26e54080e266dafa0e3f3911e9a93c0754`。本文件是执行记录模板，不代表任何真机场景已经通过。
+> 适用基线：R50 / `756e99d`（R51 仅删除旧登录/账号数据兼容，不改运行时行为；CI 结果见 README）。本文件是执行记录模板，不代表任何真机场景已经通过。
 >
-> **Android-only 范围（2026-11-10 更新）**：不考虑旧数据兼容；headless、mihomo Sidecar、内核下载属桌面/headless
+> **Android-only 范围（2026-11-10 更新）**：不考虑旧数据兼容；旧 `auth.json`、三家旧账号导入、chatglm 嵌套令牌与
+> `accounts.json` 账号迁移的代码已删除（R51），账号重新登录/添加即可。headless、mihomo Sidecar、内核下载属桌面/headless
 > 路径，Android 产品不交付（`sub_kernel::asset_for_platform()` 对 `android/*` 返回 `None`），对应条目标「不适用」，
 > 不计入通过率。
 > 验收对象：Android Kotlin 生命周期控制面与 Rust Core/Gateway 的协作。不要将此验收与 RapidOCR AutoJS Plugin 或 OCR Fusion Engine 混用。

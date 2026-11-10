@@ -49,7 +49,7 @@ fn chatglm_id() -> &'static str {
 impl AccountStore {
     // ─── 读：账号记录 ────────────────────────────────────────
 
-    /// 取智谱清言账号的**原始记录**（含 auth.accessToken / deviceId）。
+    /// 取智谱清言账号的**原始记录**（含顶层 accessToken / refreshToken / deviceId）。
     ///
     /// `account_id` 为空 → 取本家组内优先级最小的启用账号（与转发选路同一判据）；
     /// 找不到返回 None（调用方据此报「没有可用凭证」）。
