@@ -2650,8 +2650,9 @@ R41 当前为源码候选；尚未执行 Linux/Windows Cargo tests、Android ABI
 
 - 本文 §32.6 与 R42 节里的「R40 仍是最后已验证基线」是**当时**的状态记录，已被后续轮次取代；最新代码基线以本节为准：R47 `1a634aa` 通过 GitHub Actions Run `42541283774`（rust-tests 790 passed / 11 ignored；android-build 全步 success：Android clippy、JNI 符号 + 描述符、JVM 119/119、双 APK 校验、Instrumentation 2/2）。
 - R47 收口了运行时正确性（checkin-fire 条目级身份、supervisor 回收）、数据目录所有权（`acquire_shared` 锁窗口、`ensure_core` 目录一致性、CLOEXEC 错误）、JNI 契约（pending exception 清理、信封从严、stop 三态、描述符签名级互检）与签名门禁；详见 README「R47 changes」与 `docs/JNI控制面契约.md`。
-- 仍未完成的验证：真机侧运行时验收（APK 由用户自取 run artifacts）—— START/STOP 意图竞争、Service destroy、进程回收重建；R49/R50 设备清单见 `docs/PHASE2_REAL_DEVICE_ACCEPTANCE_CHECKLIST.md`。release 正式签名按委托方裁定暂缓（README Signing）。
+- 仍未完成的验证：真机侧运行时验收（APK 由用户自取 run artifacts）—— START/STOP 意图竞争、Service destroy、进程回收重建、D2/D3/D4；R49/R50 设备清单见 `docs/PHASE2_REAL_DEVICE_ACCEPTANCE_CHECKLIST.md`。release 正式签名按委托方裁定暂缓（README Signing）。
 - 已移出 Android 验收范围（2026-11-10 委托方裁定「不考虑旧数据兼容」+ 代码事实）：
-  ① 存量嵌套账号恢复、D2/D3/D4 等旧数据/迁移项不再验收（D2/D3/D4 在当前文档无定义，随旧数据兼容一并作废）；
+  ① 存量嵌套账号恢复属**旧账号数据**的 schema 迁移（首版把 chatglm 令牌写进嵌套 `auth`，现行 `has_credentials()` 只读顶层），按裁定不再验收；迁移代码 `chatglm_accounts::migrate_nested_tokens` 保留，仅停止把它当交付门槛。
   ② headless 信号退出、mihomo 子进程回收、下载中途 cancel 属 Linux/桌面 headless 与 Sidecar 路径，Android 产品不交付（`sub_kernel::asset_for_platform()` 对 `android/*` 返回 `None`，S1–S4 不适用）。
-  ③ 真正保留的 Android 运行时缺口只剩 START/STOP 竞争、Service destroy、进程回收重建，已并入设备清单。
+  ③ D2/D3/D4 **不是旧数据**：D2 后台任务分级、D3 闹钟签到直调、D4 SSE 一期 HTTP-only，均为《Agate 两级内核重构 方案 v2.0》决策项；保留为 Android 真机待验，见 PHASE2 §13。
+  ④ 真正保留的 Android 运行时缺口：START/STOP 竞争、Service destroy、进程回收重建。

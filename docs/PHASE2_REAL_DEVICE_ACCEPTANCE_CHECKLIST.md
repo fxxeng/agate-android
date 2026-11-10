@@ -253,3 +253,16 @@ R50 的 STOP 相位、管理面缓存、TICK、签到超时、日志、闹钟、
 | R50-8 | 16 MiB 响应上限 | 超限返回 `response body exceeds 16 MiB`；正常大响应可用 | 未执行 |
 | R50-9 | 进程回收重建 | `adb shell am kill dev.agate.android` 后重开：Service/Core 可重建，无崩溃循环 | 未执行 |
 | R50-10 | Release 交付形态 | Release APK 仅 `arm64-v8a`；版本页脚 `0.5.0-r50`；debug 可覆盖安装 | 未执行 |
+
+## 13. 两级内核 D2/D3/D4 设备验收（2026-11-10 恢复）
+
+> 这三项**不是旧数据兼容**，而是《Agate 两级内核重构 方案 v2.0》的决策项；
+> 代码路径已在 R44–R49 落地，缺真机证据。与 §12 的 R50 回归分开计。
+
+| # | 场景 | 期望 | 状态 |
+|---|---|---|---|
+| D2-1 | 停网关后后台任务分级 | Gateway 停：签到循环 / scheduled_tasks / zcode config_sync / usage sweeper / sub_kernel worker 不再跑；Core 凭证维护与模型目录刷新仍可跑 | 未执行 |
+| D2-2 | 启停 3 次幂等 | 各 loop 不重复、不残留；停后 60s 无定时行为、无重复请求 | 未执行 |
+| D3-1 | 网关停着立即签到 | 「立即触发签到」走 Core 直调 `POST /api/auto-checkin/run`，不要求 8787 监听，`checkin_done` 正常 | 未执行 |
+| D3-2 | 网关运行定时签到 | 闹钟直调与 Gateway 调度双轨不重复触发同一条目，结果只落账一次 | 未执行 |
+| D4-1 | Core 态 SSE 降级 | 徽标显示「Core · 轮询」，不建立 SSE；网关运行后 SSE 恢复正常 | 未执行 |

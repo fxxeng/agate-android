@@ -1,16 +1,16 @@
 # Agate — Android-only Mainline Candidate
 
 - Verification branch: `verify/arch-8faa5f5`
-- Current batch: R49 / 运行时正确性（STOP 生命周期、补签取消、启动顺序、端口；R48 已收口）
-- Latest verified: `9fe250e` — GitHub Actions Run `42605799073`（双 job 全绿；R49 运行时正确性批）
-- 状态：rust-tests 802 passed / 11 ignored + 格式门 / 六 deny clippy（宿主 + Android target）；android-build JVM 单元测试 136/136、JNI 12 入口（符号 + Kotlin/Rust 描述符签名级互检）、双 APK 校验（debug 共享凭证指纹硬断言）、Instrumentation 2/2。
+- Current batch: R50 / 运行时加固（STOP 相位、管理面缓存、TICK、签到上限、日志、闹钟、异步管理面、ABI；R49 已收口）
+- Latest verified: `756e99d` — GitHub Actions Run `42733103334`（双 job 全绿；R50 运行时加固批）
+- 状态：rust-tests 815 passed / 11 ignored + 格式门 / 六 deny clippy（宿主 + Android target）；android-build JVM 单元测试 143/143、JNI 15 入口（符号 + Kotlin/Rust 描述符签名级互检）、双 APK 校验（均仅 arm64-v8a + AArch64 ELF；debug 共享凭证指纹硬断言）、Instrumentation 2/2。
 - 真机验收待做（APK 自取 run artifacts）；release 正式签名按委托方裁定暂缓。
 
 ## Direction
 
 Agate's only active product delivery target is Android. Prioritize Android Kotlin/Compose Host, Foreground Service, JNI, Android Rust ABIs, Shared Core runtime, storage, Sidecar, background work, app packaging and release closure. Do not schedule Windows/macOS/Linux Desktop feature work as a prerequisite for the Android mainline.
 
-The repository already has no complete Tauri/Desktop UI Host. The remaining desktop-specific code is mostly platform-gated path discovery, credential import, Windows APIs and a Headless binary. Keep the single Rust Shared Core; isolate or remove only code proven unnecessary to Android and safe for account/data compatibility.
+The repository already has no complete Tauri/Desktop UI Host. The remaining desktop-specific code is mostly platform-gated path discovery, credential import, Windows APIs and a Headless binary. Keep the single Rust Shared Core; isolate or remove only code proven unnecessary to Android and safe for account/data compatibility. mihomo Sidecar remains interface-only on Android: `sub_kernel::asset_for_platform()` returns `None` for `android/*`, so kernel download/autostart are not Android deliverables.
 
 ## R47 changes — 运行时正确性与所有权收口
 
@@ -34,7 +34,24 @@ The repository already has no complete Tauri/Desktop UI Host. The remaining desk
 4. **端口（T4）**：`GatewayPortChoice` 统一探测端口（运行态实际端口优先、配置端口回落）；控制页 5s 轮询刷新、不再写死 8787；健康卡文案取设置；失败卡片区分「启动失败 / 停止未完成」。
 5. **文档**：新增 `docs/R49_RUNTIME_CORRECTNESS.md`（含未执行的真机验收清单与「不得折算为通过」声明）；JNI 契约 §3.9 与沿革同步。
 
+## R50 changes — 运行时加固（STOP / 缓存 / TICK / 日志 / 闹钟 / 异步）
+
+1. **STOP 相位（T1）**：停止确认改用 serve 退出标记，`status` 暴露 `stopping`；只有确认退出才报 Stopped，不再把「已发停止请求」当「已停」。
+2. **管理面缓存（T2）**：Router 缓存按 `(port, host, local_panel)` 失效；改端口 / host / 本地面板后立即走新目标，无需杀进程。
+3. **LAN 管理 Key（T3）**：改用 `SecureRandom` 24 字节 CSPRNG，不再用时间/随机数拼接。
+4. **TICK 非粘性（T4）**：前台服务 TICK 改 `START_NOT_STICKY`，系统重启不复活已停止的网关。
+5. **签到上限（T5）**：`checkin_run_and_wait` 改 15min `recv_timeout`，超时返回 `{done:false,error:"timeout"}` 并请求账号边界取消；Kotlin WakeLock 16min，覆盖 JNI 等待并留 1min 余量，避免上游挂住无限持锁。
+6. **取消锁存（T6）**：`TaskCancellation` 取消状态锁存，二次消费不再 panic。
+7. **日志转发（T7）**：Tokio worker 改 `attach_current_thread_permanently`；删除非 BMP→U+FFFD 转换，emoji 按 CESU-8 原样过 JNI；Kotlin 改用 `BoundedLogQueue(2048)`，消费慢时丢弃并限频告警；serve 非 stop 退出发布 `gateway_stopped(reason=serve_exited)`，SSE 不再静默断流。
+8. **就绪等待（T8）**：Core 就绪等待从 0.6s 扩到 15s，Failed 立即返回，不再把慢初始化误判为启动失败。
+9. **Manifest / 版本（T9）**：`BootReceiver exported=false`；新增 `ExactAlarmPermissionReceiver`，精确闹钟授权变化后重排；versionCode 50 / versionName `0.5.0-r50`；页脚读 `BuildConfig.VERSION_NAME`；补 JNI keep 规则；`onDestroy` 清理排队回调；停止复核改专用单线程。
+10. **异步管理面（T10）**：管理面直调异步化并可取消（`api_call` + callback），JNI 契约升 v3；响应体上限 16 MiB；CI 工具链全钉版本。
+11. **交付 ABI（T11）**：release 仅 `arm64-v8a`，构建仍保留 x86_64 供 emulator Instrumentation；APK 校验断言仅 arm64 + AArch64 ELF。
+12. **CI（T12）**：放行 emulator-runner 的旧 `add-path` 命令，避免「测试 2/2 通过但 step 红」。
+
 ## Verification state
+
+R50 代码基线 `756e99d` 通过 Run `42733103334`：rust-tests 815 passed / 11 ignored（`cargo fmt --check` + 宿主/Android target clippy 六 deny 全绿）；android-build 全步 success（JNI 15 入口符号 + 描述符互检、JVM 143/143、双 APK 均仅 arm64-v8a + AArch64 ELF、Instrumentation 2/2）。相对 R49：Rust CI 812→815（净 +3），JVM 136→143（+7）。
 
 R49 代码基线 `9fe250e` 通过 Run `42605799073`：rust-tests 812 passed / 11 ignored（`cargo fmt --check` + 宿主 clippy 六 deny 全绿）；android-build 全步 success（Rust 全量重编译、Android target clippy 六 deny、JNI 符号 + 描述符互检、JVM 136/136、双 APK 校验、Instrumentation 2/2）。R49 新增 19 条 Rust 用例（本地 `--lib` 815，宿主 812——3 条 `jni_bridge` 用例是 Android-only）与 15 条 JVM 用例（121 → 136）。
 
