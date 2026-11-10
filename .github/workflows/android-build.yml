@@ -157,6 +157,11 @@ jobs:
           fi
       - name: Android Instrumentation (x86_64 emulator)
         uses: reactivecircus/android-emulator-runner@4f4106d3fcce05df782f55421d7a769a2d2e0713 # v2.8.0
+        env:
+          # v2.8.0 仍用 core.addPath() 发 `::add-path::`；runner 已默认禁用，
+          # 会在 Gradle 成功、2/2 测试通过后把整个 step 标红（run 42642712896）。
+          # 只对这一枚 pin 死的 action 放行旧命令，不扩散到 job 级。
+          ACTIONS_ALLOW_UNSECURE_COMMANDS: true
         with:
           api-level: 35
           target: default
