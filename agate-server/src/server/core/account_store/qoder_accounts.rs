@@ -64,7 +64,7 @@ impl AccountStore {
             .into_iter()
             .find(|record| {
                 record.user_id() == credentials.user_id
-                    && Site::from_payload(&record.to_value()).ok() == Some(credentials.site)
+                    && Site::from_record(&record.to_value()).ok() == Some(credentials.site)
             });
         let id = existing.as_ref().map(|record| record.id().to_string()).unwrap_or_else(|| {
             format!(
@@ -161,7 +161,7 @@ impl AccountStore {
             }
         }
         if record.user_id() != credentials.user_id
-            || Site::from_payload(&record.to_value()).ok() != Some(credentials.site)
+            || Site::from_record(&record.to_value()).ok() != Some(credentials.site)
         {
             return Err(AccountStoreError::bad_request("Qoder 刷新结果与原账号身份不一致"));
         }
@@ -185,8 +185,8 @@ impl AccountStore {
         // 站点先看 provider 身份（拆家后的权威来源），payload 里的 `mode` 只是
         // 旧数据的兼容读取 —— 记录缺 `mode` 时 `from_payload` 会默认国际版，
         // 那个默认对中国版记录是错的，不能当首选。
-        let site = Site::from_provider_id(&record.provider())
-            .or_else(|| Site::from_payload(&record.to_value()).ok());
+        // 与 from_record 同一口径：provider 优先，缺了才按 mode 回落
+        let site = Site::from_record(&record.to_value()).ok();
         let available = record.has_token() && site.is_some();
         let can_refresh = Credentials::from_payload(&record.to_value())
             .map(|credentials| credentials.can_refresh()).unwrap_or(false);

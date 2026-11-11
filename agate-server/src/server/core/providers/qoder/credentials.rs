@@ -39,7 +39,9 @@ impl Credentials {
         if !payload.is_object() {
             return Err(GatewayError::with_status(400, "Qoder 账号内容必须是 JSON 对象"));
         }
-        let site = Site::from_payload(payload)?;
+        // 账号记录的站点只认 provider id：千问办公的 `mode` 也是 "cn"，
+        // 用 from_payload 会把它认成 Qoder 中国版（见 Site::from_record 的说明）。
+        let site = Site::from_record(payload)?;
         let access_token = secret(payload, &["accessToken", "access", "token", "access_token"])?;
         if access_token.is_empty() {
             return Err(GatewayError::with_status(400, "缺少 Qoder access / accessToken"));

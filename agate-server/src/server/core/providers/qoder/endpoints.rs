@@ -223,6 +223,29 @@ impl Site {
         }
     }
 
+    /// 从**账号记录**解析站点：`provider` id 是权威，`mode`/`edition` 只作兼容兜底。
+    ///
+    /// ── 为什么必须有这一层（2026-11-11 修）──────────────────────
+    /// [`Self::id`] / [`Self::edition`] 对 Qoder 中国版与千问办公都返回 `"cn"`，
+    /// 所以 `from_payload(mode="cn")` 会把千问办公记录认成 `QoderCn`。后果：
+    /// 模型目录刷新打到 `gateway.qoder.com.cn`、读 `chat` 场景（千问办公返回
+    /// 的是 `qwork`）、COSY 身份常量全用 Qoder 那套 —— 用千问办公的 token
+    /// 必然失败，界面表现为「拉取模型失败 / 目录为空」；`credentials_expiring`
+    /// 也会把千问办公的 1 小时续期窗口错用成 5 分钟。
+    ///
+    /// 账号记录一定带 `provider`（`qoder_account_record` 就是按它过滤的），
+    /// 所以优先取它；只有「手工粘贴一份凭证」这类没有 provider 的 payload 才
+    /// 回落到 [`Self::from_payload`]，而那些入口本来就显式 `set_site` 覆盖。
+    /// 别再在业务分支里写 `Site::from_payload(&record)` 判站点。
+    pub fn from_record(payload: &Value) -> Result<Self, GatewayError> {
+        if let Some(provider) = payload.get("provider").and_then(Value::as_str) {
+            if let Some(site) = Self::from_provider_id(provider) {
+                return Ok(site);
+            }
+        }
+        Self::from_payload(payload)
+    }
+
     // ── 主机 ────────────────────────────────────────────────────
 
     /// 网页门户基址（人看的页面：登录授权页所在的那台主机）。
@@ -787,6 +810,23 @@ mod tests {
         assert_eq!(Site::QoderCn.account_id_prefix(), "qoder-cn");
         assert_eq!(Site::QoderIntl.account_id_prefix(), "qoder-global");
         assert_eq!(Site::QwenworkCn.account_id_prefix(), "qwenwork-cn");
+    }
+
+    /// 账号记录的站点只认 provider id：千问办公与 Qoder 中国版的 `mode` 都是
+    /// `"cn"`，从 mode 猜会把模型刷新打到错的网关（from_record 说明里的真实故障）。
+    #[test]
+    fn record_provider_id_overrides_ambiguous_mode() {
+        let qwenwork = serde_json::json!({ "provider": "qwenwork", "mode": "cn" });
+        assert_eq!(Site::from_record(&qwenwork).expect("千问办公"), Site::QwenworkCn);
+
+        let intl = serde_json::json!({ "provider": "qoder-intl", "mode": "cn" });
+        assert_eq!(Site::from_record(&intl).expect("国际版"), Site::QoderIntl);
+
+        // 没有 provider（手工粘贴的凭证）才回落历史口径
+        let pasted = serde_json::json!({ "mode": "cn" });
+        assert_eq!(Site::from_record(&pasted).expect("中国版"), Site::QoderCn);
+        let unknown = serde_json::json!({ "provider": "other", "mode": "global" });
+        assert_eq!(Site::from_record(&unknown).expect("兜底"), Site::QoderIntl);
     }
 
     #[test]

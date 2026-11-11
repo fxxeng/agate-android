@@ -310,9 +310,14 @@ impl ProviderAdapter for QoderAdapter {
                 }
                 return ModelRefreshOutcome::failed("指定的账号不存在或不可用，请重新选择");
             };
-            let Ok(credentials) = credentials::Credentials::from_payload(&record) else {
+            let Ok(mut credentials) = credentials::Credentials::from_payload(&record) else {
                 return ModelRefreshOutcome::failed("Qoder 账号凭证无效，请重新登录或更新 PAT");
             };
+            // 目录刷新与 refresh::snapshot 同一口径：站点以适配器的 provider 身份
+            // 为准，不拿记录里的 `mode` 猜（千问办公的 mode 也是 "cn"）。
+            // 少了这一句，千问办公的模型目录会打去 Qoder 网关、读 chat 场景，
+            // 症状是「拉取失败 / 清单为空」——与 implemented_kinds 无关的静默故障。
+            credentials.set_site(self.site);
             let proxy = match auth::account_proxy(&record) {
                 Ok(proxy) => proxy,
                 Err(error) => return ModelRefreshOutcome::failed(error.message),
