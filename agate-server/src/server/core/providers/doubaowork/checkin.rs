@@ -96,7 +96,7 @@ const RECONCILE_DELAYS: [u64; 3] = [0, 2, 4];
 const CONFIRM_BUDGET_SECS: u64 = 18;
 
 /// 这条 pending 是用哪个写端点提交的。旧记录缺省 `ItemReward`。
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 enum ClaimEndpoint {
     ItemReward,
     LandingCheckin,
@@ -644,6 +644,8 @@ mod tests {
             item: "a".to_string(),
             submitted_at: submitted,
             rounds: 1,
+            endpoint: ClaimEndpoint::ItemReward,
+            upstream_failure: None,
         };
         assert_eq!(
             attempt.retry_at(submitted),
@@ -654,6 +656,8 @@ mod tests {
             item: "a".to_string(),
             submitted_at: submitted,
             rounds: MAX_ROUNDS,
+            endpoint: ClaimEndpoint::ItemReward,
+            upstream_failure: None,
         };
         assert_eq!(last_round.retry_at(submitted), None, "轮次用尽不再重试");
         // 距提交已超过窗口（30 分钟后）
@@ -667,6 +671,8 @@ mod tests {
             item: "a".to_string(),
             submitted_at: submitted + 13 * 3600 * 1000 + 55 * 60 * 1000,
             rounds: 1,
+            endpoint: ClaimEndpoint::ItemReward,
+            upstream_failure: None,
         };
         assert_eq!(
             late.retry_at(late.submitted_at + 3 * 60 * 1000),
@@ -686,6 +692,8 @@ mod tests {
             item: "daily_checkin_v3".to_string(),
             submitted_at: logging::now_ms(),
             rounds: 2,
+            endpoint: ClaimEndpoint::LandingCheckin,
+            upstream_failure: None,
         };
         for readable in [true, false] {
             let view = waiting(&attempt, readable);

@@ -45,6 +45,8 @@ pub use endpoints::ID;
 #[cfg(test)]
 mod tests {
     use super::*;
+    // `kind()` 是 trait 方法：不导入 trait 就只有「找不到方法」这一句报错
+    use crate::server::core::providers::adapter::ProviderAdapter;
 
     #[test]
     fn adapter_declares_quwork_kind() {

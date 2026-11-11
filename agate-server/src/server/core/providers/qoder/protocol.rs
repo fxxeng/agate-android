@@ -422,7 +422,7 @@ pub fn build_upstream_body(
     let request_id = super::cosy::random_uuid().unwrap_or_default();
     let session_id = session_id_for(user_id, upstream_key, session_seed);
 
-    let payload = json!({
+    let mut payload = json!({
         "request_id": request_id,
         "request_set_id": record_id,
         "chat_record_id": record_id,
