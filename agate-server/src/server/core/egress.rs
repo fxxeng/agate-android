@@ -47,6 +47,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
 use crate::server::config::TimeoutSettings;
 use crate::server::core::proxies::ResolvedProxy;
@@ -121,12 +122,27 @@ const DIRECT_KEY: &str = "__direct__";
 fn cache_key(proxy: Option<&ResolvedProxy>, timeouts: &TimeoutSettings) -> String {
     let egress = match proxy {
         None => DIRECT_KEY.to_string(),
-        Some(proxy) => format!(
-            "{}://{}:{}",
-            proxy.protocol,
-            proxy.host,
-            proxy.port.map(|port| port.to_string()).unwrap_or_else(|| "?".to_string())
-        ),
+        Some(proxy) => {
+            // 凭证也必须进键：同一个地址用两套账密时，复用一个连接池会把
+            // Authorization 发去另一套身份（上游 3.5.0 修的正是这条）。
+            // 只放指纹不放明文，避免代理密码落到日志/调试输出里。
+            let mut fingerprint = Sha256::new();
+            fingerprint.update((proxy.username.len() as u64).to_be_bytes());
+            fingerprint.update(proxy.username.as_bytes());
+            fingerprint.update(proxy.password.as_bytes());
+            let fingerprint: String = fingerprint
+                .finalize()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect();
+            format!(
+                "{}://{}:{}|a{}",
+                proxy.protocol,
+                proxy.host,
+                proxy.port.map(|port| port.to_string()).unwrap_or_else(|| "?".to_string()),
+                fingerprint,
+            )
+        }
     };
     // 两项传输层超时进键：见上面的说明
     format!(
@@ -149,10 +165,10 @@ fn cache_key(proxy: Option<&ResolvedProxy>, timeouts: &TimeoutSettings) -> Strin
 /// 意图落空。因此这里在构造 reqwest 代理 URI 时换成 socks5h ——
 /// 账号里存的、UI 上显示的仍然是 socks5，只有内部实现换了个等价 scheme。
 fn build_proxy_url(proxy: &ResolvedProxy) -> String {
-    let auth = if proxy.username.is_empty() {
+    // 只有密码、没有用户名也是合法形态（不少代理只靠密码鉴权）。旧写法在
+    // username 为空时把密码一起丢掉，结果连上代理却拿不到认证。
+    let auth = if proxy.username.is_empty() && proxy.password.is_empty() {
         String::new()
-    } else if proxy.password.is_empty() {
-        format!("{}@", urlencoding(&proxy.username))
     } else {
         format!("{}:{}@", urlencoding(&proxy.username), urlencoding(&proxy.password))
     };
@@ -421,17 +437,17 @@ pub fn client_for(proxy: Option<&ResolvedProxy>) -> Arc<reqwest::Client> {
         // 它每个出口缓存条目最多触发一次 —— 构造失败的兜底 Client 也会被缓存
         // （见下面 ③），后续请求直接命中缓存、不再走到这里，所以条数**不随
         // 请求量增长**。判据与其它日志一致：看它的条数会不会跟着请求一起涨。
-        logging::log("[Upstream]", &format!("⚠️ {error}，本次回退直连"));
-        // 构造失败的兜底客户端：TLS 后端初始化都失败时没有别的退路，只能返回
-        // 一个「请求时才报错」的客户端（几乎不会失败）。这里显式 `.no_proxy()`：
-        // 本函数是**显式出口**（直连 / 指定代理），兜底也不能变成跟随系统代理
-        // —— `Client::new()` 的 auto_sys_proxy 默认开启（见 Cargo.toml 的
-        // `system-proxy` 说明），直接用它会让「直连」出口在极端路径上悄悄
-        // 走系统代理；二级兜底才是裸 Client::new()（两处 build 都失败）。
-        reqwest::Client::builder()
-            .no_proxy()
-            .build()
-            .unwrap_or_else(|_| reqwest::Client::new())
+        //
+        // ⚠️ 不能回退直连：本函数是「显式出口」，一旦构造失败就改成 no_proxy，
+        // 用户以为在走代理的流量会带着本机真实 IP 出去 —— 这正是
+        // `ProxyResolution::Broken` 在选路层想堵、却堵不到的一层（那边只管
+        // 配置解析，这里才是 Client 构造）。返回一个必然连不上的客户端，
+        // 让本次请求明确失败。
+        logging::log(
+            "[Upstream]",
+            &format!("账号出口连接无法创建（{error}），本次请求未改走直连"),
+        );
+        blocked_client()
     }));
     // ③ 回填缓存（锁内只做插入与淘汰）
     let mut guard = lock_clients();
@@ -459,6 +475,21 @@ pub fn client_for(proxy: Option<&ResolvedProxy>) -> Arc<reqwest::Client> {
         }
     };
     client
+}
+
+/// 「出口构造失败」专用的必失败客户端：所有请求被导到 `127.0.0.1:0`，
+/// 一秒内连接失败。用它替代 `.no_proxy()` 直连兜底，是为了让失败**可见**。
+///
+/// 注意 `.no_proxy()` 只清掉系统代理；随后再挂 `Proxy::custom` 仍然生效
+/// （reqwest 的 builder 按顺序累积），所以「黑洞代理」不会被它抵消。
+fn blocked_client() -> reqwest::Client {
+    let blocked = reqwest::Proxy::custom(|_: &url::Url| Some("http://127.0.0.1:0"));
+    reqwest::Client::builder()
+        .no_proxy()
+        .proxy(blocked)
+        .timeout(Duration::from_secs(1))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
 }
 
 /// 取 Client 缓存的锁；锁中毒（某次持锁 panic）不致命，接管内部数据继续用
@@ -554,17 +585,26 @@ pub async fn test_connectivity(
         .timeout(Duration::from_millis(timeout_ms));
     match request.send().await {
         Ok(response) => {
-            let status = response.status().as_u16();
+            let status = response.status();
             let duration_ms = logging::now_ms() - started;
             // 只关心「连得上」，不读响应体（drop 掉即可，连接会回到池里或直接关闭）
             drop(response);
-            let ip = read_exit_ip(&client, proxy, timeout_ms.min(IP_LOOKUP_MAX_MS)).await;
+            // 「拿到任意 HTTP 响应」不等于出口可用：401/404 说明代理把请求送到了
+            // 别处（或被中间页拦了），旧判据会把这种死代理标成可用。
+            let success = status.is_success();
+            let ip = if success {
+                read_exit_ip(&client, proxy, timeout_ms.min(IP_LOOKUP_MAX_MS)).await
+            } else {
+                String::new()
+            };
             ConnectivityResult {
-                success: true,
-                status: Some(status),
+                success,
+                status: Some(status.as_u16()),
                 ip,
                 duration_ms,
-                error: None,
+                error: (!success).then(|| {
+                    format!("测试目标返回 HTTP {}，出口不可用", status.as_u16())
+                }),
             }
         }
         Err(error) => ConnectivityResult {

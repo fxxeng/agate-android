@@ -413,6 +413,19 @@ async fn drive_stream(
             }
         }
     }
+    // 弱网下上游常常发了一半内容就断流。旧逻辑只补 `[DONE]`，客户端看到的
+    // 是「回答正常结束、内容偏短」，没有任何线索。先判 `[DONE]` 是不是我们
+    // 自己补的：发过内容却没有完成通知/流内错误 ⇒ 明确下发一条 upstream_error。
+    if solo.missing_terminal() {
+        telemetry.note_error(MISSING_TERMINAL);
+        let failure = format!(
+            "data: {}\n\n",
+            json!({"error": {"message": MISSING_TERMINAL, "type": "upstream_error"}})
+        );
+        if sender.send(Ok(bytes::Bytes::from(failure))).await.is_err() {
+            return;
+        }
+    }
     // EOF 收尾：上游没给过 `done` 时由 `finish()` 补那一个 `[DONE]`。
     // 这里**不再自己添一个** —— `[DONE]` 必须恰好一个，而 `SoloStream` 已经
     // 保证「done / error / EOF 三条路各发一次且只一次」。
@@ -426,6 +439,9 @@ async fn drive_stream(
     }
     let _ = &usage_seen;
 }
+
+/// 上游断流时给客户端的明确错误（而不是伪装成正常结束）。
+const MISSING_TERMINAL: &str = "Trae 上游未返回完成事件，回答可能已截断";
 
 /// 一帧的旁读（首帧时刻与用量上报），不改字节。
 fn note(frame: &Frame, telemetry: &RequestTelemetry, usage_seen: &mut Option<Value>) {

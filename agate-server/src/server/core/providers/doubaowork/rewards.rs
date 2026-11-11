@@ -137,6 +137,10 @@ pub struct CheckinState {
     pub claimable: Vec<(String, String, bool)>,
     /// 上次签到距今连续天数（上游给了才带；本家不一定有这个字段）
     pub continuous_days: Option<i64>,
+    /// 活动组 `campaign_group_code`：签到写请求的 `scene` 用它。
+    /// 上游从 `/alice/user/launch` 拿，活动详情里通常也带同一份；
+    /// 读不到时调用方回落到已知的 V3 组，不拿条目 id 冒充。
+    pub scene: Option<String>,
 }
 
 /// 读活动详情（`campaign/v3/detail/m2` 的响应 → [`CheckinState`]）
@@ -213,10 +217,30 @@ pub fn read_checkin_state(payload: &Value) -> CheckinState {
         .and_then(Value::as_i64)
         .filter(|value| *value >= 0);
 
+    let scene = [
+        "/campaign_group_code",
+        "/campaignCode",
+        "/campaign_code",
+        "/scene",
+        "/ug_campaign_info/campaign_group_code",
+        "/data/ug_campaign_info/campaign_group_code",
+    ]
+    .iter()
+    .find_map(|pointer| {
+        payload
+            .pointer(pointer)
+            .or_else(|| root.get(pointer.trim_start_matches('/')))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(str::to_string)
+    });
+
     CheckinState {
         checked_in_today,
         claimable,
         continuous_days,
+        scene,
     }
 }
 
@@ -366,6 +390,57 @@ pub async fn fetch_checkin_state(
 ) -> Result<CheckinState, GatewayError> {
     let payload = fetch_json(credentials, endpoints::campaign_detail_url(), timeout_ms).await?;
     Ok(read_checkin_state(&payload))
+}
+
+/// 每日签到写请求（`POST /alice/ug/campaign/landing/checkin`）。
+///
+/// 与 [`claim_item`] 是**两个动作**：领奖不推进签到态，签到必须打这里。
+/// 上游 3.5.0 的回执形态是 `data.checked_in` + `data.biz_error.code`，
+/// 由 `checkin::classify_receipt` 判，不在这里假装「发了就是到账」。
+pub async fn submit_checkin(
+    credentials: &Credentials,
+    scene: &str,
+    timeout_ms: u64,
+) -> Result<Value, GatewayError> {
+    if scene.trim().is_empty() {
+        return Err(GatewayError::with_status(
+            400,
+            "缺少活动组 campaign_group_code，无法提交签到",
+        ));
+    }
+    let query = endpoints::encode_query(&endpoints::security_params(&credentials.fingerprint));
+    let url = format!("{}?{}", endpoints::landing_checkin_url(), query);
+    let body = json!({ "scene": scene.trim() });
+    let mut headers = endpoints::base_headers();
+    headers.extend(endpoints::json_headers());
+    headers.extend(endpoints::auth_headers(
+        &credentials.cookie_header(),
+        credentials.csrf_token().as_deref(),
+    ));
+    let response = send_raw("POST", &url, Some(&body), &headers, None, Some(timeout_ms))
+        .await
+        .map_err(|error| GatewayError::with_status(502, format!("豆包工作签到请求失败：{error}")))?;
+    match response.status {
+        200..=299 => Ok(response.payload.unwrap_or(Value::Null)),
+        401 | 403 => Err(GatewayError::with_status(
+            401,
+            format!(
+                "豆包工作登录态已失效（HTTP {}）：请在账号页重新登录",
+                response.status
+            ),
+        )),
+        other => Err(GatewayError::with_status(
+            502,
+            format!(
+                "豆包工作签到返回 HTTP {other}：{}",
+                response
+                    .payload
+                    .as_ref()
+                    .and_then(readable_error)
+                    .unwrap_or_else(|| "（无文案）".to_string())
+            ),
+        )),
+    }
 }
 
 /// 领取一个条目（`POST /alice/ug/campaign/item/reward/claim/<campaign_item_code>`）

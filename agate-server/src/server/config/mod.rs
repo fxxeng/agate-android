@@ -1035,6 +1035,20 @@ pub fn current() -> RuntimeConfig {
     build(Map::new())
 }
 
+/// 只读取调试开关（不克隆整份配置）。
+///
+/// `capture_raw_body` / `is_verbose` 每请求都会问一次，而 [`current()`] 是
+/// RwLock 读 + **整份 raw 表克隆**（含几百行提示词）。手机端低端机上这是
+/// 热路径常驻分配；开关是个 bool，没必要为它搬整份配置。
+pub fn debug_mode_enabled() -> bool {
+    if let Ok(guard) = CONFIG.read() {
+        if let Some(config) = guard.as_ref() {
+            return config.debug_mode;
+        }
+    }
+    false
+}
+
 /// 在配置读锁内跑一个**只读、短小**的闭包，只借出快照的 `raw` 表（**不克隆**）。
 ///
 /// ── 为什么需要它（与上面各 `*_enabled` 轻量读取同一动机）──────

@@ -148,11 +148,20 @@ pub struct SoloStream {
     /// `token_usage` 读到后欠着，随下一帧一起发。
     pending_usage: Option<Value>,
     saw_done: bool,
+    /// 已经给客户端发过内容（回答/思考/工具调用）
+    saw_output: bool,
+    /// 上游给过 `done` 事件（**完成通知**，不是 EOF 补的 `[DONE]`）
+    completed: bool,
+    /// 上游给过流内 error
+    had_error: bool,
 }
 
 impl SoloStream {
     pub fn new(id: String, created: i64) -> Self {
-        Self { id, created, scanner: SseScanner::default(), pending_usage: None, saw_done: false }
+        Self {
+            id, created, scanner: SseScanner::default(), pending_usage: None,
+            saw_done: false, saw_output: false, completed: false, had_error: false,
+        }
     }
 
     /// 喂一行，返回该行产生的帧。
@@ -179,6 +188,7 @@ impl SoloStream {
                 if delta.is_empty() {
                     return Vec::new();
                 }
+                self.saw_output = true;
                 vec![self.chunk(Value::Object(delta), None)]
             }
             SoloEvent::TokenUsage(usage) => {
@@ -187,11 +197,13 @@ impl SoloStream {
             }
             SoloEvent::Done { finish_reason } => {
                 self.saw_done = true;
+                self.completed = true;
                 vec![self.chunk(json!({}), Some(finish_reason)), Frame::Done]
             }
             SoloEvent::Error { code, message } => {
                 let kind = stream_error_kind(code, &message);
                 self.saw_done = true;
+                self.had_error = true;
                 // 注意：这里**不终止读取**，所以后面再来 `done` 会再发一整套
                 // 帧（向量 `流内错误 4008` 记的就是这个形状）。转发层在首包门
                 // 之前看到这条 error 就会改判成 HTTP 错误，正常不会走到第二步。
@@ -199,6 +211,14 @@ impl SoloStream {
             }
             SoloEvent::Other => Vec::new(),
         }
+    }
+
+    /// 上游断流：发过内容，却既没给完成通知、也没给错误。
+    ///
+    /// `finish()` 补出来的 `[DONE]` 只让客户端结束等待，**不代表上游正常完成**；
+    /// 少了这个判据，弱网断流会被渲染成一次「回答正常结束」。
+    pub fn missing_terminal(&self) -> bool {
+        self.saw_output && !self.completed && !self.had_error
     }
 
     /// 流结束（EOF）。上游没给过 `done` 时补一个 `[DONE]`，保证客户端能收尾。
@@ -518,4 +538,28 @@ mod tests {
         assert_eq!("{\"x\":1}", calls[1]["function"]["arguments"], "arguments 是拼接的");
         assert!(calls[1]["function"].get("namespace").is_none(), "SOLO 专属字段要剥掉");
     }
+
+    /// 断流判据：只有「发过内容 + 没有完成通知 + 没有流内错误」才算截断。
+    #[test]
+    fn missing_terminal_requires_output_without_completion() {
+        let mut solo = SoloStream::new("chatcmpl-test".to_string(), 0);
+        assert!(!solo.missing_terminal(), "空流不该报截断");
+        solo.feed_line("event: output");
+        solo.feed_line(r#"data: {"response":"hi"}"#);
+        solo.feed_line("");
+        assert!(solo.missing_terminal(), "给了内容就断流必须判截断");
+        solo.feed_line("event: done");
+        solo.feed_line("");
+        assert!(!solo.missing_terminal(), "收到完成通知就不算截断");
+
+        let mut errored = SoloStream::new("chatcmpl-test".to_string(), 0);
+        errored.feed_line("event: output");
+        errored.feed_line(r#"data: {"response":"hi"}"#);
+        errored.feed_line("");
+        errored.feed_line("event: error");
+        errored.feed_line(r#"data: {"code":4008,"message":"限流"}"#);
+        errored.feed_line("");
+        assert!(!errored.missing_terminal(), "流内错误已有明确原因，不重复报截断");
+    }
+
 }

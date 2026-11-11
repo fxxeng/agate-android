@@ -94,6 +94,14 @@ pub const CAMPAIGN_LIST_PATH: &str = "/alice/ug/campaign/list/";
 /// 因此这里给的是拼接用的常量而不是完整路径。
 pub const CAMPAIGN_REWARD_CLAIM_PREFIX: &str = "/alice/ug/campaign/item/reward/claim/";
 
+/// 每日签到的**写端点**（上游 3.5.0 改到这里）。
+///
+/// ⚠️ `item/reward/claim/<code>` 是「领任务奖励」，它会把奖励发了，却**不会
+/// 推进官方每日签到状态** —— 表现为签到一直回查不到账、用户每天点都白点。
+/// 签到必须打这个入口，body 只带 `{"scene": campaign_group_code}`。
+/// 领奖前缀保留给别的奖励链路，别把两者混成一个。
+pub const CAMPAIGN_LANDING_CHECKIN_PATH: &str = "/alice/ug/campaign/landing/checkin";
+
 /// 能力槽位简报路径（[二进制] `/alice/slot/action_bar_v3/brief_list`）。
 ///
 /// 二进制里它与 `default_select_mode_map` / `new_chat` / `agent-` /
@@ -317,6 +325,11 @@ pub fn subscription_entry_config_url() -> String {
 /// 活动详情全 URL（签到态读它）
 pub fn campaign_detail_url() -> String {
     url(CAMPAIGN_DETAIL_PATH)
+}
+
+/// 每日签到写端点全 URL
+pub fn landing_checkin_url() -> String {
+    url(CAMPAIGN_LANDING_CHECKIN_PATH)
 }
 
 /// 活动列表全 URL

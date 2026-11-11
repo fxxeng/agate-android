@@ -98,7 +98,9 @@ pub enum UpstreamKind {
 /// 普通的 400 直接透传给客户端 —— 账号页不会进冷却，下一个请求还会选它。
 pub fn classify_upstream_error(status: u16, message: &str) -> UpstreamKind {
     let lower = message.to_ascii_lowercase();
-    if status == 401 || status == 403 {
+    // 403 是权限/风控，不等于凭证失效：当 Auth 会让内核去刷新一份其实还能用的
+    // token，并把这次失败伪装成「需要重新登录」。真正的鉴权失败由 401 与文案判据给。
+    if status == 401 {
         return UpstreamKind::Auth;
     }
     if status == 429 {

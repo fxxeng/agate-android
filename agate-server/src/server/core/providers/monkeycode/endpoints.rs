@@ -163,10 +163,12 @@ pub fn ws_headers(region: Region, session: &str) -> Vec<(String, String)> {
 ///
 /// 未知 / 缺失的接口类型回落 `opencode`（与参考 `task-runner.ts` 的兜底一致）
 /// —— 那是「最通用」的一档，不是随意的默认值。
-pub fn cli_name_for(interface_type: &str) -> &'static str {
-    match interface_type.trim().to_ascii_lowercase().as_str() {
-        "openai_responses" => "codex",
-        "anthropic" => "claude",
-        _ => "opencode",
-    }
+pub const TASK_CLI_NAME: &str = "opencode";
+
+/// 云任务**固定**用 OpenCode；`interface_type` 只决定它调用模型的协议。
+/// 早先按接口类型建 codex/claude 容器，会把模型协议和容器里的 agent 混为一谈，
+/// 表现为「建任务失败 / 任务跑到另一个 agent 上」。保留函数签名是为了不改动
+/// 目录与建任务的调用点，语义改为恒定值。
+pub fn cli_name_for(_interface_type: &str) -> &'static str {
+    TASK_CLI_NAME
 }

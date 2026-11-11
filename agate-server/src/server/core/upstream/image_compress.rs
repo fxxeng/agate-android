@@ -86,7 +86,8 @@ impl ImageCompressStats {
 /// 单图失败或无需压缩时原样保留，绝不阻断请求。返回值只统计发生替换的项。
 ///
 /// ── 为什么先收集再写回 ──────────────────────────────────────
-/// 扫描阶段只**借用** `body`（拿位置 + 原 URI 的拷贝），写回阶段才 `pointer_mut`。
+/// 扫描阶段只**借用** `body`（逐张按 pointer 借出原 URI，不复制），写回阶段才
+/// `pointer_mut`。
 /// 若边扫边改，同一份 `body` 就要同时被不可变借用（读下一个块）与可变借用
 /// （改上一个块）—— 借用检查器不允许，而那正是「改到一半的 body 长什么样」这类
 /// 无从推理的中间状态。
@@ -100,8 +101,14 @@ pub fn compress_images_in_place(
     }
     let mut stats = ImageCompressStats::default();
     let mut writes: Vec<(usize, usize, String)> = Vec::with_capacity(targets.len());
-    for (message_index, part_index, uri) in targets {
-        let Some(next) = compress_with_cache(&uri, settings) else {
+    for (message_index, part_index) in targets {
+        // 只记位置，逐张按 pointer 借出来压缩：旧版把每张原图的完整 data URI
+        // 都 `to_string()` 存进 Vec，多图请求等于把整个请求体再复制一份常驻
+        // —— 手机端内存峰值最吃紧的正是这一处。
+        let pointer = format!("/messages/{message_index}/content/{part_index}");
+        let Some(part) = body.pointer(&pointer) else { continue };
+        let Some(uri) = image_uri_of(part) else { continue };
+        let Some(next) = compress_with_cache(uri, settings) else {
             continue;
         };
         if next == uri {
@@ -141,8 +148,8 @@ pub fn has_compressible(body: &Value) -> bool {
     })
 }
 
-/// 收集所有「内嵌 base64 图片」的位置与原始 data URI（只读借用一遍）。
-fn collect_targets(body: &Value) -> Vec<(usize, usize, String)> {
+/// 只收集「内嵌 base64 图片」的位置（不复制正文，见调用处）。
+fn collect_targets(body: &Value) -> Vec<(usize, usize)> {
     let mut out = Vec::new();
     let Some(messages) = body.get("messages").and_then(Value::as_array) else {
         return out;
@@ -154,7 +161,7 @@ fn collect_targets(body: &Value) -> Vec<(usize, usize, String)> {
         for (part_index, part) in parts.iter().enumerate() {
             let Some(uri) = image_uri_of(part) else { continue };
             if uri.starts_with("data:image/") {
-                out.push((message_index, part_index, uri.to_string()));
+                out.push((message_index, part_index));
             }
         }
     }

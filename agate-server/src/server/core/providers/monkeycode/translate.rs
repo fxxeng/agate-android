@@ -641,11 +641,19 @@ fn parse_question(raw: &str) -> Option<Value> {
 fn error_detail(data: Option<&Value>) -> String {
     match data {
         Some(Value::String(text)) if !text.trim().is_empty() => text.trim().to_string(),
-        Some(Value::Object(object)) => ["error", "message", "msg"]
+        // 详细原因在 `details`；且每个候选都要**单独**过滤空串 —— 老写法在
+        // `.map().filter()` 里过滤整个 Option，第一个键存在但为空时就不会再看
+        // 后面的键，用户只得到一句「上游未给原因」。
+        Some(Value::Object(object)) => ["details", "detail", "error", "message", "msg"]
             .iter()
-            .find_map(|key| object.get(*key).and_then(Value::as_str))
-            .map(|text| text.trim().to_string())
-            .filter(|text| !text.is_empty())
+            .find_map(|key| {
+                object
+                    .get(*key)
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|text| !text.is_empty())
+            })
+            .map(str::to_string)
             .unwrap_or_else(|| "任务执行出错（上游未给原因）".to_string()),
         _ => "任务执行出错（上游未给原因）".to_string(),
     }

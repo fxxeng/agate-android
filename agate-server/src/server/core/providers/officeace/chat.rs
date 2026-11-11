@@ -77,9 +77,33 @@ pub fn apply_reasoning_allowance(body: &mut Value) -> Option<(i64, i64)> {
     if requested < TINY_MAX_TOKENS {
         return None;
     }
-    let raised = requested + REASONING_ALLOWANCE;
+    let raised = requested.saturating_add(REASONING_ALLOWANCE);
     body["max_tokens"] = json!(raised);
     Some((requested, raised))
+}
+
+/// 果办上游明确报出的 `max_tokens` 参数上限（DeepSeek 393216 / GLM 131072）。
+/// Qwen 限的是输入+输出总长，不套用这个静态上限；未知模型同样不限制。
+fn max_tokens_ceiling(wire_model: &str) -> Option<i64> {
+    let name = wire_model.to_ascii_lowercase();
+    if name.contains("deepseek") {
+        Some(393_216)
+    } else if name.contains("glm") {
+        Some(131_072)
+    } else {
+        None
+    }
+}
+
+/// 必须在追加推理预算之后调用；没有字段或未超限时不动请求。
+fn clamp_max_tokens(body: &mut Value) -> Option<i64> {
+    let ceiling = max_tokens_ceiling(body.get("model").and_then(Value::as_str)?)?;
+    let current = body.get("max_tokens").and_then(Value::as_i64)?;
+    if current <= ceiling {
+        return None;
+    }
+    body["max_tokens"] = json!(ceiling);
+    Some(ceiling)
 }
 
 /// 流式补 `stream_options.include_usage`（**不覆盖**客户端已有的取值）。
@@ -158,6 +182,7 @@ pub fn build_chat_plan(
         object.insert("stream".to_string(), Value::Bool(true));
     }
     apply_reasoning_allowance(&mut body);
+    clamp_max_tokens(&mut body);
     ensure_include_usage(&mut body);
 
     let mut headers = vec![

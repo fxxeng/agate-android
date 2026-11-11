@@ -102,11 +102,25 @@ pub mod terminal {
         b"data: [DONE]\r\n",
         b"data:[DONE]\r\n",
     ];
-    /// Responses：正常收尾 `response.completed`，失败收尾 `response.failed`
-    pub const RESPONSES: super::TerminalFrames =
-        &[b"event: response.completed\n", b"event: response.failed\n"];
+    /// Responses：正常收尾 `response.completed`，失败收尾 `response.failed` /
+    /// `response.incomplete`（输出预算或内容过滤导致的中断），以及通用的 `error`。
+    /// 与 CHAT 表同一取向：冒号后那个空格可省、行尾可能是 CRLF —— 少认一种
+    /// 就会把一次**成功结束**记成中断，随后 `normalize` 的失败清零抹掉用量。
+    pub const RESPONSES: super::TerminalFrames = &[
+        b"event: response.completed\n", b"event: response.completed\r\n",
+        b"event:response.completed\n", b"event:response.completed\r\n",
+        b"event: response.failed\n", b"event: response.failed\r\n",
+        b"event:response.failed\n", b"event:response.failed\r\n",
+        b"event: response.incomplete\n", b"event: response.incomplete\r\n",
+        b"event:response.incomplete\n", b"event:response.incomplete\r\n",
+        b"event: error\n", b"event: error\r\n", b"event:error\n", b"event:error\r\n",
+    ];
     /// Anthropic Messages：`message_stop`（成功与流内错误都以它收尾）
-    pub const ANTHROPIC: super::TerminalFrames = &[b"event: message_stop\n"];
+    pub const ANTHROPIC: super::TerminalFrames = &[
+        b"event: message_stop\n", b"event: message_stop\r\n",
+        b"event:message_stop\n", b"event:message_stop\r\n",
+        b"event: error\n", b"event: error\r\n", b"event:error\n", b"event:error\r\n",
+    ];
 }
 
 // ─── 模型解析 ───────────────────────────────────────────────
@@ -1251,14 +1265,18 @@ mod tests {
         assert!(scan.window.len() <= cap, "窗口留了 {} 字节，上限 {}", scan.window.len(), cap);
     }
 
-    /// 另外两条入口的特征原样不动（帧名带协议前缀，不存在空格方言问题）。
-    /// 这条钉的是「本次改动只碰了 Chat」，而特征表是逐入口给出的 —— 传错一张
-    /// 表就等于给那条入口悄悄换了判据。
+    /// 另外两条入口也认「空格可省 / CRLF / 中断与 error 收尾」。
+    /// 早先这两张表只有带空格的 LF 一种写法，上游换个写法就把成功请求记成中断。
     #[test]
-    fn other_entries_keep_their_own_frames() {
+    fn other_entries_recognize_all_terminal_dialects() {
         assert!(seen_after(terminal::RESPONSES, &["event: response.completed\n"]));
+        assert!(seen_after(terminal::RESPONSES, &["event:response.completed\r\n"]));
         assert!(seen_after(terminal::RESPONSES, &["event: response.failed\n"]));
+        assert!(seen_after(terminal::RESPONSES, &["event: response.incomplete\n"]));
+        assert!(seen_after(terminal::RESPONSES, &["event:error\n"]));
         assert!(seen_after(terminal::ANTHROPIC, &["event: message_stop\n"]));
+        assert!(seen_after(terminal::ANTHROPIC, &["event:message_stop\r\n"]));
+        assert!(seen_after(terminal::ANTHROPIC, &["event: error\n"]));
         // DONE 是 Chat 方言：喂给另外两张表都不该命中
         assert!(!seen_after(terminal::RESPONSES, &[UNSPACED_DONE, SPACED_DONE]));
         assert!(!seen_after(terminal::ANTHROPIC, &[UNSPACED_DONE, SPACED_DONE]));

@@ -352,7 +352,10 @@ pub fn record_limited(limit: &LimitContext, status: u16, message: &str) {
 /// 一帧的错误 → 网关错误（额度类带 429、鉴权类带 401）
 fn frame_error(frame: &Frame) -> GatewayError {
     let text = frame.error_text();
-    let kind = protocol::classify_upstream_error(200, &text);
+    // 上游把业务错误写在帧的 error_code 里、HTTP 常是 200：写死 200 会把
+    // 帧内 429 当普通错误，账号因此不进冷却、下一条请求还选它。
+    let status = frame.error_code.parse::<u16>().ok().unwrap_or(200);
+    let kind = protocol::classify_upstream_error(status, &text);
     let status = match kind {
         UpstreamKind::Quota => 429,
         UpstreamKind::Auth => 401,

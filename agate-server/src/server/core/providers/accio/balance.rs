@@ -58,8 +58,12 @@ pub async fn query(
         .get("usagePercent")
         .or_else(|| quota.get("usage_percent"))
         .and_then(Value::as_f64)
-        .unwrap_or(0.0)
-        .clamp(0.0, 100.0);
+        // 读不出用量就报错，别拿 0.0 冒充「额度满」。NaN / 负数 / 超 100 同样
+        // 是上游口径异常，clamp 会把它们悄悄改成一个看起来正常的数。
+        .filter(|value| value.is_finite() && (0.0..=100.0).contains(value))
+        .ok_or_else(|| {
+            GatewayError::with_status(502, "Accio 额度查询未返回有效用量，无法确认剩余额度")
+        })?;
     let countdown = quota
         .get("refreshCountdownSeconds")
         .or_else(|| quota.get("refresh_countdown_seconds"))

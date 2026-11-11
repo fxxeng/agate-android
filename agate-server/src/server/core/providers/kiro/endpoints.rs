@@ -75,36 +75,39 @@ pub fn region_of(profile: &str, signed_in: &str) -> String {
 ///
 /// 只做形态检查：它要拼进 AWS 的主机名，允许任意内容等于允许把请求导到别处。
 pub fn is_aws_region(value: &str) -> bool {
-    let bytes = value.as_bytes();
-    if bytes.len() < 9 || bytes.len() > 32 {
+    // 长度按字节算即可：下面逐段只允许 ASCII 小写字母 / 数字，非 ASCII 内容
+    // 一定被拒，不会因为「字符数」与「字节数」的差放过什么。
+    // 地区不一定是三段（`ap-southeast-1` 就有四段），末尾必须是 1~2 位数字。
+    if !(9..=32).contains(&value.len()) {
         return false;
     }
     let parts: Vec<&str> = value.split('-').collect();
-    if parts.len() != 3 {
+    let Some((number, words)) = parts.split_last() else {
         return false;
-    }
-    let region = parts[0];
-    let direction = parts[1];
-    let number = parts[2];
-    region.len() == 2
-        && region.chars().all(|ch| ch.is_ascii_lowercase())
-        && !direction.is_empty()
-        && direction.chars().all(|ch| ch.is_ascii_lowercase())
-        && !number.is_empty()
-        && number.chars().all(|ch| ch.is_ascii_digit())
+    };
+    words.len() >= 2
+        && words[0].len() == 2
+        && words
+            .iter()
+            .all(|word| !word.is_empty() && word.bytes().all(|ch| ch.is_ascii_lowercase()))
+        && (1..=2).contains(&number.len())
+        && number.bytes().all(|ch| ch.is_ascii_digit())
 }
 
 /// 是 https 且不带用户名（AWS Start URL 的形态检查）。
 pub fn is_https_url(value: &str) -> bool {
-    let trimmed = value.trim();
-    let Some(rest) = trimmed.strip_prefix("https://") else {
-        return false;
-    };
-    if rest.is_empty() || rest.starts_with('/') {
+    // 手写 strip_prefix 会把 `https://x@y/`、`https://x/#frag` 乃至带控制字符
+    // 的地址放过去；交给 URL 解析器判 scheme/host/无凭据/无 fragment。
+    if value.bytes().any(|ch| ch <= b' ' || ch == 0x7f) {
         return false;
     }
-    let authority = rest.split('/').next().unwrap_or("");
-    !authority.is_empty() && !authority.contains('@')
+    url::Url::parse(value).is_ok_and(|url| {
+        url.scheme() == "https"
+            && url.host_str().is_some()
+            && url.username().is_empty()
+            && url.password().is_none()
+            && url.fragment().is_none()
+    })
 }
 
 /// query 参数的百分号编码（只有 profile ARN 这类值需要）。

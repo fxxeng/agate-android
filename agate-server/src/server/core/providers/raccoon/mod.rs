@@ -204,11 +204,13 @@ impl ProviderAdapter for RaccoonAdapter {
             return UpstreamErrorClass::TokenExpired { message };
         }
         if status == 429 {
-            // 上游文案里没有可解析的恢复时间（小浣熊的限额语义在源项目的
-            // credit-limit 模块里，是它自己抛的 429，本期不迁移），
-            // reset_at 给 None 让冷却标记落 10 分钟兜底
+            // 「请求过于频繁」是短期限流，不是额度耗尽：一律给 10 分钟兜底会把
+            // 一个 1 分钟就能恢复的账号白白罚掉。只有这类瞬时 429 给结构化
+            // 恢复时刻；真额度耗尽仍交给冷却兜底（上游不给恢复时间）。
+            let reset_at = transient_rate_limit(error_body, raw)
+                .then(|| crate::server::logging::now_ms() + 60_000);
             return UpstreamErrorClass::QuotaLimited {
-                reset_at: None,
+                reset_at,
                 message,
                 upstream_code: None,
                 status,
@@ -674,4 +676,46 @@ mod chat_body_tests {
         assert!(!is_glm_5_3("glm-4-3"));
         assert!(!is_glm_5_3("raccoon-8c4485"));
     }
+}
+
+
+/// 429 是「瞬时频率限制」还是「额度耗尽」：只有前者给 60 秒的恢复时刻。
+/// 判据与上游 `raccoon/upstream_errors.rs` 一致（错误码 + 文案关键词），
+/// 且不触碰额度耗尽那类错误 —— 那类需要真正的冷却兜底。
+fn transient_rate_limit(body: &Value, message: &str) -> bool {
+    let code = body
+        .pointer("/error/code")
+        .or_else(|| body.get("code"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let lower = message.to_ascii_lowercase();
+    let exhausted = [
+        "余额不足",
+        "积分不足",
+        "额度不足",
+        "额度已用完",
+        "insufficient quota",
+        "insufficient balance",
+        "quota exceeded",
+        "credit limit",
+    ]
+    .iter()
+    .any(|marker| lower.contains(marker));
+    if exhausted {
+        return false;
+    }
+    matches!(
+        code.as_str(),
+        "rate_limit" | "rate_limit_exceeded" | "user_model_rate_limited"
+    ) || [
+        "rate limit",
+        "too many requests",
+        "请求过于频繁",
+        "频率",
+        "rpm",
+        "tpm",
+    ]
+    .iter()
+    .any(|marker| lower.contains(marker))
 }
