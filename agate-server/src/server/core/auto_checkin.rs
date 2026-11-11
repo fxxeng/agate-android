@@ -125,7 +125,7 @@ pub fn default_time() -> String {
 /// 这是「有签到或每日活跃任务」的清单，不是「有积分概念」的清单：CatPaw 有积分
 /// 查询但没有签到，因此不在此列 —— 它的账号在批量签到里被算作 `skipped`。
 /// 加一家之前先确认它的签到链路真的存在（一个点了必然报错的复选框比没有更糟）。
-pub const CHECKIN_PROVIDERS: [&str; 20] = [
+pub const CHECKIN_PROVIDERS: [&str; 21] = [
     "workbuddy",
     "workbuddy-intl",
     "raccoon",
@@ -172,6 +172,9 @@ pub const CHECKIN_PROVIDERS: [&str; 20] = [
     // 只有模型凭据（无网页会话）的账号由实现直接回 `ineligible`，不会空打。
     // 追加在末尾（与上面同一理由）。
     "astudio",
+    // QuWork 1.6.0：先查 → 领取 → 回查的每日奖励（结果不明不重复提交），
+    // 见 `providers::quwork::checkin`。追加在末尾（与上面同一理由）。
+    "quwork",
 ];
 
 /// 缺省的签到提供商集合（全选）
@@ -189,12 +192,12 @@ pub fn default_providers() -> Vec<String> {
 /// 会让这一家的勾选框再也取消不掉（读完就补回来，界面上表现为「取消勾选没反应」）。
 /// 所以补齐只做一次，靠配置里的版本号记账；版本一旦写上去，用户之后再取消勾选
 /// 就真的生效了。执行点见 `checkin_schedules::extend_providers_once`。
-pub const PROVIDERS_VERSION: i64 = 8;
+pub const PROVIDERS_VERSION: i64 = 9;
 
 /// 「哪一版加入的家」——条目清单的版本低于它 = 这家还没被提供过 ⇒ 补进去。
 /// 版本 1 = 多条目改造上线时的形态（9 家；`qoder-intl` 由 `normalize_providers`
 /// 的存量兼容规则跟着 `qoder` 带上，不在这里重复登记）。
-const PROVIDERS_ADDED_IN: [(&str, i64); 10] = [
+const PROVIDERS_ADDED_IN: [(&str, i64); 11] = [
     ("officeace", 2),
     ("codearts", 2),
     // 版本 3（2026-10-31）：ModelScope 两家一次性纳入。它们**默认在范围内**
@@ -214,6 +217,8 @@ const PROVIDERS_ADDED_IN: [(&str, i64); 10] = [
     ("tabbit-intl", 7),
     // 版本 8：AStudio —— 「每日登录积分」，靠前后余额差观测。
     ("astudio", 8),
+    // 版本 9：QuWork —— 每日奖励（先查后领、结果不明不重复提交）。
+    ("quwork", 9),
 ];
 
 /// 版本 `version` 之后才加入清单的家（按注册顺序）。空数组 = 这一版没有新家，

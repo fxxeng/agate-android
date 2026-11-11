@@ -224,6 +224,12 @@ object AccountOps {
             // `modelBearerToken`、带 `Bearer ` 外壳的整行、整段 `astron-session.json`、
             // 以及动态登录的 `{inputs:{…}}` 包装 —— 按内容判，所以这里只递原文。
             "astudio" -> body.put("text", primary.trim())
+            // QuWork：primary 是整段凭证（JSON / 纯 llmToken / yaml 行），
+            // secondary 是可选的登录凭证 accessToken。内核按内容判，不在这里解析。
+            "quwork" -> {
+                body.put("text", primary.trim())
+                if (!secondary.isNullOrBlank()) body.put("accessToken", secondary.trim())
+            }
             else -> return OpResult(false, null, "该提供商不支持粘贴凭证添加")
         }
         return post("/api/accounts", body)

@@ -307,6 +307,18 @@ pub(super) fn identity_of_item(provider: &str, item: &Map<String, Value>) -> Res
             &fields,
         ));
     }
+    // QuWork：`quwork:{uid}` / `quwork:key:{摘要}`，与落库判重同一个函数。
+    // 不接这一支会落进兜底按 `userId` 取 → 报「缺少 userId」整条导入失败。
+    if provider == kind_id(ProviderKind::QuWork) {
+        let secret = Value::Object(item.clone());
+        let llm = crate::server::core::providers::quwork::credentials::text(
+            &secret, &["llmToken"],
+        );
+        if llm.is_empty() {
+            return Err("缺少 llmToken（无法标识 QuWork 账号）".to_string());
+        }
+        return Ok(crate::server::core::providers::quwork::credentials::identity(&secret));
+    }
     if user_id.is_empty() {
         return Err(format!("缺少 userId（无法标识 {provider} 账号）"));
     }
@@ -423,6 +435,17 @@ pub(super) fn identity_of_record(provider: &str, record: &StoredAccount) -> Opti
         return Some(crate::server::core::providers::astudio::credentials::identity(
             &fields,
         ));
+    }
+    // QuWork：与 `identity_of_item` 调同一个函数（同一口径的唯一保证）
+    if provider == kind_id(ProviderKind::QuWork) {
+        let secret = record.to_value();
+        let llm = crate::server::core::providers::quwork::credentials::text(
+            &secret, &["llmToken"],
+        );
+        if llm.is_empty() {
+            return None;
+        }
+        return Some(crate::server::core::providers::quwork::credentials::identity(&secret));
     }
     let user_id = record.user_id().trim().to_string();
     (!user_id.is_empty()).then_some(user_id)

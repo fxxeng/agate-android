@@ -1655,6 +1655,33 @@ pub async fn add_account(state: &ServerState, body: &Bytes) -> Response {
                 Err(error) => Err(AccountStoreError::new(error.message, error.status_code)),
             }
         }
+        // QuWork（1.6.0）：**粘贴凭证 JSON / 纯 llmToken / yaml 行** → 本地归一
+        // → 落账号。只支持粘贴：Android 上没有 QuWork 桌面客户端可读登录态
+        // （去桌面化，见 `quwork/mod.rs`）。
+        Some(crate::server::core::providers::ProviderKind::QuWork) => {
+            if import_desktop {
+                return management_error(
+                    400,
+                    "QuWork 不支持导入桌面端登录态（Android 上没有 QuWork 客户端），\
+                     请粘贴凭证 JSON 或模型凭证 llmToken",
+                );
+            }
+            if auth_file_b64.is_some() && auth_file_content.is_none() {
+                return management_error(
+                    400,
+                    "QuWork 的凭证是文本 JSON / 纯令牌，不支持二进制凭证文件；\
+                     请选择文本文件或改用「填写凭证」",
+                );
+            }
+            let pasted = match auth_file_content {
+                Some(content) => json!({ "text": content }),
+                None => payload,
+            };
+            match crate::server::core::providers::quwork::credentials::normalize_paste(&pasted) {
+                Ok(secret) => store.add_quwork_account(&secret, import_name, "manual"),
+                Err(error) => Err(AccountStoreError::new(error.message, error.status_code)),
+            }
+        }
         // WorkBuddy 系的两家（国内版 / 国际版）：同一套凭证形态与落账号路径，
         // 差别只有归属 —— provider id 自己就是归属（拆家后不再从 payload 里的
         // `edition` 反推：那是账号的属性，而落哪一家是身份问题）。

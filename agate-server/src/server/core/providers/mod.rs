@@ -183,6 +183,9 @@ pub mod onboarding_memory;
 /// 不进身份体系：它是各家的共用设施，只按 provider id 记状态。
 pub mod readiness;
 pub mod qoder;
+/// QuWork（1.6.0）：OpenAI 兼容转发 + 粘贴 llmToken / 可选 accessToken +
+/// 独立账号续期 / 公开模型目录 / 积分 / 每日奖励（去桌面化，见 `quwork/mod.rs`）。
+pub mod quwork;
 pub mod raccoon;
 pub mod refresh_flight;
 pub mod tabbit;
@@ -657,6 +660,10 @@ pub enum ProviderKind {
     /// 归 **Agent 分段**：在上游 `agent2api-providers` 包里（该包不声明
     /// `provider_category`，默认 agent），`order` 是 32。
     Astudio,
+    /// QuWork（1.6.0）：OpenAI 兼容模型网关 + 独立账号服务 + 公开目录。
+    /// 归 **Agent 分段**（上游 `agent2api-providers` 包，order 33；本仓
+    /// `PROVIDERS` 不存 order 字段，按接入批次排在末尾）。只支持粘贴凭证。
+    QuWork,
 }
 
 /// 一个提供商的静态元数据。
@@ -856,6 +863,9 @@ pub const PROVIDERS: &[ProviderMeta] = &[
     // astron-session.json），没有地区伴生。标签逐字取上游 `pack.json`，
     // 归 **Agent 分段**（order 32）。排在末尾：本仓按接入批次排。
     ProviderMeta::agent("astudio", "AStudio"),
+    // QuWork（1.6.0）：上游插件 `meta.order = 33`，归 Agent 分段。本仓注册表
+    // 没有 order 字段（按接入批次排末尾），order 33 只作移植记录写在这里。
+    ProviderMeta::agent("quwork", "QuWork"),
 ];
 
 /// provider id 在注册表里的下标（未知 id → None）。
@@ -952,6 +962,7 @@ pub fn kind_from_id(id: &str) -> Option<ProviderKind> {
         "tabbit-intl" => Some(ProviderKind::TabbitIntl),
         "kiro" => Some(ProviderKind::Kiro),
         "astudio" => Some(ProviderKind::Astudio),
+        "quwork" => Some(ProviderKind::QuWork),
         // 走到这里 = 上面的注册表判定已放行、这个 match 却没有对应分支：
         // 只可能是有人给 `PROVIDERS` 加了条目忘了加这里。开发期喊出来；
         // release 返回 None（见上：宁可为「未知」，不可误认成别家）。
@@ -1006,6 +1017,7 @@ pub const fn kind_id(kind: ProviderKind) -> &'static str {
         ProviderKind::TabbitIntl => "tabbit-intl",
         ProviderKind::Kiro => "kiro",
         ProviderKind::Astudio => "astudio",
+        ProviderKind::QuWork => "quwork",
     }
 }
 

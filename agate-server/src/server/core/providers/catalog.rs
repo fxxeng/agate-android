@@ -292,6 +292,11 @@ pub(crate) fn refresh_meta(kind: ProviderKind) -> (bool, i64) {
             super::astudio::models::remote_refreshed(),
             super::astudio::models::last_refreshed_at(),
         ),
+        // QuWork：内置兜底 10 条 + 公开远程目录，刷新后如实回报来源与时刻
+        ProviderKind::QuWork => (
+            super::quwork::models::remote_refreshed(),
+            super::quwork::models::last_refreshed_at(),
+        ),
     }
 }
 

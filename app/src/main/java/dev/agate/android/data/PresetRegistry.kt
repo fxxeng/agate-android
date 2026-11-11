@@ -551,6 +551,23 @@ object PresetRegistry {
             pasteMultiline = true,
             supportsCheckin = true,
         ),
+
+        // QuWork（1.6.0）：上游插件 meta.order = 33，归 **Agent 分段**。
+        // 只支持**粘贴**（Android 上没有 QuWork 桌面客户端可读登录态，去桌面化）。
+        // 两套凭据：模型凭证 llmToken 必填（对话用），登录凭证 accessToken
+        // 可选（积分 / 续期 / 每日奖励用；只填 llmToken 也能对话）。
+        // 内核 `api::accounts` 的 QuWork 分支把整段凭证交给
+        // `quwork::credentials::normalize_paste` 按内容判（JSON / 纯 token /
+        // `QURIVS_LLM_API_KEY:` yaml 行），客户端不写第二套解析。
+        ProviderPreset(
+            "quwork", "QuWork", "QuWork 1.6.0 · 粘贴凭证",
+            LoginKind.PASTE,
+            listOf(AuthChannel.PASTE),
+            pasteHint = "模型凭证 llmToken 必填：粘贴凭证 JSON（含 llmToken，可选 accessToken）、纯 llmToken，或 QURIVS_LLM_API_KEY: 的 yaml 行",
+            pasteSecondaryHint = "登录凭证 accessToken（可选；填写后可用积分 / 续期 / 每日奖励）",
+            pasteMultiline = true,
+            supportsCheckin = true,
+        ),
     )
 
     fun byId(id: String): ProviderPreset? = ALL.firstOrNull { it.id == id }

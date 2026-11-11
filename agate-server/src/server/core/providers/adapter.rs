@@ -1341,6 +1341,8 @@ pub fn adapter_for(kind: ProviderKind) -> &'static dyn ProviderAdapter {
         // AStudio 是单一站点、单一入口（粘贴 modelBearerToken / astron-session.json），
         // 没有地区伴生，所以只有一个适配器实例（与 Kiro 同一处置，只是理由更简单）。
         ProviderKind::Astudio => &super::astudio::adapter::ASTUDIO_ADAPTER,
+        // QuWork（1.6.0）：无状态 OpenAI 兼容转发，单一站点、单一实例
+        ProviderKind::QuWork => &super::quwork::QUWORK_ADAPTER,
     }
 }
 
@@ -1495,6 +1497,8 @@ pub fn implemented_kinds() -> Vec<ProviderKind> {
         // 目录（`/api/v1/model-manager/models`）—— 漏了就是「账号加了，模型列表
         // 一直停在兜底那七条」
         ProviderKind::Astudio,
+        // QuWork：适配器已接真身（对话 / 目录 / 续期 / 积分 / 签到），有公开远程目录
+        ProviderKind::QuWork,
     ]
 }
 

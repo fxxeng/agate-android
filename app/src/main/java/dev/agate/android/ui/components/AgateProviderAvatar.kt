@@ -92,6 +92,9 @@ object ProviderIcons {
         // `desktop-tauri/ui/assets/providers/astudio.png`（256×256）。实测透明
         // 占比 0.010（满底色块），所以在两种模式下都够清楚，**不进**底座表。
         "astudio" to R.drawable.provider_astudio,
+        // QuWork 1.6.0：上游 `assets/quwork.png`，复制到
+        // `drawable-nodpi/provider_quwork.png`。单一站点，无变体。
+        "quwork" to R.drawable.provider_quwork,
     )
 
     /**

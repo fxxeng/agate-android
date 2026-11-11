@@ -413,6 +413,11 @@ impl AccountStore {
             // 续期凭据，下发等于把「这个账号能被别人续期」的条件送出去
             // （见 `atomcode_accounts.rs` 的模块头）。
             self.to_atomcode_public_account(record)
+        } else if record.provider() == super::quwork_accounts::QUWORK_PROVIDER_ID {
+            // QuWork：`accessToken`(llmToken 镜像) / `llmToken` / `loginToken`
+            // 一律不下发；公开视图只给 name/uid/phone/hasToken/tokenTail/
+            // expiresAt 与 canRefresh 能力位（见 `quwork_accounts::public_shape`）。
+            self.to_quwork_public_account(record)
         } else if record
             .provider()
             .starts_with(crate::server::core::custom_providers::ID_PREFIX)

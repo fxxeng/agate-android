@@ -122,6 +122,8 @@ pub mod officeace_accounts;
 pub mod orcaterm_accounts;
 pub mod priority;
 pub mod qoder_accounts;
+/// QuWork 账号：粘贴凭证落库、公开形态、续期结果的比较-再写。
+pub mod quwork_accounts;
 pub mod raccoon_accounts;
 pub mod raccoon_import;
 pub mod snapshot;
