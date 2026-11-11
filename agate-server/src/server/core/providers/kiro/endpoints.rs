@@ -101,10 +101,18 @@ pub fn is_https_url(value: &str) -> bool {
     if value.bytes().any(|ch| ch <= b' ' || ch == 0x7f) {
         return false;
     }
+    // ⚠️ `https:///start` 里的 `start` 会被 url crate 规范成 **host**（标准对
+    // 特殊 scheme 的处理：多余斜杠等同于 authority 分隔符），所以只看解析结果
+    // 会把它当合法 URL。authority 必须在字面上就存在：`https://` 之后不能是
+    // 空串或 `/`。
+    let Some(rest) = value.strip_prefix("https://") else {
+        return false;
+    };
+    if rest.is_empty() || rest.starts_with('/') {
+        return false;
+    }
     url::Url::parse(value).is_ok_and(|url| {
         url.scheme() == "https"
-            // `https:///start` 在 url crate 里能解析出**空 host**，只看 `is_some()`
-            // 会把它放过去 —— 那等于允许把票据发给「没有主机的 https」。
             && url.host_str().is_some_and(|host| !host.is_empty())
             && url.username().is_empty()
             && url.password().is_none()
