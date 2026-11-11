@@ -81,9 +81,12 @@ fn user_view(user: &Value) -> Value {
 }
 
 /// 令牌校验：去 `Bearer ` 外壳，要求 ASCII、无空白 / 控制字符、不超长。
+///
+/// 只剥**两侧普通空格**：换行 / 制表符是粘贴事故（`abc\n` 这种），
+/// 静默 trim 掉就等于把一个「不知道从哪粘来的东西」当令牌收下 —— 报错让用户重贴。
 pub fn token(value: &str, label: &str) -> Result<String, GatewayError> {
-    let value = value.trim();
-    let value = value.strip_prefix("Bearer ").unwrap_or(value).trim();
+    let value = value.trim_matches(' ');
+    let value = value.strip_prefix("Bearer ").unwrap_or(value).trim_matches(' ');
     if value.len() > MAX_TOKEN_BYTES
         || !value.is_ascii()
         || value

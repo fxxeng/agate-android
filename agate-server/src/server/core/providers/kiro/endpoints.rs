@@ -103,7 +103,9 @@ pub fn is_https_url(value: &str) -> bool {
     }
     url::Url::parse(value).is_ok_and(|url| {
         url.scheme() == "https"
-            && url.host_str().is_some()
+            // `https:///start` 在 url crate 里能解析出**空 host**，只看 `is_some()`
+            // 会把它放过去 —— 那等于允许把票据发给「没有主机的 https」。
+            && url.host_str().is_some_and(|host| !host.is_empty())
             && url.username().is_empty()
             && url.password().is_none()
             && url.fragment().is_none()
