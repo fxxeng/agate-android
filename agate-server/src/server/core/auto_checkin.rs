@@ -431,6 +431,53 @@ pub(crate) fn project_result(summary: &Value) -> Result<(), String> {
 // ─── 服务句柄 ───────────────────────────────────────────────
 
 /// 句柄内部状态：下载/签到这类长任务只在这里留「是否在跑」与调度任务句柄。
+/// 每个账号的结果及投影提交后才推进；JNI watchdog 与 Kotlin WakeLock
+/// 共用这一份单调 revision，不把总时长误判成无进展。
+#[derive(Clone)]
+pub struct CheckinProgress(Arc<std::sync::Mutex<(u64, Option<std::time::Instant>)>>);
+
+impl Default for CheckinProgress {
+    fn default() -> Self {
+        Self(Arc::new(std::sync::Mutex::new((0, None))))
+    }
+}
+
+impl CheckinProgress {
+    pub(crate) fn advance(&self) {
+        let mut state = match self.0.lock() {
+            Ok(state) => state,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        state.0 = state.0.saturating_add(1);
+        state.1 = Some(std::time::Instant::now());
+    }
+
+    pub(crate) fn begin_round(&self) {
+        let mut state = match self.0.lock() {
+            Ok(state) => state,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        state.0 = state.0.saturating_add(1);
+        state.1 = Some(std::time::Instant::now());
+    }
+
+    pub fn revision(&self) -> u64 {
+        match self.0.lock() {
+            Ok(state) => state.0,
+            Err(poisoned) => poisoned.into_inner().0,
+        }
+    }
+
+    pub fn idle_elapsed(&self) -> std::time::Duration {
+        let last = match self.0.lock() {
+            Ok(state) => state.1,
+            Err(poisoned) => poisoned.into_inner().1,
+        };
+        // 新轮次必须先 begin_round；旧轮次残留不能使新等待永续。
+        last.map_or(std::time::Duration::MAX, |at| at.elapsed())
+    }
+}
+
 struct Inner {
     /// 是否已有一次签到在执行（对应 Node 的闭包变量 running）
     running: bool,
@@ -443,6 +490,7 @@ struct Inner {
     generation: u64,
     /// 当前签到轮次的合作式停止请求；只在账号边界检查，不中断在途 Provider。
     cancel_current: Arc<AtomicBool>,
+    progress: CheckinProgress,
 }
 
 /// 定时签到服务句柄：内部一把锁 + Clone，与 update / models 同构。
@@ -484,6 +532,7 @@ impl AutoCheckin {
                 stopped: Arc::new(AtomicBool::new(false)),
                 generation: 0,
                 cancel_current: Arc::new(AtomicBool::new(false)),
+                progress: CheckinProgress::default(),
             })),
         }
     }
@@ -515,6 +564,10 @@ impl AutoCheckin {
     /// 当前是否存在一轮签到执行中（包括手动、调度器与闹钟触发）。
     pub fn is_running(&self) -> bool {
         self.lock().running
+    }
+
+    pub fn progress(&self) -> CheckinProgress {
+        self.lock().progress.clone()
     }
 
     /// 请求当前签到轮次在当前账号完成后停止。不会中断正在进行的 Provider 请求。
@@ -659,6 +712,10 @@ impl AutoCheckin {
             checkin_schedules::mark_fired(id, Some(&today));
         }
         logging::log("[Checkin]", &format!("⏰ 定时签到开始（{reason}）"));
+        crate::server::events::publish(
+            "checkin_started",
+            json!({ "reason": reason, "source": source }),
+        );
 
         // 范围：条目轮次用那条自己勾的提供商；手动全量（无条目）= 全部提供商。
         // 条目可能在执行前被删（罕见）：拿不到就按全量兜，不空跑。
@@ -670,7 +727,11 @@ impl AutoCheckin {
                 .unwrap_or_else(default_providers),
             None => default_providers(),
         };
-        let cancel_current = self.lock().cancel_current.clone();
+        let (cancel_current, progress) = {
+            let inner = self.lock();
+            (inner.cancel_current.clone(), inner.progress.clone())
+        };
+        progress.begin_round();
         let outcome = match checkin::run_checkin_cancellable(
             &self.store,
             &self.billing,
@@ -681,6 +742,7 @@ impl AutoCheckin {
             Some(cancel_current.as_ref()),
             schedule_id,
             true,
+            Some(&progress),
         )
         .await
         {
@@ -788,6 +850,7 @@ impl AutoCheckin {
             "total": total,
             "skipped": skipped,
             "cancelled": result.get("cancelled").and_then(Value::as_bool).unwrap_or(false),
+            "remaining": number("remaining"),
             // 只留前 5 条：面板展示用，避免 config.json 被长列表撑大（Node 同）
             "failed": failures.iter().take(5).cloned().collect::<Vec<_>>(),
             "failedCount": failures.len(),
@@ -801,6 +864,7 @@ impl AutoCheckin {
                 "failed": failures.len(),
                 "active": active,
                 "cancelled": result.get("cancelled").and_then(Value::as_bool).unwrap_or(false),
+                "remaining": number("remaining"),
             }),
         );
         write_state(json!({ "lastResult": summary }));
@@ -1292,6 +1356,18 @@ mod scheduling_tests {
             write_state_checked(json!({ "enabled": true, "schedules": entries })),
             "测试配置写回失败"
         );
+    }
+
+    #[test]
+    fn progress_renews_only_after_account_completion() {
+        let progress = super::CheckinProgress::default();
+        progress.begin_round();
+        let before = progress.revision();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        assert!(progress.idle_elapsed() >= std::time::Duration::from_millis(1));
+        progress.advance();
+        assert_eq!(before + 1, progress.revision());
+        assert!(progress.idle_elapsed() < std::time::Duration::from_millis(100));
     }
 
     fn entry(id: &str, time: &str, fired_today: bool) -> Value {

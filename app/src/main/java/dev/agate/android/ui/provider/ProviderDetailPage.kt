@@ -794,6 +794,14 @@ private fun AccountBlock(
             color = if (usage?.startsWith("查询失败") == true) C.red else C.textSub,
             fontSize = 12.sp,
         )
+        if (acc.provider == "chatglm" && !acc.hasCredentials) {
+            Text(
+                "旧版登录态不再兼容，请删除后重新添加。",
+                color = C.red,
+                fontSize = 12.sp,
+                modifier = Modifier.padding(top = 4.dp),
+            )
+        }
         // 凭证（与列表页账号卡同口径：双字段 + 秒毫秒归一 + 统一到期文案）
         credentialExpiryMs(acc)?.let { at ->
             ExpiryLine(at)

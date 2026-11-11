@@ -100,6 +100,7 @@ pub mod proxies;
 pub mod proxy_pool;
 pub mod proxy_rotate;
 pub mod proxy_settings;
+pub mod response_observation;
 pub mod routing;
 pub mod sanitize;
 pub mod scheduled_tasks;

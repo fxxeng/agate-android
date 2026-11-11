@@ -357,25 +357,22 @@ impl AccountStore {
     /// （`checkinAt` 落在今天即算签过）。只保留较新的时间戳，避免延迟恢复较早的
     /// CheckinRun 时把后续已经成功的签到时间倒退。跨过 0 点后旧值自然失效。
     ///
-    /// 与限额标记同族：都是「账号级的事实、低频写、失败不致命」。调用方是签到
-    /// 链路，写盘失败**不**影响签到结果本身（上游那边积分已经领到了），所以返回
-    /// bool 而不是 Result —— 调用方拿到 false 时最多记一条日志，绝不因此把
-    /// 一次成功的签到报成失败。
-    pub fn mark_checkin(&self, id: &str, at: i64) -> bool {
+    /// 远端结果已成功保存时，本地投影失败必须可恢复、可诊断；不能把存储错误
+    /// 静默压成 false，也不能宣称远端签到失败。恢复会重试本地投影，不重放远端。
+    pub fn mark_checkin(&self, id: &str, at: i64) -> Result<(), String> {
         let _guard = self.guard();
         let Some(mut record) = self.record_by_id(&_guard, id) else {
-            return false;
+            return Err("账号不存在".to_string());
         };
         if at <= record.checkin_at() {
             // 延迟恢复可能晚于后续签到到达；旧时间不能覆盖新的成功事实。
-            return true;
+            return Ok(());
         }
         record.set_checkin_at(at);
-        // 注意**不**动 updatedAt：那是「记录被改过」的时间，会显示在账号页的
-        // 「更新于 …」上；签到不是用户改配置那种「更新」，写进去会让这一栏
-        // 在每天自动签到后集体跳动一次。
+        // 不动 updatedAt：签到不是用户编辑账号配置。
         self.with_conn(&_guard, |conn| sql::update_in_place(conn, &record))
-            .is_ok()
+            .map(|_| ())
+            .map_err(|error| error.to_string())
     }
 
     /// 记下「这个账号的新手任务（一次性福利）已全部结算」的快照

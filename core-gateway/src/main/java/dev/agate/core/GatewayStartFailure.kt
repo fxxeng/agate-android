@@ -26,6 +26,9 @@ object GatewayStartFailure {
      * @param error native 给出的完整说明；非空时原样透传
      */
     fun guidance(stage: String?, kind: String?, port: Int, error: String?): String {
+        if (error == "stopping") {
+            return "上一个网关正在停止，请稍后重试。"
+        }
         if (!error.isNullOrBlank()) {
             return error
         }

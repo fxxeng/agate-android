@@ -26,12 +26,12 @@
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use tokio::sync::oneshot;
+use tokio::sync::watch;
 
 use crate::server::ServerState;
 
 /// 当前持有的临时监听：`(端口, 关停句柄)`。`None` = 没有在监听。
-static HOLDER: Mutex<Option<(u16, oneshot::Sender<()>)>> = Mutex::new(None);
+static HOLDER: Mutex<Option<(u16, watch::Sender<bool>)>> = Mutex::new(None);
 
 /// 是否已经由本模块占着端口（登录监听，不代表网关在跑）。
 pub fn held() -> bool {
@@ -82,7 +82,7 @@ pub fn release() {
     let Some((port, shutdown_tx)) = taken else {
         return;
     };
-    let _ = shutdown_tx.send(());
+    let _ = shutdown_tx.send(true);
     wait_until_released(port);
     crate::server::logging::log("[Server]", &format!("登录临时监听已释放（:{}）", port));
 }

@@ -714,6 +714,7 @@ mod tests {
             status: 409,
             ok: false,
             payload: None,
+            ..Default::default()
         };
         assert!(already_claimed(&response));
     }
@@ -724,6 +725,7 @@ mod tests {
             status: 200,
             ok: true,
             payload: Some(json!({ "result": "ALREADY_CLAIMED" })),
+            ..Default::default()
         };
         assert!(already_claimed(&response));
     }
@@ -734,6 +736,7 @@ mod tests {
             status: 502,
             ok: false,
             payload: Some(json!({ "result": "UPSTREAM_ERROR" })),
+            ..Default::default()
         };
         assert!(!already_claimed(&response));
     }

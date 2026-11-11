@@ -16,7 +16,19 @@ import dev.agate.core.RuntimeController
 class AgateApp : Application() {
     override fun onCreate() {
         super.onCreate()
+        dev.agate.core.AgateAlarmIntents.cancelAll(this)
+        if (GatewayPrefs.checkinAlarmEnabled(this)) {
+            dev.agate.core.AgateAlarmScheduler.schedule(this, dev.agate.core.AlarmResource.Checkin)
+        }
         Thread {
+            GatewayPrefs.apiKey(this)
+            if (GatewayPrefs.consumeApiKeyRotationNotice(this) && GatewayPrefs.alertNotify(this)) {
+                dev.agate.core.AgateNotify.serviceAlert(
+                    this,
+                    "局域网访问密钥已更新",
+                    "旧版本生成的可预测密钥已轮换。请在局域网设备上改用新的访问密钥。",
+                )
+            }
             try {
                 RuntimeController.coreInit(
                     filesDir.resolve("agate").absolutePath,

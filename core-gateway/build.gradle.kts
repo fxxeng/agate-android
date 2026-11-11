@@ -23,6 +23,7 @@ android {
 }
 
 dependencies {
+    implementation("androidx.core:core:1.13.1")
     // libagate_server.so 经 src/main/jniLibs/arm64-v8a/ 进入 APK（build-android-so.sh 产出）
     // M0 无运行时依赖；Retrofit/kotlinx.serialization 在 M3 接数据面时加入
     testImplementation("junit:junit:4.13.2")

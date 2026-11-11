@@ -22,7 +22,6 @@ import java.util.TimeZone
 object AlarmScheduler {
 
     const val ACTION = "dev.agate.core.action.CHECKIN_ALARM"
-    private const val REQUEST_CODE = 1002
 
     /** Android 12+ 能否用精确闹钟（Android 14 起新装默认拒绝，需引导）。 */
     fun canExact(ctx: Context): Boolean =
@@ -42,7 +41,8 @@ object AlarmScheduler {
             return null
         }
         val at = nextOccurrence(times) ?: return null
-        val pi = pendingIntent(app)
+        val pi = AgateAlarmIntents.pendingIntent(app, AlarmResource.Checkin)
+            ?: return null
         val am = app.getSystemService(Context.ALARM_SERVICE) as AlarmManager
         // canExact 可能在检查后被用户撤权；先尝试精确闹钟，再降级为非精确。
         // 两条路径都可能因后台限制/ROM 策略抛异常，不能让 BroadcastReceiver 崩溃，
@@ -72,9 +72,7 @@ object AlarmScheduler {
     }
 
     fun cancel(ctx: Context) {
-        val app = ctx.applicationContext
-        (app.getSystemService(Context.ALARM_SERVICE) as AlarmManager).cancel(pendingIntent(app))
-        GatewayPrefs.setNextAlarmAt(app, 0L)
+        AgateAlarmScheduler.cancel(ctx, AlarmResource.Checkin)
     }
 
     /** "08:00,20:00" → [(8,0),(20,0)]；非法项丢弃。 */
@@ -107,11 +105,4 @@ object AlarmScheduler {
         return if (best == Long.MAX_VALUE) null else best
     }
 
-    private fun pendingIntent(ctx: Context): PendingIntent =
-        PendingIntent.getBroadcast(
-            ctx,
-            REQUEST_CODE,
-            Intent(ctx, AlarmReceiver::class.java).setAction(ACTION),
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
-        )
 }

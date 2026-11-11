@@ -280,14 +280,14 @@ pub async fn run_activity(State(state): State<ServerState>, body: Bytes) -> Resp
             .into_response();
     }
     // 落 `checkinAt`：与常规签到共用 day_completed 判据和原始结果时间戳。
-    if crate::server::core::billing::checkin::day_completed(&row)
-        && !state.store().mark_checkin(&id, result_saved_at)
-    {
-        return GatewayError::with_status(
-            500,
-            format!("账号 {id} 的签到时间未能持久化；结果已保存在执行台账"),
-        )
-        .into_response();
+    if crate::server::core::billing::checkin::day_completed(&row) {
+        if let Err(error) = state.store().mark_checkin(&id, result_saved_at) {
+            return GatewayError::with_status(
+                500,
+                format!("账号 {id} 的签到时间未能持久化：{error}；结果已保存在执行台账"),
+            )
+            .into_response();
+        }
     }
     if let Err(error) = crate::server::core::checkin_records::record_activity_for_run_at(
         &row,

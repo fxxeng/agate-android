@@ -33,7 +33,7 @@
 | 5 | `nativeCoreInit(dir,port,on)` | 后台线程（Application/FGS） | bootstrap，秒级 | 信封 JSON |
 | 6 | `nativeSchedulerSet(on)` | 任意 | 锁等待 | 信封 JSON |
 | 7 | `nativeCheckinRunNow(ms)` | 后台线程（闹钟） | ≤ms（默认 120s） | 信封 JSON |
-| 8 | `nativeCheckinRunAndWait()` | 后台线程 + 必须持 WakeLock | ≤15min（超时 done:false/timeout） | 信封 JSON |
+| 8 | `nativeCheckinRunAndWait()` | 后台线程 + 必须持 WakeLock | 无进展 15min，取消后最多再收尾 60s | 信封 JSON |
 | 9 | `nativeRequestCheckinStop()` | 任意 | 锁等待 | 信封 JSON |
 | 10 | `nativeVersion()` | 任意 | 即返 | **裸字符串**（唯一非信封） |
 | 11 | `nativeSetLogCallback(cb\|null)` | 任意（@Synchronized） | 锁等待 | 信封 JSON |
@@ -59,19 +59,21 @@
 
 1. **start 幂等语义**：已运行返回 `already_running` 且不触碰鉴权覆盖（LAN
    会话 Key 不能被本机模式重复 start 摘掉）。
-2. **stop 释放语义（R50/T1 起）**：shutdown 信号 + 等待 serve 任务完成标记
+2. **stop 释放语义（R50/T1 起，R52 收紧）**：shutdown 信号 + 等待 serve 任务完成标记
    （所有 listener 已 drop），5s 上限。超时返回 `ok=true, released=false,
    stopping=true` 并保留 Stopping 相位：`status` 继续报 `running:false,
-   stopping:true`，`start` 返回 `stopping` 错误，直到完成标记置位后自动归位。
+   stopping:true`；`start` 有界等待旧 listener 释放，仍超时返回 `stopping` 错误。
+   listener 释放后由主动 reaper 归位，不再依赖 UI 轮询。SSE 立即停止，残余连接
+   最多优雅排空 10s 后强制关闭；`released` 不等待长连接自然结束。
    端口探测只作辅助信号，不再是判据。只停网关，Core/调度器不受影响。
 3. **apiCall 直调**：内存 `Router::oneshot`，完整鉴权/CORS/错误信封栈；响应
    上限 16 MiB（R50/T10 由 4 MiB 上调，越界返回 `response body exceeds 16 MiB`）；
    API Key 走 Bearer；Core 未就绪返回 `core_not_ready`。
 4. **checkin 三入口**：RunNow 超时不断任务（fire 已后台跑，返回 timeout +
-   ok=true）；RunAndWait 等 CAS 抢锁的 busy 轮真实结束（FGS WakeLock），
-   但等待有 15min 上限：超时返回 `done:false, error:"timeout"` 并调用
-   `request_cancel_current()`（账号边界停止后续账号，不中断在途 Provider
-   请求）——R50/T5 前是无限等待；RequestStop 合作式。
+   ok=true）；RunAndWait 等 CAS 抢锁的 busy 轮真实结束（FGS WakeLock）。
+   R52 起按最后账号进展计算 15min idle deadline，持续进展的整轮不受总时长限制；
+   无进展时请求账号边界取消，最多再等待 60s 自然收尾，并返回 `error:"idle_timeout"`
+   与 `remaining`（未执行数）。不硬中断在途 Provider 请求；RequestStop 合作式。
 5. **日志回调**：单 GlobalRef；网关运行期不换监听；Kotlin 侧固定在 AgateLog
    HandlerThread 执行（有界队列 2048，消费慢时丢弃并限频告警），回调内禁重活；
    Rust 侧回调异常一律清理不留 pending exception；jni 0.21 的 `JNIString`
@@ -114,8 +116,14 @@
     bind 失败原样返回 `port_conflict`，不产生任何 Sidecar 副作用；顺序由
     `server::run_after_successful_bind` 固定，jni_bridge 与 headless bin 同源。
 
+13. **签到进展（R52，bridge=4）**：status 增 `checkin_running:boolean` 与
+    `checkin_revision:number`；账号完成持久化与本地投影后才推进 revision。
+    Kotlin 在 revision 变化时续期 16min WakeLock；旧内核缺省 false/0，且不伪造进展。
+
 ## 4. 版本沿革
 
+- **v4（R52，bridge=4）**：status 增签到运行状态与进展 revision；停止语义改为
+  listener 释放而非长连接排空，签到等待改为无进展超时并返回未执行数。
 - **v3（R50，bridge=3）**：新增 `nativeSetApiCallback` / `nativeApiCallAsync` /
   `nativeApiCancel` 三个入口；管理面直调改为异步回调，超时可真正取消；响应
   上限 4 MiB → 16 MiB；Kotlin `CoreTransport` 切换到异步通道。

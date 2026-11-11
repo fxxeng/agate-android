@@ -121,6 +121,8 @@ fun AuthWebViewSheet(
             Spacer(Modifier.height(8.dp))
             WebViewBlock(
                 authUrl = session.authUrl,
+                providerId = session.providerId,
+                expectedState = session.state,
                 onPageHint = { status = it },
                 onSchemeCallback = { url ->
                     // state 来自本次登录会话：内核靠它认任务（缺了必 400）
@@ -150,6 +152,8 @@ fun AuthWebViewSheet(
 @Composable
 private fun WebViewBlock(
     authUrl: String,
+    providerId: String,
+    expectedState: String,
     onPageHint: (String) -> Unit,
     onSchemeCallback: (String) -> Unit,
 ) {
@@ -175,12 +179,7 @@ private fun WebViewBlock(
                 settings.domStorageEnabled = true
                 CookieManager.getInstance().setAcceptCookie(true)
                 CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
-                // F4 会话隔离：每次登录用全新会话，清掉上一家/上一账号的
-                // Cookie 与站点存储，防止串号。removeAllCookies 异步，但
-                // 登录页首个网络请求前通常已完成，浏览器态对时序不敏感。
-                CookieManager.getInstance().removeAllCookies(null)
-                CookieManager.getInstance().removeSessionCookies(null)
-                CookieManager.getInstance().flush()
+                // F4 会话隔离：异步清理真正完成后才导航，不能依赖时序猜测。
                 WebStorage.getInstance().deleteAllData()
                 webViewClient = object : WebViewClient() {
                     override fun shouldOverrideUrlLoading(
@@ -193,7 +192,15 @@ private fun WebViewBlock(
                         if (scheme.equals("http", true) || scheme.equals("https", true)) {
                             return false
                         }
-                        onSchemeCallback(request.url.toString())
+                        if (AuthCallbackPolicy.shouldForward(
+                                providerId,
+                                expectedState,
+                                request.url.toString(),
+                            )
+                        ) {
+                            onSchemeCallback(request.url.toString())
+                        }
+                        // 非 http(s) 默认拦截，绝不转发给其他 Provider 登录任务。
                         return true
                     }
 
@@ -201,7 +208,11 @@ private fun WebViewBlock(
                         onPageHint("登录页已就绪，完成授权后自动关闭")
                     }
                 }
-                loadUrl(authUrl)
+                val cookies = CookieManager.getInstance()
+                cookies.removeAllCookies {
+                    cookies.flush()
+                    loadUrl(authUrl)
+                }
             }
         },
     )

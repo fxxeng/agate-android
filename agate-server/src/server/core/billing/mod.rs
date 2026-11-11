@@ -286,6 +286,18 @@ impl BillingService {
             }
         })?;
 
+        logging::verbose(
+            "[Billing]",
+            &format!(
+                "{} {} → HTTP {} · {} ms · {} bytes · {}",
+                spec.method,
+                spec.path,
+                response.status,
+                response.duration_ms,
+                response.response_bytes,
+                response.egress,
+            ),
+        );
         let payload = response.payload;
         let code = payload
             .as_ref()

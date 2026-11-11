@@ -69,6 +69,8 @@ sealed interface RuntimeStateEvent {
         val bindLan: Boolean,
         val version: String,
     ) : RuntimeStateEvent
+    /** START 时旧 listener 仍在释放：这是过渡态，不是启动失败。 */
+    data object GatewayStoppingObserved : RuntimeStateEvent
     data object GatewayStopStarted : RuntimeStateEvent
     data object GatewayStopSucceeded : RuntimeStateEvent
     /** released=false 的停止结果：停止已发出，端口释放未在 5s 内确认（R47/T3.4）。 */
@@ -151,6 +153,11 @@ object RuntimeSnapshotReducer {
                     current.copy(
                         gateway = GatewayRuntimeState.Running(event.port, event.bindLan, event.version),
                     )
+                } else current
+            }
+            RuntimeStateEvent.GatewayStoppingObserved -> {
+                if (current.gateway is GatewayRuntimeState.Starting) {
+                    current.copy(gateway = GatewayRuntimeState.Stopping)
                 } else current
             }
             RuntimeStateEvent.GatewayStopStarted -> {

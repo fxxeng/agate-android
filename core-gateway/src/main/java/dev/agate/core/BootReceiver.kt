@@ -19,11 +19,12 @@ class BootReceiver : BroadcastReceiver() {
             Intent.ACTION_MY_PACKAGE_REPLACED,
             -> {
                 val app = context.applicationContext
+                runCatching { AgateAlarmIntents.cancelAll(app) }
+                if (GatewayPrefs.checkinAlarmEnabled(app)) {
+                    runCatching { AgateAlarmScheduler.schedule(app, AlarmResource.Checkin) }
+                }
                 if (GatewayPrefs.bootAutoStart(app)) {
                     runCatching { AgateForegroundService.start(app) }
-                }
-                if (GatewayPrefs.checkinAlarmEnabled(app)) {
-                    runCatching { AlarmScheduler.scheduleNext(app) }
                 }
             }
         }

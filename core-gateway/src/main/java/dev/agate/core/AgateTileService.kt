@@ -29,8 +29,9 @@ class AgateTileService : TileService() {
 
         Thread({
             try {
-                val running = currentStatus()?.running == true
-                if (running) {
+                val status = currentStatus()
+                val running = status?.running == true
+                if (running || status?.stopping == true) {
                     AgateForegroundService.stop(this)
                     mainHandler.post { applyState(qsTile, false, null) }
                 } else {

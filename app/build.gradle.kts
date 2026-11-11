@@ -22,8 +22,8 @@ android {
         targetSdk = 35
         // 主版本号与上游内核同步溯源（方案 §2）
         // R50：版本号与验证轮次对齐（此前停在 0.4.0-m3/3，R49 已脱节）。
-        versionCode = 50
-        versionName = "0.5.0-r50"
+        versionCode = 52
+        versionName = "0.5.2-r52"
 
         // 正式构建默认只打 arm64-v8a，避免生成缺少 Native Core 的假 ABI。
         // CI Instrumentation 专用构建通过 -PagateInstrumentationAbi=x86_64
@@ -111,6 +111,7 @@ dependencies {
     // 只是一组抛 "not mocked" 的桩，不补的话所有解析断言都跑不起来。
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20240303")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
 
     // 真实 Android Runtime / JNI / ForegroundService 仪器测试。
     androidTestImplementation("androidx.test:runner:1.6.2")

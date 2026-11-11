@@ -22,6 +22,45 @@ class GatewayPrefsApiKeyTest {
     }
 
     @Test
+    fun r49LegacyKeyIsRotatedExactlyOnce() {
+        val legacy = "agate-" + "a".repeat(32)
+        val replacement = "agate-" + "b".repeat(48)
+        var generated = 0
+        val resolved = GatewayPrefs.resolveApiKey(legacy, 0) {
+            generated += 1
+            replacement
+        }
+        assertEquals(replacement, resolved.key)
+        assertTrue(resolved.rotated)
+        assertEquals(1, generated)
+        val next = GatewayPrefs.resolveApiKey(resolved.key, 2) {
+            error("gen2 key 不得再次轮换")
+        }
+        assertEquals(replacement, next.key)
+        assertTrue(!next.rotated)
+    }
+
+    @Test
+    fun r50CsprngKeyIsRetainedAndMarkedCurrent() {
+        val current = "agate-" + "0123456789abcdef".repeat(3)
+        val resolved = GatewayPrefs.resolveApiKey(current, 0) {
+            error("R50 强随机 Key 不得轮换")
+        }
+        assertEquals(current, resolved.key)
+        assertTrue(!resolved.rotated)
+    }
+
+    @Test
+    fun malformedOrMissingKeyIsRebuilt() {
+        for (stored in listOf(null, "", "agate-123", "agate-" + "z".repeat(32))) {
+            val resolved = GatewayPrefs.resolveApiKey(stored, 2) { "agate-" + "c".repeat(48) }
+            assertEquals(54, resolved.key.length)
+            // 缺失 Key 是「首次生成」而非轮换；已有畸形值被替换才是轮换。
+            assertEquals("畸形/缺失 Key 的轮换标记: $stored", stored != null, resolved.rotated)
+        }
+    }
+
+    @Test
     fun generatedKeysDoNotRepeat() {
         val keys = (1..64).map { GatewayPrefs.generateApiKey() }.toSet()
         assertEquals("64 次生成必须互不相同", 64, keys.size)

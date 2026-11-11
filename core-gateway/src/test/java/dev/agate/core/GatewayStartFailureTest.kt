@@ -39,6 +39,12 @@ class GatewayStartFailureTest {
     }
 
     @Test
+    fun stoppingIsTransitionGuidanceNotEnglishFailure() {
+        val guidance = GatewayStartFailure.guidance(null, null, 8787, "stopping")
+        assertEquals("上一个网关正在停止，请稍后重试。", guidance)
+    }
+
+    @Test
     fun kindConstantsMatchRustConflictKindAsStr() {
         assertEquals("occupied", GatewayStartFailure.KIND_OCCUPIED)
         assertEquals("reserved", GatewayStartFailure.KIND_RESERVED)

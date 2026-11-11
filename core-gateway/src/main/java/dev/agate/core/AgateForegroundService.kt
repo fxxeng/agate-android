@@ -53,8 +53,7 @@ class AgateForegroundService : Service() {
         /** 未确认态的复核节奏：10s × 3 轮；超限只保留服务，不退出前台（R49 §2.5）。 */
         private const val STOP_CONFIRM_RETRY_MS = 10_000L
         private const val STOP_CONFIRM_MAX_ATTEMPTS = 3
-        // R50/T5：WakeLock 必须有上限 —— Rust 侧 checkin 等待上限同为 15min。
-        private const val TICK_WAKE_LOCK_TIMEOUT_MS = 16 * 60 * 1000L
+        private const val CHECKIN_WATCHDOG_POLL_MS = 5_000L
         // 跨 Service 实例保存带代次的最新网关意图。布尔值只能表达当前状态，
         // 不能识别「旧销毁清理捕获后又发生新 STOP/START」这样的过期快照。
         private val gatewayIntent = GatewayIntentTracker()
@@ -74,6 +73,29 @@ class AgateForegroundService : Service() {
          * 通知本身就是「用户手动点 → 前台 Activity → 启动服务」的合法路径。
          */
         fun start(context: Context): Boolean = launch(context, ACTION_START)
+
+        /** 可见 Activity 的心跳只更新已有通知，不创建/启动服务。 */
+        fun refreshNotification(context: Context, text: String) {
+            val manager = context.getSystemService(NotificationManager::class.java)
+            val service = Intent(context, AgateForegroundService::class.java)
+            manager?.notify(
+                NOTIFICATION_ID,
+                Notification.Builder(context, CHANNEL_ID)
+                    .setSmallIcon(R.drawable.ic_agate_logo)
+                    .setContentTitle("Agate")
+                    .setContentText(text)
+                    .setOngoing(true)
+                    .setDeleteIntent(
+                        PendingIntent.getService(
+                            context,
+                            3,
+                            service.setAction(ACTION_STOP),
+                            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+                        ),
+                    )
+                    .build(),
+            )
+        }
 
         fun stop(context: Context) {
             context.startService(
@@ -169,6 +191,9 @@ class AgateForegroundService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_STOP -> {
+                // 先记录用户意图，再执行可能等待 listener 释放的停止流程。
+                // 即使进程在过渡窗口被杀，系统恢复也不得重新启动网关。
+                GatewayPrefs.setGatewayDesiredRunning(this, false)
                 gatewayIntent.requestStop()
                 // STOP 不必等排在 TICK 后面：先通过轻量 JNI 置合作式停止标志。
                 // 当前 Provider 请求自然结束后，Rust 会在账号边界阻止下一账号启动。
@@ -333,7 +358,7 @@ class AgateForegroundService : Service() {
             null
         }
         when {
-            result != null && result.ok -> {
+            result != null && result.ok && result.error == null -> {
                 if (result.bindLan) acquireKeepAwakeLocks()
                 updateNotification(
                     "网关运行中 · :${result.port}（内核 v${result.version}）" +
@@ -348,16 +373,13 @@ class AgateForegroundService : Service() {
             }
 
             else -> {
-                // R44 T1：文案走 GatewayStartFailure 单一出口（Rust 文案原样透传，
-                // 不再裸拼 "stage: error" —— stage/kind 的结构化信息留给界面卡片）。
-                val reason = result
-                    ?.let { GatewayStartFailure.guidance(it.stage, it.kind, it.port, it.error) }
-                    ?: "内核启动异常（.so 加载失败？）"
-                updateNotification("启动失败：$reason")
+                val reason = GatewayFailureEnvelope.display(result)
+                val stopping = result?.error == "stopping"
+                updateNotification(if (stopping) reason else "启动失败：$reason")
                 // 告警只在「用户以为网关起来了、其实没起」时发。这里是启动
                 // 路径的失败分支，正是那种情况：常驻通知会一直挂着「启动失败」，
                 // 但用户在别的页面时看不到，需要一条会响的通知。
-                if (GatewayPrefs.alertNotify(this)) {
+                if (!stopping && GatewayPrefs.alertNotify(this)) {
                     AgateNotify.serviceAlert(this, "网关启动失败", reason)
                 }
             }
@@ -369,17 +391,14 @@ class AgateForegroundService : Service() {
     private fun runTick(startId: Int) {
         // F3：WakeLock 覆盖整轮签到，必须等 Rust 任务真正结束后才释放。
         var tickLock: PowerManager.WakeLock? = null
+        var watchdog: Thread? = null
         try {
             val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
             val acquiredLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "agate:tick")
             tickLock = acquiredLock
             acquiredLock.setReferenceCounted(false)
-            // 签到可按账号串行执行，耗时可能超过 120s；无超时持锁，
-            // 由 finally 在 Rust 任务实际结束后释放，避免 JNI 等待超时后任务仍在跑。
-            // R50/T5：有上限地持锁。旧实现无超时，任意上游请求挂住就会
-            // 无限期持锁（耗电 + Play vitals stuck wake lock）；Rust 侧
-            // checkinRunAndWait 的等待上限同为 15min，这里留 1min 余量。
-            acquiredLock.acquire(TICK_WAKE_LOCK_TIMEOUT_MS)
+            // 每个账号最多静默 15min；完成账号后由 revision 续期。
+            acquiredLock.acquire(CheckinWakePolicy.IDLE_TIMEOUT_MS)
             // F2：tick 不再拉起网关 —— Core 态直调签到执行体，网关保持原状
             //（没在跑就继续没在跑；Core 未就绪时这里兜底初始化）
             val init = try {
@@ -396,9 +415,24 @@ class AgateForegroundService : Service() {
                 updateNotification("闹钟拉起 Core 失败：${init?.optString("error") ?: "异常"}")
                 return
             }
+            CheckinWakePolicy.reset()
+            watchdog = Thread({
+                try {
+                    while (!Thread.currentThread().isInterrupted) {
+                        CheckinWakePolicy.observe(RuntimeController.readStatus(), acquiredLock)
+                        Thread.sleep(CHECKIN_WATCHDOG_POLL_MS)
+                    }
+                } catch (_: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                } catch (t: Throwable) {
+                    // 不再静默等待固定总时长；明确要求用户更新匹配内核。
+                    android.util.Log.e("Agate", "签到进展看门狗停止", t)
+                }
+            }, "agate-checkin-watchdog")
+            watchdog.isDaemon = true
+            watchdog.start()
             val reply = try {
-                // 不使用 checkinRunNow(120s)：该接口超时只结束调用方等待，
-                // Rust Tokio 任务仍会继续。FGS 必须等任务真正结束再释放 WakeLock。
+                // FGS 等待任务真正结束，idle 超时也会返回剩余账号数。
                 Gateway.checkinRunAndWait()
             } catch (t: Throwable) {
                 android.util.Log.e("Agate", "checkinRunAndWait 异常", t)
@@ -414,6 +448,8 @@ class AgateForegroundService : Service() {
             // 放在收尾处而不是执行前 —— 通知要报的是结果，不是「开始了」。
             notifyCheckinResult(reply)
         } finally {
+            watchdog?.interrupt()
+            runCatching { watchdog?.join(1_000) }
             runCatching { tickLock?.takeIf { it.isHeld }?.release() }
             // runTick 已返回 JNI 或确认本轮未能启动；从目标集合移除，STOP
             // 重试线程即可退出。按 startId 删除，不影响 STOP 之后排队的新 TICK。
@@ -468,6 +504,22 @@ class AgateForegroundService : Service() {
         }
         val error = reply.optString("error").takeIf { it.isNotEmpty() }
         val result = reply.optJSONObject("result")
+        if (error == "idle_timeout") {
+            val remaining = result?.optInt("remaining", -1) ?: -1
+            if (alertNotify) {
+                val detail = if (remaining >= 0) {
+                    "仍有 $remaining 个未执行；请检查网络后重试。"
+                } else {
+                    "本轮尚未正常收尾，剩余账号数未知；请检查网络并查看日志。"
+                }
+                AgateNotify.serviceAlert(
+                    this,
+                    "签到长时间无进展",
+                    "已请求停止后续账号，$detail",
+                )
+            }
+            return
+        }
         when {
             result?.optBoolean("cancelled") == true -> if (resultNotify) AgateNotify.checkinResult(
                 this, "签到已停止",
@@ -672,7 +724,16 @@ class AgateForegroundService : Service() {
      * 避免 Native 初始化/锁竞争把前台服务启动时限耗在主线程上。真实状态由
      * runStart()/runTick() 完成后通过 updateNotification() 校准。
      */
-    private fun currentNotificationText(fallback: String): String = fallback
+    private fun currentNotificationText(fallback: String): String =
+        when (val gateway = RuntimeController.snapshot().gateway) {
+            is GatewayRuntimeState.Running ->
+                "网关运行中 · :${gateway.port}（内核 v${gateway.version}）" +
+                    if (gateway.bindLan) " · 局域网" else ""
+            GatewayRuntimeState.Stopping,
+            GatewayRuntimeState.StopTimeout,
+            -> "网关正在停止…"
+            else -> fallback
+        }
 
     private fun enterForeground(text: String) {
         val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager

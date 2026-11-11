@@ -7,6 +7,17 @@ import org.junit.Test
 
 class RuntimeSnapshotReducerTest {
     @Test
+    fun startingObservesStoppingWithoutBecomingFailure() {
+        val starting = RuntimeSnapshot(gateway = GatewayRuntimeState.Starting)
+        val next = RuntimeSnapshotReducer.reduce(
+            starting,
+            RuntimeStateEvent.GatewayStoppingObserved,
+            100L,
+        )
+        assertEquals(GatewayRuntimeState.Stopping, next.gateway)
+    }
+
+    @Test
     fun coreAndGatewayHaveIndependentLifecycles() {
         val coreReady = reduce(RuntimeSnapshot(), RuntimeStateEvent.CoreInitializationStarted, 10)
             .let { reduce(it, RuntimeStateEvent.CoreInitializationSucceeded, 20) }

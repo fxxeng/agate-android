@@ -23,7 +23,9 @@ use tokio_stream::wrappers::BroadcastStream;
 
 use crate::server::events;
 
-pub async fn handle() -> Sse<impl futures::Stream<Item = Result<Event, Infallible>>> {
+pub async fn handle(
+    axum::Extension(stop): axum::Extension<tokio::sync::watch::Receiver<bool>>,
+) -> Sse<impl futures::Stream<Item = Result<Event, Infallible>>> {
     // futures 0.3 的 filter_map 是异步签名（闭包须返回 Future<Output=Option<T>>），
     // 同步 match 用 async move 块包一层。
     let live = BroadcastStream::new(events::subscribe()).filter_map(|item| async move {
@@ -44,11 +46,54 @@ pub async fn handle() -> Sse<impl futures::Stream<Item = Result<Event, Infallibl
         })
         .to_string(),
     )));
+    // 广播/心跳都不能作为停机信号：STOP 到达后主动结束流，避免 hyper
+    // 因永不结束的 SSE 无法退出 accept 循环并释放 listener。
+    let events = hello.chain(live).take_until(async move {
+        let mut stop = stop;
+        let _ = stop.wait_for(|stopping| *stopping).await;
+    });
     // axum 0.8 的 KeepAlive 只有 text()（发 `: ping` 注释帧，不带事件名）；
     // okhttp-sse 对注释帧不回调 onEvent，正好是纯心跳语义。
-    Sse::new(hello.chain(live)).keep_alive(
+    Sse::new(events).keep_alive(
         KeepAlive::new()
             .interval(Duration::from_secs(15))
             .text("ping"),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::handle;
+    use axum::body::Body;
+    use axum::routing::get;
+    use futures::StreamExt;
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn stop_signal_ends_sse_stream() {
+        let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+        let app = axum::Router::new()
+            .route("/", get(handle))
+            .layer(axum::Extension(stop_rx));
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/")
+                    .body(Body::empty())
+                    .expect("build SSE request"),
+            )
+            .await
+            .expect("SSE route infallible");
+        let mut body = response.into_body().into_data_stream();
+        let first = tokio::time::timeout(std::time::Duration::from_millis(100), body.next())
+            .await
+            .expect("hello 应及时到达");
+        assert!(first.is_some(), "首帧必须是 hello");
+
+        stop_tx.send(true).expect("send stop");
+        let end = tokio::time::timeout(std::time::Duration::from_millis(100), body.next())
+            .await
+            .expect("停机后 SSE 必须立即结束，而不是继续等广播/心跳");
+        assert!(end.is_none(), "停止信号后不得再产生 SSE 帧");
+    }
 }

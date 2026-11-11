@@ -90,11 +90,28 @@ impl std::fmt::Display for WorkBuddyAuthError {
 }
 
 /// 鉴权/账号接口的响应包：`{ code, data, msg?, message? }`
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct ApiResponse {
     pub status: u16,
     pub ok: bool,
     pub payload: Option<Value>,
+    /// 有界观测信息，供日志与审计；不包含原始响应体或凭证。
+    pub duration_ms: u64,
+    pub response_bytes: u64,
+    pub egress: &'static str,
+}
+
+impl Default for ApiResponse {
+    fn default() -> Self {
+        Self {
+            status: 0,
+            ok: false,
+            payload: None,
+            duration_ms: 0,
+            response_bytes: 0,
+            egress: "direct",
+        }
+    }
 }
 
 /// 发一次上游请求并返回原始响应文本与状态码。
@@ -149,6 +166,7 @@ pub async fn send_raw(
     proxy: Option<&ResolvedProxy>,
     timeout_ms: Option<u64>,
 ) -> Result<ApiResponse, reqwest::Error> {
+    let started = std::time::Instant::now();
     let client = egress::client_for(proxy);
     let mut builder = match method {
         "POST" => client.post(url),
@@ -169,7 +187,9 @@ pub async fn send_raw(
     let response = builder.send().await?;
     let status = response.status().as_u16();
     let ok = response.status().is_success();
-    let text = response.text().await?;
+    let bytes = response.bytes().await?;
+    let response_bytes = bytes.len() as u64;
+    let text = String::from_utf8_lossy(&bytes).into_owned();
     let payload = if text.trim().is_empty() {
         None
     } else {
@@ -179,6 +199,9 @@ pub async fn send_raw(
         status,
         ok,
         payload,
+        duration_ms: started.elapsed().as_millis() as u64,
+        response_bytes,
+        egress: if proxy.is_some() { "proxy" } else { "direct" },
     })
 }
 

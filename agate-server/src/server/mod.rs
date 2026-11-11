@@ -18,11 +18,8 @@
 //! ```text
 //! server/
 //!   mod.rs          模块总装：ServerState 构造、start()/停机信号
-//!   account_bootstrap.rs 账号侧的启动期一次性迁移（auth.json 旧登录态 /
-//!                   优先级整队 / 三家旧项目数据导入）。**两处调用**：
-//!                   启动时（仅当没有待迁移旧文件）与用户点完「升级」之后 ——
-//!                   为什么不能无条件跑，见那个文件的模块头（有一段不可逆的
-//!                   破坏路径：抢在数据迁移之前占住 `accounts` 表）
+//!   account_bootstrap.rs 启动期账号收敛与升级流程编排（R51 起不导入旧登录态）；
+//!                   非登录数据的迁移仍由用户点完「升级」之后执行。
 //!   http.rs         axum Router 组装、CORS、API Key 检查、404 兜底
 //!   logging.rs      双通道日志（控制台 + 数据库的 logs 表）
 //!   config.rs       config.json 读写（全量保留未知字段）
@@ -34,8 +31,8 @@
 //!     mod.rs        连接与句柄（`Db::open` / `with` / `with_mut` / `file`）
 //!     schema.rs     全部建表 DDL 与 `PRAGMA user_version` 逐版本升级
 //!     migrate/      旧文件 → 库的一次性迁移（框架 + 每个迁移项一个文件）
-//!                   八项已全部接入（配置 / 桌面设置 / 账号 / 日志 /
-//!                   请求明细 / 请求聚合 / 调试报文 / 脱敏词表）；
+//!                   配置 / 桌面设置 / 日志 / 请求明细 / 请求聚合 / 调试报文 /
+//!                   脱敏词表已接入；R51 起不包含账号登录数据；
 //!                   **启动时只探测、不执行** —— 由用户在升级弹窗里点「升级」
 //!                   触发 `POST /api/upgrade/run`（见 api/upgrade_api.rs）。
 //!                   迁移成功后旧文件改名为 `*.migrated` 备份，**绝不删除**
@@ -150,23 +147,32 @@ pub mod logs_store;
 pub mod request_stats;
 mod static_files;
 
+use std::future::Future;
+use std::io;
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::task::{Context, Poll};
 
-use tokio::sync::oneshot;
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio::sync::{watch, Notify};
+use tokio_util::sync::{CancellationToken, WaitForCancellationFutureOwned};
 
-/// 监听任务全部退出的完成标记（R50/T1）。
+/// 收到停机信号后，给残余连接的自然收尾时间；超时后逐个唤醒 socket。
+const FORCE_CLOSE_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// 所有监听器已经退出的完成标记。
 ///
-/// 每个 `axum::serve` 任务持有一个 [`ServeDoneGuard`]：任务无论正常结束、
-/// 提前 return 还是 unwind，guard 都会在 drop 时递减计数；计数归零才置
-/// `done`。这是 `stop_gateway` 需要的权威信号 —— 端口探测只能说明「此刻
-/// 有人占着/没人占着」，说明不了「旧 listener 已经交出端口」。分端口形态
-/// 有两个 serve，必须两个都退出才算完成。
+/// guard 必须持有在 `TrackedListener` 内，而不是持有在整个 `axum::serve`
+/// future 内：hyper 在收到 graceful-shutdown 后会先放弃 listener，再等待
+/// 已接收连接自然结束。这里的 `done` 只承诺端口已归还；SSE 立即结束和
+/// 残余连接的有界排空分别由 stop watch 与 force-close token 负责。
 pub struct ServeDone {
     remaining: AtomicUsize,
     done: AtomicBool,
+    released: Notify,
 }
 
 impl ServeDone {
@@ -174,18 +180,39 @@ impl ServeDone {
         Self {
             remaining: AtomicUsize::new(tasks),
             done: AtomicBool::new(false),
+            released: Notify::new(),
         }
     }
 
     fn finish_one(&self) {
         if self.remaining.fetch_sub(1, Ordering::SeqCst) == 1 {
             self.done.store(true, Ordering::SeqCst);
+            self.released.notify_waiters();
         }
     }
 
-    /// 所有监听任务都已退出（listener 已 drop，端口已归还）。
+    /// 所有监听器都已 drop，端口已归还；不表示连接已排空。
     pub fn is_done(&self) -> bool {
         self.done.load(Ordering::SeqCst)
+    }
+
+    /// 等待监听器释放。使用 notified future 的轮询形式，避免注册/置位
+    /// 竞态丢失唤醒；轮询前会重新检查 done，已完成时立即返回。
+    pub async fn wait(&self) {
+        if self.is_done() {
+            return;
+        }
+        let notified = self.released.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        loop {
+            if self.is_done() {
+                return;
+            }
+            notified.as_mut().await;
+            notified.set(self.released.notified());
+            notified.as_mut().enable();
+        }
     }
 }
 
@@ -197,10 +224,127 @@ impl Drop for ServeDoneGuard {
     }
 }
 
-/// [`start_tracked`] 的返回：停机信号 + listener 全部退出标记。
+/// listener 存活期与端口释放记账绑定，连接不再延长 released 的含义。
+#[derive(Clone, Debug)]
+struct ClientAddr(#[allow(dead_code)] SocketAddr);
+
+impl axum::extract::connect_info::Connected<axum::serve::IncomingStream<'_, TrackedListener>>
+    for ClientAddr
+{
+    fn connect_info(stream: axum::serve::IncomingStream<'_, TrackedListener>) -> Self {
+        Self(*stream.remote_addr())
+    }
+}
+
+struct TrackedListener {
+    listener: tokio::net::TcpListener,
+    token: CancellationToken,
+    _released_on_drop: ServeDoneGuard,
+}
+
+impl TrackedListener {
+    fn new(
+        listener: tokio::net::TcpListener,
+        released_on_drop: ServeDoneGuard,
+        token: CancellationToken,
+    ) -> Self {
+        Self {
+            listener,
+            token,
+            _released_on_drop: released_on_drop,
+        }
+    }
+}
+
+impl axum::serve::Listener for TrackedListener {
+    type Io = ForceCloseIo<tokio::net::TcpStream>;
+    type Addr = SocketAddr;
+
+    async fn accept(&mut self) -> (Self::Io, Self::Addr) {
+        let (stream, addr) =
+            <tokio::net::TcpListener as axum::serve::Listener>::accept(&mut self.listener).await;
+        (ForceCloseIo::new(stream, self.token.clone()), addr)
+    }
+
+    fn local_addr(&self) -> std::io::Result<Self::Addr> {
+        self.listener.local_addr()
+    }
+}
+
+/// 给已接收的 socket 增加独立取消通道。
+///
+/// graceful shutdown 只停止接新连接，不保证旧 hyper-io 会持续 poll；令牌
+/// 的 owned wait future 因此保存在了 IO 对象本身。取消后所有 I/O 返回
+/// ConnectionAborted，即使对端不发数据也能结束阻塞中的读写。
+struct ForceCloseIo<T> {
+    inner: T,
+    cancelled: Pin<Box<WaitForCancellationFutureOwned>>,
+}
+
+impl<T> ForceCloseIo<T> {
+    fn new(inner: T, token: CancellationToken) -> Self {
+        Self {
+            inner,
+            cancelled: Box::pin(token.cancelled_owned()),
+        }
+    }
+
+    fn poll_cancelled(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        match self.cancelled.as_mut().poll(cx) {
+            Poll::Ready(()) => Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::ConnectionAborted,
+                "gateway listener is stopping",
+            ))),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+impl<T: AsyncRead + Unpin> AsyncRead for ForceCloseIo<T> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buffer: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        if let Poll::Ready(result) = self.poll_cancelled(cx) {
+            return Poll::Ready(result);
+        }
+        Pin::new(&mut self.inner).poll_read(cx, buffer)
+    }
+}
+
+impl<T: AsyncWrite + Unpin> AsyncWrite for ForceCloseIo<T> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buffer: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        if let Poll::Ready(result) = self.poll_cancelled(cx) {
+            return Poll::Ready(result.map(|()| 0));
+        }
+        Pin::new(&mut self.inner).poll_write(cx, buffer)
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        if let Poll::Ready(result) = self.poll_cancelled(cx) {
+            return Poll::Ready(result);
+        }
+        Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        if let Poll::Ready(result) = self.poll_cancelled(cx) {
+            return Poll::Ready(result);
+        }
+        Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+}
+
+/// [`start_tracked`] 的返回：优雅停止 + listener 全部退出标记。
 pub struct StartHandles {
-    pub shutdown: oneshot::Sender<()>,
+    pub shutdown: watch::Sender<bool>,
     pub done: Arc<ServeDone>,
+    pub force_close: CancellationToken,
 }
 
 use crate::data_dir_lock::{self, DataDirLock};
@@ -1110,7 +1254,7 @@ fn available_account_count(state: &ServerState) -> usize {
 /// bind 失败的原因决定了界面该给什么出路：被别的进程占用可以「结束进程」，
 /// 落在系统保留段里则只能「更换端口」。分类判据（`std::io::ErrorKind`）
 /// 只有在这里才拿得到，所以在这里分好类往上带，别让界面去猜错误文案。
-pub fn start(state: &ServerState) -> Result<oneshot::Sender<()>, PortConflict> {
+pub fn start(state: &ServerState) -> Result<watch::Sender<bool>, PortConflict> {
     start_tracked(state).map(|handles| handles.shutdown)
 }
 
@@ -1134,6 +1278,9 @@ pub fn start_tracked(state: &ServerState) -> Result<StartHandles, PortConflict> 
         None => http::router(state.clone()),
     };
     let panel_router = panel_port.map(|_| http::panel_router(state.clone()));
+    let (stop_tx, stop_rx) = watch::channel(false);
+    let main_router = main_router.layer(axum::Extension(stop_rx.clone()));
+    let panel_router = panel_router.map(|router| router.layer(axum::Extension(stop_rx.clone())));
 
     let addr = SocketAddr::new(state.host, state.port);
     let listener = std::net::TcpListener::bind(addr)
@@ -1167,17 +1314,16 @@ pub fn start_tracked(state: &ServerState) -> Result<StartHandles, PortConflict> 
         None => None,
     };
 
-    // 完成标记在 spawn 之前创建：serve 任务的 drop guard 共享同一个 Arc。
+    // guard 先创建再移入 listener，避免 from_std 失败后漏记 listener 释放。
     let done = Arc::new(ServeDone::new(1 + usize::from(panel_listener.is_some())));
-    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
-    // 停机广播：oneshot 只有一个 receiver，而分端口形态有两个 serve 都要
-    // 收到停机信号。协调任务把 oneshot 信号（send 或发送端被 drop）转成
-    // watch 置位，两个 serve 各拿一份 receiver；watch 发送端 drop 也会让
-    // `wait_for` 返回，停机语义与单 oneshot 一致。
-    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+    let force_close = CancellationToken::new();
+    // 常驻等待 stop，因此不会因 sender 被 drop 而误触发强制关闭。
+    let force_close_after_grace = force_close.clone();
+    let mut stop_for_force_close = stop_rx.clone();
     crate::spawn_task(async move {
-        let _ = shutdown_rx.await;
-        let _ = stop_tx.send(true);
+        let _ = stop_for_force_close.wait_for(|stop| *stop).await;
+        tokio::time::sleep(FORCE_CLOSE_GRACE).await;
+        force_close_after_grace.cancel();
     });
 
     // 停机收尾要用的统计句柄：先克隆出来再移进任务（`state` 是借用，不能
@@ -1185,10 +1331,8 @@ pub fn start_tracked(state: &ServerState) -> Result<StartHandles, PortConflict> 
     let request_stats = state.request_stats();
     let stop_main = stop_rx.clone();
     let done_main = done.clone();
+    let force_close_main = force_close.clone();
     crate::spawn_task(async move {
-        // R50/T1：任务无论从哪条路径退出（含 from_std 失败提前 return），
-        // guard 都会记账；只有最后一个 serve 退出时 done 才置位。
-        let _serve_done = ServeDoneGuard(done_main);
         // 运行时上下文在这里必然成立，from_std 不会 panic
         let listener = match tokio::net::TcpListener::from_std(listener) {
             Ok(listener) => listener,
@@ -1197,15 +1341,13 @@ pub fn start_tracked(state: &ServerState) -> Result<StartHandles, PortConflict> 
                 return;
             }
         };
+        let listener = TrackedListener::new(listener, ServeDoneGuard(done_main), force_close_main);
         // into_make_service_with_connect_info：把客户端地址带进 handler
         // （面板登录的失败锁定按来源 IP 计；无 ConnectInfo 的提取会 panic，
         //  所以 serve 的形态必须与之一致）
         let mut stop = stop_main;
-        let server = axum::serve(
-            listener,
-            main_router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-        )
-        .with_graceful_shutdown(async move {
+        let make_service = main_router.into_make_service_with_connect_info::<ClientAddr>();
+        let server = axum::serve(listener, make_service).with_graceful_shutdown(async move {
             // 收到停机广播（或广播端被丢弃）即结束 accept 循环，
             // 已在处理中的请求会跑完再退出
             let _ = stop.wait_for(|stop| *stop).await;
@@ -1230,8 +1372,8 @@ pub fn start_tracked(state: &ServerState) -> Result<StartHandles, PortConflict> 
         // panel_port 与 panel_router 由同一处赋值，成对不变量（R46/T1 白名单）
         let router = panel_router.expect("panel_port 与 panel_router 必须成对");
         let done_panel = done.clone();
+        let force_close_panel = force_close.clone();
         crate::spawn_task(async move {
-            let _serve_done = ServeDoneGuard(done_panel);
             let listener = match tokio::net::TcpListener::from_std(listener) {
                 Ok(listener) => listener,
                 Err(error) => {
@@ -1239,9 +1381,11 @@ pub fn start_tracked(state: &ServerState) -> Result<StartHandles, PortConflict> 
                     return;
                 }
             };
+            let listener =
+                TrackedListener::new(listener, ServeDoneGuard(done_panel), force_close_panel);
             let server = axum::serve(
                 listener,
-                router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+                router.into_make_service_with_connect_info::<ClientAddr>(),
             )
             .with_graceful_shutdown(async move {
                 let mut stop = stop_rx;
@@ -1254,8 +1398,9 @@ pub fn start_tracked(state: &ServerState) -> Result<StartHandles, PortConflict> 
     }
 
     Ok(StartHandles {
-        shutdown: shutdown_tx,
+        shutdown: stop_tx,
         done,
+        force_close,
     })
 }
 
@@ -1346,7 +1491,7 @@ mod gateway_start_order_tests {
 
 #[cfg(test)]
 mod serve_done_tests {
-    use super::{ServeDone, ServeDoneGuard};
+    use super::{ForceCloseIo, ServeDone, ServeDoneGuard, TrackedListener};
     use std::sync::Arc;
 
     /// 单个 serve 退出不能宣布完成：分端口形态必须等第二个也退出。
@@ -1371,5 +1516,95 @@ mod serve_done_tests {
             // 模拟 serve 任务在建立监听前提前返回
         }
         assert!(done.is_done());
+    }
+
+    #[tokio::test]
+    async fn force_close_interrupts_pending_read() {
+        use tokio::io::AsyncReadExt;
+        use tokio_util::sync::CancellationToken;
+
+        let token = CancellationToken::new();
+        let (_client, server) = tokio::io::duplex(16);
+        let mut io = ForceCloseIo::new(server, token.clone());
+        let read = tokio::spawn(async move {
+            let mut buffer = [0u8; 1];
+            io.read(&mut buffer).await
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        token.cancel();
+
+        let result = tokio::time::timeout(std::time::Duration::from_millis(200), read)
+            .await
+            .expect("force-close 必须唤醒 pending read")
+            .expect("read task 不得 panic");
+        assert_eq!(
+            result.expect_err("连接应被强制中止").kind(),
+            std::io::ErrorKind::ConnectionAborted
+        );
+    }
+
+    #[tokio::test]
+    async fn listener_release_does_not_wait_for_live_response() {
+        use axum::body::Body;
+        use axum::routing::get;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio_util::sync::CancellationToken;
+
+        let std_listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind test listener");
+        let addr = std_listener.local_addr().expect("test listener addr");
+        std_listener
+            .set_nonblocking(true)
+            .expect("nonblocking test listener");
+        let listener = tokio::net::TcpListener::from_std(std_listener).expect("tokio listener");
+        let done = Arc::new(ServeDone::new(1));
+        let token = CancellationToken::new();
+        let tracked = TrackedListener::new(listener, ServeDoneGuard(done.clone()), token.clone());
+        let (stop_tx, mut stop_rx) = tokio::sync::watch::channel(false);
+        let app = axum::Router::new().route(
+            "/",
+            get(|| async {
+                Body::from_stream(futures::stream::repeat(Ok::<_, std::convert::Infallible>(
+                    "data: pending\n\n",
+                )))
+            }),
+        );
+        let serve = tokio::spawn(async move {
+            axum::serve(tracked, app.into_make_service())
+                .with_graceful_shutdown(async move {
+                    let _ = stop_rx.wait_for(|stop| *stop).await;
+                })
+                .await
+        });
+
+        let mut client = tokio::net::TcpStream::connect(addr)
+            .await
+            .expect("connect test server");
+        client
+            .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .await
+            .expect("write request");
+        let mut response = [0u8; 128];
+        let read = client
+            .read(&mut response)
+            .await
+            .expect("read response headers");
+        assert!(read > 0, "长响应必须已经开始");
+
+        stop_tx.send(true).expect("send graceful stop");
+        tokio::time::timeout(std::time::Duration::from_millis(200), done.wait())
+            .await
+            .expect("listener 释放不得等待长响应结束");
+        let rebound = std::net::TcpListener::bind(addr);
+        assert!(
+            rebound.is_ok(),
+            "listener 释放后端口必须可立即重绑: {rebound:?}"
+        );
+
+        token.cancel();
+        tokio::time::timeout(std::time::Duration::from_millis(300), serve)
+            .await
+            .expect("force-close 后排空必须有界")
+            .expect("serve task 不得 panic")
+            .expect("serve 应正常收尾");
     }
 }

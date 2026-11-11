@@ -14,6 +14,8 @@ object GatewayPrefs {
 
     private const val KEY_BIND_LAN = "bind_lan"
     private const val KEY_API_KEY = "api_key"
+    private const val KEY_API_KEY_GEN = "api_key_gen"
+    private const val KEY_API_KEY_ROTATION_NOTICE = "api_key_rotation_notice"
     /** 用户最后一次明确意图：网关是否应当运行（R50/T4，跨进程死亡保留）。 */
     private const val KEY_GATEWAY_DESIRED = "gateway_desired_running"
     private const val KEY_BOOT_AUTO_START = "boot_auto_start"
@@ -46,24 +48,61 @@ object GatewayPrefs {
      * 「访问密钥」页供局域网设备配置。仅存 SharedPreferences（M3/M5 的
      * KeyStore 加密为增强项，见方案 §3.7）。
      *
-     * R50/T3：随机源必须是 CSPRNG。旧实现用 `Collection.random()`（JVM 上
-     * 落 ThreadLocalRandom，种子来自时间），而 `apiKey` 是备份导出/导入
-     * （/api/backup）等管理接口的唯一凭证；把可预测的 key 暴露在明文 LAN
-     * HTTP 上，等于把备份能力交给同网段攻击者。
+     * R50/T3 使用 CSPRNG；R52 通过代际标记区分 R49 的弱随机 32hex 与
+     * R50 的 48hex。前者必须轮换，后者只补标记，避免误伤已配对设备。
      */
     fun apiKey(ctx: Context): String {
-        prefs(ctx).getString(KEY_API_KEY, null)?.let { return it }
-        val key = generateApiKey()
-        prefs(ctx).edit().putString(KEY_API_KEY, key).apply()
-        return key
+        val prefs = prefs(ctx)
+        val generation = prefs.getInt(KEY_API_KEY_GEN, 0)
+        val stored = prefs.getString(KEY_API_KEY, null)
+        val resolved = resolveApiKey(stored, generation, ::generateApiKey)
+        if (generation != 2 || stored != resolved.key || resolved.rotated) {
+            val saved = prefs.edit()
+                .putString(KEY_API_KEY, resolved.key)
+                .putInt(KEY_API_KEY_GEN, 2)
+                .putBoolean(KEY_API_KEY_ROTATION_NOTICE, resolved.rotated && stored != null)
+                .commit()
+            check(saved) { "访问密钥升级无法持久化" }
+        }
+        return resolved.key
+    }
+
+    /** 旧 Key 只在本代升级边界处理一次，日常读取不重复生成。 */
+    internal data class ApiKeyResolution(val key: String, val rotated: Boolean)
+
+    internal fun resolveApiKey(
+        stored: String?,
+        generation: Int,
+        generate: () -> String,
+    ): ApiKeyResolution {
+        val body = stored?.removePrefix("agate-") ?: ""
+        val current = stored?.startsWith("agate-") == true &&
+            body.length == 48 && body.all { it in "0123456789abcdef" }
+        if (generation >= 2 && current) return ApiKeyResolution(stored!!, false)
+        val legacy = stored?.startsWith("agate-") == true &&
+            body.length == 32 && body.all { it in "0123456789abcdef" }
+        return if (legacy) {
+            ApiKeyResolution(generate(), true)
+        } else if (current) {
+            // R50 已使用 SecureRandom，但没有代际标记：保留凭证，不打扰配对设备。
+            ApiKeyResolution(stored!!, false)
+        } else {
+            ApiKeyResolution(generate(), stored != null)
+        }
+    }
+
+    /** 一次性提醒已由后台线程安全地消费；不阻塞 Application 主线程。 */
+    fun consumeApiKeyRotationNotice(ctx: Context): Boolean {
+        val prefs = prefs(ctx)
+        if (!prefs.getBoolean(KEY_API_KEY_ROTATION_NOTICE, false)) return false
+        return prefs.edit().putBoolean(KEY_API_KEY_ROTATION_NOTICE, false).commit()
     }
 
     /**
      * 生成 24 字节 CSPRNG Key（`agate-` + 48 位 hex）。
      *
      * 拆成 internal 纯函数供 JVM 单测锁格式/唯一性；生产路径不注入随机源。
-     * 旧安装的 Key 保持原样不强制轮换（轮换会让已配对的局域网设备瞬间失效），
-     * 新装与重置后走本函数。
+     * R49 弱随机 Key 由 resolveApiKey 轮换；R50 强随机 Key 保留。
      */
     internal fun generateApiKey(
         random: java.security.SecureRandom = java.security.SecureRandom(),
@@ -77,7 +116,9 @@ object GatewayPrefs {
         prefs(ctx).getBoolean(KEY_GATEWAY_DESIRED, false)
 
     fun setGatewayDesiredRunning(ctx: Context, value: Boolean) {
-        prefs(ctx).edit().putBoolean(KEY_GATEWAY_DESIRED, value).apply()
+        check(prefs(ctx).edit().putBoolean(KEY_GATEWAY_DESIRED, value).commit()) {
+            "网关运行意图无法持久化"
+        }
     }
 
     fun bindLan(ctx: Context): Boolean =

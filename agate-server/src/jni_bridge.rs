@@ -39,7 +39,7 @@ use jni::objects::{GlobalRef, JClass, JObject, JString, JValue};
 use jni::sys::{jboolean, jint, jlong, jstring};
 use jni::{JNIEnv, JavaVM};
 use serde_json::{json, Value};
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, watch};
 use tower::ServiceExt;
 
 use crate::server::{self, ServerState};
@@ -51,7 +51,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// 随 `status_json()` 信封下发（`bridge` 字段）；Kotlin 读到 0 = 旧内核（未
 /// 携带该字段的历史版本），按 R44 `kind` 的 null 兼容先例降级。字段变更必须
 /// 同步 bump、改 Gateway.kt 两侧并更新 docs/JNI控制面契约.md。
-pub const BRIDGE_CONTRACT_VERSION: u32 = 3;
+pub const BRIDGE_CONTRACT_VERSION: u32 = 4;
 
 /// logcat 优先级（android/log.h 的数值）
 const LOG_INFO: i32 = 4;
@@ -65,7 +65,7 @@ extern "C" {
 
 struct Running {
     /// 只在 Running→Stopping 迁移时取走；None = 停机信号已发出。
-    shutdown_tx: Option<oneshot::Sender<()>>,
+    shutdown_tx: Option<watch::Sender<bool>>,
     port: u16,
     bind_lan: bool,
     started_at: Instant,
@@ -97,6 +97,15 @@ static RUNNING: Mutex<GatewayPhase> = Mutex::new(GatewayPhase::Stopped);
 
 /// 后台 serve 已退出时把残留相位归位 Stopped（异常退出 / 停止完成）。
 /// 返回是否发生了归位。
+fn spawn_listener_reaper(done: Arc<server::ServeDone>) {
+    crate::spawn_task(async move {
+        done.wait().await;
+        if let Ok(mut guard) = RUNNING.lock() {
+            reap_finished_phase(&mut guard);
+        }
+    });
+}
+
 fn reap_finished_phase(guard: &mut GatewayPhase) -> bool {
     let (finished, unexpected) = match guard {
         GatewayPhase::Running(r) => (r.done.is_done(), true),
@@ -439,28 +448,68 @@ fn checkin_run_now(timeout_ms: u64) -> Value {
 ///
 /// Android FGS 使用此入口持有 WakeLock 直到执行完成；不能用带超时的
 /// `checkin_run_now`，因为超时只停止 JNI 调用方等待，不会取消 Tokio 任务。
-/// `checkin_run_and_wait` 的等待上限。Kotlin FGS 的 WakeLock 用同一个
-/// 15min 预算（另加 1min 余量）；超时只结束等待，不杀在途任务（R50/T5）。
-const CHECKIN_WAIT_LIMIT: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+/// 连续无账号进展的等待上限，不是整轮签到的总预算。
+const CHECKIN_IDLE_LIMIT: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+/// idle 超时后仍允许当前 Provider 自然收尾，不硬中断多阶段领取。
+const CHECKIN_CANCEL_SETTLE_LIMIT: std::time::Duration = std::time::Duration::from_secs(60);
 
-/// 等一轮签到的结果信封。单独抽出来便于 JVM 之外的单测锁超时语义。
+/// 等一轮签到的结果信封。每轮循环都重新读取最后进展，长批次可持续运行。
 fn wait_for_checkin_result(
     rx: std::sync::mpsc::Receiver<Option<Value>>,
-    timeout: std::time::Duration,
+    progress: &crate::server::core::auto_checkin::CheckinProgress,
     cancel_current: &dyn Fn(),
 ) -> Value {
-    match rx.recv_timeout(timeout) {
-        Ok(Some(result)) => json!({ "ok": true, "done": true, "result": result }),
-        // None = 已有一轮在执行，本次没有启动新的签到。
-        Ok(None) => json!({ "ok": false, "done": true, "error": "busy" }),
-        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-            // 不杀任务：Provider 请求不能被硬中断；请求在当前账号边界停止，
-            // 避免继续跑后续账号（返回 done=false，前端不得当成已完成）。
-            cancel_current();
-            json!({ "ok": false, "done": false, "error": "timeout" })
-        }
-        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-            json!({ "ok": false, "done": true, "error": "checkin task ended without result" })
+    wait_for_checkin_result_with_limits(
+        rx,
+        progress,
+        CHECKIN_IDLE_LIMIT,
+        CHECKIN_CANCEL_SETTLE_LIMIT,
+        cancel_current,
+    )
+}
+
+fn wait_for_checkin_result_with_limits(
+    rx: std::sync::mpsc::Receiver<Option<Value>>,
+    progress: &crate::server::core::auto_checkin::CheckinProgress,
+    idle_limit: std::time::Duration,
+    settle_limit: std::time::Duration,
+    cancel_current: &dyn Fn(),
+) -> Value {
+    loop {
+        let wait = idle_limit.saturating_sub(progress.idle_elapsed());
+        match rx.recv_timeout(wait) {
+            Ok(Some(result)) => {
+                return json!({ "ok": true, "done": true, "result": result });
+            }
+            // None = 已有一轮在执行，本次没有启动新的签到。
+            Ok(None) => return json!({ "ok": false, "done": true, "error": "busy" }),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                if progress.idle_elapsed() < idle_limit {
+                    continue;
+                }
+                cancel_current();
+                match rx.recv_timeout(settle_limit) {
+                    Ok(Some(result)) => {
+                        return json!({
+                            "ok": false,
+                            "done": true,
+                            "error": "idle_timeout",
+                            "result": result,
+                        });
+                    }
+                    Ok(None) => return json!({ "ok": false, "done": true, "error": "busy" }),
+                    Err(_) => {
+                        return json!({ "ok": false, "done": false, "error": "idle_timeout" });
+                    }
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                return json!({
+                    "ok": false,
+                    "done": true,
+                    "error": "checkin task ended without result",
+                });
+            }
         }
     }
 }
@@ -488,7 +537,8 @@ fn checkin_run_and_wait() -> Value {
         }
         let _ = tx.send(result);
     });
-    wait_for_checkin_result(rx, CHECKIN_WAIT_LIMIT, &|| {
+    let progress = checkin.progress();
+    wait_for_checkin_result(rx, &progress, &|| {
         checkin.request_cancel_current();
     })
 }
@@ -886,15 +936,24 @@ fn start_gateway(data_dir: &str, port: u16, bind_lan: bool, api_key: Option<&str
                 });
             }
             GatewayPhase::Stopping(s) => {
-                // 上一个 stop 尚未收尾：此时 bind 必然撞旧 listener，明确拒绝。
-                return json!({
-                    "ok": false,
-                    "error": "stopping",
-                    "port": s.port,
-                    "bind_lan": s.bind_lan,
-                    "stopping": true,
-                    "version": VERSION
-                });
+                // 给旧 listener 有界收尾时间。等待时不持 RUNNING 锁，主动
+                // reaper 与 status 都能推进/读取真实状态；绝不提前 bind。
+                let (done, port, previous_lan) = (s.done.clone(), s.port, s.bind_lan);
+                let deadline = Instant::now() + std::time::Duration::from_secs(5);
+                while !done.is_done() && Instant::now() < deadline {
+                    std::thread::sleep(std::time::Duration::from_millis(25));
+                }
+                if !done.is_done() {
+                    return json!({
+                        "ok": false,
+                        "error": "stopping",
+                        "port": port,
+                        "bind_lan": previous_lan,
+                        "stopping": true,
+                        "version": VERSION
+                    });
+                }
+                reap_finished_phase(&mut guard);
             }
             GatewayPhase::Stopped => {}
         }
@@ -979,7 +1038,7 @@ fn start_gateway(data_dir: &str, port: u16, bind_lan: bool, api_key: Option<&str
         }
     };
     let Ok(mut guard) = RUNNING.lock() else {
-        let _ = handles.shutdown.send(());
+        let _ = handles.shutdown.send(true);
         crate::server::config::parse::clear_android_api_key_override();
         return json!({ "ok": false, "error": "state poisoned" });
     };
@@ -990,6 +1049,7 @@ fn start_gateway(data_dir: &str, port: u16, bind_lan: bool, api_key: Option<&str
             if bind_lan { "0.0.0.0" } else { "127.0.0.1" }
         ),
     );
+    spawn_listener_reaper(handles.done.clone());
     *guard = GatewayPhase::Running(Running {
         shutdown_tx: Some(handles.shutdown),
         port,
@@ -1027,9 +1087,9 @@ fn stop_gateway() -> Value {
             }
             GatewayPhase::Running(mut r) => {
                 if let Some(tx) = r.shutdown_tx.take() {
-                    // 优雅停机：start() 内部的协调任务会把它转成 watch 广播，
-                    // 在途请求有 graceful shutdown 收尾（见 server::start）。
-                    let _ = tx.send(());
+                    // watch 广播先结束 accept 与 SSE；listener 释放后 done 置位，
+                    // 十秒未自然排空的残余 socket 由独立 force-close token 收尾。
+                    let _ = tx.send(true);
                 }
                 let done = r.done.clone();
                 *guard = GatewayPhase::Stopping(Stopping {
@@ -1118,6 +1178,14 @@ fn status_json() -> Value {
     // running/port/bind_lan/uptime_sec 字段向后兼容（M3 的 UI 读这几个）；
     // core/scheduler 是 B 包新增的两级状态。
     let scheduler = core.as_ref().map(|c| c.0).unwrap_or(false);
+    let checkin = CORE
+        .lock()
+        .ok()
+        .and_then(|guard| guard.as_ref().map(|core| core.state.auto_checkin().clone()));
+    let checkin_revision = checkin
+        .as_ref()
+        .map(|service| service.progress().revision());
+    let checkin_running = checkin.as_ref().is_some_and(|service| service.is_running());
     match running {
         Some((port, bind_lan, uptime, stopping)) => json!({
             "ok": true,
@@ -1126,6 +1194,8 @@ fn status_json() -> Value {
             "core": true,
             "scheduler": scheduler,
             "bridge": BRIDGE_CONTRACT_VERSION,
+            "checkin_revision": checkin_revision,
+            "checkin_running": checkin_running,
             "port": port,
             "bind_lan": bind_lan,
             "uptime_sec": uptime,
@@ -1138,6 +1208,8 @@ fn status_json() -> Value {
             "core": core.is_some(),
             "scheduler": scheduler,
             "bridge": BRIDGE_CONTRACT_VERSION,
+            "checkin_revision": checkin_revision,
+            "checkin_running": checkin_running,
             "core_uptime_sec": core.as_ref().map(|c| c.1).unwrap_or(0),
             "version": VERSION,
         }),
@@ -1154,7 +1226,14 @@ fn trigger_task(task: &str) -> Value {
         reap_finished_phase(&mut guard);
         match &*guard {
             GatewayPhase::Running(r) => r.port,
-            _ => return json!({"ok": false, "error": "not_running"}),
+            // Android 的签到入口是 FGS checkinRunAndWait；旧 triggerTask
+            // 在 Stopping 窗口不得用「已停止」的假状态拉起回环 HTTP。
+            GatewayPhase::Stopping(_) => {
+                return json!({"ok": false, "error": "stopping"});
+            }
+            GatewayPhase::Stopped => {
+                return json!({"ok": false, "error": "not_running"});
+            }
         }
     };
     let route = match task {
@@ -1384,7 +1463,12 @@ fn checkin_request_stop() -> Value {
         core.state.auto_checkin().clone()
     };
     let requested = checkin.request_cancel_current();
-    json!({ "ok": true, "requested": requested, "running": checkin.is_running() })
+    json!({
+        "ok": true,
+        "requested": requested,
+        "running": checkin.is_running(),
+        "revision": checkin.progress().revision(),
+    })
 }
 
 /// FGS 专用：等待本轮签到任务真正结束后再返回，供 WakeLock 生命周期使用。
@@ -1454,6 +1538,8 @@ mod tests {
         assert_eq!(status["running"], json!(false));
         assert_eq!(status["stopping"], json!(false));
         assert_eq!(status["bridge"], json!(BRIDGE_CONTRACT_VERSION));
+        assert!(status.get("checkin_revision").is_some());
+        assert!(status.get("checkin_running").is_some());
     }
 
     /// R47/T2.3：目录一致（规范化后）→ 幂等 Ok(false)。
@@ -1462,12 +1548,49 @@ mod tests {
     fn checkin_wait_times_out_and_requests_cancel() {
         let (_tx, rx) = std::sync::mpsc::channel::<Option<Value>>();
         let cancelled = std::sync::atomic::AtomicBool::new(false);
-        let reply = wait_for_checkin_result(rx, std::time::Duration::from_millis(5), &|| {
-            cancelled.store(true, std::sync::atomic::Ordering::SeqCst);
-        });
-        assert_eq!(reply["error"], json!("timeout"));
+        let progress = crate::server::core::auto_checkin::CheckinProgress::default();
+        progress.begin_round();
+        let reply = wait_for_checkin_result_with_limits(
+            rx,
+            &progress,
+            std::time::Duration::from_millis(5),
+            std::time::Duration::from_millis(5),
+            &|| cancelled.store(true, std::sync::atomic::Ordering::SeqCst),
+        );
+        assert_eq!(reply["error"], json!("idle_timeout"));
         assert_eq!(reply["done"], json!(false));
         assert!(cancelled.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[test]
+    fn checkin_account_progress_renews_wait_deadline() {
+        let (tx, rx) = std::sync::mpsc::channel::<Option<Value>>();
+        let progress = crate::server::core::auto_checkin::CheckinProgress::default();
+        let sender = std::thread::spawn({
+            let progress = progress.clone();
+            move || {
+                for revision in 1..=3 {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                    progress.advance();
+                    assert_eq!(progress.revision(), revision);
+                }
+                let _ = tx.send(Some(json!({ "total": 3, "remaining": 0 })));
+            }
+        });
+        progress.begin_round();
+        let reply = wait_for_checkin_result_with_limits(
+            rx,
+            &progress,
+            std::time::Duration::from_millis(50),
+            std::time::Duration::from_millis(5),
+            &|| panic!("持续推进账号不得触发 idle cancel"),
+        );
+        sender.join().expect("progress sender");
+        assert!(reply["done"].as_bool() == Some(true));
+        assert_eq!(reply["result"]["total"], json!(3));
+        // 使用 50ms 空闲窗口：账号每 20ms 推进，总轮次超过单次窗口。
+        // wait 每轮读取真实 Instant，不按整轮截断。
+        assert!(progress.revision() >= 3);
     }
 
     #[test]

@@ -697,7 +697,7 @@ pub async fn run_checkin(
     source: &str,
 ) -> Result<Value, CheckinError> {
     run_checkin_cancellable(
-        store, billing, providers, id, reason, source, None, None, false,
+        store, billing, providers, id, reason, source, None, None, false, None,
     )
     .await
 }
@@ -714,6 +714,7 @@ pub async fn run_checkin_cancellable(
     cancel: Option<&std::sync::atomic::AtomicBool>,
     schedule_id: Option<&str>,
     auto_checkin: bool,
+    progress: Option<&crate::server::core::auto_checkin::CheckinProgress>,
 ) -> Result<Value, CheckinError> {
     // 不排队执行第二轮：手动接口应明确返回 409，定时调度则清掉本轮预写的
     // lastFiredDate，留给下一次 tick 重试。否则手动批量与定时签到可能同时
@@ -848,11 +849,23 @@ pub async fn run_checkin_cancellable(
                     .into_iter()
                     .flatten()
                     .any(|item| item.get("id").and_then(Value::as_str) == Some(account_id));
-                if account_still_exists && !store.mark_checkin(account_id, result_saved_at) {
-                    return Err(CheckinError::new(
-                        format!("账号 {account_id} 的签到时间未能持久化；结果已保存在执行台账，停止后续账号"),
-                        500,
-                    ));
+                if account_still_exists {
+                    let store = store.clone();
+                    let account_id = account_id.to_string();
+                    let persisted_id = account_id.clone();
+                    let written = tokio::task::spawn_blocking(move || {
+                        store.mark_checkin(&persisted_id, result_saved_at)
+                    })
+                    .await
+                    .map_err(|error| {
+                        CheckinError::new(format!("账号签到时间写库线程异常：{error}"), 500)
+                    })?;
+                    if let Err(error) = written {
+                        return Err(CheckinError::new(
+                            format!("账号 {account_id} 的签到时间未能持久化：{error}；结果已保存在执行台账，停止后续账号"),
+                            500,
+                        ));
+                    }
                 }
             }
         }
@@ -884,6 +897,18 @@ pub async fn run_checkin_cancellable(
                 500,
             )
         })?;
+        if let Some(progress) = progress {
+            progress.advance();
+        }
+        // 只公布轮次与计数，不含 token 或 Provider 原始报文。
+        crate::server::events::publish(
+            "checkin_account_done",
+            json!({
+                "completed": results.len() + 1,
+                "total": targets.len(),
+                "success": day_completed(&row),
+            }),
+        );
         results.push(row);
     }
     // 停止请求可能在最后一个账号执行期间到达；即使没有后续账号可跳过，
@@ -959,6 +984,7 @@ pub async fn run_checkin_cancellable(
         "total": results.len(),
         "skipped": skipped,
         "cancelled": cancelled,
+        "remaining": targets.len().saturating_sub(results.len()),
         "failed": failures.iter().take(5).cloned().collect::<Vec<_>>(),
         "failedCount": failures.len(),
     });
@@ -1011,6 +1037,7 @@ pub async fn run_checkin_cancellable(
         "total": results.len(),
         "skipped": skipped,
         "cancelled": cancelled,
+        "remaining": targets.len().saturating_sub(results.len()),
     }))
 }
 

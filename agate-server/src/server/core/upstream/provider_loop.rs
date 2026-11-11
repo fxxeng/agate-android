@@ -2578,6 +2578,12 @@ async fn send_with_retry(
                 Err(_elapsed) => super::request::UpstreamErrorDetail {
                     code: None,
                     message: format!("非流式响应超时({}秒)", budget.as_secs()),
+                    observation: crate::server::core::response_observation::ResponseObservation {
+                        status: Some(status),
+                        elapsed_ms: budget.as_millis().min(u128::from(u64::MAX)) as u64,
+                        response_bytes: 0,
+                        egress: "upstream",
+                    },
                 },
             }
         };

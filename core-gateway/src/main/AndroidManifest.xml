@@ -28,6 +28,12 @@
 
         <!-- 签到闹钟：只收本应用 PendingIntent，exported=false -->
         <receiver
+            android:name="dev.agate.core.AgateAlarmReceiver"
+            android:enabled="true"
+            android:exported="false" />
+
+        <!-- 升级前已注册的签到 token：只接收旧签到 action，不导出。 -->
+        <receiver
             android:name="dev.agate.core.AlarmReceiver"
             android:enabled="true"
             android:exported="false" />

@@ -20,6 +20,46 @@ import dev.agate.core.GatewayPrefs
  */
 class MainActivity : ComponentActivity() {
 
+    @Volatile private var activityVisible = false
+    private val heartbeatHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private val heartbeat = object : Runnable {
+        override fun run() {
+            Thread({
+                runCatching { dev.agate.core.RuntimeController.readStatus() }
+                    .getOrNull()?.let { status ->
+                        val text = when (dev.agate.core.GatewayFailureEnvelope.health(status)) {
+                            "running" -> "网关运行中 · :${status.port}"
+                            "stopping" -> "网关正在停止…"
+                            else -> return@let
+                        }
+                        heartbeatHandler.post {
+                            if (!activityVisible) return@post
+                            dev.agate.core.AgateForegroundService.refreshNotification(this@MainActivity, text)
+                        }
+                    }
+            }, "agate-ui-heartbeat").start()
+            heartbeatHandler.postDelayed(this, 30_000L)
+        }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        activityVisible = true
+        heartbeatHandler.removeCallbacks(heartbeat)
+        heartbeat.run()
+    }
+
+    override fun onStop() {
+        activityVisible = false
+        heartbeatHandler.removeCallbacks(heartbeat)
+        super.onStop()
+    }
+
+    override fun onDestroy() {
+        heartbeatHandler.removeCallbacks(heartbeat)
+        super.onDestroy()
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         // 显式开启边到边，让各版本表现一致。

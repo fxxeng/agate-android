@@ -705,13 +705,15 @@ pub fn project_pending_reconciliation_history(
     let pending = pending_reconciliation_projections(db)?;
     let mut projected = 0usize;
     for item in pending {
-        if existing_accounts.contains(&item.account_id)
-            && !store.mark_checkin(&item.account_id, item.account_started_at)
-        {
-            return Err(format!(
-                "恢复对账签到时间失败（账号 {}）；原 uncertain 记录与证据仍保留",
-                item.account_id
-            ));
+        if existing_accounts.contains(&item.account_id) {
+            store
+                .mark_checkin(&item.account_id, item.account_started_at)
+                .map_err(|error| {
+                    format!(
+                        "恢复对账签到时间失败（账号 {}）：{error}；原 uncertain 记录与证据仍保留",
+                        item.account_id
+                    )
+                })?;
         }
         crate::server::core::checkin_records::record_reconciliation_for_run_at(
             db,
@@ -817,12 +819,15 @@ pub fn recover_startup(
         // 但仍保留执行结果历史，避免删除账号导致已发生的远端结果失去审计记录。
         if existing_accounts.contains(&saved.account_id)
             && crate::server::core::billing::checkin::day_completed(&row)
-            && !store.mark_checkin(&saved.account_id, saved.result_saved_at)
         {
-            return Err(format!(
-                "恢复签到时间失败（账号 {}）；执行结果仍保留在台账",
-                saved.account_id
-            ));
+            store
+                .mark_checkin(&saved.account_id, saved.result_saved_at)
+                .map_err(|error| {
+                    format!(
+                        "恢复签到时间失败（账号 {}）：{error}；执行结果仍保留在台账",
+                        saved.account_id
+                    )
+                })?;
         }
         if saved.source == "activity" {
             // 活动入口把 mode 保存在原始结果快照中；恢复必须沿用原 mode，

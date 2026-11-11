@@ -83,6 +83,7 @@ pub struct TransportRequest {
 pub struct UpstreamErrorDetail {
     pub code: Option<i64>,
     pub message: String,
+    pub observation: crate::server::core::response_observation::ResponseObservation,
 }
 
 impl UpstreamErrorDetail {
@@ -105,10 +106,13 @@ pub async fn read_upstream_error(
     response: reqwest::Response,
     capture: Option<&crate::server::core::debug_traffic::TrafficCapture>,
 ) -> UpstreamErrorDetail {
+    let started = std::time::Instant::now();
     if let Some(capture) = capture {
         capture.attach_response(response.status().as_u16(), response.headers());
     }
-    let text = response.text().await.unwrap_or_default();
+    let status = response.status().as_u16();
+    let bytes = response.bytes().await.unwrap_or_default();
+    let text = String::from_utf8_lossy(&bytes).into_owned();
     if let Some(capture) = capture {
         capture.push(text.as_bytes());
     }
@@ -138,7 +142,16 @@ pub async fn read_upstream_error(
             message = candidate.to_string();
         }
     }
-    UpstreamErrorDetail { code, message }
+    UpstreamErrorDetail {
+        code,
+        message,
+        observation: crate::server::core::response_observation::ResponseObservation {
+            status: Some(status),
+            elapsed_ms: started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
+            response_bytes: bytes.len() as u64,
+            egress: "upstream",
+        },
+    }
 }
 
 /// 发一次上游请求（不读 body，保留原始响应给流式转发与错误解析）。

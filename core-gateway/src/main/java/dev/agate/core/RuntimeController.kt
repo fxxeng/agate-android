@@ -176,6 +176,8 @@ object RuntimeController {
                 ),
                 nowMillis(),
             )
+        } else if (result.error == "stopping") {
+            recordStateEvent(RuntimeStateEvent.GatewayStoppingObserved, nowMillis())
         } else {
             recordStateEvent(
                 RuntimeStateEvent.GatewayFailed(

@@ -161,6 +161,9 @@ object Gateway {
          * 当成「已停止」而释放保活资源。旧内核缺省 false。
          */
         val stopping: Boolean = false,
+        /** 账号完成投影后才递增；旧内核无此字段时缺省 0。 */
+        val checkinRevision: Long = 0,
+        val checkinRunning: Boolean = false,
     ) {
         companion object {
             fun parse(raw: String?): Status {
@@ -182,6 +185,8 @@ object Gateway {
                     j.optBoolean("scheduler"),
                     j.optInt("bridge", 0),
                     j.optBoolean("stopping", false),
+                    j.optLong("checkin_revision", 0),
+                    j.optBoolean("checkin_running", false),
                 )
             }
         }

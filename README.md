@@ -1,7 +1,7 @@
 # Agate — Android-only Mainline Candidate
 
 - Verification branch: `verify/arch-8faa5f5`
-- Current batch: R51 / 旧登录与账号数据兼容移除（已收口）
+- Current batch: R52 / 停止生命周期与运行时根因整改（验证中）
 - Latest verified: `d28588c` — GitHub Actions Run `42751468673`（双 job 全绿；R51 旧登录/账号数据兼容移除）
 - 状态：R51 已验证 rust-tests **802 passed / 11 ignored**（CI 宿主口径；本机 809，环境差异以 CI 为准）、JVM **143/143**、JNI **15**、双 APK 仅 arm64-v8a + AArch64 ELF（debug 共享凭证指纹命中，release 未签名放行）、Instrumentation **2/2**；`cargo fmt --check` 与六 deny clippy 全绿。
 - 真机验收待做（APK 自取 run artifacts）；release 正式签名按委托方裁定暂缓。
@@ -61,6 +61,18 @@ The repository already has no complete Tauri/Desktop UI Host. The remaining desk
 6. **保留当前登录/导入能力**：`account_transfer` 账号转移、WorkBuddy 桌面登录态手工导入入口（Android 平台门禁不可用）、各 provider 手动粘贴凭证的现行输入解析。
 
 净删除约 **2.3k 行**（21 文件，−2291/+135）；CI Run `42751468673` 双绿：Rust **802/11**（本机 809，环境差异以 CI 为准）、JVM **143/143**、JNI **15**、双 APK 仅 arm64-v8a、Instrumentation **2/2**。`cargo check --lib` 0 warning，`cargo fmt --check` 通过。
+
+## R52 changes — 运行时根因整改与升级边界
+
+1. **STOP 生命周期**：listener 释放与连接排空分离；SSE 收到停止信号立即结束，残余连接优雅收尾 10s 后有界关闭；启动遇到旧实例停止时有限等待，不再把过渡态报成启动失败。
+2. **用户意图与 LAN Key**：STOP 一到达即同步持久化；R49 的 32 位旧随机 Key 升级时轮换并提示，R50 的 48 位 CSPRNG Key 保留。
+3. **签到公平性**：整轮总时限改为账号级无进展超时；每完成一个账号推进 revision，WakeLock 按进展续期；超时返回 `remaining` 未执行数。
+4. **回调与 WebView 边界**：Tokio 回调只投递原文，JSON 解析回到 `Dispatchers.IO`；登录深链只放行 provider、精确回调与 state 均匹配的请求，Cookie 清理完成后才导航。
+5. **CI 与文档**：emulator-runner 固定 v2.38.0 的完整 commit，移除不安全命令开关；补旧账号数据升级提示。
+
+**升级代价（R51 起）**：旧 `auth.json`、Raccoon / CatPaw / AutoClaw 旧账号文件、ChatGLM 嵌套 `auth` 令牌及 `accounts.json` 不再导入。旧文件不会删除，但对应登录态需重新添加；升级弹窗中也不再提供这些账号数据的迁移。配置、日志、统计与脱敏规则等非登录数据仍按现有迁移项处理。
+
+R52 尚在验证，真机项目未执行；不得将本地 Rust 测试或 CI 结果冒充真机验收。
 
 ## Verification state
 

@@ -51,12 +51,14 @@ object CoreTransport {
     private const val NATIVE_TIMEOUT_MS = 125_000L
 
     private val nextRequestId = AtomicLong(1)
-    private val pending = ConcurrentHashMap<Long, CancellableContinuation<Reply>>()
+    private val pending = ConcurrentHashMap<Long, CancellableContinuation<String>>()
 
     @Volatile private var callbackInstalled = false
 
     private val apiCallback = ApiCallCallback { requestId, replyJson ->
-        pending.remove(requestId)?.resume(parseReply(replyJson))
+        // 这是 Tokio runtime worker：只做无分配/短耗时的注册表操作与恢复。
+        // JSON 解析及业务 Reply 构造回到 call() 的 Dispatchers.IO 协程执行。
+        pending.remove(requestId)?.resume(replyJson)
     }
 
     fun configure(apiKey: String) {
@@ -78,9 +80,11 @@ object CoreTransport {
         withContext(Dispatchers.IO) {
             val deadlineNanos = System.nanoTime() + CORE_READY_TIMEOUT_MS * 1_000_000
             while (true) {
-                val reply = withTimeoutOrNull(NATIVE_TIMEOUT_MS) {
+                val rawReply = withTimeoutOrNull(NATIVE_TIMEOUT_MS) {
                     awaitOnce(method, path, body)
-                } ?: Reply.Down("操作超时（超过 2 分钟），请稍后重试")
+                }
+                val reply = rawReply?.let(::parseReply)
+                    ?: Reply.Down("操作超时（超过 2 分钟），请稍后重试")
 
                 // 只有「内核还没就绪」值得等待；业务错误立即回落。
                 if (reply is Reply.Down && reply.raw?.contains("core_not_ready") == true) {
@@ -106,8 +110,8 @@ object CoreTransport {
 
     suspend fun post(path: String, body: String): Reply = call("POST", path, body)
 
-    private suspend fun awaitOnce(method: String, path: String, body: String?): Reply {
-        ensureCallback()?.let { return Reply.Down(it) }
+    private suspend fun awaitOnce(method: String, path: String, body: String?): String? {
+        ensureCallback()?.let { return errorEnvelope(it) }
         val requestId = nextRequestId.getAndIncrement()
         return suspendCancellableCoroutine { continuation ->
             pending[requestId] = continuation
@@ -122,16 +126,18 @@ object CoreTransport {
                 JSONObject(Gateway.apiCallAsync(requestId, method, path, body, apiKey))
             } catch (error: Throwable) {
                 pending.remove(requestId)
-                continuation.resume(Reply.Down(nativeFailure(error)))
+                continuation.resume(errorEnvelope(nativeFailure(error)))
                 return@suspendCancellableCoroutine
             }
             if (!accepted.optBoolean("ok")) {
                 pending.remove(requestId)
-                val raw = accepted.optString("error")
-                continuation.resume(Reply.Down(humanize(raw), raw))
+                continuation.resume(accepted.toString())
             }
         }
     }
+
+    private fun errorEnvelope(message: String): String =
+        JSONObject().put("ok", false).put("error", message).toString()
 
     /** 注册一次；失败时返回可展示的错误，Native 侧仍无回调，调用方不要继续发请求。 */
     private fun ensureCallback(): String? {
