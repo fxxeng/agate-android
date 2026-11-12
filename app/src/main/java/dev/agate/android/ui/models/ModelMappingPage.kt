@@ -167,7 +167,7 @@ fun ModelMappingPage(
             // 这一页只做一件事：改名。模型的启停与思考等级已经搬去「模型」页
             // 每一行（2026-11-12）—— 那本来就是模型自己的属性，不是映射关系。
             Text(
-                "改名：对外名 → 上游模型。同名可多家主备，路由时原生模型优先",
+                "改名：对外名 → 上游模型。同名可多家主备，路由时原生模型优先；标「未生效」的名字当前调不通，与映射开关无关",
                 style = AgateType.Caption, color = C.textDim,
             )
             Spacer(Modifier.height(4.dp))
@@ -333,6 +333,12 @@ private fun MappingRowCard(
                     if (row.dangling) {
                         Spacer(Modifier.width(6.dp))
                         AgateBadge(text = "目标已不存在", tone = dev.agate.android.ui.components.BadgeTone.AMBER)
+                    } else if (row.enabled && !row.effective) {
+                        // 开关开着、名字却调不通（目标模型被关 / 被原生 id 抢走…）。
+                        // `effective` 是内核请求侧入口现算的真值，界面不自己猜形状，
+                        // 所以这里只说「未生效」，不写具体原因（2026-11-12 #129）。
+                        Spacer(Modifier.width(6.dp))
+                        AgateBadge(text = "未生效", tone = dev.agate.android.ui.components.BadgeTone.AMBER)
                     }
                 }
             }
