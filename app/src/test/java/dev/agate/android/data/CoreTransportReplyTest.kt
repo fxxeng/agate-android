@@ -5,6 +5,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CancellableContinuation
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlin.coroutines.resume
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
@@ -17,7 +18,7 @@ class CoreTransportReplyTest {
         val caller = Executors.newSingleThreadExecutor { runnable ->
             Thread(runnable, "caller-io")
         }
-        val callerDispatcher = kotlinx.coroutines.asCoroutineDispatcher(caller)
+        val callerDispatcher = caller.asCoroutineDispatcher()
         val native = Executors.newSingleThreadExecutor { runnable ->
             Thread(runnable, "tokio-callback")
         }
