@@ -69,9 +69,20 @@ fn advertised_names(
             names.push(id);
         }
     }
+    // ── 别名里不能再把「已让位的原名」加回来（2026-11-12 真机）──────────
+    // 上面那个 filter 只是从**清单**里拿掉原名，`claimed` 里因此没有它；而
+    // 「默认绑定」给每个模型都存了一条 `alias == target` 的自映射，它的别名
+    // 恰好就是刚被拿掉的原名 —— 于是 `sn-glm-5-3` 又从下面这个循环回到清单，
+    // 客户端看到 `glm-5.3` 与 `sn-glm-5-3` 各占一行，「按别名聚合」等于没发生
+    // （用户会以为跟「默认绑定」有关，实际是这一处漏了判据）。
+    // 凡是被改名让位的名字一律不再广告，不管它以别名身份来还是以自映射来。
+    let hidden: HashSet<String> = renamed.iter()
+        .map(|(target_id, _)| target_id.to_lowercase())
+        .collect();
     for mapping in rules.mappings.iter()
         .filter(|mapping| mapping.enabled)
         .filter(|mapping| mapping.provider.as_deref().map_or(true, |owner| owner == provider))
+        .filter(|mapping| !hidden.contains(&mapping.alias.to_lowercase()))
     {
         if claimed.insert(mapping.alias.to_lowercase()) {
             names.push(mapping.alias.clone());
@@ -789,6 +800,26 @@ mod tests {
         );
     }
 
+    /// **默认绑定（`alias == target` 的自映射）不该把让位的原名加回来**
+    ///
+    /// 真机现场（2026-11-12）：映射页「默认绑定」给每个模型都存了一条自映射，
+    /// 于是 `advertised_names` 的清单一侧把 `sn-glm-5-3` 拿掉之后，别名一侧
+    /// 又被这条自映射的 `alias`（正是 `sn-glm-5-3`）加回来 —— 客户端里
+    /// `glm-5.3` 与 `sn-glm-5-3` 各占一行，「按别名聚合」完全没有发生。
+    #[test]
+    fn default_binding_does_not_resurrect_the_hidden_name() {
+        let rules = rules_with(json!([
+            { "alias": "glm-5.3", "target": "sn-glm-5-3", "provider": "raccoon", "enabled": true },
+            { "alias": "sn-glm-5-3", "target": "sn-glm-5-3", "provider": "raccoon", "enabled": true }
+        ]));
+        let manifest = vec![json!({ "id": "sn-glm-5-3" }), json!({ "id": "sn-kimi-k8" })];
+        let names = advertised_names(&rules, "raccoon", &manifest);
+        assert!(
+            !names.iter().any(|name| name == "sn-glm-5-3"),
+            "自映射把让位的原名加回来了: {names:?}"
+        );
+        assert_eq!(names, vec!["sn-kimi-k8".to_string(), "glm-5.3".to_string()]);
+    }
     /// 关掉那条映射 → 原名立刻回到清单里（「关掉才显示」）
     #[test]
     fn disabling_the_mapping_restores_the_original_id() {

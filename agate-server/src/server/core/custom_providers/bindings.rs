@@ -81,8 +81,17 @@ pub fn public_models(provider: &Value) -> Vec<Value> {
             .map(model_id)
             .filter(|id| !renamed.iter().any(|hidden| hidden.eq_ignore_ascii_case(id))),
     );
+    // 别名里不能再把「已让位的原名」加回来（与内置家 `advertised_names` 同一个
+    // 坑，2026-11-12）：`alias == target` 的自映射别名恰好等于刚被拿掉的原名，
+    // 无条件展开就等于没改名 —— 客户端会看到原名与别名各占一行。
     if let Some(mappings) = provider.get("mappings").and_then(Value::as_array) {
-        names.extend(mappings.iter().filter_map(|mapping| mapping.get("alias").and_then(Value::as_str).map(str::to_string)));
+        names.extend(mappings.iter().filter_map(|mapping| {
+            let alias = mapping.get("alias").and_then(Value::as_str)?;
+            if renamed.iter().any(|hidden| hidden.eq_ignore_ascii_case(alias)) {
+                return None;
+            }
+            Some(alias.to_string())
+        }));
     }
     let mut result = Vec::new();
     for name in names {
@@ -290,5 +299,23 @@ mod tests {
             { "alias": "glm-5.3", "target": "sn-glm-5-3", "enabled": false }
         ]));
         assert_eq!(synonymous(&off, "sn-glm-5-3"), vec!["sn-glm-5-3".to_string()]);
+    }
+    /// 默认绑定（`alias == target` 的自映射）不该把让位的原名加回清单
+    ///
+    /// 自定义家没有「默认绑定」页签，但只要有一条 `alias == target` 的条目
+    /// （手改数据 / 未来种子），同一个坑就在：别名一侧无条件展开会把刚被
+    /// 隐藏的原名加回来。判据与内置家 `advertised_names` 同源。
+    #[test]
+    fn self_mapping_does_not_resurrect_the_hidden_name() {
+        let p = json!({
+            "id": "custom-x", "enabled": true,
+            "models": [{ "id": "sn-glm-5-3" }],
+            "mappings": [
+                { "alias": "glm-5.3", "target": "sn-glm-5-3", "enabled": true },
+                { "alias": "sn-glm-5-3", "target": "sn-glm-5-3", "enabled": true }
+            ],
+        });
+        let ids = ids(&p);
+        assert_eq!(ids, vec!["glm-5.3".to_string()], "自映射把原名加回来了: {ids:?}");
     }
 }
