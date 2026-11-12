@@ -121,7 +121,7 @@ fun AuthWebViewSheet(
             Spacer(Modifier.height(8.dp))
             WebViewBlock(
                 authUrl = session.authUrl,
-                providerId = providerId,
+                providerId = session.providerId,
                 expectedState = session.state,
                 onPageHint = { status = it },
                 onSchemeCallback = { url ->

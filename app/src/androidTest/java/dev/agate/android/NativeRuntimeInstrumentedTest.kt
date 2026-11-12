@@ -116,13 +116,16 @@ class NativeRuntimeInstrumentedTest {
             AgateForegroundService.stop(context)
             startForegroundService(context)
 
-            assertTrue("START after STOP was lost", await(20_000) {
+            // 不能立刻 await(running)：旧实例此时仍在 running，会假阳性通过。
+            // 先让 STOP → START 队列真正执行完，旧实例停止、新实例重新监听。
+            SystemClock.sleep(5_000)
+            assertTrue("START after STOP was lost", await(10_000) {
                 val status = Gateway.status()
                 status.running && status.port == testPort
             })
 
-            // 留出主线程处理旧 stopSelfResult(startId) 的窗口，再确认新 Gateway 仍运行。
-            SystemClock.sleep(500)
+            // 再留出主线程处理旧 stopSelfResult(startId) 的窗口，确认新 Gateway 未被反杀。
+            SystemClock.sleep(2_000)
             assertTrue("old STOP incorrectly killed the new START", Gateway.status().running)
         } finally {
             runCatching { AgateForegroundService.stop(context) }

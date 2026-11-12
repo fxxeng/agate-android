@@ -32,16 +32,17 @@ class CoreTransportReplyTest {
                 pending.remove(id)?.resume(raw)
             }
             val reply = kotlinx.coroutines.withContext(callerDispatcher) {
-                kotlinx.coroutines.suspendCancellableCoroutine<String> { continuation ->
+                val raw = kotlinx.coroutines.suspendCancellableCoroutine<String> { continuation ->
                     pending[1] = continuation
-                    native.execute { callback.onReply(1, "raw-json") }
+                    native.execute { callback.onComplete(1, "raw-json") }
                 }
+                // 这是生产 call() 的解析位置：恢复后的调用协程，仍应在 caller 调度器上。
+                parsedThread.set(Thread.currentThread().name)
+                raw
             }
-            // 这是生产 call() 的解析位置：恢复后的调用协程，而非 onReply。
-            parsedThread.set(Thread.currentThread().name)
             assertEquals("raw-json", reply)
-            assertEquals("caller-io", parsedThread.get())
-            assertNotEquals("tokio-callback", parsedThread.get())
+            assertEquals("caller-io", parsedThread.get().substringBefore(" @"))
+            assertNotEquals("tokio-callback", parsedThread.get().substringBefore(" @"))
         } finally {
             releaseCallback.countDown()
             callerDispatcher.close()

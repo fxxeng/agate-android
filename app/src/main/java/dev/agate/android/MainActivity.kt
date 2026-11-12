@@ -27,13 +27,13 @@ class MainActivity : ComponentActivity() {
             Thread({
                 runCatching { dev.agate.core.RuntimeController.readStatus() }
                     .getOrNull()?.let { status ->
+                        val text = when (dev.agate.core.GatewayFailureEnvelope.health(status)) {
+                            "running" -> "网关运行中 · :${status.port}"
+                            "stopping" -> "网关正在停止…"
+                            else -> return@let
+                        }
                         heartbeatHandler.post {
                             if (!activityVisible) return@post
-                            val text = when (dev.agate.core.GatewayFailureEnvelope.health(status)) {
-                                "running" -> "网关运行中 · :${status.port}"
-                                "stopping" -> "网关正在停止…"
-                                else -> return@let
-                            }
                             dev.agate.core.AgateForegroundService.refreshNotification(this@MainActivity, text)
                         }
                     }

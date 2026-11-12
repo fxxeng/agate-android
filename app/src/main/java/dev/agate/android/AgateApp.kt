@@ -1,6 +1,7 @@
 package dev.agate.android
 
 import android.app.Application
+import dev.agate.core.AgateNotify
 import dev.agate.core.GatewayPrefs
 import dev.agate.core.RuntimeController
 
