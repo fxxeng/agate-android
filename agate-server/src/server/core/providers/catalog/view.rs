@@ -460,8 +460,147 @@ pub fn models_by_provider(store: &AccountStore) -> Value {
     Value::Object(map)
 }
 
-/// 每条原始 ID 都返回一个默认绑定；历史的同名映射合并进默认绑定，避免两个开关
-/// 控制同一个请求名。默认绑定不可删除，关闭不影响这一行的其他别名。
+/// 一条映射是不是**用户改的名**：`alias == target` 的自映射存的是模型自身的
+/// 状态（启停 + 思考等级），不是一条改名规则。
+///
+/// 这是出口分类的唯一判据：`mappings[]` 只收 `true` 的那些，模型状态走
+/// `models[]`。大小写不敏感 —— 与存储侧（`model_rules` 全按 `eq_ignore_ascii_case`
+/// 命中同一条）同一口径，否则 `GLM-5.3 → glm-5.3` 会被当成一条改名规则。
+fn is_rename(alias: &str, target: &str) -> bool {
+    !alias.eq_ignore_ascii_case(target)
+}
+
+/// 一家内置提供商的清单 → `(models[], mappings[])` 两类行。
+///
+/// 从 `manage_view` 里拆出来只为一件事：这里的两个判定就是「默认绑定」改造的
+/// 全部语义，而 `manage_view` 需要真实账号才有清单（`active_manifests` 按可用
+/// 账号过滤），端到端测不了。判据是：**模型自身的状态挂在模型行上**（`enabled`
+/// / `reasoningBinding`），**`mappings[]` 只装用户改的名**。
+fn builtin_rows(
+    rules: &model_rules::ModelRules,
+    provider: &str,
+    mut manifest: Vec<Value>,
+    remote: bool,
+    refreshed_at: i64,
+    claimed: &mut HashSet<(String, String)>,
+    attached: &mut HashSet<usize>,
+) -> (Vec<Value>, Vec<Value>) {
+    let mut models = Vec::new();
+    let mut mappings = Vec::new();
+    // 关掉的沉到底部（与清单、界面的阅读顺序一致）
+    manifest.sort_by_key(|item| !rules.default_enabled(provider, &model_id(item)));
+    let source = if remote { "remote" } else { "builtin" };
+    for item in manifest {
+        let id = model_id(&item);
+        if id.is_empty() { continue; }
+        if !claimed.insert((provider.to_string(), id.to_lowercase())) {
+            continue; // 同家同 id 的重复条目（见 manage_view 里 claimed 的说明）
+        }
+        // 模型自身的状态：存量就是一条 `alias == target` 的自映射（`binding`
+        // 把「没有这条映射」也归一到同一份默认值）。它不再被写成一条映射行，
+        // 只把两个字段挂到下面的模型行上。
+        let default = rules.binding(provider, &id, &id);
+        let enabled = rules.default_enabled(provider, &id);
+        let mut aliases = Vec::new();
+        for (index, mapping) in rules.mappings.iter().enumerate() {
+            if !mapping.target.eq_ignore_ascii_case(&id)
+                || !mapping.provider.as_deref().map_or(true, |owner| owner == provider)
+            { continue; }
+            // 命中这条模型的规则一律算「已归属」—— 包括下面要跳过的自映射，
+            // 否则它会从函数末尾的「悬空规则」那一轮再冒出来。
+            attached.insert(index);
+            if !is_rename(&mapping.alias, &id)
+                || aliases.iter().any(|alias: &String| alias.eq_ignore_ascii_case(&mapping.alias))
+            { continue; }
+            let Some(effective) = rules.binding(provider, &mapping.alias, &id) else { continue };
+            aliases.push(mapping.alias.clone());
+            mappings.push(json!({
+                "alias": effective.alias, "target": id, "provider": provider,
+                "enabled": effective.enabled, "reasoning": effective.reasoning,
+                "dangling": false, "carried": true,
+            }));
+        }
+        let source = if rules.custom.iter().any(|custom| custom.matches(provider, &id)) {
+            "manual"
+        } else { source };
+        // 覆盖键列表从**本次快照**里查（不调 model_rules::current() —— 那会
+        // 每行重新解析一遍配置，几百行的清单就是几百次解析）
+        let cap_overrides: Vec<String> = rules
+            .capabilities
+            .iter()
+            .find(|entry| entry.matches(provider, &id))
+            .map(|entry| capability::overridden_keys(&entry.values))
+            .unwrap_or_default();
+        models.push(json!({
+            "id": id, "name": item.get("name"), "credits": item.get("credits"),
+            "isDefault": item.get("isDefault").and_then(Value::as_bool).unwrap_or(false),
+            "provider": provider, "providerLabel": super::super::label_of(provider),
+            // ── 图像条目的三个键（2026-11-06）────────────────────
+            // 生图通道接通之后，管理视图里第一次出现 **`kind=image` 的行**。
+            // 不把这三件带出来的话，模型页只能按「工具 ✗ 图片 ✗ 思考 ✗」
+            // 画一条三连灰 —— 用户完全看不出它不是对话模型（那三个位为 false
+            // 是**如实**的：生图模型确实不做工具调用，也不收图）。
+            // 判据与出口同源（`shape::list_item` 读的是同一批键）。
+            "kind": item.get("kind"),
+            "outputModalities": item.get("output_modalities"),
+            "supportsImageGeneration": item.get("supports_image_generation"),
+            "supportsImageEditing": item.get("supports_image_editing"),
+            "source": source, "enabled": enabled, "aliases": aliases,
+            // 用户给这条模型**绑定的思考档位**（`null` = 未绑定，跟随请求默认）。
+            // 与下面 `reasoningDefaultLevel`（模型自己声明的默认档）是两件事：
+            // 那是上游的事实（它自己默认怎么想），这是用户的偏好（我要它用哪
+            // 一档）。模型行那颗「思考」芯片的当前值读的就是本键 —— 此前它只能
+            // 从一条合成的自映射行里读（`mappings[]`），于是模型页要先把「映射」
+            // 翻一遍才拿得到模型自己的状态。
+            "reasoningBinding": default.and_then(|mapping| mapping.reasoning.clone()),
+            "capabilities": capability::effective(&item),
+            "capOverrides": cap_overrides,
+            // 在不在**官方客户端下拉（picker）**里：`shown` / `hidden`，
+            // 拿不到名单时缺失（null）。这是 `apply_remote` 写进清单条目的
+            // 同一个键 —— 在此之前它**没有任何消费方**（管理视图不返回、
+            // 前端不读），于是「上游给了 40 条、桌面端只显示 18 条」这件事
+            // 在界面上完全看不出来。模型页据它标「桌面端未列」并解释
+            // 「为什么我这个客户端看到的名字和桌面端不一样」。
+            "visibility": item.get("visibility"),
+            // 每个能力键的**来源**（`upstream` / `modelsdev` / `user`，见
+            // `core::model_meta` 的模块头）。管理页据它把「上游实测」「社区
+            // 库补的」「用户改的」三档分开显示 —— 没有它，六个键看起来一样
+            // 可信，而它们的可信度差着量级。缺失（没有这个键）= 那一项没有
+            // 任何来源（未声明）。
+            "capSources": item.get("capSources"),
+            // 模型**自己能配哪些思考档位**（出口键名，由 `core::model_meta`
+            // 在清单成型处归一：这家自己声明的 > models.dev 的 effort 列表）。
+            // 与 `reasoningBinding` 是两件事：这里回答「这个模型支持哪些档」，
+            // 那里回答「用户给它选了哪一档」。缺失（null）= 该模型未声明，
+            // 界面据此回落通用档位表。
+            "reasoningLevels": item.get("reasoningLevels"),
+            "reasoningDefaultLevel": item.get("reasoningDefaultLevel"),
+            // 这一家的清单是什么时候拉到的（毫秒；0 = 从未成功拉过）。
+            // 缓存恢复的清单与刚拉的清单**都是 `remote`**，时效只能靠这个
+            // 时间戳说明（见 `providers::catalog_cache` 的模块头）。
+            "refreshedAt": refreshed_at,
+        }));
+    }
+    (models, mappings)
+}
+
+/// 模型管理视图的两份清单：`models`（每条上游模型一行，含已禁用）与
+/// `mappings`（**只**含用户改的名）。
+///
+/// ── 自映射（`alias == target`）为什么不在 `mappings[]` 里 ────────────
+/// 存储上模型状态确实是一条自映射：`ModelRules` 用同一张表承载启停、思考等级
+/// 与改名。但**出口不必照抄存储形态**。照抄的后果是映射页里堆满「自己改成
+/// 自己」的条目，用户读成「这里有 N 条改名规则」，而它其实是「这个模型关着 /
+/// 用哪一档思考」（2026-11-12 的反馈原话：「默认绑定误以为映射改名」）。
+///
+/// 所以出口按**是谁的属性**分类：
+///   · `models[]` —— 模型自己的状态：`enabled`（在不在清单里）、
+///     `reasoningBinding`（用哪一档思考）；
+///   · `mappings[]` —— 人对名字做的改动：`alias`（对外名）→ `target`（上游 id）。
+///
+/// 存储与写接口都没变：`POST /api/models/mappings` 仍然用 (alias, target,
+/// provider) 三元组命中同一条，自映射照样能写（模型页的思考芯片就走它）。
+/// 变的只是读出来的位置 —— 界面不必再从「映射」里反推模型状态。
 ///
 /// ── 能力位（`capabilities` / `capOverrides`）─────────────────
 /// 每行带两个能力字段（管理页的「上下文 / 输出」与「能力」两列读它们）：
@@ -480,99 +619,23 @@ pub fn manage_view(store: &AccountStore) -> Value {
     //
     // 各家的目录解析**应**在源头去重（如 Trae 的 `parse_catalog` 按
     // `config_name`），但上游形态随时可能变化、别家未必有同样的去重 —— 管理页
-    // 是「清单的可视检查」，同 id 画出两行会连带下面那条默认映射也重复一条。
+    // 是「清单的可视检查」，同 id 画出两行，用户看到的就是两条一模一样的条目。
     // 这一层独立于源头：不管哪家目录出了脏数据，这里只认第一次出现的那条。
     let mut claimed: HashSet<(String, String)> = HashSet::new();
-    for (kind, mut manifest) in active_manifests(store) {
-        let provider = kind_id(kind);
-        manifest.sort_by_key(|item| !rules.default_enabled(provider, &model_id(item)));
+    for (kind, manifest) in active_manifests(store) {
         // 一次取「远程与否 + 拉取时刻」：两者是同一处状态，分两次取会多读一次锁
         let (remote, refreshed_at) = refresh_meta(kind);
-        let source = if remote { "remote" } else { "builtin" };
-        for item in manifest {
-            let id = model_id(&item);
-            if id.is_empty() { continue; }
-            if !claimed.insert((provider.to_string(), id.to_lowercase())) {
-                continue; // 同家同 id 的重复条目（见 claimed 的说明）
-            }
-            let default = rules.binding(provider, &id, &id);
-            let enabled = rules.default_enabled(provider, &id);
-            mappings.push(json!({
-                "alias": id, "target": id, "provider": provider, "enabled": enabled,
-                "reasoning": default.and_then(|mapping| mapping.reasoning.clone()),
-                "isDefault": true, "dangling": false, "carried": true,
-            }));
-            let mut aliases = Vec::new();
-            for (index, mapping) in rules.mappings.iter().enumerate() {
-                if !mapping.target.eq_ignore_ascii_case(&id)
-                    || !mapping.provider.as_deref().map_or(true, |owner| owner == provider)
-                { continue; }
-                attached.insert(index);
-                if mapping.alias.eq_ignore_ascii_case(&id)
-                    || aliases.iter().any(|alias: &String| alias.eq_ignore_ascii_case(&mapping.alias))
-                { continue; }
-                let Some(effective) = rules.binding(provider, &mapping.alias, &id) else { continue };
-                aliases.push(mapping.alias.clone());
-                mappings.push(json!({
-                    "alias": effective.alias, "target": id, "provider": provider,
-                    "enabled": effective.enabled, "reasoning": effective.reasoning,
-                    "isDefault": false, "dangling": false, "carried": true,
-                }));
-            }
-            let source = if rules.custom.iter().any(|custom| custom.matches(provider, &id)) {
-                "manual"
-            } else { source };
-            // 覆盖键列表从**本次快照**里查（不调 model_rules::current() —— 那会
-            // 每行重新解析一遍配置，几百行的清单就是几百次解析）
-            let cap_overrides: Vec<String> = rules
-                .capabilities
-                .iter()
-                .find(|entry| entry.matches(provider, &id))
-                .map(|entry| capability::overridden_keys(&entry.values))
-                .unwrap_or_default();
-            models.push(json!({
-                "id": id, "name": item.get("name"), "credits": item.get("credits"),
-                "isDefault": item.get("isDefault").and_then(Value::as_bool).unwrap_or(false),
-                "provider": provider, "providerLabel": super::super::label_of(provider),
-                // ── 图像条目的三个键（2026-11-06）────────────────────
-                // 生图通道接通之后，管理视图里第一次出现 **`kind=image` 的行**。
-                // 不把这三件带出来的话，模型页只能按「工具 ✗ 图片 ✗ 思考 ✗」
-                // 画一条三连灰 —— 用户完全看不出它不是对话模型（那三个位为 false
-                // 是**如实**的：生图模型确实不做工具调用，也不收图）。
-                // 判据与出口同源（`shape::list_item` 读的是同一批键）。
-                "kind": item.get("kind"),
-                "outputModalities": item.get("output_modalities"),
-                "supportsImageGeneration": item.get("supports_image_generation"),
-                "supportsImageEditing": item.get("supports_image_editing"),
-                "source": source, "enabled": enabled, "aliases": aliases,
-                "capabilities": capability::effective(&item),
-                "capOverrides": cap_overrides,
-                // 在不在**官方客户端下拉（picker）**里：`shown` / `hidden`，
-                // 拿不到名单时缺失（null）。这是 `apply_remote` 写进清单条目的
-                // 同一个键 —— 在此之前它**没有任何消费方**（管理视图不返回、
-                // 前端不读），于是「上游给了 40 条、桌面端只显示 18 条」这件事
-                // 在界面上完全看不出来。模型页据它标「桌面端未列」并解释
-                // 「为什么我这个客户端看到的名字和桌面端不一样」。
-                "visibility": item.get("visibility"),
-                // 每个能力键的**来源**（`upstream` / `modelsdev` / `user`，见
-                // `core::model_meta` 的模块头）。管理页据它把「上游实测」「社区
-                // 库补的」「用户改的」三档分开显示 —— 没有它，六个键看起来一样
-                // 可信，而它们的可信度差着量级。缺失（没有这个键）= 那一项没有
-                // 任何来源（未声明）。
-                "capSources": item.get("capSources"),
-                // 模型**自己能配哪些思考档位**（出口键名，由 `core::model_meta`
-                // 在清单成型处归一：这家自己声明的 > models.dev 的 effort 列表）。
-                // 与上面 `mappings[].reasoning`（用户给某条映射**指定**的档位）
-                // 是两件事：这里回答「这个模型支持哪些档」，那里回答「这条映射
-                // 用哪一档」。缺失（null）= 该模型未声明，界面据此回落通用档位表。
-                "reasoningLevels": item.get("reasoningLevels"),
-                "reasoningDefaultLevel": item.get("reasoningDefaultLevel"),
-                // 这一家的清单是什么时候拉到的（毫秒；0 = 从未成功拉过）。
-                // 缓存恢复的清单与刚拉的清单**都是 `remote`**，时效只能靠这个
-                // 时间戳说明（见 `providers::catalog_cache` 的模块头）。
-                "refreshedAt": refreshed_at,
-            }));
-        }
+        let (mut model_rows, mut mapping_rows) = builtin_rows(
+            &rules,
+            kind_id(kind),
+            manifest,
+            remote,
+            refreshed_at,
+            &mut claimed,
+            &mut attached,
+        );
+        models.append(&mut model_rows);
+        mappings.append(&mut mapping_rows);
     }
     // ── 自定义家（含「预置 API」建出来的那些）────────────────────
     //
@@ -657,6 +720,11 @@ pub fn manage_view(store: &AccountStore) -> Value {
                 .and_then(Value::as_object)
                 .map(|map| capability::overridden_keys(map))
                 .unwrap_or_default();
+            // ⚠️ 这里**没有** `reasoningBinding`：自定义家的思考等级存在它自己
+            // 那条记录上（`bindings::resolve` 读 `models[].reasoning` 与自映射的
+            // `reasoning`），写入口是「登记模型」的整表保存 —— `POST
+            // /api/models/mappings` 只认内置家。给出一个界面改不动的值只会让
+            // 模型行那颗芯片点出一句报错，所以本键缺失（= 内核没说）比给个谎好。
             models.push(json!({
                 "id": id.as_str(), "name": item.get("name"), "credits": item.get("credits"),
                 "isDefault": false,
@@ -685,8 +753,15 @@ pub fn manage_view(store: &AccountStore) -> Value {
             }));
         }
     }
+    // ── 剩下的是「没有任何模型接管」的规则 ────────────────────────
+    //
+    // 自映射在这里**一律跳过**：它是模型状态、不是改名规则（见本函数的说明）。
+    // 目标模型不在任何清单里时，那条状态无处可编辑（页面上没有那一行），
+    // 展示出来只会变成一条读不懂的「A → A」—— 模型回到清单时状态自然还在，
+    // 所以这里只是不展示，不是丢弃。
     for (index, mapping) in rules.mappings.iter().enumerate() {
         if attached.contains(&index) { continue; }
+        if !is_rename(&mapping.alias, &mapping.target) { continue; }
         let carried = match mapping.provider.as_deref() {
             Some(provider) => kind_from_id(provider).is_some_and(|kind| {
                 entry_id_in_manifest(&manifest_for(kind), &mapping.target).is_some()
@@ -696,7 +771,6 @@ pub fn manage_view(store: &AccountStore) -> Value {
         mappings.push(json!({
             "alias": mapping.alias, "target": mapping.target, "provider": mapping.provider,
             "enabled": mapping.enabled, "reasoning": mapping.reasoning,
-            "isDefault": mapping.alias.eq_ignore_ascii_case(&mapping.target),
             "dangling": true, "carried": carried,
         }));
     }
@@ -724,6 +798,75 @@ mod tests {
     /// 一条展示名与别名逐字相同的上游条目（`space-bunny-alpha` 是实测命中的那个）
     fn manifest() -> Vec<Value> {
         vec![json!({ "id": "stealth/space-bunny-alpha", "name": "space-bunny-alpha" })]
+    }
+
+    /// 自映射（`alias == target`）是**模型自身的状态**，不是一条改名规则。
+    ///
+    /// 它此前被合成成 `mappings[]` 里一行 `alias == target` 的条目，映射页于是
+    /// 看起来堆着「自己改成自己」的规则（用户 2026-11-12 的反馈）。现在出口把
+    /// 它拆成两处：`models[].enabled` 与 `models[].reasoningBinding`。
+    #[test]
+    fn self_mapping_is_model_state_not_a_rename() {
+        let rules = rules_with(json!([
+            { "alias": "glm-5.3", "target": "glm-5.3", "provider": "zcode",
+              "enabled": true, "reasoning": "high" }
+        ]));
+        let (models, mappings) = builtin_rows(
+            &rules,
+            "zcode",
+            vec![json!({ "id": "glm-5.3" })],
+            false,
+            0,
+            &mut HashSet::new(),
+            &mut HashSet::new(),
+        );
+        assert!(mappings.is_empty(), "自映射不该出现在 mappings[] 里: {mappings:?}");
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0]["enabled"], json!(true));
+        assert_eq!(models[0]["reasoningBinding"], json!("high"));
+    }
+
+    /// 真改名照旧进 `mappings[]`，并且模型行不再顺带背一个等级。
+    ///
+    /// 两个出口各管一件事：改名的思考等级属于**那条别名**，模型行上的
+    /// `reasoningBinding` 只回答「这条上游模型自己用哪一档」。
+    #[test]
+    fn rename_stays_in_mappings_and_model_row_carries_its_own_level() {
+        let rules = rules_with(json!([
+            { "alias": "glm-5-3", "target": "glm-5.3", "provider": "zcode",
+              "enabled": true, "reasoning": "low" }
+        ]));
+        let (models, mappings) = builtin_rows(
+            &rules,
+            "zcode",
+            vec![json!({ "id": "glm-5.3" })],
+            false,
+            0,
+            &mut HashSet::new(),
+            &mut HashSet::new(),
+        );
+        assert_eq!(mappings.len(), 1, "改名规则要留在 mappings[] 里: {mappings:?}");
+        assert_eq!(mappings[0]["alias"], json!("glm-5-3"));
+        assert_eq!(mappings[0]["reasoning"], json!("low"));
+        assert!(
+            mappings[0].get("isDefault").is_none(),
+            "mappings[] 里不该再有 isDefault 这个键（这份清单只装改名）"
+        );
+        assert_eq!(models[0]["aliases"], json!(["glm-5-3"]));
+        assert_eq!(
+            models[0].get("reasoningBinding"),
+            Some(&Value::Null),
+            "没给这条模型绑等级时本键存在且为 null（界面据此显示「不覆盖」）"
+        );
+    }
+
+    /// 自映射的判据大小写不敏感：存储侧全按 `eq_ignore_ascii_case` 命中同一条，
+    /// 出口若区分大小写，`GLM-5.3 → glm-5.3` 会被当成一条改名规则漏出来。
+    #[test]
+    fn self_mapping_is_matched_case_insensitively() {
+        assert!(!is_rename("GLM-5.3", "glm-5.3"));
+        assert!(!is_rename("glm-5.3", "glm-5.3"));
+        assert!(is_rename("glm-5-3", "glm-5.3"));
     }
 
     /// 被关掉的映射别名不能进广告候选名。漏了这道过滤时，别名会经由

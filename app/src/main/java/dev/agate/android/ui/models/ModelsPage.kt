@@ -180,7 +180,7 @@ internal data class ListView(
  * 模型行的「思考等级」绑定（模型页唯一入口，2026-11-12）。
  *
  * 三个动作分开传，是因为「当前值 / 候选档位 / 写入」来自三份不同的数据：
- * 当前值来自 manage 的 `mappings[]`（isDefault 行）、候选档位来自
+ * 当前值来自 `models[].reasoningBinding`（模型自己的属性）、候选档位来自
  * `models[].reasoningLevels`（缺失回落顶层表）、写入走 `/api/models/mappings`。
  * 收成一个对象只是为了让 `ModelLine` / 聚合卡的行都调同一处，不各写一份判断。
  */
@@ -457,22 +457,25 @@ fun ModelsPage(
     var batchBusy by remember { mutableStateOf(false) }
 
     // ── 模型行上的「思考等级」入口（2026-11-12，从映射页的「默认绑定」搬来）──
-    // 现状：等级存在那条 `alias == target` 的自映射上（`mappings[].reasoning`），
-    // 所以「当前值」从 `manageMappings` 的 isDefault 行取；写入仍走
+    // 等级在存储上仍是那条 `alias == target` 的自映射，但**出口挂在模型行上**
+    // （`models[].reasoningBinding`，由内核 `manage_view` 现算），写入仍走
     // `POST /api/models/mappings`（同三元组命中已有条目）。**内核存储没变** ——
     // 变的只是位置：思考等级是模型自己的属性，就该出现在模型行上，而不是在
     // 「映射」页里冒充一条改名规则（用户 2026-11-12 反馈的原话）。
-    val levelCurrent = remember(manageMappings) {
-        manageMappings.filter { it.isDefault }
-            .associate { "${it.provider?.lowercase()}|${it.target.lowercase()}" to it.reasoning }
+    // 「有没有入口」只看内核有没有发这个键（`reasoningEditable`）：自定义家不发
+    // ——它的等级存在自己那条记录里，映射写接口不认 `custom-xxx`，亮了也是坏按钮。
+    val levelCurrent = remember(manage) {
+        manage.filter { it.reasoningEditable }
+            .associate { "${it.provider.lowercase()}|${it.id.lowercase()}" to it.reasoningBinding }
     }
     val levelBind = LevelBinding(
         current = { provider, id -> levelCurrent["${provider.lowercase()}|${id.lowercase()}"] },
         levels = { provider, id ->
             val key = "${provider.lowercase()}|${id.lowercase()}"
-            // 只有「manage 里有这一行的默认绑定」才给入口：那意味着写入走的是
-            // `/api/models/mappings` 且能命中内置家。自定义家的映射存在它自己的
-            // 记录里（写接口不认 `custom-xxx`），露出 chip 只会点出一句报错。
+            // 只有「内核为这条模型发了 `reasoningBinding`」才给入口（见
+            // `levelCurrent`）：那意味着写入走的是 `/api/models/mappings` 且能
+            // 命中内置家。自定义家的等级存在它自己的记录里（写接口不认
+            // `custom-xxx`），露出 chip 只会点出一句报错。
             if (levelCurrent.containsKey(key)) {
                 levelsByModel[key] ?: globalLevels
             } else {

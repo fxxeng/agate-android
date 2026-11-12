@@ -133,8 +133,12 @@ fun ModelMappingPage(
     // 模型状态也存在 `mappings` 里、用同名表示「没改名」。这种条目不会改任何
     // 名字，列在这里只会让人误以为映射页里混着改名规则 —— 而模型的启停与思考
     // 等级已经搬去「模型」页每一行上设置（2026-11-12，用户反馈「默认绑定被
-    // 误以为映射改名」）。这里一并挡住它两种来源：`isDefault` 的视图合成行，
-    // 以及点过开关后落盘的 `isDefault=false` 自映射。
+    // 误以为映射改名」）。
+    //
+    // 内核已从**出口侧**收口（`catalog::view::builtin_rows`：不再合成自映射行，
+    // 也不再把它当悬空规则列出），所以这里两重条件都留着 —— `alias != target`
+    // 挡住历史落盘的自映射与更早的内核，代价为零。它与存储侧「同名 = 模型状态」
+    // 是同一句话，不是补丁。
     val allUserRows = mappings.filter { !it.isDefault && it.alias != it.target }
     val danglingRows = allUserRows.filter { it.dangling }
     val userRows = if (showDangling) allUserRows else allUserRows.filterNot { it.dangling }

@@ -74,6 +74,24 @@ object ModelOps {
         val imageModel: Boolean = false,
         /** 能不能做参考图编辑。 */
         val imageEditing: Boolean = false,
+        /**
+         * 用户给这条模型绑的思考档位（`null` = 不覆盖，跟随请求默认）。
+         *
+         * 来自内核 `models[].reasoningBinding`（`manage_view` 现算）—— 存储上它
+         * 还是那条 `alias == target` 的自映射，但**出口挂在模型行**上：那是模型
+         * 自己的属性，不是一条改名规则（见内核 `catalog::view::builtin_rows`）。
+         */
+        val reasoningBinding: String? = null,
+        /**
+         * 内核有没有为这条模型给出 [reasoningBinding] 这个键。
+         *
+         * 用它当「能否编辑思考等级」的判据，**不要**当成「值是不是 null」：
+         * 内置家每条上游模型都会带这个键（值为 null = 没绑），自定义家**不带**
+         * （它的等级存在自己那条记录里，写入口是「登记模型」的整表保存，
+         * `POST /api/models/mappings` 不认 `custom-xxx`）。所以「键在」= 有入口，
+         * 与自定义家列表有没有加载完无关。
+         */
+        val reasoningEditable: Boolean = false,
     ) {
         fun toModelRow(): GatewayRepository.ModelRow = GatewayRepository.ModelRow(
             id = id,
@@ -130,6 +148,12 @@ object ModelOps {
                         // 确实都是 false，但用户看不出它其实是生图模型。
                         imageModel = o.isImageModel(),
                         imageEditing = o.optBoolean("supportsImageEditing"),
+                        // 思考等级绑定（2026-11-12 从映射页搬到模型行）。
+                        // 值可能是 JSON null，必须走 jsonTextOrNull（真机的
+                        // optString 会把 null 读成字符串 "null"，见 MappingRow 的
+                        // 说明）。`has` 才是「有没有入口」的判据，见字段注释。
+                        reasoningBinding = jsonTextOrNull(o, "reasoningBinding"),
+                        reasoningEditable = o.has("reasoningBinding"),
                     )
                 }
                 return out
