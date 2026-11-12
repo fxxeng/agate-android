@@ -38,7 +38,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::Router;
 use tokio::net::TcpListener;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::server::logging;
 
@@ -55,6 +55,12 @@ pub struct CallbackListener {
     /// 远程浏览器粘贴回调地址时，复用真实 HTTP 回调的投递通道。
     sender: std::sync::Mutex<Option<mpsc::UnboundedSender<String>>>,
     inbox: tokio::sync::Mutex<mpsc::UnboundedReceiver<String>>,
+    /// 监听任务**确实退出**之后才会收到一条通知（`close_and_wait` 用）。
+    ///
+    /// `close()` 只是发信号，任务要等被调度到、跑完 graceful shutdown 才
+    /// 真正 drop listener —— 端口在那一瞬间才归还。要断言"已归还"就必须等
+    /// 这条通知，不能假定 close 返回即归还。
+    done: tokio::sync::Mutex<Option<oneshot::Receiver<()>>>,
 }
 
 impl CallbackListener {
@@ -72,12 +78,14 @@ impl CallbackListener {
             .port();
         let (shutdown, receiver) = watch::channel(false);
         let (sender, inbox) = mpsc::unbounded_channel();
+        let (done_tx, done_rx) = oneshot::channel();
         let app = router(sender.clone());
-        spawn_server(listener, app.clone(), receiver.clone());
+        spawn_server(listener, app.clone(), receiver.clone(), Some(done_tx));
         // 浏览器把 localhost 解析成 ::1 时也要有人接（多数环境先试 IPv4，
         // 但 macOS / 双栈 Docker 上出现过只连 ::1 的情况）。拿不到不影响。
         if let Ok(v6) = TcpListener::bind((Ipv6Addr::LOCALHOST, port)).await {
-            spawn_server(v6, app, receiver);
+            // IPv6 那份只做兜底接流，完成信号只认 IPv4 那一份（同一轮一个端口）。
+            spawn_server(v6, app, receiver, None);
         }
         logging::log(
             "[Login]",
@@ -88,6 +96,7 @@ impl CallbackListener {
             shutdown,
             sender: std::sync::Mutex::new(Some(sender)),
             inbox: tokio::sync::Mutex::new(inbox),
+            done: tokio::sync::Mutex::new(Some(done_rx)),
         })
     }
 
@@ -104,12 +113,34 @@ impl CallbackListener {
     /// 取消会退化成"等 5 分钟超时才还端口"。所以取消/超时/完成这三条收尾路径
     /// 都要显式 close 一次（幂等：`watch` 重复置位没有副作用）。
     /// close 之后 `next_callback` 会以 `None` 结束，等待方据此退出。
+    ///
+    /// ── 注意：这只是**请求**关闭 ─────────────────────────────
+    /// 本函数同步返回时，监听任务可能还没被调度到，socket 因此仍被占着
+    /// （几毫秒到几十毫秒的窗口）。要确定端口**已经**归还系统，用
+    /// [`Self::close_and_wait`]。生产路径不需要等：下一轮登录是绑**新的**
+    /// 随机端口，旧端口晚一点释放不影响正确性。
     pub fn close(&self) {
         self.sender
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .take();
         let _ = self.shutdown.send(true);
+    }
+
+    /// 关掉监听器，**等它真的退出**（端口此刻保证已归还系统）。
+    ///
+    /// 与 [`Self::close`] 的区别只有一点：返回时机。这里等到监听任务跑完
+    /// graceful shutdown 才返回，因此返回之后立刻 rebind 同一端口必定成功。
+    /// 幂等：重复调用、或与 `Drop` 撞上，都只是等待一个已经完成的信号。
+    pub async fn close_and_wait(&self) {
+        self.close();
+        // 取走接收端：第二次调用（或与 Drop 竞争）时它已是 None，
+        // 此时监听任务必然已在退出路上，直接返回即可。
+        let receiver = self.done.lock().await.take();
+        if let Some(receiver) = receiver {
+            // 发送端可能在 serve 出错时被丢掉（Err）：那也等于"任务已结束"。
+            let _ = receiver.await;
+        }
     }
 
     /// 等下一次**真回调**（认不出的噪音不会进到这里）。
@@ -214,7 +245,17 @@ fn callback_page(status: u16, title: &str, message: &str) -> Response {
 }
 
 /// 起一个只服务这一轮登录的 HTTP 任务，收到 shutdown 信号就退出。
-fn spawn_server(listener: TcpListener, app: Router, mut shutdown: watch::Receiver<bool>) {
+///
+/// `done` 给一次"任务已退出"的通知：`serve.await` 返回意味着 listener 已被
+/// drop、端口已归还系统 —— 这正是 [`CallbackListener::close_and_wait`] 要等
+/// 的那一刻。拿 `Option` 是因为 IPv6 那份兜底监听不需要独立信号（端口只有
+/// 一个，IPv4 那份的通知就够）。
+fn spawn_server(
+    listener: TcpListener,
+    app: Router,
+    mut shutdown: watch::Receiver<bool>,
+    done: Option<oneshot::Sender<()>>,
+) {
     crate::spawn_task(async move {
         let serve = axum::serve(listener, app).with_graceful_shutdown(async move {
             // Drop 早于任务启动时 `changed()` 不会返回 —— 先查一次当前值。
@@ -225,6 +266,10 @@ fn spawn_server(listener: TcpListener, app: Router, mut shutdown: watch::Receive
         });
         if let Err(error) = serve.await {
             logging::log("[Login]", &format!("⚠️ Trae 回调监听器异常退出: {error}"));
+        }
+        // serve 返回后 listener 已随 futures 一起 drop：此时端口真还了。
+        if let Some(done) = done {
+            let _ = done.send(());
         }
     });
 }
@@ -336,7 +381,7 @@ mod tests {
         let port = listener.port();
         // 取消路径就是这一手：待办表移除记录后必须让等待方退出，
         // 不能让它干等到 5 分钟超时（端口也一并被占到那时候）。
-        listener.close();
+        listener.close_and_wait().await;
         let ended = tokio::time::timeout(Duration::from_secs(3), listener.next_callback())
             .await
             .map(|value| value.is_none())

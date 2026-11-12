@@ -345,7 +345,7 @@ mod tests {
     #[tokio::test]
     async fn closing_the_session_releases_the_waiter_immediately() {
         // 取消语义（面板点「取消」→ `/cancel`）：等待方必须**立刻**以错误退出，
-        // 且端口当场还给系统 —— 否则下一轮登录要么等到 5 分钟超时，
+        // 且端口最终要还给系统 —— 否则下一轮登录要么等到 5 分钟超时，
         // 要么抢不到端口（这是 AutoClaw 那个坑的随机端口版本）。
         let session = session().await;
         let port = session.listener.port();
@@ -363,17 +363,19 @@ mod tests {
             "实际：{} {}",
             error.status_code, error.message
         );
+        // 端口还掉了没有：绑**同一个端口号**才验得出来。
+        // （原来这里绑的是 `CallbackListener::bind()` 的另一个随机端口，
+        //  成功与否和 `port` 无关 —— 那条断言等于什么都没验。）
+        // `close` 是同步发信号，端口归还发生在监听任务退出时；`close_and_wait`
+        // 等到那一刻，返回即代表端口已归还，不需要 sleep 重试。
+        session.listener.close_and_wait().await;
+        let rebound = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)).await;
+        assert!(
+            rebound.is_ok(),
+            "close 后端口 {port} 应当已归还系统，实际：{:?}",
+            rebound.err()
+        );
         drop(session);
-        // 端口还能再绑上一次 = 真的还掉了（异步任务收尾有一瞬延迟，重试几次）
-        let mut rebound = false;
-        for _ in 0..40 {
-            if CallbackListener::bind().await.is_ok() {
-                rebound = true;
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-        }
-        assert!(rebound, "监听器没能释放端口（{port}）");
     }
 
     #[tokio::test]
