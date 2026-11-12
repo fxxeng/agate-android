@@ -250,12 +250,21 @@ pub fn models_response_with_mode(
     let mut data: Vec<_> = items.into_iter()
         .filter(|(_, item)| match &allowed {
             None => true,
-            Some(set) => set.contains(&model_id(item).to_lowercase()),
+            Some(set) => {
+                // 白名单里存的可能是裸名，而 Provider / Hybrid 形态下清单里的
+                // 条目是 `provider/模型`。只按字面比对，勾了裸名的 Key 一换成
+                // 「按提供商」就会看不到任何条目（与自定义家那段同一口径，见
+                // `providers::custom::append_models_response`）。
+                let id = model_id(item);
+                let bare = split_provider_prefix(&id).map(|(_, bare)| bare);
+                set.contains(&id.to_lowercase())
+                    || bare.is_some_and(|bare| set.contains(&bare.to_lowercase()))
+            }
         })
         .map(|(_, item)| item)
         .collect();
     let builtin_count = data.len();
-    super::super::custom::append_models_response(store, scope, &mut data);
+    super::super::custom::append_models_response(store, scope, mode, pins, &mut data);
     // 自定义家贡献了条目时，这份列表就不再是单/多家内置的来源了 ——
     // 与「多家内置」同一个词（aggregate），下游据此知道列表是拼出来的。
     let source = if data.len() > builtin_count { "aggregate" } else { source };

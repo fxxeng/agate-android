@@ -191,6 +191,15 @@ pub fn forwarding_providers(model: &str) -> Vec<String> {
 }
 
 pub fn model_blocked_everywhere(model: &str) -> bool {
+    // ── 先剥「锁家」前缀（2026-11-12 修）─────────────────────────
+    // `provider/模型` 与裸名是**同一个模型**的两种写法（见
+    // `catalog::synonymous_names` 的说明）。不先归一的话，「按提供商」清单里
+    // 复制出来的名字会因为「目录里找不到这个字符串」被判成「已在网关中关闭」
+    // —— 名字明明就在客户端刚拉到的清单里。内置家与自定义家同此一处。
+    let normalized = split_provider_prefix(model)
+        .map(|(_, bare)| bare)
+        .unwrap_or_else(|| model.trim().to_string());
+    let model = normalized.as_str();
     if !forwarding_providers(model).is_empty() {
         return false;
     }
@@ -206,8 +215,15 @@ pub fn model_blocked_everywhere(model: &str) -> bool {
 
 /// 把对外带前缀名拆成 `(provider_id, 裸名)`。
 ///
-/// 只认**已登记的 provider id**：`deepseek/deepseek-chat` 这类真实模型名不会命中
-/// （head 不是 provider id），所以可以放心在转发入口先用它试一次。
+/// 只认**已登记的 provider id**（内置家 + 自定义家）：`deepseek/deepseek-chat`
+/// 这类真实模型名不会命中（head 不是 provider id），所以可以放心在转发入口先
+/// 用它试一次。
+///
+/// ── 自定义家也要认（2026-11-12 修）───────────────────────────
+/// 「按提供商」形态下自定义家的条目现在也写成 `custom-xxx/模型`（见
+/// `providers::custom::exposed_names`）。前缀不在这里被认出来，那个名字就
+/// 只是「清单里看得见、发出去 404」—— 比不带前缀更糟。`is_custom_provider_id`
+/// 同时要求 `custom-` 前缀与记录存在，真实模型名不会误命中。
 ///
 /// 这是清单里「`provider/model` 锁定这一家」那条语义的**请求侧**实现 ——
 /// 没有它，候选家只能拿完整名字去目录里查，一个也查不到，于是回落默认家：
@@ -219,7 +235,7 @@ pub fn split_provider_prefix(model: &str) -> Option<(String, String)> {
     if rest.is_empty() {
         return None;
     }
-    if kind_from_id(head).is_none() {
+    if kind_from_id(head).is_none() && !custom_providers::is_custom_provider_id(head) {
         return None;
     }
     Some((head.to_string(), rest.to_string()))

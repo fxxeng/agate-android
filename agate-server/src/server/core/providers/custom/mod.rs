@@ -6,6 +6,7 @@ use crate::server::core::account_store::AccountStore;
 use crate::server::core::custom_providers;
 use crate::server::core::key_scope::{self, KeyScope};
 use crate::server::core::models::{list_item, model_id};
+use crate::server::core::providers::catalog::ListMode;
 
 /// 余额查询：七种方案（sub2api / NewAPI / DeepSeek / OpenCode Go / 商汤日日新 /
 /// 智谱 / 智谱 z.ai 国际）的编排。方案由提供商记录的 `balanceScheme` 决定
@@ -41,6 +42,36 @@ pub(crate) fn catalog_providers(store: &AccountStore) -> Vec<(String, Vec<Value>
     }).collect()
 }
 
+/// 自定义家的条目在各清单形态下写成什么（裸名 / `provider/model`，或两者都要）。
+///
+/// ── 为什么必须跟着形态走（2026-11-12 真机反馈）──────────────
+/// 这里原先是无条件 `data.push(list_item(&model, &provider))`：内置家的循环
+/// （`catalog::view::public_builtin_items`）按 `ListMode` 决定带不带前缀，而
+/// 自定义家这一段**完全不知道当前形态**。于是「按提供商」模式下清单里多出几条
+/// **没有前缀**的条目 —— 用户看到的是「最后三个没有前缀」，而那三个正是他自己
+/// 的自定义 / 预置 API 家的模型名（重名时与别家带前缀的那条并列，看起来像
+/// 重复，也看不出是哪一家的）。
+///
+/// 语义与内置家逐条对齐（见 `ListMode` 的说明）：
+///   · `Model`    → 只出裸名（跨家同名去重）；
+///   · `Provider` → 只出带前缀（每家的每个模型各一条）；
+///   · `Hybrid`   → 裸名 + 「被 pin 的那几家 / 那几条」另出带前缀。
+fn exposed_names(provider: &str, id: &str, mode: ListMode, pinned: bool) -> Vec<String> {
+    let prefixed = match mode {
+        ListMode::Provider => true,
+        ListMode::Hybrid => pinned,
+        ListMode::Model => false,
+    };
+    let mut out = Vec::new();
+    if mode != ListMode::Provider {
+        out.push(id.to_string());
+    }
+    if prefixed {
+        out.push(format!("{provider}/{id}"));
+    }
+    out
+}
+
 /// 把自定义家的对外条目并进清单。
 ///
 /// ── 白名单按**同义名**判（与内置家同一口径）──────────────────
@@ -49,12 +80,33 @@ pub(crate) fn catalog_providers(store: &AccountStore) -> Vec<(String, Vec<Value>
 /// 的 Key 会因此看不到这个模型（逐字比对判成「不在白名单」）。这里就地把这家
 /// 自己的「名字 + 它的同义名」展开一次，判据与 `bindings::public_models`
 /// 的收敛口径同源。
-pub fn append_models_response(store: &AccountStore, scope: Option<&KeyScope>, data: &mut Vec<Value>) {
+///
+/// ── 形态也决定了清单里的写法（[`exposed_names`]）──────────────
+/// 「按提供商」必须每一条都带前缀，否则那几条既看不出是哪一家，也没法与别家
+/// 同名的条目区分。带前缀的写法在转发层是**锁家**语义（见
+/// `catalog::routing::split_provider_prefix`，自定义家 id 也认）。
+pub fn append_models_response(
+    store: &AccountStore,
+    scope: Option<&KeyScope>,
+    mode: ListMode,
+    pins: &[String],
+    data: &mut Vec<Value>,
+) {
     let mut claimed: std::collections::HashSet<_> = data.iter()
         .map(|item| model_id(item).to_lowercase()).collect();
     let restricts = scope.is_some_and(KeyScope::restricts_models);
     for (provider, models) in catalog_providers(store) {
         if !key_scope::allows_provider(scope, &provider) { continue; }
+        // 这一家要不要整体带前缀（Hybrid 的 pin 语义）：整家 pin 认 provider id
+        // 与展示名，单条 pin 认 `provider/模型` —— 与内置家同一套写法。
+        let label = crate::server::core::providers::label_of(&provider);
+        let pinned = |name: &str| {
+            pins.iter().any(|pin| {
+                pin.eq_ignore_ascii_case(&provider)
+                    || pin.eq_ignore_ascii_case(&label)
+                    || pin.eq_ignore_ascii_case(&format!("{provider}/{name}"))
+            })
+        };
         // 这家的允许集合：勾了哪些名字 + 它们的同义名（只在真的限制了模型时算）
         let allowed: Option<std::collections::HashSet<String>> = if restricts {
             let record = crate::server::core::custom_providers::get(&provider);
@@ -74,13 +126,74 @@ pub fn append_models_response(store: &AccountStore, scope: Option<&KeyScope>, da
         };
         for model in models {
             let id = model_id(&model);
+            // 白名单里可能是裸名，也可能是用户在清单里看到的 `provider/模型`
+            // —— 两种写法都算勾过（否则切到「按提供商」这把 Key 的清单会变空）
+            let prefixed = format!("{provider}/{id}");
             let permitted = match &allowed {
                 None => true,
-                Some(set) => set.contains(&id.to_lowercase()),
+                Some(set) => set.contains(&id.to_lowercase())
+                    || set.contains(&prefixed.to_lowercase()),
             };
-            if permitted && claimed.insert(id.to_lowercase()) {
-                data.push(list_item(&model, &provider));
+            if !permitted { continue; }
+            for name in exposed_names(&provider, &id, mode, pinned(&id)) {
+                if !claimed.insert(name.to_lowercase()) { continue; }
+                let mut item = list_item(&model, &provider);
+                // 带前缀那条与内置家同一写法：id / name 都是 `provider/模型`，
+                // 且不是默认模型（客户端照抄这个名字发请求 → 锁家）
+                if !name.eq_ignore_ascii_case(&id) {
+                    if let Some(object) = item.as_object_mut() {
+                        object.insert("id".to_string(), Value::String(name.clone()));
+                        object.insert("name".to_string(), Value::String(name));
+                        object.insert("is_default".to_string(), Value::Bool(false));
+                    }
+                }
+                data.push(item);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 「按提供商」必须每一条都带前缀。
+    ///
+    /// 2026-11-12 真机：清单末尾三条没有前缀（`glm-5.3` / `kimi-k3` /
+    /// `deepseek-v4.1-flash-1017`），它们正是自定义 / 预置 API 家的模型 ——
+    /// 内置家那段跟着形态走、这一段没有，于是同一份清单里两种写法混着出。
+    #[test]
+    fn provider_mode_prefixes_custom_entries() {
+        assert_eq!(
+            exposed_names("custom-relay", "glm-5.3", ListMode::Provider, false),
+            vec!["custom-relay/glm-5.3".to_string()],
+        );
+        // Provider 形态下带不带前缀与 pin 无关（全带）
+        assert_eq!(
+            exposed_names("custom-relay", "glm-5.3", ListMode::Provider, true),
+            vec!["custom-relay/glm-5.3".to_string()],
+        );
+    }
+
+    /// 「按模型」保持裸名（同名跨家合并，选哪家交给路由队列）
+    #[test]
+    fn model_mode_keeps_custom_entries_bare() {
+        assert_eq!(
+            exposed_names("custom-relay", "glm-5.3", ListMode::Model, true),
+            vec!["glm-5.3".to_string()],
+        );
+    }
+
+    /// 「混合」：裸名 + 被 pin 的那家另加一条带前缀的（与内置家同一语义）
+    #[test]
+    fn hybrid_prefixes_only_pinned_custom_entries() {
+        assert_eq!(
+            exposed_names("custom-relay", "glm-5.3", ListMode::Hybrid, false),
+            vec!["glm-5.3".to_string()],
+        );
+        assert_eq!(
+            exposed_names("custom-relay", "glm-5.3", ListMode::Hybrid, true),
+            vec!["glm-5.3".to_string(), "custom-relay/glm-5.3".to_string()],
+        );
     }
 }

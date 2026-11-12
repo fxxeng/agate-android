@@ -1306,8 +1306,22 @@ pub fn carriers_of_model(name: &str) -> Vec<String> {
 /// `off`/`none`（本网关不向任何上游发「关闭思考」字段，判据
 /// `model_rules::reasoning_is_off`）。名字与等级**同源同次解析** —— 拆成两次
 /// 调用就会出现「A 条映射改了名、B 条映射的等级被注入」的串味。
+/// ── 先剥掉「锁家」前缀（2026-11-12 修）────────────────────────
+/// 「按提供商」形态下清单里的写法是 `custom-xxx/模型`。内核在转发入口按
+/// `catalog::routing::split_provider_prefix` 认出它**锁定了这一家**，但 body 里
+/// 的名字不会因此改写 —— 内置家由 `wire_target_for_provider` 剥，自定义家原来
+/// 没人剥，于是 `custom-xxx/模型` 被当成上游真名发出去（上游 400）。
+/// 前缀恰好等于**本家 id** 时才剥（真实模型名里也可能带 `/`，见内置家同一处）。
 pub fn wire_model_for(provider_id: &str, requested_name: &str) -> (String, Option<String>) {
     let requested = requested_name.trim();
+    let requested = match requested.split_once('/') {
+        Some((head, rest))
+            if !rest.trim().is_empty() && head.trim().eq_ignore_ascii_case(provider_id) =>
+        {
+            rest.trim()
+        }
+        _ => requested,
+    };
     get(provider_id).and_then(|provider| bindings::resolve(&provider, requested))
         .unwrap_or_else(|| (requested.to_string(), None))
 }
