@@ -152,10 +152,15 @@ object ModelOps {
             fun from(o: JSONObject): MappingRow = MappingRow(
                 alias = o.optString("alias"),
                 target = o.optString("target"),
-                // provider 可空（空串 = 全局语义：由所有承载 target 的家接收）
-                provider = o.optString("provider").ifBlank { null },
+                // ── provider / reasoning 必须走 jsonTextOrNull（2026-11-12 真机）──
+                // 内核发的这两个键是 JSON `null`；真机 AOSP 的 `optString` 会把
+                // `JSONObject.NULL.toString()` 交出来（字符串 "null"），`ifBlank`
+                // 拦不住它 —— 界面把「未绑定」渲染成 `null`，用户点一下再保存还会
+                // 把字面量 "null" 当思考等级写回配置。单测库对 NULL 返回空串，
+                // 所以这个坑单测看不出来（同一处坑见 RoutingOps 的说明）。
+                provider = jsonTextOrNull(o, "provider"),
                 enabled = o.optBoolean("enabled", true),
-                reasoning = o.optString("reasoning").ifBlank { null },
+                reasoning = jsonTextOrNull(o, "reasoning"),
                 isDefault = o.optBoolean("isDefault", false),
                 dangling = o.optBoolean("dangling", false),
                 carried = o.optBoolean("carried", true),
@@ -354,7 +359,7 @@ object ModelOps {
             return OpResult(false, null, "内核响应异常")
         }
         return if (obj.optBoolean("success")) OpResult(true, obj.optJSONObject("data"), null)
-        else OpResult(false, obj.optJSONObject("data"), obj.optString("error").ifBlank { "操作失败" })
+        else OpResult(false, obj.optJSONObject("data"), jsonTextOrNull(obj, "error") ?: "操作失败")
     }
 
     // P2：经 CoreTransport 内核直调（错误信封随 status 一并透传，不拦 4xx/5xx）
@@ -400,6 +405,6 @@ object ModelOps {
             return OpResult(false, null, "内核响应异常")
         }
         return if (obj.optBoolean("success")) OpResult(true, obj.optJSONObject("data"), null)
-        else OpResult(false, obj.optJSONObject("data"), obj.optString("error").ifBlank { "操作失败" })
+        else OpResult(false, obj.optJSONObject("data"), jsonTextOrNull(obj, "error") ?: "操作失败")
     }
 }
