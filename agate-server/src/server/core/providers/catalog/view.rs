@@ -470,6 +470,33 @@ fn is_rename(alias: &str, target: &str) -> bool {
     !alias.eq_ignore_ascii_case(target)
 }
 
+/// 这条别名**此刻是否真的生效** —— 不问界面、不问开关，直接问请求侧同名入口。
+///
+/// ── 为什么只认 `builtin_target` 一个结果 ─────────────────────
+/// 「生效」不是「映射开关是开的」这么简单：目标模型被关、目标已从目录消失、
+/// 别名撞上这家另一个原生 id、映射自身被关，全都会让这个名字解析不到东西。
+/// 这些判据已经在 [`builtin_target`] 里收齐（66b43c5 补的正是「target 被关
+/// ⇒ 别名跟着失效」），而 `/v1/models` 的 `public_builtin_items` 也用它逐名
+/// 过滤（`let Some(wire) = builtin_target(..) else { continue }`）。
+///
+/// 界面若自己拼一遍这些条件，就是**第二套判据**：内核一加新条件，模型页就会
+/// 把一条已失效的别名画成生效。所以管理视图在这里把真值算好，随每条
+/// `mappings[]` 行发下去，客户端只读不算（见 `ModelsPage` 的别名标注）。
+///
+/// 口径与 `renamed_away_pairs` 的判据 3 一致：只要求**解析得出某个上游模型**，
+/// 不要求解析回 `target`。别名撞原生 id 时请求确实走那条原生条目，但清单里
+/// 名字仍在、原名仍让位 —— 两处必须同口径，否则界面会把刚藏掉的原名放回来，
+/// 重现「按模型模式里原名与别名并列」。
+fn alias_effective(
+    rules: &model_rules::ModelRules,
+    kind: Option<ProviderKind>,
+    manifest: &[Value],
+    alias: &str,
+) -> bool {
+    let Some(kind) = kind else { return false };
+    builtin_target(rules, kind, manifest, alias).is_some()
+}
+
 /// 一家内置提供商的清单 → `(models[], mappings[])` 两类行。
 ///
 /// 从 `manage_view` 里拆出来只为一件事：这里的两个判定就是「默认绑定」改造的
@@ -490,8 +517,11 @@ fn builtin_rows(
     // 关掉的沉到底部（与清单、界面的阅读顺序一致）
     manifest.sort_by_key(|item| !rules.default_enabled(provider, &model_id(item)));
     let source = if remote { "remote" } else { "builtin" };
-    for item in manifest {
-        let id = model_id(&item);
+    // `alias_effective` 要拿同一份清单问请求侧入口，所以这里按引用遍历，
+    // 不把 manifest move 掉。`provider` 来自 `kind_id(kind)`，必能反查回来。
+    let kind = kind_from_id(provider);
+    for item in &manifest {
+        let id = model_id(item);
         if id.is_empty() { continue; }
         if !claimed.insert((provider.to_string(), id.to_lowercase())) {
             continue; // 同家同 id 的重复条目（见 manage_view 里 claimed 的说明）
@@ -517,6 +547,9 @@ fn builtin_rows(
             mappings.push(json!({
                 "alias": effective.alias, "target": id, "provider": provider,
                 "enabled": effective.enabled, "reasoning": effective.reasoning,
+                // 真值由请求侧同名入口算（见 alias_effective）：界面不自己拼
+                // 「映射开 / 模型开 / 在清单」那套条件，免得两套判据漂移。
+                "effective": alias_effective(rules, kind, &manifest, &mapping.alias),
                 "dangling": false, "carried": true,
             }));
         }
@@ -553,7 +586,7 @@ fn builtin_rows(
             // 从一条合成的自映射行里读（`mappings[]`），于是模型页要先把「映射」
             // 翻一遍才拿得到模型自己的状态。
             "reasoningBinding": default.and_then(|mapping| mapping.reasoning.clone()),
-            "capabilities": capability::effective(&item),
+            "capabilities": capability::effective(item),
             "capOverrides": cap_overrides,
             // 在不在**官方客户端下拉（picker）**里：`shown` / `hidden`，
             // 拿不到名单时缺失（null）。这是 `apply_remote` 写进清单条目的
@@ -771,7 +804,10 @@ pub fn manage_view(store: &AccountStore) -> Value {
         mappings.push(json!({
             "alias": mapping.alias, "target": mapping.target, "provider": mapping.provider,
             "enabled": mapping.enabled, "reasoning": mapping.reasoning,
-            "dangling": true, "carried": carried,
+            // 悬空 = 当前**没有任何 active 清单**接管这条规则，请求侧无从解析。
+            // `carried` 说的是另一件事（静态目录里还有没有这名字），两者不矛盾：
+            // 目录有、但这家现在没在服务，别名照样调不通。
+            "effective": false, "dangling": true, "carried": carried,
         }));
     }
     json!({
@@ -858,6 +894,67 @@ mod tests {
             Some(&Value::Null),
             "没给这条模型绑等级时本键存在且为 null（界面据此显示「不覆盖」）"
         );
+    }
+
+    /// 带 `disabled` 的完整规则（「模型被关 ⇒ 别名失效」要用）。
+    fn rules_with_state(mappings: Value, disabled: Value) -> model_rules::ModelRules {
+        let raw = json!({ "modelRules": { "mappings": mappings, "disabled": disabled } });
+        model_rules::ModelRules::from_raw(raw.as_object().expect("对象字面量"))
+    }
+
+    /// 一条映射 + 一条在清单里的目标 ⇒ 别名生效。
+    fn rows_for(rules: &model_rules::ModelRules) -> (Vec<Value>, Vec<Value>) {
+        builtin_rows(
+            rules, "zcode", vec![json!({ "id": "glm-5.3" })], false, 0,
+            &mut HashSet::new(), &mut HashSet::new(),
+        )
+    }
+
+    /// 别名的**真值**跟着请求侧入口走，不是「映射开关是开的」就算数。
+    /// 这一组钉住的是 `mappings[].effective` 的四种形状：界面只读这个值，
+    /// 所以这里错一个，模型页就会把一条调不通的别名画成生效。
+    #[test]
+    fn alias_effective_follows_the_request_side_resolver() {
+        let live = json!([
+            { "alias": "glm-5-3", "target": "glm-5.3", "provider": "zcode", "enabled": true }
+        ]);
+        let (_, mappings) = rows_for(&rules_with_state(live.clone(), json!([])));
+        assert_eq!(mappings.len(), 1);
+        assert_eq!(mappings[0]["effective"], json!(true));
+
+        // ① 目标模型被关（#129 的主症状）：映射还开着，别名也调不通
+        let (_, mappings) = rows_for(&rules_with_state(
+            live.clone(), json!([{ "provider": "zcode", "id": "glm-5.3" }]),
+        ));
+        assert_eq!(mappings[0]["effective"], json!(false), "模型关了，别名必须跟着失效");
+
+        // ② 映射自己被关
+        let off = json!([
+            { "alias": "glm-5-3", "target": "glm-5.3", "provider": "zcode", "enabled": false }
+        ]);
+        let (_, mappings) = rows_for(&rules_with_state(off, json!([])));
+        assert_eq!(mappings[0]["effective"], json!(false), "关掉的映射不该显示成生效");
+
+        // ③ 目标已经不在清单里（悬空）
+        let dangling = json!([
+            { "alias": "glm-5-3", "target": "gone-model", "provider": "zcode", "enabled": true }
+        ]);
+        let rules = rules_with_state(dangling, json!([]));
+        assert!(!alias_effective(
+            &rules, kind_from_id("zcode"), &[json!({ "id": "glm-5.3" })], "glm-5-3",
+        ));
+    }
+
+    /// 别名撞上这家另一个原生 id 时，解析落到那条原生条目上 —— 只要**解析得出
+    /// 东西**就算生效。与 `renamed_away_pairs` 判据 3 同口径；如果这里收紧成
+    /// 「必须解析回 target」，界面会把刚让位藏起来的原名又放回清单。
+    #[test]
+    fn alias_resolving_to_another_native_id_is_still_effective() {
+        let rules = rules_with(json!([
+            { "alias": "glm-5.3", "target": "sn-glm-5-3", "provider": "zcode", "enabled": true }
+        ]));
+        let manifest = vec![json!({ "id": "sn-glm-5-3" }), json!({ "id": "glm-5.3" })];
+        assert!(alias_effective(&rules, kind_from_id("zcode"), &manifest, "glm-5.3"));
     }
 
     /// 自映射的判据大小写不敏感：存储侧全按 `eq_ignore_ascii_case` 命中同一条，

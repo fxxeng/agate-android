@@ -851,9 +851,12 @@ fun ModelsPage(
             val owner = mapping.provider ?: return@mapNotNull null
             val alias = mapping.alias.trim()
             val target = mapping.target.trim()
-            // 默认绑定（alias == target）不是别名；关掉的映射不构成候选
+            // 默认绑定（alias == target）不是别名；关掉的映射不构成候选；
+            // 内核判定未生效的（模型被关 / 目标不在清单）也不该当成一个能选的家。
             if (alias.isEmpty() || target.isEmpty() || mapping.isDefault) return@mapNotNull null
-            if (alias.equals(target, ignoreCase = true) || !mapping.enabled) return@mapNotNull null
+            if (alias.equals(target, ignoreCase = true) || !mapping.enabled || !mapping.effective) {
+                return@mapNotNull null
+            }
             val ownerKey = owner.lowercase()
             val cardKey = "$ownerKey|${alias.lowercase()}"
             // 这一家在「这个对外名」下已经有一行了（原生同名）就不再补
@@ -880,23 +883,33 @@ fun ModelsPage(
                 upstreamId = target,
             )
         }
-        // ── 每条上游 id 的**启用别名**（供两处用：全局视图隐藏原名卡、
-        //    单家视图给原名行标小字）。键用「家|真实上游 id」。
-        val aliasesByTarget: Map<String, List<String>> = manageMappings
-            .filter { !it.isDefault && it.enabled }
+        // ── 每条上游 id 的别名（2026-11-12 #129：按内核真值分两堆）──────
+        // `effective` 由内核请求侧同名入口 `builtin_target` 现算：模型被关、
+        // 映射被关、目标已不在清单、别名被原生 id 抢走，全都反映在那一个 bool 上。
+        // 界面**不再自己拼判据**（拼了就是第二套规则，内核一改就漂移）。
+        //   · 生效的那堆：决定全局视图要不要把原名行让位，也写成行内小字；
+        //   · 未生效的那堆：只置灰标注「未生效」，不猜原因、不让位、不进候选。
+        val namedMappings = manageMappings
+            .filter { !it.isDefault && it.enabled && !it.dangling }
             .filter { mapping ->
                 val alias = mapping.alias.trim()
                 val target = mapping.target.trim()
                 alias.isNotEmpty() && target.isNotEmpty() &&
                     !alias.equals(target, ignoreCase = true)
             }
+        fun aliasIndex(rows: List<ModelOps.MappingRow>): Map<String, List<String>> = rows
             .groupBy { "${it.provider?.lowercase()}|${it.target.lowercase()}" }
             .mapValues { (_, list) -> list.map { it.alias } }
+        val aliasesByTarget = aliasIndex(namedMappings.filter { it.effective })
+        val inactiveAliasesByTarget = aliasIndex(namedMappings.filter { !it.effective })
 
         val annotated = (fromSession + extra).map { row ->
             val key = "${row.provider.lowercase()}|" +
                 (row.upstreamId ?: bare(row.id)).lowercase()
-            row.copy(aliases = aliasesByTarget[key].orEmpty())
+            row.copy(
+                aliases = aliasesByTarget[key].orEmpty(),
+                inactiveAliases = inactiveAliasesByTarget[key].orEmpty(),
+            )
         }
         annotated + aliasRows
     }
@@ -908,7 +921,8 @@ fun ModelsPage(
     //     （`sn-glm-5-3`），别名卡不在这里出现 —— 别名是聚合视图的概念。
     //
     // 两个判据都是**实时算的**（`aliases` 由当前 mappings 推出）：
-    // 映射一关掉，`aliases` 变空 ⇒ 原名卡在全局视图自动恢复、别名卡消失。
+    // 映射一关掉、或内核判定别名已失效（模型被关 / 目标不在清单），`aliases`
+    // 变空 ⇒ 原名卡在全局视图自动恢复、别名卡消失。
     val scopeRows = remember(allRows, listScope) {
         val s0 = listScope
         if (s0 == null) {
@@ -2227,6 +2241,16 @@ private fun ModelLine(
                     fontSize = 9.sp,
                 )
             }
+            // 配过、但内核判定调不通的别名单独标一行（2026-11-12 #129）。
+            // 只说「未生效」，不猜原因：模型被关 / 目标不在清单 / 映射被关 /
+            // 撞了原生 id 都会落到这堆，界面拿不到是哪一种，写具体原因就是谎报。
+            m.inactiveAliases.takeIf { it.isNotEmpty() }?.let { aliases ->
+                Text(
+                    "别名 ${aliases.joinToString(" / ")} · 未生效",
+                    color = C.textDim.copy(alpha = 0.7f),
+                    fontSize = 9.sp,
+                )
+            }
             if (testResult != null) {
                 Text(
                     testResult.summary(),
@@ -2558,6 +2582,14 @@ private fun ModelAggregateCard(
                             ?.let { "别名 ${it.joinToString(" / ")}" }
                     if (note != null) {
                         Text(note, color = C.textDim, fontSize = 9.sp)
+                    }
+                    // 未生效的别名：置灰另起一行，不让位、不算候选（见 #129）
+                    if (m.inactiveAliases.isNotEmpty()) {
+                        Text(
+                            "别名 ${m.inactiveAliases.joinToString(" / ")} · 未生效",
+                            color = C.textDim.copy(alpha = 0.7f),
+                            fontSize = 9.sp,
+                        )
                     }
                 }
                 if (m.official == false) {

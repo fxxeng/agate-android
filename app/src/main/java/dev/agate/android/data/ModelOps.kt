@@ -171,6 +171,16 @@ object ModelOps {
         val isDefault: Boolean,
         val dangling: Boolean,
         val carried: Boolean,
+        /**
+         * 这条别名**此刻是否真的能把请求解析到上游**（内核 `alias_effective` 用
+         * 请求侧同名入口 `builtin_target` 现算）。
+         *
+         * 与 `enabled` 是两件事：后者只是「映射开关」，前者还覆盖目标模型被关、
+         * 目标已不在清单、别名被原生 id 抢走等所有失效形状。界面**只读不算** ——
+         * 自己拼判据等于抄一份内核规则，迟早漂移（2026-11-12 #129）。
+         * 缺省 false = 内核没给这个值，按「未生效」降级，不谎报生效。
+         */
+        val effective: Boolean,
     ) {
         companion object {
             fun from(o: JSONObject): MappingRow = MappingRow(
@@ -188,6 +198,7 @@ object ModelOps {
                 isDefault = o.optBoolean("isDefault", false),
                 dangling = o.optBoolean("dangling", false),
                 carried = o.optBoolean("carried", true),
+                effective = o.optBoolean("effective", false),
             )
         }
     }

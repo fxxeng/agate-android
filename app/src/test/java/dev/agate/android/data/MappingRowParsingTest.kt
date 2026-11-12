@@ -2,7 +2,9 @@ package dev.agate.android.data
 
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -60,5 +62,19 @@ class MappingRowParsingTest {
         val r = row("""{"alias":"a","target":"b"}""")
         assertNull(r.provider)
         assertNull(r.reasoning)
+    }
+
+    // ── `effective`（2026-11-12 #129）────────────────────────────
+    // 别名的生效真值由内核请求侧入口算好随行下发，界面只读不算。
+    @Test
+    fun effective_flag_is_read_from_kernel() {
+        assertTrue(row("""{"alias":"a","target":"b","effective":true}""").effective)
+        assertFalse(row("""{"alias":"a","target":"b","effective":false}""").effective)
+    }
+
+    @Test
+    fun missing_effective_flag_degrades_to_inactive() {
+        // 内核没算过就不能谎报生效：界面按「未生效」降级
+        assertFalse(row("""{"alias":"a","target":"b"}""").effective)
     }
 }
