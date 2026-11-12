@@ -33,8 +33,18 @@ pub fn resolve(provider: &Value, requested: &str) -> Option<(String, Option<Stri
         {
             return None;
         }
-        // target 的 enabled 只控制原始 ID，不能阻止别名调用它。
-        let model = models.iter().find(|model| model_id(model).eq_ignore_ascii_case(target))?;
+        // ── 关掉的模型不该因为有了别名而重新出现（2026-11-12）──────────
+        // 别名是**这一行的另一个名字**，不是绕过启停的后门。此前这里只找
+        // target 条目、不看它的 `enabled`，于是自定义家里「关掉模型」之后，
+        // 它的别名照旧解析得通：清单里还在（`public_models` 以 `resolve`
+        // 为门）、请求还能派给这家 —— 与内置家同一个漏洞（见
+        // `catalog::routing::builtin_target`）。`renamed_away_targets` 的
+        // 注释早就写着「关掉的模型不该因为有了别名而从清单里重新出现」，
+        // 那条判据本来就靠这里，只是代码没跟上。
+        let model = models
+            .iter()
+            .find(|model| model_id(model).eq_ignore_ascii_case(target))
+            .filter(|model| model.get("enabled").and_then(Value::as_bool).unwrap_or(true))?;
         Some((model_id(model), level(mapping)))
     })
 }
@@ -236,6 +246,28 @@ mod tests {
         ]));
         let ids = ids(&p);
         assert_eq!(ids, vec!["sn-glm-5-3".to_string(), "keep-me".to_string()]);
+    }
+
+    /// **关掉模型 ⇒ 它的别名一起失效**（与内置家同一判据）
+    ///
+    /// 反例的症状：模型页把这一行关掉之后，别名还在清单里、请求还能派进来，
+    /// 上游回 408 / 400 —— 用户看到的是「这家没启用的模型还在被用」。
+    #[test]
+    fn alias_of_a_disabled_model_does_not_resolve() {
+        let p = json!({
+            "id": "custom-x", "enabled": true,
+            "models": [{ "id": "sn-kimi-k8", "enabled": false }, { "id": "keep-me" }],
+            "mappings": [{ "alias": "kimi-k8", "target": "sn-kimi-k8", "enabled": true }],
+        });
+        assert!(resolve(&p, "kimi-k8").is_none(), "模型已关，别名不该还能解析");
+        assert!(resolve(&p, "sn-kimi-k8").is_none(), "原名同样不可用");
+        let ids = ids(&p);
+        assert!(!ids.iter().any(|id| id == "kimi-k8"), "别名不该进清单: {ids:?}");
+        assert!(
+            !ids.iter().any(|id| id == "sn-kimi-k8"),
+            "关掉的模型不该因为有了别名而回到清单: {ids:?}"
+        );
+        assert!(ids.iter().any(|id| id == "keep-me"));
     }
 
     /// 同义名双向展开（Key 白名单用）

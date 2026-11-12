@@ -30,6 +30,14 @@ pub(super) fn entry_id_in_manifest(manifest: &[Value], requested: &str) -> Optio
         .map(model_id)
 }
 
+/// 对外名 → 这一家的上游 id。**两条路都必须过启停**：
+///
+///   1. 直接命中清单里的原生 id（含展示名回落）；
+///   2. 命中一条**生效**的别名映射 —— 且它指向的目标在这家是**开着**的。
+///
+/// 第 2 条的后半句是 2026-11-12 补上的：只判映射自己的开关时，模型页关掉的
+/// 模型仍能通过自动种下的别名被解析（详见函数内的注释）—— 于是「关掉」既
+/// 不拦广告（`/v1/models`）、也不拦转发（`route_for_forward`）。
 pub(super) fn builtin_target(
     rules: &model_rules::ModelRules,
     kind: ProviderKind,
@@ -52,7 +60,22 @@ pub(super) fn builtin_target(
         .filter(|mapping| rules.binding(provider, &mapping.alias, &mapping.target)
             .is_some_and(|effective| effective.enabled))
         .filter_map(|mapping| {
-            entry_id_in_manifest(manifest, &mapping.target).map(|target| (mapping, target))
+            // ── 目标模型在这家被关掉 → 别名跟着失效（2026-11-12 真机）──────
+            // 别名是「这一行的另一个名字」，不是绕过启停的后门。
+            //
+            // 症状：小浣熊每次拉目录都会给 `sn-*` 种一条去前缀别名
+            // （`sn-kimi-k8 → kimi-k8`，`enabled: true`，见
+            // `model_rules::seed_raccoon_defaults`），而模型页的开关只写
+            // `disabled[(provider, 上游 id)]`。此前这里只判映射自己的
+            // `enabled`，于是「模型页关了 8 个、只剩 2 个」之后，`kimi-k8`
+            // 照样解析成 `sn-kimi-k8`：清单继续广告它、请求继续派给这家，
+            // 上游回 408 —— 用户看到的是「这家一个模型都没启用，却还在用它」。
+            //
+            // 判据取 `default_enabled`（与上面按原生 id 命中那条同源）：
+            // 它同时覆盖 `disabled` 与「别名与 id 逐字相同」的恒等映射开关。
+            entry_id_in_manifest(manifest, &mapping.target)
+                .filter(|target| rules.default_enabled(provider, target))
+                .map(|target| (mapping, target))
         })
         .collect();
     let prefix = super::super::cline::models::Pool::from_provider_id(provider)
@@ -265,6 +288,49 @@ mod tests {
             .cloned()
             .unwrap_or_default();
         ModelRules::from_raw(&raw)
+    }
+
+    /// **模型被关掉 = 它的别名一起失效**（2026-11-12 真机：小浣熊只剩 2 个
+    /// 启用，`kimi-k8` 的请求却仍被派给小浣熊并 408）。
+    ///
+    /// 复现链：拉目录时 `model_rules::seed_raccoon_defaults` 给每个 `sn-*`
+    /// 自动种一条去前缀别名（`enabled: true`），而模型页的开关只写
+    /// `disabled[{provider, 上游 id}]`。别名分支只判映射自己的 `enabled` 时，
+    /// `kimi-k8` 照样解析成 `sn-kimi-k8` —— 清单继续广告、`route_for_forward`
+    /// 继续把这家算成承载家，于是开关只是摆设。
+    #[test]
+    fn alias_of_a_disabled_target_does_not_resolve() {
+        let raw = serde_json::json!({
+            "modelRules": {
+                "mappings": [
+                    { "alias": "kimi-k8", "target": "sn-kimi-k8", "provider": "raccoon", "enabled": true },
+                    { "alias": "glm-5.3", "target": "sn-glm-5-3", "provider": "raccoon", "enabled": true }
+                ],
+                "disabled": [{ "provider": "raccoon", "id": "sn-kimi-k8" }]
+            }
+        })
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+        let rules = ModelRules::from_raw(&raw);
+        let manifest = vec![
+            serde_json::json!({ "id": "sn-kimi-k8" }),
+            serde_json::json!({ "id": "sn-glm-5-3" }),
+        ];
+        assert!(
+            builtin_target(&rules, ProviderKind::Raccoon, &manifest, "kimi-k8").is_none(),
+            "模型已关，别名不该还能解析出上游 id"
+        );
+        assert!(
+            builtin_target(&rules, ProviderKind::Raccoon, &manifest, "sn-kimi-k8").is_none(),
+            "原名同样不可用：两条路必须同一判据"
+        );
+        // 没关的那条不受影响 —— 修复不能把功能一起修没
+        assert_eq!(
+            builtin_target(&rules, ProviderKind::Raccoon, &manifest, "glm-5.3")
+                .map(|target| target.model),
+            Some("sn-glm-5-3".to_string())
+        );
     }
 
     /// **别名必须能把请求名解析回本家的上游 id**。
