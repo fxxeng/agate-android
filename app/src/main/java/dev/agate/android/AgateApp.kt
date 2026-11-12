@@ -23,7 +23,7 @@ class AgateApp : Application() {
         Thread {
             GatewayPrefs.apiKey(this)
             if (GatewayPrefs.consumeApiKeyRotationNotice(this) && GatewayPrefs.alertNotify(this)) {
-                dev.agate.core.AgateNotify.serviceAlert(
+                AgateNotify.serviceAlert(
                     this,
                     "局域网访问密钥已更新",
                     "旧版本生成的可预测密钥已轮换。请在局域网设备上改用新的访问密钥。",

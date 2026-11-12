@@ -121,7 +121,7 @@ fun AuthWebViewSheet(
             Spacer(Modifier.height(8.dp))
             WebViewBlock(
                 authUrl = session.authUrl,
-                providerId = session.providerId,
+                providerId = providerId,
                 expectedState = session.state,
                 onPageHint = { status = it },
                 onSchemeCallback = { url ->
@@ -210,8 +210,10 @@ private fun WebViewBlock(
                 }
                 val cookies = CookieManager.getInstance()
                 cookies.removeAllCookies {
-                    cookies.flush()
-                    loadUrl(authUrl)
+                    cookies.removeSessionCookies {
+                        cookies.flush()
+                        loadUrl(authUrl)
+                    }
                 }
             }
         },

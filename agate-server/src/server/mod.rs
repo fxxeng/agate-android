@@ -1236,8 +1236,7 @@ fn available_account_count(state: &ServerState) -> usize {
 
 /// 启动进程内服务器：同步 bind（失败立刻返回可读错误）+ 异步 serve。
 ///
-/// 返回停机信号发送端：调用方（state::BackendHandle）持有它，
-/// 退出时 `send(())` 触发 graceful shutdown。
+/// 返回停机信号发送端：调用方持有它，退出时 `send(true)` 触发 graceful shutdown。
 ///
 /// ── 为什么 bind 用同步 std 监听、而 tokio 包装放到 spawn 里 ──
 /// `tokio::net::TcpListener::from_std` 会向 reactor 注册句柄，

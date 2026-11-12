@@ -54,9 +54,8 @@ class GatewayPrefsApiKeyTest {
     fun malformedOrMissingKeyIsRebuilt() {
         for (stored in listOf(null, "", "agate-123", "agate-" + "z".repeat(32))) {
             val resolved = GatewayPrefs.resolveApiKey(stored, 2) { "agate-" + "c".repeat(48) }
+            assertTrue("畸形/缺失 Key 不得沿用: $stored", resolved.rotated)
             assertEquals(54, resolved.key.length)
-            // 缺失 Key 是「首次生成」而非轮换；已有畸形值被替换才是轮换。
-            assertEquals("畸形/缺失 Key 的轮换标记: $stored", stored != null, resolved.rotated)
         }
     }
 

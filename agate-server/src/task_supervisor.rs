@@ -758,26 +758,26 @@ mod tests {
         );
         assert!(supervisor.recent_task_failures().is_empty());
     }
-}
 
-/// R50/T6：取消信号被 try_recv 消费后，再次 await / 检查不得 panic。
-#[tokio::test]
-async fn cancellation_handle_is_idempotent_after_signal() {
-    let (tx, rx) = oneshot::channel();
-    let mut cancellation = TaskCancellation {
-        receiver: rx,
-        cancelled: false,
-    };
-    tx.send(()).expect("send cancellation");
+    /// R50/T6：取消信号被 try_recv 消费后，再次 await / 检查不得 panic。
+    #[tokio::test]
+    async fn cancellation_handle_is_idempotent_after_signal() {
+        let (tx, rx) = oneshot::channel();
+        let mut cancellation = TaskCancellation {
+            receiver: rx,
+            cancelled: false,
+        };
+        tx.send(()).expect("send cancellation");
 
-    assert!(cancellation.is_cancelled());
-    assert!(cancellation.is_cancelled(), "二次检查必须仍为 true");
+        assert!(cancellation.is_cancelled());
+        assert!(cancellation.is_cancelled(), "二次检查必须仍为 true");
 
-    tokio::time::timeout(Duration::from_millis(50), cancellation.cancelled())
-        .await
-        .expect("已取消的句柄再次 await 必须立即返回");
-    assert!(
-        !cancellation.wait_or_cancel(Duration::from_millis(5)).await,
-        "已取消的 wait_or_cancel 必须返回 false 而不是 panic"
-    );
+        tokio::time::timeout(Duration::from_millis(50), cancellation.cancelled())
+            .await
+            .expect("已取消的句柄再次 await 必须立即返回");
+        assert!(
+            !cancellation.wait_or_cancel(Duration::from_millis(5)).await,
+            "已取消的 wait_or_cancel 必须返回 false 而不是 panic"
+        );
+    }
 }

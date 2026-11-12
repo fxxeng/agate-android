@@ -17,8 +17,8 @@
 //!     订阅内核 worker / zcode 配置同步 / 余额查询，见 bootstrap 末尾区块）
 //!     随 Core 常驻，不监听任何端口，也不随网关启停；
 //!   网关（手动）：重设 OAuth 回调端口 → `local_panel = true` →（bind_lan
-//!     时面板闸门 + /v1 fail-closed）→ `server::start()` 拿 oneshot 停机
-//!     通道 →（绑定成功后）`start_gateway_tasks` 提交 Sidecar autostart。
+//!     时面板闸门 + /v1 fail-closed）→ `server::start()` 拿 watch 停机
+//!     通道与 listener 释放标记 →（绑定成功后）提交 Sidecar autostart。
 //! `start()` 是同步调用，内部经 `crate::spawn_task` 落到全局惰性 Tokio 运行时
 //! （见 lib.rs），因此本桥不需要自建 Runtime —— 与 headless bin 的时序一致
 //! （那边也是先 start、再建运行时等信号）。
@@ -1049,14 +1049,16 @@ fn start_gateway(data_dir: &str, port: u16, bind_lan: bool, api_key: Option<&str
             if bind_lan { "0.0.0.0" } else { "127.0.0.1" }
         ),
     );
-    spawn_listener_reaper(handles.done.clone());
+    let done = handles.done.clone();
     *guard = GatewayPhase::Running(Running {
         shutdown_tx: Some(handles.shutdown),
         port,
         bind_lan,
         started_at: Instant::now(),
-        done: handles.done,
+        done,
     });
+    // 先安装 Running 相位再启动 reaper，避免极快退出时归位被后写的 Running 覆盖。
+    spawn_listener_reaper(handles.done);
     // SSE 总线（M3）：App 的 GatewayRepository 重连上即收到，UI 据此从
     // 「轮询降级」回到 SSE 通道（O9）。stop 不推 —— 那时 SSE 已断流，
     // 客户端靠 onFailure 感知，重连后的 hello 帧补位。
