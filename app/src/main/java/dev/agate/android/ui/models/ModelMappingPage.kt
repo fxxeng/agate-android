@@ -20,9 +20,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -35,7 +33,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import android.widget.Toast
 import dev.agate.core.GatewayPrefs
-import dev.agate.android.data.GatewayRepository
 import dev.agate.android.data.ModelOps
 import dev.agate.android.ui.components.AgateBadge
 import dev.agate.android.ui.components.AgateFormInput
@@ -51,14 +48,23 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /**
- * 模型映射（M3 · MODEL_MAPPING 子页）。
+ * 模型映射（M3 · MODEL_MAPPING 子页）—— **只做「改名」这一件事**。
  *
- * 数据源 GET /api/models/manage：mappings[] 拆「用户映射」（isDefault=false，
- * 可删可改）与「默认绑定」（isDefault=true，视图合成的 alias=target 行，只展示
- * 与改思考等级，不提供删除——内核里它不是一条独立实体）。新增 / 改等级 / 切
- * 开关都走 POST /api/models/mappings（同三元组 = 命中已有条目），写接口返回
- * 最新 manage 视图就地替换。reasoning 候选表用响应里随发的 reasoningLevels
+ * 一条映射 = 「对外名 → 上游模型（家 × 真名）」，同名可多家主备。数据源
+ * GET /api/models/manage 的 `mappings[]`；新增 / 改思考等级 / 切开关都走
+ * POST /api/models/mappings（同三元组 = 命中已有条目），写接口返回最新 manage
+ * 视图就地替换。reasoning 候选表用响应里随发的 reasoningLevels
  * （内核 model_rules::REASONING_LEVELS，前端不自己抄一份避免漂移）。
+ *
+ * ── 这里刻意**不再**出现「默认绑定」（2026-11-12）────────────────
+ * `alias == target` 的条目不是改名，它是「这个模型自己的状态」（启停 + 思考
+ * 等级）的存储形态 —— 内核把模型状态也存在 `mappings` 里，用同名表示「没改名」。
+ * 把它摆在映射页，用户会以为那是一条改名规则（真机反馈的原话）。现在：
+ *   · 列表只认 `alias != target`（连点开关后落盘的自映射也一起挡掉）；
+ *   · 模型的启停与思考等级搬到「模型」页每一行（`ModelLine` 的「思考」入口），
+ *     那里才是「模型属性」该在的地方。
+ * 内核侧存储与判据不变（`default_enabled` 继续读那条自映射），只是不再把它
+ * 当成映射展示。
  */
 @Composable
 fun ModelMappingPage(
@@ -71,7 +77,6 @@ fun ModelMappingPage(
 
     var view by remember { mutableStateOf<JSONObject?>(null) }
     var loading by remember { mutableStateOf(false) }
-    var tab by remember { mutableIntStateOf(0) } // 0 用户映射 / 1 默认绑定
     var showAdd by remember { mutableStateOf(false) }
     // 行内等级选择展开态：alias|target|provider 标识哪一行
     var expandedRow by remember { mutableStateOf<String?>(null) }
@@ -123,55 +128,16 @@ fun ModelMappingPage(
     // 这条映射转发时必然 404 —— 留在首屏除了制造噪音没有别的用。
     // 但仍要能看见与清理：底部给一行「另有 N 条失效」，点开才铺开。
     var showDangling by remember { mutableStateOf(false) }
-    val allUserRows = mappings.filter { !it.isDefault }
+    // ── 只认「真的改了名」的映射（alias ≠ target）────────────────
+    // `alias == target` 是「模型默认值」（启停 + 思考等级）的存储形态：内核把
+    // 模型状态也存在 `mappings` 里、用同名表示「没改名」。这种条目不会改任何
+    // 名字，列在这里只会让人误以为映射页里混着改名规则 —— 而模型的启停与思考
+    // 等级已经搬去「模型」页每一行上设置（2026-11-12，用户反馈「默认绑定被
+    // 误以为映射改名」）。这里一并挡住它两种来源：`isDefault` 的视图合成行，
+    // 以及点过开关后落盘的 `isDefault=false` 自映射。
+    val allUserRows = mappings.filter { !it.isDefault && it.alias != it.target }
     val danglingRows = allUserRows.filter { it.dangling }
     val userRows = if (showDangling) allUserRows else allUserRows.filterNot { it.dangling }
-
-    val allDefaultRows = mappings.filter { it.isDefault }
-
-    // ── 内置映射默认只显示「有账号的家」──────────────────────────
-    // 没登录的提供商的默认绑定点了也用不了（`/v1/models` 根本不会广告它，
-    // 内核 `active_manifests` 也是同一口径）。把它们全列出来会让这一页被
-    // 20 多家的空绑定淹没 —— 这正是「太混乱」的来源。
-    // 仍保留「全部」切换：配映射之前想看看某家有哪些模型名是合理需求。
-    val snap by GatewayRepository.snapshot.collectAsState()
-    var showAllProviders by remember { mutableStateOf(false) }
-    val activeProviders = remember(snap.providerCounts) {
-        snap.providerCounts.filterValues { it > 0 }.keys
-    }
-    // ── 默认绑定：只显示「**真配了东西**」的那些 ─────────────────
-    // 每条清单模型都天然带一条 `alias == target` 的默认绑定，而绝大多数是
-    // 「启用 + 没设思考等级 + 没挂别名」—— 那是**没有配置**，不是映射。
-    // 全列出来就是用户说的「全部显示内置默认映射」：40 个模型 × N 家 = 一屏
-    // 全是同名的 alias→target，真正配过的几条反而找不到。
-    //
-    // 所以默认只留「有信息量」的三类：
-    //   · 被关掉的（`enabled == false`）—— 用户显式做的决定；
-    //   · 设了思考等级的（`reasoning != null`）；
-    //   · 挂了用户别名的（同一 target 另有 alias≠target 的映射）。
-    var showPlainDefaults by remember { mutableStateOf(false) }
-    val aliasedTargets = remember(mappings) {
-        mappings.filter { !it.isDefault && it.alias != it.target }
-            .map { (it.provider ?: "") to it.target }
-            .toSet()
-    }
-    val providerFiltered = if (showAllProviders || activeProviders.isEmpty()) {
-        allDefaultRows
-    } else {
-        allDefaultRows.filter { it.provider.isNullOrBlank() || it.provider in activeProviders }
-    }
-    val defaultRows = if (showPlainDefaults) {
-        providerFiltered
-    } else {
-        // 「有信息量」与「有账号的家」两个条件同时成立才算要显示
-        providerFiltered.filter { row ->
-            !row.enabled || row.reasoning != null ||
-                aliasedTargets.contains((row.provider ?: "") to row.target)
-        }
-    }
-    val hiddenCount = allDefaultRows.size - defaultRows.size
-    val hiddenPlainCount = providerFiltered.size - defaultRows.size
-    val rows = if (tab == 0) userRows else defaultRows
     val danglingCount = danglingRows.size
 
     Column(modifier = modifier.fillMaxSize().background(C.bg)) {
@@ -187,102 +153,77 @@ fun ModelMappingPage(
 
             // ── 统计行 ──
             Row(verticalAlignment = Alignment.CenterVertically) {
-                AgateBadge(text = "用户映射 ${userRows.size}", tone = dev.agate.android.ui.components.BadgeTone.BLUE)
-                Spacer(Modifier.width(8.dp))
-                AgateBadge(text = "默认绑定 ${defaultRows.size}")
+                AgateBadge(text = "映射 ${userRows.size}", tone = dev.agate.android.ui.components.BadgeTone.BLUE)
                 if (danglingCount > 0) {
                     Spacer(Modifier.width(8.dp))
                     AgateBadge(text = "悬空 $danglingCount", tone = dev.agate.android.ui.components.BadgeTone.AMBER)
                 }
             }
             Spacer(Modifier.height(8.dp))
+            // 这一页只做一件事：改名。模型的启停与思考等级已经搬去「模型」页
+            // 每一行（2026-11-12）—— 那本来就是模型自己的属性，不是映射关系。
             Text(
-                "alias 是对外名，可自由命名；路由时同名模型的原生映射优先，用户映射是追加的主备路",
+                "改名：对外名 → 上游模型。同名可多家主备，路由时原生模型优先",
+                style = AgateType.Caption, color = C.textDim,
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "模型自身的启停与思考等级在「模型」页每行设置，不在这页",
                 style = AgateType.Caption, color = C.textDim,
             )
             Spacer(Modifier.height(10.dp))
 
-            // ── 视图切换 + 新增入口 ──
-            AgateSegmented(
-                options = listOf("用户映射", "默认绑定"),
-                selected = tab,
-                onSelect = { tab = it },
-            )
-            // 用户映射页：有失效条目时给一个开关（默认隐藏，见上面 userRows 的说明）
-            if (tab == 0 && danglingCount > 0) {
-                Spacer(Modifier.height(8.dp))
+            // 有失效条目时给一个开关（默认隐藏，见上面 userRows 的说明）
+            if (danglingCount > 0) {
                 AgateSegmented(
                     options = listOf("有效映射", "含失效 · $danglingCount"),
                     selected = if (showDangling) 1 else 0,
                     onSelect = { showDangling = it == 1 },
                 )
+                Spacer(Modifier.height(10.dp))
             }
-            // 默认绑定页：只显示有账号的家 / 全部（默认前者，见上面 defaultRows 的说明）
-            if (tab == 1 && activeProviders.isNotEmpty()) {
-                Spacer(Modifier.height(8.dp))
-                AgateSegmented(
-                    options = listOf("仅有账号", "全部"),
-                    selected = if (showAllProviders) 1 else 0,
-                    onSelect = { showAllProviders = it == 1 },
-                )
-            }
-            // 默认绑定页：默认只看「有配置」的（关掉 / 设了思考等级 / 挂了别名），
-            // 否则一屏全是 alias==target 的同名行，真正配过的反而找不到
-            if (tab == 1 && hiddenPlainCount > 0) {
-                Spacer(Modifier.height(8.dp))
-                AgateSegmented(
-                    options = listOf("仅有配置", "含未配置 · $hiddenPlainCount"),
-                    selected = if (showPlainDefaults) 1 else 0,
-                    onSelect = { showPlainDefaults = it == 1 },
-                )
-            }
-            Spacer(Modifier.height(10.dp))
 
-            if (tab == 0) {
-                if (showAdd) {
-                    AddMappingCard(
-                        models = models,
-                        levels = levels,
-                        busy = loading,
-                        onCancel = { showAdd = false },
-                        onSubmit = { alias, target, provider, reasoning ->
-                            scope.launch {
-                                val r = ModelOps.setMapping(
-                                    alias = alias, target = target, provider = provider,
-                                    reasoning = reasoning, reasoningExplicit = reasoning != null,
-                                )
-                                applyResult(r, "新增映射")
-                                if (r.ok) showAdd = false
-                            }
-                        },
-                    )
-                    Spacer(Modifier.height(10.dp))
-                } else {
-                    EntryCard(
-                        icon = "＋", title = "新增映射",
-                        sub = "alias → 上游模型 · 同名可多家主备",
-                        onClick = { showAdd = true },
-                    )
-                    Spacer(Modifier.height(10.dp))
-                }
+            if (showAdd) {
+                AddMappingCard(
+                    models = models,
+                    levels = levels,
+                    busy = loading,
+                    onCancel = { showAdd = false },
+                    onSubmit = { alias, target, provider, reasoning ->
+                        scope.launch {
+                            val r = ModelOps.setMapping(
+                                alias = alias, target = target, provider = provider,
+                                reasoning = reasoning, reasoningExplicit = reasoning != null,
+                            )
+                            applyResult(r, "新增映射")
+                            if (r.ok) showAdd = false
+                        }
+                    },
+                )
+                Spacer(Modifier.height(10.dp))
+            } else {
+                EntryCard(
+                    icon = "＋", title = "新增映射",
+                    sub = "alias → 上游模型 · 同名可多家主备",
+                    onClick = { showAdd = true },
+                )
+                Spacer(Modifier.height(10.dp))
             }
 
             // ── 映射行列表 ──
-            if (rows.isEmpty()) {
+            if (userRows.isEmpty()) {
                 Spacer(Modifier.height(18.dp))
                 Text(
-                    if (tab == 0) "暂无用户映射 —— 建一条把多家同名模型串成主备"
-                    else "尚无模型清单（先到「模型」页刷新目录）",
+                    "暂无映射 —— 建一条把多家同名模型串成主备",
                     style = AgateType.Caption, color = C.textDim,
                     modifier = Modifier.fillMaxWidth(),
                 )
             }
-            rows.forEach { row ->
+            userRows.forEach { row ->
                 MappingRowCard(
                     row = row,
                     levels = levels,
                     expanded = expandedRow == row.key(),
-                    allowDelete = tab == 0,
                     onToggle = { checked ->
                         scope.launch {
                             applyResult(
@@ -323,22 +264,12 @@ fun ModelMappingPage(
                     scope.launch { applyResult(ModelOps.removeCustomModel(pv, mid), "移除自定义模型") }
                 },
             )
-            // 用户映射页：失效条数说明白（它们被隐藏了，不是被删了）
-            if (tab == 0 && danglingCount > 0) {
+            // 失效条数说明白（它们被隐藏了，不是被删了）
+            if (danglingCount > 0) {
                 Spacer(Modifier.height(10.dp))
                 Text(
                     "另有 $danglingCount 条失效映射（目标模型已不在该家清单里，转发会 404）；" +
                         "切到「含失效」可查看并删除",
-                    style = AgateType.Caption,
-                    color = C.textDim,
-                )
-            }
-            // 被隐藏的条数要说明白：不能让用户以为「我的绑定丢了」
-            if (tab == 1 && hiddenCount > 0) {
-                Spacer(Modifier.height(10.dp))
-                Text(
-                    "另有 $hiddenCount 条默认绑定属于未登录的提供商（没账号，客户端也不会看到）；" +
-                        "切到「全部」可查看",
                     style = AgateType.Caption,
                     color = C.textDim,
                 )
@@ -351,7 +282,7 @@ fun ModelMappingPage(
         AlertDialog(
             onDismissRequest = { pendingDelete = null },
             title = { Text("删除映射") },
-            text = { Text("删除「$alias → $target」这条映射？删除后该别名会回落到默认绑定。", fontSize = 13.sp) },
+            text = { Text("删除「$alias → $target」这条映射？删除后这个名字不再对外提供（上游模型的原名照旧可用）。", fontSize = 13.sp) },
             confirmButton = {
                 TextButton(onClick = {
                     pendingDelete = null
@@ -373,7 +304,6 @@ private fun MappingRowCard(
     row: ModelOps.MappingRow,
     levels: List<String>,
     expanded: Boolean,
-    allowDelete: Boolean,
     onToggle: (Boolean) -> Unit,
     onPickLevel: (String) -> Unit,
     onExpandLevel: () -> Unit,
@@ -423,16 +353,14 @@ private fun MappingRowCard(
                     .padding(horizontal = 10.dp, vertical = 4.dp),
             )
             Spacer(Modifier.weight(1f))
-            if (allowDelete) {
-                Text(
-                    "删除",
-                    style = AgateType.BodyS, color = C.badgeRedText, fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier
-                        .clickable(onClick = onDelete)
-                        .background(C.redBg, AgateShape.small)
-                        .padding(horizontal = 10.dp, vertical = 4.dp),
-                )
-            }
+            Text(
+                "删除",
+                style = AgateType.BodyS, color = C.badgeRedText, fontWeight = FontWeight.SemiBold,
+                modifier = Modifier
+                    .clickable(onClick = onDelete)
+                    .background(C.redBg, AgateShape.small)
+                    .padding(horizontal = 10.dp, vertical = 4.dp),
+            )
         }
 
         if (expanded) {

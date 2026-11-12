@@ -23,9 +23,11 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -175,6 +177,33 @@ internal data class ListView(
 }
 
 /**
+ * 模型行的「思考等级」绑定（模型页唯一入口，2026-11-12）。
+ *
+ * 三个动作分开传，是因为「当前值 / 候选档位 / 写入」来自三份不同的数据：
+ * 当前值来自 manage 的 `mappings[]`（isDefault 行）、候选档位来自
+ * `models[].reasoningLevels`（缺失回落顶层表）、写入走 `/api/models/mappings`。
+ * 收成一个对象只是为了让 `ModelLine` / 聚合卡的行都调同一处，不各写一份判断。
+ */
+private class LevelBinding(
+    /** 当前等级；null = 未覆盖（跟随请求默认） */
+    val current: (provider: String, id: String) -> String?,
+    /** 这个模型可选哪些档位（空 = 内核没声明，不给入口） */
+    val levels: (provider: String, id: String) -> List<String>,
+    /** 写入（null = 清除覆盖） */
+    val apply: (provider: String, id: String, level: String?) -> Unit,
+)
+
+/** 把 JSON 字符串数组读成非空字符串列表（内核下发的档位 / 名字表都走它）。 */
+private fun namesOf(arr: org.json.JSONArray?): List<String> {
+    if (arr == null) return emptyList()
+    val out = ArrayList<String>(arr.length())
+    for (i in 0 until arr.length()) {
+        arr.optString(i).takeIf { it.isNotBlank() }?.let { out += it }
+    }
+    return out
+}
+
+/**
  * 模型页（M3-5，对齐 v44 Tab 3）：
  * - 客户端所见清单卡（GET /v1/models 口径）：总数 + 两档视图（按模型聚合 / 按提供商分组）
  * - 搜索 + 提供商分组折叠（mgroups）或按模型聚合（提供商候选列表 + 倍率）
@@ -233,6 +262,16 @@ fun ModelsPage(
     var manageError by remember { mutableStateOf<String?>(null) }
     /** manage 的 `mappings[]`（别名 → 上游 id）；模型页据此补「别名承载者」候选。 */
     var manageMappings by remember { mutableStateOf<List<ModelOps.MappingRow>>(emptyList()) }
+    /**
+     * 思考等级的候选档位（模型行「思考」入口用，2026-11-12）。
+     *
+     * 优先用该模型自己声明的 `models[].reasoningLevels`，缺失时回落到顶层
+     * `reasoningLevels`（内核 `model_rules::REASONING_LEVELS`）。前端**不自己
+     * 抄一份档位表** —— 抄了就会与内核漂移，而漂移的表现是「选了一个内核不认识
+     * 的档位，保存后看起来没生效」。
+     */
+    var globalLevels by remember { mutableStateOf<List<String>>(emptyList()) }
+    var levelsByModel by remember { mutableStateOf<Map<String, List<String>>>(emptyMap()) }
     /**
      * 「刚点过、等 manage 回话」的临时覆盖：`"provider|id" -> enabled`。
      *
@@ -359,6 +398,21 @@ fun ModelsPage(
                 manage = fresh
                 manageError = null
                 optimistic = emptyMap()
+                // 思考档位：逐模型声明的优先，顶层表兜底（见 state 的说明）
+                globalLevels = namesOf(r.data?.optJSONArray("reasoningLevels"))
+                val byKey = HashMap<String, List<String>>()
+                r.data?.optJSONArray("models")?.let { arr ->
+                    for (i in 0 until arr.length()) {
+                        val o = arr.optJSONObject(i) ?: continue
+                        val prov = o.optString("provider")
+                        val id = o.optString("id")
+                        val picks = namesOf(o.optJSONArray("reasoningLevels"))
+                        if (prov.isNotBlank() && id.isNotBlank() && picks.isNotEmpty()) {
+                            byKey["${prov.lowercase()}|${id.lowercase()}"] = picks
+                        }
+                    }
+                }
+                levelsByModel = byKey
                 if (rejected.isNotEmpty()) {
                     val which = rejected.keys.first().replace("|", " / ")
                     Toast.makeText(
@@ -401,6 +455,42 @@ fun ModelsPage(
 
     /** 批量启停的忙态（与单条 `toggling` 分开：批量期间不希望每行都变成「…」）。 */
     var batchBusy by remember { mutableStateOf(false) }
+
+    // ── 模型行上的「思考等级」入口（2026-11-12，从映射页的「默认绑定」搬来）──
+    // 现状：等级存在那条 `alias == target` 的自映射上（`mappings[].reasoning`），
+    // 所以「当前值」从 `manageMappings` 的 isDefault 行取；写入仍走
+    // `POST /api/models/mappings`（同三元组命中已有条目）。**内核存储没变** ——
+    // 变的只是位置：思考等级是模型自己的属性，就该出现在模型行上，而不是在
+    // 「映射」页里冒充一条改名规则（用户 2026-11-12 反馈的原话）。
+    val levelCurrent = remember(manageMappings) {
+        manageMappings.filter { it.isDefault }
+            .associate { "${it.provider?.lowercase()}|${it.target.lowercase()}" to it.reasoning }
+    }
+    val levelBind = LevelBinding(
+        current = { provider, id -> levelCurrent["${provider.lowercase()}|${id.lowercase()}"] },
+        levels = { provider, id ->
+            val key = "${provider.lowercase()}|${id.lowercase()}"
+            // 只有「manage 里有这一行的默认绑定」才给入口：那意味着写入走的是
+            // `/api/models/mappings` 且能命中内置家。自定义家的映射存在它自己的
+            // 记录里（写接口不认 `custom-xxx`），露出 chip 只会点出一句报错。
+            if (levelCurrent.containsKey(key)) {
+                levelsByModel[key] ?: globalLevels
+            } else {
+                emptyList()
+            }
+        },
+        apply = { provider, id, level ->
+            scope.launch {
+                val r = ModelOps.setMapping(
+                    alias = id, target = id, provider = provider,
+                    reasoning = level, reasoningExplicit = true,
+                )
+                // 写入成功后必须重拉：等级只有 manage 视图给得出，不重拉会显示旧档位
+                if (r.ok) loadManage()
+                else Toast.makeText(ctx, "思考等级保存失败：${r.error ?: "未知"}", Toast.LENGTH_SHORT).show()
+            }
+        },
+    )
 
     /**
      * 整家批量启停：**一次请求、一次落盘**。
@@ -1033,6 +1123,7 @@ fun ModelsPage(
                         onToggleAll = { ids, enabled -> toggleAll(pid, ids, enabled) },
                         batchBusy = batchBusy,
                         onOpenCaps = { modelId -> onOpenCaps(pid, modelId) },
+                        levelBind = levelBind,
                         // 单家范围就是「看这家」，没有折叠的必要
                         expandByDefault = true,
                         hybrid = listView.mode == "hybrid",
@@ -1077,6 +1168,7 @@ fun ModelsPage(
                         toggling = toggling,
                         onToggle = { toggle(it) },
                         onOpenCaps = onOpenCaps,
+                        levelBind = levelBind,
                     )
                     Spacer(Modifier.height(10.dp))
                 }
@@ -1932,6 +2024,8 @@ private fun ProviderModelGroup(
     onToggleAll: (List<String>, Boolean) -> Unit,
     batchBusy: Boolean,
     onOpenCaps: (String) -> Unit,
+    /** 模型行「思考」入口的读写绑定（见 [LevelBinding]）。 */
+    levelBind: LevelBinding,
     /** 单家范围用：进来就展开、且不可折叠（这时卡片只是容器，不是手风琴）。 */
     expandByDefault: Boolean = false,
     /** 当前清单形态是不是混合（只有混合下「前缀」才有意义）。 */
@@ -2025,6 +2119,7 @@ private fun ProviderModelGroup(
                     toggling = toggling,
                     onToggle = onToggle,
                     onOpenCaps = onOpenCaps,
+                    levelBind = levelBind,
                     entryOn = if (!hybrid || homePinned) null else ("$providerId/$bare" in pins),
                     onToggleEntry = { onToggleEntry(providerId, bare) },
                 )
@@ -2061,6 +2156,7 @@ private fun ProviderModelGroup(
                             toggling = toggling,
                             onToggle = onToggle,
                             onOpenCaps = onOpenCaps,
+                            levelBind = levelBind,
                             entryOn = if (!hybrid || homePinned) null else ("$providerId/$bare" in pins),
                             onToggleEntry = { onToggleEntry(providerId, bare) },
                         )
@@ -2083,6 +2179,8 @@ private fun ModelLine(
     toggling: String?,
     onToggle: (GatewayRepository.ModelRow) -> Unit,
     onOpenCaps: (String) -> Unit,
+    /** 模型行「思考」入口的读写绑定（见 [LevelBinding]）。 */
+    levelBind: LevelBinding,
     /**
      * 「这一条也带前缀暴露」的状态：
      * `null` = 不显示（非混合模式，或这家已整家勾选 —— 那时每一条本来就带前缀）；
@@ -2135,6 +2233,8 @@ private fun ModelLine(
                 )
             }
         }
+        // 「思考」：这一条模型自己的默认档位（从「映射 → 默认绑定」搬来）
+        ReasoningChip(m, wireId, levelBind)
         // 「前缀」：把这一条单独加进混合模式的带前缀清单（写 pins 的 `provider/model`）。
         // 整家已勾选时传 null 不显示 —— 那时每一条都带前缀，再给开关会让人以为可以单独关掉。
         entryOn?.let { on ->
@@ -2201,6 +2301,79 @@ private fun ModelLine(
         )
     }
 }
+
+/**
+ * 「思考」入口：模型行上的一颗 chip + 档位弹层。
+ *
+ * 为什么在这里（2026-11-12）：这个值以前只能去「模型映射 → 默认绑定」里设，
+ * 而那一栏的名字让人以为它在改模型的名字。它其实是**模型自己的默认参数**
+ * （内核存在那条 `alias == target` 的自映射上），自然该跟启停开关并排。
+ *
+ * 只有内核声明了档位（`models[].reasoningLevels`，缺失回落顶层表）的模型才给
+ * 入口 —— 没档位就没有可选项，画一颗点开是空的按钮只会让人以为界面坏了。
+ */
+@Composable
+private fun ReasoningChip(row: GatewayRepository.ModelRow, wireId: String, bind: LevelBinding) {
+    val C = agateColors()
+    val levels = bind.levels(row.provider, wireId)
+    if (levels.isEmpty()) return
+    val current = bind.current(row.provider, wireId)
+    var picking by remember { mutableStateOf(false) }
+    Text(
+        if (current != null) "思考 $current" else "思考",
+        color = if (current != null) C.onAccent else C.accent,
+        fontSize = 9.sp,
+        fontWeight = FontWeight.SemiBold,
+        modifier = Modifier
+            .padding(end = 6.dp)
+            .background(
+                if (current != null) C.accent else C.accent.copy(alpha = 0.10f),
+                RoundedCornerShape(7.dp),
+            )
+            .clickable { picking = true }
+            .padding(horizontal = 7.dp, vertical = 3.dp),
+    )
+    if (picking) {
+        AlertDialog(
+            onDismissRequest = { picking = false },
+            title = { Text("思考等级 · ${row.id}", fontSize = 15.sp) },
+            text = {
+                Column {
+                    Text(
+                        "这一条模型自己的档位，对所有请求生效；「不覆盖」= 跟随请求里的值",
+                        color = C.textDim, fontSize = 11.sp,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    // null 代表「不覆盖」（删掉那条自映射上的 reasoning）
+                    (listOf<String?>(null) + levels).forEach { level ->
+                        val selected = level == current
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    picking = false
+                                    bind.apply(row.provider, wireId, level)
+                                }
+                                .padding(vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                level ?: "不覆盖（默认）",
+                                color = if (selected) C.accent else C.textMain,
+                                fontSize = 13.sp,
+                                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                                modifier = Modifier.weight(1f),
+                            )
+                            if (selected) Text("✓", color = C.accent, fontSize = 13.sp)
+                        }
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { picking = false }) { Text("关闭") } },
+        )
+    }
+}
+
 
 /** 范围选择用的胶囊（全部 / 某一家）。 */
 @Composable
@@ -2293,6 +2466,8 @@ private fun ModelAggregateCard(
     toggling: String?,
     onToggle: (GatewayRepository.ModelRow) -> Unit,
     onOpenCaps: (String, String) -> Unit,
+    /** 模型行「思考」入口的读写绑定（见 [LevelBinding]）。 */
+    levelBind: LevelBinding,
 ) {
     val C = agateColors()
     val scope = rememberCoroutineScope()
@@ -2393,6 +2568,10 @@ private fun ModelAggregateCard(
                             .padding(horizontal = 4.dp, vertical = 1.dp),
                     )
                 }
+                // ── 「思考」：这一家的这一条用哪一档 ──────────────────
+                // 聚合卡一行对应**一家**，所以这里逐行给入口是准的
+                // （与「能力位」那颗按家 pills 同一个理由）。
+                ReasoningChip(m, wireId, levelBind)
                 // 测速：聚合卡的价值就是「对比各家」，能在这一屏直接测才有意义
                 val testKey = ModelTestStore.key(m.provider, wireId)
                 Text(
