@@ -413,11 +413,11 @@ object PresetRegistry {
         // ── 归 Agent 分段（用注册表默认值）──────────────────────
         // 上游 agent 插件包里的家（该包不声明 provider_category）。
         //
-        // ── 为什么有签到、没有「网页登录」通道 ───────────────────
-        // 签到 = 读当日签到态 + 领取活动奖励（内核 `rewards`）；登录本应是
-        // 「内嵌窗口取 Cookie」，但那条链在 Android 侧的收尾（从 WebView 读
-        // Cookie 再提交）尚未在客户端实现，因此**只提供粘贴入口** ——
-        // 给一个点了没反应的通道比少给一条更糟。
+        // ── 登录通道：内嵌窗口取 Cookie + 粘贴 + 导入文件 ───────────
+        // 网页登录**已经接通**：`LoginKind.WEBVIEW` + `webLoginCookies` 由
+        // `AuthWebViewSheet` 在 WebView 轮询收尾时用 CookieManager 读会话
+        // Cookie 交回内核（见 `hasSessionCookie` / `forwardCallback`）。
+        // 签到是另一条链（读当日签到态 + 领奖，内核 `rewards`），互不依赖。
         // 通道与上游 beta 的 `add-doubaowork-config.ts` 对齐：
         //   网页登录（内嵌窗口自动读 Cookie）/ 填写凭证 / 导入凭证文件。
         //   ⚠️ 上游还有「导入桌面端登录态」，它要读本机豆包客户端的 Cookie
