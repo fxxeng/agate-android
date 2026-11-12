@@ -1,6 +1,12 @@
 //! 模型管理 API（模型管理页）：
 //!
 //! - `GET  /api/models/manage`          → `{models, mappings, reasoningLevels}`（含禁用条目与关闭的映射）
+//!
+//! 两份清单按「是谁的属性」分工（见 `catalog::manage_view` 的说明）：
+//! `models[]` 是模型自身的状态（`enabled` / `reasoningBinding`），`mappings[]`
+//! **只装用户改的名**（`alias != target`）。同一条自映射的两种读法别混 ——
+//! 出口不再合成 `isDefault` 行，但写接口仍然用 (alias, target, provider) 三元组
+//! 命中它。
 //! - `GET  /api/models/list-view`       → `{mode, pins, counts}` 客户端所见清单的状态与三项计数
 //! - `POST /api/models/list-view`       `{mode, pins}` 设置清单形态；返回最新状态（含重新推演的计数）
 //! - `POST /api/models/state`           `{id, enabled?}` 启停（`hidden` 已移除，传了报 400）
