@@ -813,19 +813,20 @@ mod tests {
         assert!(names.iter().any(|name| name == "sn-glm-5-3"));
     }
 
-    /// 别名与本家**另一个原生 id** 撞名 → 不隐藏（否则那个名字无路可走）
+    /// 别名与本家**另一个原生 id** 撞名 → 仍然隐藏原名（2026-11-12 收口）
+    ///
+    /// 撞名时 `glm-5.3` 自己就在清单里（它就是原生条目），隐去原名不会让模型
+    /// 消失；两条并列才是问题 —— 客户端下拉里出现「看起来不同、实则同一个
+    /// 上游模型」的两个名字，正是「按模型模式里还是显示原名」那个现象。
+    /// 旧判据（不隐藏）是更早的保守选择，用户明确要求按别名聚合。
     #[test]
-    fn alias_colliding_with_another_native_id_does_not_hide_the_original() {
+    fn alias_colliding_with_another_native_id_hides_the_original() {
         let rules = rules_with(json!([
             { "alias": "glm-5.3", "target": "sn-glm-5-3", "provider": "raccoon", "enabled": true }
         ]));
         let manifest = vec![json!({ "id": "sn-glm-5-3" }), json!({ "id": "glm-5.3" })];
         let names = advertised_names(&rules, "raccoon", &manifest);
-        assert!(names.iter().any(|name| name == "glm-5.3"));
-        assert!(
-            names.iter().any(|name| name == "sn-glm-5-3"),
-            "别名被原生 id 占用时不能隐藏原名: {names:?}"
-        );
+        assert_eq!(names, vec!["glm-5.3".to_string()], "撞名时也只该剩一条: {names:?}");
     }
 
     /// 别家的同名映射不影响这一家的原名广告（映射按 provider 归属）
