@@ -315,10 +315,14 @@ mod local_gates {
     fn a_gate_expires_rather_than_waiting_for_a_release() {
         let _slot = lock_for_tests();
         clear_for_tests();
-        assert!(hold("zcode", "令牌池为空"));
         // 全程用注入时钟做 TTL 判定：真实时钟下这条只能靠睡眠验证，而睡眠要么
         // 睡满两分钟、要么睡不到 TTL（后者等于什么都没测）。
+        //
+        // ⚠️ 闸门与基准必须是**同一个**时刻：原先写成 `hold()` 之后再读一次
+        // `now_ms()`，两次读之间哪怕差 1ms，`base + TTL - 1` 就落到闸门的
+        // 寿命之外 —— 这条断言随机红（CI 2026-11-12 就是撞在 1ms 上）。
         let base = logging::now_ms();
+        assert!(hold_at("zcode", "令牌池为空", base));
         assert!(
             gated_at("zcode", base + GATE_TTL_MS - 1),
             "寿命内仍然挡着 —— 比令牌 TTL 还短就放行是白挡"
