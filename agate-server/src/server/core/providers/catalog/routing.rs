@@ -109,16 +109,22 @@ pub(super) fn builtin_target(
 /// 已投产的调用方不该因为一次改名而静默失效（`api::pipeline` 那层「列表里没有
 /// 就拒绝」的门禁因此要额外认这些原名，见 `catalog::callable_names`）。
 ///
-/// ── 两条判据都不能少 ────────────────────────────────────
+/// ── 三条判据 ────────────────────────────────────────────
 ///   1. 有一条 **enabled** 映射，`target` 是这条原生 id 且 `alias != target`；
-///   2. 那条别名在本家**真的解析得回同一个 id**
-///      （`builtin_target` 命中的上游条目正是它）。
+///   2. `target` 在这家**没被关掉**（关掉的模型本来就不该出现在清单里）；
+///   3. 那条别名在这家**至少能解析出某个上游模型**（`builtin_target` 命中）。
 ///
-/// 少了第 2 条，别名指向一个已下架 / 已换名的上游 id 时原名也被隐去 —— 这个
-/// 模型会从清单里**彻底消失**，而它其实还能调。少列一个名字只是吵，消失是故障。
-/// 第 2 条还要求「解析回**这同一个** id」而不只是「解析得通」：别名与这家另一个
-/// 原生 id 撞名时（`glm-5.3` 既是别名、又是别条的原生 id），解析会落到那条
-/// 原生条目上 —— 此时隐去原名等于让这个名字无路可走。
+/// 第 3 条**不要求解析回 target 本身**。别名撞上这家另一个原生 id 时（映射是
+/// 更早种下的，上游后来新增了同名模型 —— 小浣熊的 `glm-5.3` 与
+/// `sn-glm-5-3` 就是这种），解析会落到那条原生条目上；旧判据视为「不是改名」
+/// 于是两条并列，而用户建映射的意图恰恰是「这一行对外只叫 alias」。2026-11-12
+/// 报的「按模型模式里还是显示原名」就是这个形状。撞名时那个名字仍在清单里
+/// （它就是原生条目），所以隐去原名不会让模型从清单里消失；target 本身照旧
+/// 可点名调用（[`builtin_target`] 的第一段先按原生 id 命中）。
+///
+/// 真正要防的只有「别名解析不出任何东西」（target 被换名 / 下架）：那时隐去
+/// 原名会让这个模型从清单里**彻底消失**，而它其实还能调。少列一个名字只是吵，
+/// 消失是故障。
 ///
 /// 返回成对而不是只给原名集合：调用方还要回答「这条别名替谁顶了名」
 /// （清单条目要带上它，供 Key 白名单那道过滤认老名字）。
@@ -138,20 +144,21 @@ pub(super) fn renamed_away_pairs(
         {
             continue;
         }
-        // 别名本身也是这家的原生 id 时不算「改名」：那只是给一个已存在的名字
-        // 加一条同义映射，隐去原名会把那条原生模型一起删掉
-        if manifest.iter().any(|item| model_id(item).eq_ignore_ascii_case(&mapping.alias)) {
-            continue;
-        }
         // `target` 必须是这家的原生 id（不是别家的、也不是另一个别名）
         if !manifest.iter().any(|item| model_id(item).eq_ignore_ascii_case(&mapping.target)) {
             continue;
         }
-        let resolves_back = builtin_target(rules, kind, manifest, &mapping.alias)
-            .is_some_and(|wire| wire.model.eq_ignore_ascii_case(&mapping.target));
-        if resolves_back {
-            out.push((mapping.target.clone(), mapping.alias.clone()));
+        // target 自己也被关掉就不必谈「改名」：它本来就不该在清单里
+        if !rules.default_enabled(provider, &mapping.target) {
+            continue;
         }
+        // 别名必须至少能解析出**某个**上游模型 —— 不要求是 target 本身
+        // （理由见函数头「第 3 条」）：撞名时那个名字仍是清单里的一条，隐去
+        // 原名不会让模型消失；解析不出才是真故障（两条都没了）。
+        if builtin_target(rules, kind, manifest, &mapping.alias).is_none() {
+            continue;
+        }
+        out.push((mapping.target.clone(), mapping.alias.clone()));
     }
     out
 }
@@ -418,6 +425,53 @@ mod tests {
         let manifest = vec![serde_json::json!({ "id": "sn-glm-5-3" })];
         let pairs = renamed_away_pairs(&rules, ProviderKind::Raccoon, &manifest);
         assert_eq!(pairs, vec![("sn-glm-5-3".to_string(), "glm-5.3".to_string())]);
+    }
+
+    /// 别名撞上这家**另一个原生 id** 时，仍然让原名让位（2026-11-12 真机）。
+    ///
+    /// 小浣熊目录里既有 `sn-glm-5-3`、也有上游后来新增的 `glm-5.3`，而
+    /// `glm-5.3 → sn-glm-5-3` 是更早由 `seed_extra_aliases` 种下的。旧判据
+    /// 「别名本身是原生 id 就不算改名」于是两条并列出现在按模型清单里 ——
+    /// 客户端下拉里两个看起来不同、实则同一个上游模型的名字。
+    ///
+    /// 撞名时 `glm-5.3` 这条**仍在**清单里（它就是原生条目），隐去原名不会让
+    /// 模型消失；`sn-glm-5-3` 也照旧可点名调用（解析的第一段先按原生 id 命中）。
+    #[test]
+    fn alias_colliding_with_a_native_id_still_renames_the_original() {
+        let rules = rules_with(serde_json::json!([
+            { "alias": "glm-5.3", "target": "sn-glm-5-3", "provider": "raccoon", "enabled": true }
+        ]));
+        let manifest = vec![
+            serde_json::json!({ "id": "glm-5.3", "name": "GLM-5.3" }),
+            serde_json::json!({ "id": "sn-glm-5-3", "name": "GLM-5.3 (Sensenova)" }),
+        ];
+        assert_eq!(
+            renamed_away_pairs(&rules, ProviderKind::Raccoon, &manifest),
+            vec![("sn-glm-5-3".to_string(), "glm-5.3".to_string())],
+            "别名与原生 id 撞名时也该收敛成一条，否则清单里两条并列"
+        );
+    }
+
+    /// target 被关掉时不必「改名」：它本来就不该出现在清单里（别名也一并失效）
+    #[test]
+    fn disabled_target_is_not_renamed_away() {
+        let raw = serde_json::json!({
+            "modelRules": {
+                "mappings": [
+                    { "alias": "glm-5.3", "target": "sn-glm-5-3", "provider": "raccoon", "enabled": true }
+                ],
+                "disabled": [{ "provider": "raccoon", "id": "sn-glm-5-3" }]
+            }
+        })
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+        let rules = ModelRules::from_raw(&raw);
+        let manifest = vec![serde_json::json!({ "id": "sn-glm-5-3", "name": "GLM-5.3" })];
+        assert!(
+            renamed_away_pairs(&rules, ProviderKind::Raccoon, &manifest).is_empty(),
+            "关掉的 target 不该进让位集合"
+        );
     }
 
     /// 关掉的映射不让位（「关掉映射才显示原名」）

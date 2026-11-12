@@ -144,10 +144,17 @@ pub fn synonymous(provider: &Value, name: &str) -> Vec<String> {
 
 /// 这家「已被生效别名取代」的原生 id（对外清单里让位给别名）。
 ///
-/// 与内置家的 `catalog::routing::renamed_away_pairs` 同判据：别名必须**解析回
-/// 同一个 target**，且不能与这家另一个登记模型撞名 —— 否则隐去原名会让那个
-/// 名字无路可走。别名本身是这家登记过的模型 id 时也不算改名（那是给已存在的
-/// 名字加了一条同义映射）。
+/// 与内置家的 `catalog::routing::renamed_away_pairs` 同判据：target 是这家登记
+/// 的模型且**没被关掉**，别名**至少能解析出某个模型**，原名就让位。
+///
+/// 别名撞上这家另一个登记 id 时**仍然**让位（2026-11-12）：上游后来新增同名
+/// 模型、而映射是更早种的，旧判据会让两条并列出现在清单里 —— 用户要的是
+/// 「这一行对外只叫 alias」。撞名时那个名字仍在清单里（它就是登记条目），
+/// 所以隐去原名不会让模型消失。
+///
+/// 真正要防的是「别名解析不出任何东西」（target 被换名 / 下架）：那时隐去原名
+/// 会让这个模型从清单里彻底消失 —— 而 `resolve` 已经把「target 被关掉」这类
+/// 情形排除掉了（关掉的模型不该因为有了别名而重新出现）。
 fn renamed_away_targets(provider: &Value) -> Vec<String> {
     let models = provider.get("models").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]);
     let Some(mappings) = provider.get("mappings").and_then(Value::as_array) else {
@@ -166,22 +173,17 @@ fn renamed_away_targets(provider: &Value) -> Vec<String> {
         if !mapping.get("enabled").and_then(Value::as_bool).unwrap_or(true) {
             continue;
         }
-        // target 必须是这家登记的模型；别名撞上另一个登记 id 时不改名
+        // target 必须是这家登记的模型
         if !models.iter().any(|model| model_id(model).eq_ignore_ascii_case(target)) {
             continue;
         }
-        if models.iter().any(|model| model_id(model).eq_ignore_ascii_case(alias)) {
+        // 别名必须至少能解析出某个模型（不要求是 target 本身 —— 撞名时那个
+        // 名字仍是清单里的一条，隐去原名不会让模型消失）
+        if resolve(provider, alias).is_none() {
             continue;
         }
-        // 别名必须真的解析回这个 target（`resolve` 已经把「target 已被关掉」
-        // 这类情形排除掉了 —— 关掉的模型不该因为有了别名而从清单里重新出现）
-        match resolve(provider, alias) {
-            Some((resolved, _)) if resolved.eq_ignore_ascii_case(target) => {
-                if !out.iter().any(|hidden: &String| hidden.eq_ignore_ascii_case(target)) {
-                    out.push(target.to_string());
-                }
-            }
-            _ => {}
+        if !out.iter().any(|hidden: &String| hidden.eq_ignore_ascii_case(target)) {
+            out.push(target.to_string());
         }
     }
     out
@@ -228,14 +230,19 @@ mod tests {
         assert!(!ids.iter().any(|id| id == "glm-5.3"));
     }
 
-    /// 别名与另一个登记 id 撞名 ⇒ 不改名（否则那个名字无路可走）
+    /// 别名与另一条登记 id 撞名 ⇒ **仍然**让原名让位（2026-11-12 收口）
+    ///
+    /// 撞名时那个名字自己就在清单里（它就是登记条目），所以隐去原名不会让
+    /// 模型消失；而两条并列会让客户端下拉出现「看起来不同、实则同一个上游
+    /// 模型」的两个名字 —— 正是「按模型模式里还是显示原名」那个现象。
     #[test]
-    fn alias_colliding_with_a_registered_id_keeps_the_original() {
+    fn alias_colliding_with_a_registered_id_still_renames_the_original() {
         let p = provider(json!([
             { "alias": "keep-me", "target": "sn-glm-5-3", "enabled": true }
         ]));
         let ids = ids(&p);
-        assert!(ids.iter().any(|id| id == "sn-glm-5-3"));
+        assert!(!ids.iter().any(|id| id == "sn-glm-5-3"), "原名该让位: {ids:?}");
+        assert!(ids.iter().any(|id| id == "keep-me"), "撞名的那条自己仍在: {ids:?}");
     }
 
     /// 悬空别名（target 没登记）⇒ 不改名，也不广告
