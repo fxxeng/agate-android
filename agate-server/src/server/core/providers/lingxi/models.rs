@@ -8,9 +8,12 @@
 //! 硬约束：release 是 `panic=abort`，本文件零 unwrap/expect/panic。
 
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use serde_json::{json, Value};
+
+use crate::server::logging;
 
 /// 内置兜底目录（公开参考实现里反复出现的模型 key；倍率按 `multiplier`）。
 /// 上游插件包没有这一家，清单必须能离线给出，否则刚加完账号 `/v1/models`
@@ -36,6 +39,27 @@ fn lock_table() -> std::sync::MutexGuard<'static, Vec<Value>> {
     table().lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+/// 目录「来源 / 更新日期」列要用的两个读数（消费方是
+/// `providers::catalog::refresh_meta`）。内置兜底清单不算远程拉取，
+/// 编一个「刚刚刷新过」的时刻会让界面说谎。
+fn refresh_marks() -> (&'static AtomicBool, &'static AtomicI64) {
+    static REMOTE: OnceLock<AtomicBool> = OnceLock::new();
+    static LAST: OnceLock<AtomicI64> = OnceLock::new();
+    (
+        REMOTE.get_or_init(|| AtomicBool::new(false)),
+        LAST.get_or_init(|| AtomicI64::new(0)),
+    )
+}
+
+pub fn remote_refreshed() -> bool {
+    refresh_marks().0.load(Ordering::Relaxed)
+}
+
+/// 没拉过给 0（不是「现在」，也不是内置清单写入时刻）。
+pub fn last_refreshed_at() -> i64 {
+    refresh_marks().1.load(Ordering::Relaxed)
+}
+
 /// 当前目录（内置兜底 / 远程刷新后的清单）。
 pub fn current() -> Vec<Value> {
     lock_table().clone()
@@ -49,6 +73,9 @@ pub fn replace(rows: Vec<Value>) -> usize {
     let mut guard = lock_table();
     let count = rows.len();
     *guard = rows;
+    let (remote, last) = refresh_marks();
+    remote.store(true, Ordering::Relaxed);
+    last.store(logging::now_ms(), Ordering::Relaxed);
     count
 }
 

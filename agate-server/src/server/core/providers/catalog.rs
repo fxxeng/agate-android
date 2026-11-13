@@ -297,6 +297,12 @@ pub(crate) fn refresh_meta(kind: ProviderKind) -> (bool, i64) {
             super::quwork::models::remote_refreshed(),
             super::quwork::models::last_refreshed_at(),
         ),
+        // WPS 灵犀：内置兜底 7 条 + 远程目录（`models::replace` 记录拉取时刻）。
+        // 内置清单不算「远程刷新过」—— 编一个时刻会让「更新日期」列说谎。
+        ProviderKind::Lingxi => (
+            super::lingxi::models::remote_refreshed(),
+            super::lingxi::models::last_refreshed_at(),
+        ),
     }
 }
 
