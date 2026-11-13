@@ -6,13 +6,15 @@
 //! usage 重算、错误分类、320KB 预检、session/run 缓存状态机、额度两形状、
 //! 签到幂等台账、三请求 body。
 //!
-//! ── 这一批**不是什么**（刻意的边界）──────────────────────────
-//! · 没有注册 `ProviderKind` / `PROVIDERS` / `adapter_for`：把半成品挂进转发链
-//!   只会得到「看得到、调不通」；
-//! · 没有账号存储 / API 端点 / 客户端预设 / 网络编排：那些要一起接才自洽；
-//! · **没有任何真机实测**：所有端点与字段名都来自公开 README，方案 §1 列的
-//!   4 处来源冲突（host / 额度字段 / 目录来源 / 通道）在探针验证前不是事实。
-//!   本批的价值是「判据先被单测钉住」，让下一批接线时改的只是拼装，不是猜。
+//! ── 接线状态 ────────────────────────────────────────────────
+//! 第一批只做纯函数判据；第二批已把整条链接上：`ProviderKind` / `PROVIDERS` /
+//! `adapter_for`、账号存储与粘贴端点、`prepare_body` 三请求编排、
+//! `UpstreamResponse::LingxiSse` + `upstream::translate::LingxiToChatStream`
+//! 私有 SSE 翻译器、流收尾的 `completed` 结算上报、客户端预设。
+//!
+//! ⚠️ **仍然没有任何真机实测**：所有端点与字段名都来自公开 README，方案 §1
+//! 列的 4 处来源冲突（host / 额度字段 / 目录来源 / 通道）在探针验证前不是事实。
+//! 代码已可编译、判据已被单测钉住，但「能不能真的调通」必须以真机为准。
 //!
 //! ── 已知限制对照（方案 §3）────────────────────────────────────
 //! L1 无续期 → `credentials` 不做有效期推算，`classify(401)` 才判死号；
@@ -27,8 +29,10 @@
 //!
 //! 硬约束：release 是 `panic=abort`，本模块零 unwrap/expect/panic。
 
+pub mod adapter;
 pub mod chat;
 pub mod checkin;
+pub mod client;
 pub mod classify;
 pub mod credentials;
 pub mod endpoints;
@@ -37,6 +41,7 @@ pub mod session;
 pub mod stream;
 pub mod usage;
 
+pub use adapter::LINGXI_ADAPTER;
 pub use endpoints::ID;
 
 #[cfg(test)]

@@ -138,8 +138,14 @@ pub async fn send_raw(
     timeout_ms: Option<u64>,
 ) -> Result<ApiResponse, reqwest::Error> {
     let client = egress::client_for(proxy);
+    // ⚠️ 这里曾经只认 POST、其余一律 GET：传 "PUT" 的调用方会被静默降级成
+    // GET（WPS 灵犀的 run 生命周期上报正是 PUT），发出去还是 200/404，
+    // 看不出方法错了。方法参数是契约的一部分，就得按契约分派；未列出的方法
+    // 仍回落 GET（既有调用只传 GET/POST，行为不变）。
     let mut builder = match method {
         "POST" => client.post(url),
+        "PUT" => client.put(url),
+        "DELETE" => client.delete(url),
         _ => client.get(url),
     };
     builder = builder.header("Accept", "application/json");

@@ -8,8 +8,49 @@
 //! 硬约束：release 是 `panic=abort`，本文件零 unwrap/expect/panic。
 
 use std::collections::HashSet;
+use std::sync::{Mutex, OnceLock};
 
 use serde_json::{json, Value};
+
+/// 内置兜底目录（公开参考实现里反复出现的模型 key；倍率按 `multiplier`）。
+/// 上游插件包没有这一家，清单必须能离线给出，否则刚加完账号 `/v1/models`
+/// 是空的，客户端连可点的名字都没有。
+fn builtin_catalog() -> Vec<Value> {
+    parse_catalog(&json!({ "models": [
+        { "key": "deepseek-v4.1-flash", "name": "DeepSeek V4.1 Flash", "multiplier": 0.12 },
+        { "key": "qwen3.8_flash", "name": "Qwen3.8 Flash", "multiplier": 0.08 },
+        { "key": "qwen3.8_max", "name": "Qwen3.8 Max", "multiplier": 0.8 },
+        { "key": "glm-5.3-flash", "name": "GLM-5.3 Flash", "multiplier": 0.11 },
+        { "key": "glm-5.3", "name": "GLM-5.3", "multiplier": 0.75 },
+        { "key": "kimi-k3", "name": "Kimi K3", "multiplier": 1.0 },
+        { "key": "mimo-v2.6-pro", "name": "MiMo V2.6 Pro", "multiplier": 0.1 }
+    ] }))
+}
+
+fn table() -> &'static Mutex<Vec<Value>> {
+    static TABLE: OnceLock<Mutex<Vec<Value>>> = OnceLock::new();
+    TABLE.get_or_init(|| Mutex::new(builtin_catalog()))
+}
+
+fn lock_table() -> std::sync::MutexGuard<'static, Vec<Value>> {
+    table().lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// 当前目录（内置兜底 / 远程刷新后的清单）。
+pub fn current() -> Vec<Value> {
+    lock_table().clone()
+}
+
+/// 用一次远程拉取的结果替换目录；空清单**不覆盖**（保留兜底，别把页面清空）。
+pub fn replace(rows: Vec<Value>) -> usize {
+    if rows.is_empty() {
+        return current().len();
+    }
+    let mut guard = lock_table();
+    let count = rows.len();
+    *guard = rows;
+    count
+}
 
 fn first_text<'a>(item: &'a Value, keys: &[&str]) -> Option<&'a str> {
     keys.iter()

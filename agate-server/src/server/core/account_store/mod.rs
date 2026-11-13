@@ -114,6 +114,7 @@ pub mod doubaowork_accounts;
 pub mod custom_accounts;
 pub mod kiro_accounts;
 pub mod kuku_accounts;
+pub mod lingxi_accounts;
 pub mod lobsterai_accounts;
 pub mod loomy_accounts;
 pub mod monkeycode_accounts;

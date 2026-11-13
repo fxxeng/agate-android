@@ -568,6 +568,21 @@ object PresetRegistry {
             pasteMultiline = true,
             supportsCheckin = true,
         ),
+
+        // WPS 灵犀（lingxi）：上游 agent2api 插件包没有这一家，按三个公开参考
+        // 实现原生移植（见 docs/WPS灵犀-移植方案.md）。首版**只开粘贴**：
+        // ① 无 OAuth / 无 refresh，wps_sid 约半天失效，只能重新粘贴；
+        // ② 同一浏览器只保留最近一次登录，Android WebView 的 Cookie 是全局的，
+        //    多账号互斥（方案 L2），所以首版不做网页登录，避免给出会互相顶号的入口；
+        // ③ 端点与字段尚未真机实测，desc 里如实写清，别让用户以为是稳定通道。
+        ProviderPreset(
+            "lingxi", "WPS 灵犀", "WPS 灵犀 · 粘贴 wps_sid / 整段 Cookie（非官方接口，可能随时失效）",
+            LoginKind.PASTE,
+            listOf(AuthChannel.PASTE),
+            pasteHint = "在 lingxi.wps.cn 登录后复制整段 Cookie（含 wps_sid），或只粘 V02S 开头的裸 sid",
+            pasteMultiline = false,
+            supportsCheckin = true,
+        ),
     )
 
     fun byId(id: String): ProviderPreset? = ALL.firstOrNull { it.id == id }

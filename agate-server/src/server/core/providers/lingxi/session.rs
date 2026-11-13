@@ -12,7 +12,7 @@
 //! 不持锁跨 await（本文件没有 async）。
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 
 use super::endpoints::SESSION_TTL_MS;
 
@@ -95,6 +95,14 @@ impl Default for SessionCache {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// 进程内唯一的会话缓存实例（`prepare_body` 写、`build_chat_request` 读）。
+/// 用 `OnceLock` 而不是各处 `SessionCache::new()`：否则每个调用点各有一份，
+/// 「建会话 → 用会话」两步永远对不上。
+pub fn global() -> &'static SessionCache {
+    static CACHE: OnceLock<SessionCache> = OnceLock::new();
+    CACHE.get_or_init(SessionCache::new)
 }
 
 #[cfg(test)]

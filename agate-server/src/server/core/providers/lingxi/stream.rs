@@ -110,6 +110,122 @@ pub fn rewrite_frame(frame: &Value, prompt: u64, completion: u64) -> Option<Rewr
     })
 }
 
+/// 私有 SSE → 标准 chat SSE 的**字节流状态机**（`upstream::translate` 消费）。
+///
+/// 上游不发 `[DONE]`：靠 `finish_reason` 收尾，本机补 `data: [DONE]`。
+/// 流收尾同时触发 `client::report_completed`（结算点，见方案 L7）。
+pub struct LingxiToChatMachine {
+    model: String,
+    buffer: String,
+    finished: bool,
+    pending_run: Option<crate::server::core::providers::lingxi::client::PendingRun>,
+}
+
+fn chunk_bytes(value: &Value) -> bytes::Bytes {
+    bytes::Bytes::from(format!("data: {value}\n\n"))
+}
+
+fn done_bytes() -> bytes::Bytes {
+    bytes::Bytes::from_static(b"data: [DONE]\n\n")
+}
+
+impl LingxiToChatMachine {
+    pub fn new(
+        model: &str,
+        pending_run: Option<crate::server::core::providers::lingxi::client::PendingRun>,
+    ) -> Self {
+        Self {
+            model: model.to_string(),
+            buffer: String::new(),
+            finished: false,
+            pending_run,
+        }
+    }
+
+    /// 上游 `usage` 只认 `prompt_tokens` / `completion_tokens`；`total_tokens`
+    /// 是上下文大小，不能当本次消耗透传（方案 L9）。两个字段都拿不到时
+    /// **不下发 usage**，不拿 0 冒充。
+    fn tokens_of(frame: &Value) -> Option<(u64, u64)> {
+        let usage = frame.get("usage")?;
+        let prompt = usage.get("prompt_tokens").and_then(Value::as_u64)?;
+        let completion = usage.get("completion_tokens").and_then(Value::as_u64)?;
+        Some((prompt, completion))
+    }
+
+    fn one_event(&mut self, event: &str) -> Vec<bytes::Bytes> {
+        let mut out = Vec::new();
+        for line in event.lines() {
+            let data = line.strip_prefix("data:").unwrap_or("").trim();
+            if data.is_empty() || data == "[DONE]" {
+                continue;
+            }
+            let Ok(frame) = serde_json::from_str::<Value>(data) else {
+                continue;
+            };
+            let tokens = Self::tokens_of(&frame);
+            let Some(mut rewritten) = rewrite_frame(&frame, tokens.unwrap_or((0, 0)).0, tokens.unwrap_or((0, 0)).1) else {
+                continue;
+            };
+            if tokens.is_none() {
+                if let Some(object) = rewritten.chunk.as_object_mut() {
+                    object.remove("usage");
+                }
+            }
+            if let Some(object) = rewritten.chunk.as_object_mut() {
+                object.insert("model".to_string(), Value::String(self.model.clone()));
+            }
+            if rewritten.refused {
+                // 审核拦截换号无用：交一条可读错误帧，不把兜底话术当答案
+                out.push(chunk_bytes(&json!({
+                    "error": { "message": "上游内容策略拦截了本次请求", "type": "content_filter" }
+                })));
+                rewritten.finished = true;
+            }
+            out.push(chunk_bytes(&rewritten.chunk));
+            if rewritten.finished && !self.finished {
+                self.finished = true;
+                out.push(done_bytes());
+                self.report_completed();
+            }
+        }
+        out
+    }
+
+    fn report_completed(&mut self) {
+        if let Some(run) = self.pending_run.take() {
+            crate::server::core::providers::lingxi::client::report_completed(run);
+        }
+    }
+
+    pub fn push(&mut self, chunk: &[u8]) -> Vec<bytes::Bytes> {
+        if self.finished {
+            return Vec::new();
+        }
+        self.buffer.push_str(&String::from_utf8_lossy(chunk));
+        let mut out = Vec::new();
+        while let Some(pos) = self.buffer.find("\n\n") {
+            let event: String = self.buffer.drain(..pos + 2).collect();
+            out.extend(self.one_event(&event));
+        }
+        out
+    }
+
+    pub fn finish(&mut self) -> Vec<bytes::Bytes> {
+        if self.finished {
+            return Vec::new();
+        }
+        self.finished = true;
+        let rest = std::mem::take(&mut self.buffer);
+        let mut out = self.one_event(&rest);
+        const DONE: &[u8] = b"data: [DONE]\n\n";
+        if !out.iter().any(|frame| frame.as_ref() == DONE) {
+            out.push(done_bytes());
+        }
+        self.report_completed();
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

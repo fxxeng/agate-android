@@ -8,12 +8,28 @@
 //!     **绝不看 HTTP 200**；
 //!   · 待确认文案不许含「已签到 / 已领取」。
 //!
-//! 本文件只实现状态机（纯函数）：落盘与回查由下一批接线接到账号记录自己的
-//! 命名空间里（与 `put_codearts_welfare_ledger` 同一处写法）。
+//! ── 端点未验证时的行为（重要）─────────────────────────────────
+//! 三个公开参考实现**都没给出**签到领取 / 状态查询 / 余额的完整上游 URL，
+//! 只给了 `daily_check_in`、`status=claimed`、`total_balance` 这些语义字段。
+//! `endpoints::CLAIM_ENDPOINT_VERIFIED = false` 时本模块不发任何签到请求，
+//! 走完状态机得到 `KeepPending` ⇒ 如实回「签到结果待确认」，并带
+//! `endpointUnverified: true`。**不落 done、不写「已领取」、不反复打上游**。
+//! 真机探针确认端点后把那一个常量改成 true，整条链即启用。
+//!
+//! 台账写在账号记录自己的命名空间（`lingxiCheckin`），写法与
+//! `put_codearts_welfare_ledger` 同：锁内现读整条、只写自己的键。
 //!
 //! 硬约束：release 是 `panic=abort`，本文件零 unwrap/expect/panic。
 
+use serde_json::{json, Map, Value};
+
+use crate::server::core::account_store::store::AccountStore;
+use crate::server::core::beijing;
+use crate::server::errors::GatewayError;
+use crate::server::logging;
+
 use super::endpoints::TASK_DAILY_CHECK_IN;
+use super::{client, credentials, endpoints};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Ledger {
@@ -73,6 +89,120 @@ pub fn task_name() -> &'static str {
     TASK_DAILY_CHECK_IN
 }
 
+/// 台账里「今天」的状态。`day` 变了就是新的一天，昨天的 pending 不带过来
+/// （与豆包台账同口径）；没有台账 / 形状不认一律 Idle。
+fn ledger_state(ledger: &Value, today: &str) -> Ledger {
+    if ledger.get("day").and_then(Value::as_str) != Some(today) {
+        return Ledger::Idle;
+    }
+    match ledger.get("state").and_then(Value::as_str) {
+        Some("pending") => Ledger::Pending,
+        Some("done") => Ledger::Done,
+        _ => Ledger::Idle,
+    }
+}
+
+fn write_ledger(store: &AccountStore, account_id: &str, day: &str, state: &str) -> Result<(), GatewayError> {
+    let mut ledger = Map::new();
+    ledger.insert("version".to_string(), json!(1));
+    ledger.insert("day".to_string(), json!(day));
+    ledger.insert("state".to_string(), json!(state));
+    if state == "pending" {
+        ledger.insert("submittedAt".to_string(), json!(logging::now_ms()));
+    }
+    store
+        .put_lingxi_checkin_ledger(account_id, &Value::Object(ledger))
+        .map_err(|error| {
+            GatewayError::with_status(
+                error.status_code,
+                format!("签到台账落盘失败：{}", error.message),
+            )
+        })
+}
+
+/// 签到链的执行体（`billing::checkin::checkin_for` 的 lingxi 分支）。
+/// 返回 `{success, msg, alreadyCompleted?, endpointUnverified?}` ——
+/// 形状与 `checkin_completed_today` / `claim_pending` 对齐。
+pub async fn claim_for_account(
+    store: &AccountStore,
+    account_id: &str,
+) -> Result<Value, GatewayError> {
+    let day = beijing::today_key();
+    let ledger = store
+        .lingxi_checkin_ledger(account_id)
+        .unwrap_or(Value::Null);
+    let state = ledger_state(&ledger, &day);
+    if state == Ledger::Done {
+        return Ok(json!({
+            "success": false,
+            "alreadyCompleted": true,
+            "msg": "今日已签到",
+        }));
+    }
+
+    let Some(record) = store.lingxi_account_record(account_id) else {
+        return Err(GatewayError::with_status(401, "没有可用的 WPS 灵犀账号"));
+    };
+    let (sid, cookie, uid) = client::credentials_of(&record);
+    if sid.is_empty() {
+        return Err(GatewayError::with_status(400, "灵犀账号缺少 wps_sid，请重新粘贴 Cookie"));
+    }
+    let identity = if uid.is_empty() { sid.as_str() } else { uid.as_str() };
+    let device = credentials::device_id(identity);
+
+    // 领前余额：读不出是 None，不拿 0 冒充。
+    let before = client::balance(&sid, &device, cookie.as_deref())
+        .await
+        .map(|balance| balance.total);
+
+    let (transport_ok, explicit_reject) = if state == Ledger::Pending {
+        // 有 pending 只回查，**绝不重复提交**（重复领取回 200 假成功，
+        // 再提交一次也不会多给，只会让台账与上游状态更对不上）。
+        (endpoints::CLAIM_ENDPOINT_VERIFIED, false)
+    } else {
+        // 先落盘 pending 再发 claim：落盘失败就不发，避免「发了但没记住」。
+        write_ledger(store, account_id, &day, "pending")?;
+        match client::task_claim(&sid, &device, cookie.as_deref()).await {
+            // status == 0 是「端点未验证、没发过请求」，不是上游 404。
+            Ok(reply) => (
+                endpoints::CLAIM_ENDPOINT_VERIFIED && (200..300).contains(&reply.status),
+                reply.explicit_reject,
+            ),
+            // 传输失败/超时/读不出：台账保持 pending，不重发。
+            Err(error) => return Err(error),
+        }
+    };
+
+    let after = client::balance(&sid, &device, cookie.as_deref())
+        .await
+        .map(|balance| balance.total);
+    let task_claimed = client::task_status(&sid, &device, cookie.as_deref()).await;
+    let outcome = reconcile(state, transport_ok, explicit_reject, before, after, task_claimed);
+    match outcome {
+        Outcome::MarkDone | Outcome::AlreadyDone => {
+            write_ledger(store, account_id, &day, "done")?;
+            if outcome == Outcome::MarkDone {
+                Ok(json!({ "success": true, "msg": "签到奖励已到账" }))
+            } else {
+                Ok(json!({
+                    "success": false,
+                    "alreadyCompleted": true,
+                    "msg": "今日已签到",
+                }))
+            }
+        }
+        Outcome::ClearForRetry => {
+            write_ledger(store, account_id, &day, "idle")?;
+            Ok(json!({ "success": false, "msg": "上游明确拒绝签到领取，可稍后重试" }))
+        }
+        Outcome::KeepPending => Ok(json!({
+            "success": false,
+            "msg": pending_text(),
+            "endpointUnverified": !endpoints::CLAIM_ENDPOINT_VERIFIED,
+        })),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -122,5 +252,26 @@ mod tests {
             reconcile(Ledger::Done, true, false, Some(1.0), Some(2.0), None),
             Outcome::AlreadyDone
         );
+    }
+
+    #[test]
+    fn ledger_resets_on_a_new_day() {
+        let yesterday = json!({ "day": "2026-11-12", "state": "pending" });
+        assert_eq!(ledger_state(&yesterday, "2026-11-13"), Ledger::Idle);
+        assert_eq!(ledger_state(&Value::Null, "2026-11-13"), Ledger::Idle);
+        let pending = json!({ "day": "2026-11-13", "state": "pending" });
+        assert_eq!(ledger_state(&pending, "2026-11-13"), Ledger::Pending);
+    }
+
+    #[test]
+    fn unverified_endpoint_never_reports_success() {
+        // 端点没验证 ⇒ transport_ok=false ⇒ 状态机只能停在待确认。
+        assert!(!endpoints::CLAIM_ENDPOINT_VERIFIED);
+        assert_eq!(
+            reconcile(Ledger::Pending, false, false, None, None, None),
+            Outcome::KeepPending
+        );
+        let text = pending_text();
+        assert!(!text.contains("已签到") && !text.contains("已领取"));
     }
 }

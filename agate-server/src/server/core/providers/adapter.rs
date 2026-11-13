@@ -266,6 +266,10 @@ pub enum UpstreamResponse {
     /// 解析已在 `providers::doubaowork::chat::parse_event` 完成（含全套测试），
     /// 本变体的翻译器把那台解析器接进下行管线。走翻译层的理由同上。
     DoubaoworkSse,
+    /// WPS 灵犀：私有 SSE（正文在 `choices[].text`、不发 `[DONE]`）。
+    /// 翻译器 `upstream::translate::LingxiToChatStream` 在收尾时补 `[DONE]`
+    /// 并触发 run 的 `completed` 结算上报（见 `providers::lingxi` 模块头）。
+    LingxiSse,
 }
 
 /// 上游错误分类（架构文档 §4.2；三个动作的语义见模块头）。
@@ -1343,6 +1347,9 @@ pub fn adapter_for(kind: ProviderKind) -> &'static dyn ProviderAdapter {
         ProviderKind::Astudio => &super::astudio::adapter::ASTUDIO_ADAPTER,
         // QuWork（1.6.0）：无状态 OpenAI 兼容转发，单一站点、单一实例
         ProviderKind::QuWork => &super::quwork::QUWORK_ADAPTER,
+        // WPS 灵犀：三请求 + 私有 SSE（`UpstreamResponse::LingxiSse`）。
+        // 端点待真机实测，见 providers/lingxi/mod.rs。
+        ProviderKind::Lingxi => &super::lingxi::LINGXI_ADAPTER,
     }
 }
 

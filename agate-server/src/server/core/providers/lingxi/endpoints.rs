@@ -71,8 +71,16 @@ pub fn plans_url() -> String {
     url("/api/aioffice/v1/sessions/plans")
 }
 
-/// 任务中心状态 / 领取。路径未在任何参考实现里给全，标注为待实测；
-/// P0 只做状态机（见 `checkin.rs`），不依赖这条常量发请求。
+/// ⚠️ **端点未验证开关**：三个公开参考实现只给了任务标识
+/// `daily_check_in`、`status=claimed`、`total_balance` 这些语义字段，
+/// 签到领取 / 状态查询 / 余额 / 目录的**上游完整路径一律没给出**。
+/// 下面这些路径是占位，真机探针确认前不发任何签到/额度写请求 ——
+/// 这是全仓唯一开关：验证后改成 `true` 即整条链启用，不用改调用点。
+/// 换成 `true` 的判据是「真机抓到一条 2xx 且字段能对上的响应」，
+/// 不是「看着像」。
+pub const CLAIM_ENDPOINT_VERIFIED: bool = false;
+
+/// 任务中心状态 / 领取（**占位路径，见 `CLAIM_ENDPOINT_VERIFIED`**）。
 pub fn task_url(task: &str) -> String {
     url(&format!("/api/aioffice/v1/tasks/{task}"))
 }

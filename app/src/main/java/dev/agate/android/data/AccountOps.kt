@@ -154,6 +154,9 @@ object AccountOps {
             // 负责解成 Cookie 对并校验登录态；这里原样送出去，不在客户端
             // 做半套解析 —— 两处各解析一次迟早会分叉）。
             "doubaowork" -> body.put("cookie", primary.trim())
+            // WPS 灵犀：整段 Cookie 或裸 wps_sid 都放进 `text`，由内核
+            // `lingxi::credentials::normalize_paste` 判三形态（客户端不做半套解析）。
+            "lingxi" -> body.put("text", primary.trim())
             "commandcode" -> body.put("apiKey", primary.trim())
             // DeepSeek 网页版：粘贴 userToken（不是 Cookie，也不是 sk- 平台 Key
             // —— 那种是另一套接口）。内核 `login::verify_token` 会先做一次

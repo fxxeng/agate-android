@@ -65,6 +65,17 @@ pub fn normalize_paste(line: &str) -> Result<Credential, String> {
     })
 }
 
+/// 从落库的整段 Cookie 里取出 `wps_sid`（转发层用；裸 sid 也认）。
+pub fn cookie_sid(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.starts_with("V02S") {
+        return Some(trimmed.to_string());
+    }
+    cookie_value(trimmed, "wps_sid")
+        .and_then(sid_value)
+        .map(str::to_string)
+}
+
 /// 上游按 device 维度管登录态：**同一账号永远同一个设备、不同账号不同设备**。
 /// 参考实现用 `sha256("lingxi2api:" + uid)`；本仓按同一口径派生，避免随机值
 /// 被上游当成新设备、也避免多个账号共用一个设备互相顶会话。

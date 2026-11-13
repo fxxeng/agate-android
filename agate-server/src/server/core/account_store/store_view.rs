@@ -334,6 +334,10 @@ impl AccountStore {
             // 公开形态：字段两地完全一致，差别只在站点域名（那是转发与凭证层的
             // 事，公开形态只用 `edition` 把地区标出来供界面显示）
             self.to_monkeycode_public_account(record)
+        } else if record.provider() == super::lingxi_accounts::LINGXI_PROVIDER_ID {
+            // WPS 灵犀：Cookie / wps_sid 是真凭据，必须走自己的一支，
+            // 落到 workbuddy 兜底形状会随账号列表下发（方案 L4）。
+            self.to_lingxi_public_account(record)
         } else if record.provider() == super::kuku_accounts::KUKU_PROVIDER_ID {
             // KukuAI（百度文库库库 AI）：单一入口（粘贴 Cookie / 导入本机登录态），
             // 公开形态带 uid(=uk) / loginName(=昵称) / tokenTail（见

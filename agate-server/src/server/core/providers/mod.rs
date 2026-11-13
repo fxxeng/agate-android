@@ -150,9 +150,9 @@ pub mod images;
 /// 自定义家走独立通道」的两条路径。
 pub mod custom;
 pub mod kuku;
-/// WPS 灵犀（lingxi）协议判据层：P0 第一批只落纯函数与单测，**尚未注册
-/// `ProviderKind` / 适配器 / 账号存储**，不要把它当成已可调用的 provider。
-/// 边界与待实测项见 `lingxi/mod.rs` 模块头及 `docs/WPS灵犀-移植方案.md`。
+/// WPS 灵犀（lingxi）：协议判据层 + 三请求编排 + 私有 SSE 翻译器，接线已完成。
+/// ⚠️ 端点与字段均来自公开参考实现，**尚未真机实测**，见 `lingxi/mod.rs`
+/// 模块头与 `docs/WPS灵犀-移植方案.md` 的 4 处来源冲突。
 pub mod lingxi;
 pub mod loomy;
 /// MonkeyCode（长亭科技的开源 AI 开发平台）。适配实现在 `monkeycode/`：
@@ -668,6 +668,11 @@ pub enum ProviderKind {
     /// 归 **Agent 分段**（上游 `agent2api-providers` 包，order 33；本仓
     /// `PROVIDERS` 不存 order 字段，按接入批次排在末尾）。只支持粘贴凭证。
     QuWork,
+    /// WPS 灵犀（lingxi）：网页会话 Cookie `wps_sid`，私有三请求 SSE。
+    /// 上游 agent2api 插件包**没有这一家**（3.5.0-beta.1 已核），协议按三个
+    /// 公开参考实现交叉验证移植，端点待真机实测（见 `docs/WPS灵犀-移植方案.md`）。
+    /// 归 Agent 分段（与其余「客户端型」上游同处置）。
+    Lingxi,
 }
 
 /// 一个提供商的静态元数据。
@@ -870,6 +875,10 @@ pub const PROVIDERS: &[ProviderMeta] = &[
     // QuWork（1.6.0）：上游插件 `meta.order = 33`，归 Agent 分段。本仓注册表
     // 没有 order 字段（按接入批次排末尾），order 33 只作移植记录写在这里。
     ProviderMeta::agent("quwork", "QuWork"),
+    // WPS 灵犀：上游插件包无此家，按公开参考实现原生移植。排末尾（新家按
+    // 接入批次追加），归 Agent 分段。⚠️ 端点与字段尚未真机实测，
+    // 见 providers/lingxi/mod.rs 与 docs/WPS灵犀-移植方案.md。
+    ProviderMeta::agent("lingxi", "WPS 灵犀"),
 ];
 
 /// provider id 在注册表里的下标（未知 id → None）。
@@ -967,6 +976,7 @@ pub fn kind_from_id(id: &str) -> Option<ProviderKind> {
         "kiro" => Some(ProviderKind::Kiro),
         "astudio" => Some(ProviderKind::Astudio),
         "quwork" => Some(ProviderKind::QuWork),
+        "lingxi" => Some(ProviderKind::Lingxi),
         // 走到这里 = 上面的注册表判定已放行、这个 match 却没有对应分支：
         // 只可能是有人给 `PROVIDERS` 加了条目忘了加这里。开发期喊出来；
         // release 返回 None（见上：宁可为「未知」，不可误认成别家）。
@@ -1022,6 +1032,7 @@ pub const fn kind_id(kind: ProviderKind) -> &'static str {
         ProviderKind::Kiro => "kiro",
         ProviderKind::Astudio => "astudio",
         ProviderKind::QuWork => "quwork",
+        ProviderKind::Lingxi => "lingxi",
     }
 }
 

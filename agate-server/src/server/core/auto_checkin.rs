@@ -125,7 +125,7 @@ pub fn default_time() -> String {
 /// 这是「有签到或每日活跃任务」的清单，不是「有积分概念」的清单：CatPaw 有积分
 /// 查询但没有签到，因此不在此列 —— 它的账号在批量签到里被算作 `skipped`。
 /// 加一家之前先确认它的签到链路真的存在（一个点了必然报错的复选框比没有更糟）。
-pub const CHECKIN_PROVIDERS: [&str; 21] = [
+pub const CHECKIN_PROVIDERS: [&str; 22] = [
     "workbuddy",
     "workbuddy-intl",
     "raccoon",
@@ -175,6 +175,11 @@ pub const CHECKIN_PROVIDERS: [&str; 21] = [
     // QuWork 1.6.0：先查 → 领取 → 回查的每日奖励（结果不明不重复提交），
     // 见 `providers::quwork::checkin`。追加在末尾（与上面同一理由）。
     "quwork",
+    // WPS 灵犀：任务中心 daily_check_in，幂等台账见 `providers::lingxi::checkin`。
+    // ⚠️ 领取端点尚未真机验证（`CLAIM_ENDPOINT_VERIFIED=false`），当前轮次只
+    // 返回「待确认」、不发上游请求。登记在这里是为了让签到中心如实显示这一家
+    // 的状态，而不是把它藏起来当作「已支持」。追加在末尾（同一理由）。
+    "lingxi",
 ];
 
 /// 缺省的签到提供商集合（全选）

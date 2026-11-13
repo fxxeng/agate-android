@@ -2053,6 +2053,14 @@ async fn attempt_queue(
                         ctx.telemetry,
                     ),
                 ),
+                // WPS 灵犀私有 SSE（`choices[].text` + 无 [DONE]）
+                UpstreamResponse::LingxiSse => Box::pin(
+                    super::translate::LingxiToChatStream::new(
+                        response,
+                        &wire_model,
+                        ctx.telemetry,
+                    ),
+                ),
                 UpstreamResponse::Chat => {
                     return Err(GatewayError::with_status(
                         500,

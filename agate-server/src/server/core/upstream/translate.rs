@@ -669,3 +669,84 @@ impl Stream for DoubaoworkToChatStream {
         }
     }
 }
+
+
+/// WPS 灵犀**私有 SSE** → 标准 chat SSE 的字节流（`UpstreamResponse::LingxiSse`）。
+///
+/// 与另外几台同构：响应字节 → 空闲守卫 → 状态机 → 帧队列。差别只有两点：
+///   · 上游不发 `[DONE]`，由状态机在 `finish_reason` / EOF 时补；
+///   · EOF 时状态机触发 `client::report_completed`（run 的结算点，方案 L7）。
+pub struct LingxiToChatStream {
+    inner: futures::stream::BoxStream<'static, Result<Bytes, std::io::Error>>,
+    machine: crate::server::core::providers::lingxi::stream::LingxiToChatMachine,
+    pending: VecDeque<Bytes>,
+    upstream_done: bool,
+    capture: Option<Arc<crate::server::core::debug_traffic::TrafficCapture>>,
+}
+
+impl LingxiToChatStream {
+    pub fn new(
+        response: reqwest::Response,
+        model: &str,
+        telemetry: &Arc<super::usage::RequestTelemetry>,
+    ) -> Self {
+        use futures::StreamExt;
+        let described = response.bytes_stream().map(|item| {
+            item.map_err(|error| {
+                std::io::Error::other(crate::server::core::egress::describe_error_detail(&error))
+            })
+        });
+        let guarded = super::stall::idle_guard(
+            Box::pin(described),
+            Duration::from_millis(crate::server::config::timeout_settings().stream_idle_ms()),
+        );
+        // 按上游真名取走本轮待结算 run（prepare_body 写入、并发单飞保证同键不重）
+        let run = crate::server::core::providers::lingxi::client::take_pending_run(model);
+        Self {
+            inner: guarded,
+            machine: crate::server::core::providers::lingxi::stream::LingxiToChatMachine::new(
+                model, run,
+            ),
+            pending: VecDeque::new(),
+            upstream_done: false,
+            capture: telemetry.capture(),
+        }
+    }
+}
+
+impl Stream for LingxiToChatStream {
+    type Item = Result<Bytes, std::io::Error>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        use futures::StreamExt;
+        loop {
+            if let Some(frame) = self.pending.pop_front() {
+                return Poll::Ready(Some(Ok(frame)));
+            }
+            if self.upstream_done {
+                return Poll::Ready(None);
+            }
+            match self.inner.poll_next_unpin(cx) {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(None) => {
+                    self.upstream_done = true;
+                    for frame in self.machine.finish() {
+                        self.pending.push_back(frame);
+                    }
+                }
+                Poll::Ready(Some(Ok(bytes))) => {
+                    if let Some(capture) = &self.capture {
+                        capture.push(&bytes);
+                    }
+                    for frame in self.machine.push(&bytes[..]) {
+                        self.pending.push_back(frame);
+                    }
+                }
+                Poll::Ready(Some(Err(error))) => {
+                    self.upstream_done = true;
+                    return Poll::Ready(Some(Err(error)));
+                }
+            }
+        }
+    }
+}

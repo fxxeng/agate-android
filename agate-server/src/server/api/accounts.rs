@@ -1682,6 +1682,34 @@ pub async fn add_account(state: &ServerState, body: &Bytes) -> Response {
                 Err(error) => Err(AccountStoreError::new(error.message, error.status_code)),
             }
         }
+        // WPS 灵犀：**只支持粘贴**（方案 L4：Android 上没有 WPS 桌面客户端
+        // Cookie 库可读，也没有 OAuth / refresh）。整段 Cookie 或裸 wps_sid
+        // 都行，三种形态由 `lingxi::credentials::normalize_paste` 归一。
+        Some(crate::server::core::providers::ProviderKind::Lingxi) => {
+            if import_desktop || auth_file_b64.is_some() {
+                return management_error(
+                    400,
+                    "WPS 灵犀只支持粘贴 wps_sid / 整段 Cookie（Android 上没有可导入的桌面登录态）",
+                );
+            }
+            let raw = ["text", "cookie", "wpsSid", "credential"]
+                .iter()
+                .find_map(|key| payload.get(*key).and_then(Value::as_str))
+                .or_else(|| auth_file_content)
+                .unwrap_or("")
+                .trim();
+            match crate::server::core::providers::lingxi::credentials::normalize_paste(raw) {
+                Ok(credential) => {
+                    let value = json!({
+                        "wps_sid": credential.wps_sid,
+                        "cookie": credential.cookie,
+                        "uid": credential.uid,
+                    });
+                    store.add_lingxi_account(&value, import_name, "manual")
+                }
+                Err(message) => Err(AccountStoreError::new(message, 400)),
+            }
+        }
         // WorkBuddy 系的两家（国内版 / 国际版）：同一套凭证形态与落账号路径，
         // 差别只有归属 —— provider id 自己就是归属（拆家后不再从 payload 里的
         // `edition` 反推：那是账号的属性，而落哪一家是身份问题）。

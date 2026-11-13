@@ -95,6 +95,10 @@ object ProviderIcons {
         // QuWork 1.6.0：上游 `assets/quwork.png`，复制到
         // `drawable-nodpi/provider_quwork.png`。单一站点，无变体。
         "quwork" to R.drawable.provider_quwork,
+        // WPS 灵犀：上游 agent2api 插件包没有这一家的图标资产，桌面端只有
+        // 48×48（放大到 256 会糊）。这里用 256×256 的纯几何占位图，
+        // 拿到官方高清资产后直接替换同名文件即可。
+        "lingxi" to R.drawable.provider_lingxi,
     )
 
     /**

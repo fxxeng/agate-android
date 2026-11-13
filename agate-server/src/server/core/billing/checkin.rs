@@ -499,6 +499,20 @@ pub async fn checkin_for(
             .map_err(|error| error.message);
             claim_result(id, name, &display, true, claim)
         }
+        "lingxi" => {
+            // WPS 灵犀：任务中心 `daily_check_in`。上游重复领取回 200 假成功，
+            // 到账只认领前/领后余额差或官方 `status=claimed`，先落 pending
+            // 再提交、有 pending 只回查（见 `providers::lingxi::checkin`）。
+            // ⚠️ 领取端点在三个公开参考实现里都没给全：
+            // `endpoints::CLAIM_ENDPOINT_VERIFIED=false` 时不发请求、结果恒为
+            // 「待确认」并带 `endpointUnverified` —— 不虚报「已领取」。
+            let claim = crate::server::core::providers::lingxi::checkin::claim_for_account(
+                store, &id,
+            )
+            .await
+            .map_err(|error| error.message);
+            claim_result(id, name, &display, true, claim)
+        }
         // 兜底只服务默认那家（WorkBuddy 国内版）——**不是**「剩下所有家」。
         // 这里曾经是无所不包的 `_`：一个 provider 只要没在上面列出，就会拿自己的
         // 令牌去打腾讯的签到接口，稳定报错且看不出原因（Qoder 接入前正是这个处境）。
