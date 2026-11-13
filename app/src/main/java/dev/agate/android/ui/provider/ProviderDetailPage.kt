@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -56,6 +57,7 @@ import dev.agate.android.data.rateRecoverAt
 import dev.agate.android.data.CustomProviderOps
 import dev.agate.android.data.ProviderIdentityOps
 import dev.agate.android.data.GatewayRepository
+import dev.agate.android.data.LingxiOps
 import dev.agate.android.data.ScheduledTaskOps
 import dev.agate.android.data.PresetRegistry
 import dev.agate.android.data.dto.AccountDto
@@ -954,6 +956,31 @@ private fun AccountBlock(
                 onOpen = { onOpenLimiter(acc) },
             )
         }
+        // ── 智点明细（WPS 灵犀，**账号级**）─────────────────────────
+        //
+        // 为什么要单独一个入口：对话响应**不带计费结果**，余额又是延迟归账，
+        // 只有 `/credits/transaction/list` 那条流水写着本次实际扣了多少。
+        // 所以余额与明细是两套口径，不能互相推算 —— 按账号看才不会串。
+        // 打开才拉（默认收起）：一条流水一次上游请求，页面加载不该替用户打。
+        if (acc.provider == "lingxi") {
+            var showLedger by remember { mutableStateOf(false) }
+            Row(
+                Modifier.fillMaxWidth().padding(top = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("智点明细", color = C.textSub, fontSize = 12.sp, modifier = Modifier.weight(1f))
+                Text(
+                    "查看 ›",
+                    color = C.accent,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.clickable { showLedger = true },
+                )
+            }
+            if (showLedger) {
+                LingxiLedgerDialog(acc = acc, onDismiss = { showLedger = false })
+            }
+        }
         // ── 套餐通道（ZCode 专属，**按账号**而不是按家）───────────────
         //
         // 为什么必须按账号：`zcodePlan` 存在账号自己的 raw 里（内核
@@ -1160,10 +1187,10 @@ private fun ZcodeVersionCard() {
                 onValueChange = { editing = it },
                 singleLine = true,
                 textStyle = androidx.compose.ui.text.TextStyle(fontSize = 13.sp),
-                // 兜底不写具体版本号：内置默认值由内核从 `zcode_system.json` 的
-                // `clientVersion` 取（会随模板更新），客户端写死一个就会在升级后
-                // 指向一个早已作废的版本 —— 与下面那行「留空 = 回到内置默认（—）」
-                // 同一口径：读不到就说不知道，不编一个数字。
+                // 兜底不写具体版本号：内置默认值由内核从 `zcode_system.json` 的
+                // `clientVersion` 取（会随模板更新），客户端写死一个就会在升级后
+                // 指向一个早已作废的版本 —— 与下面那行「留空 = 回到内置默认（—）」
+                // 同一口径：读不到就说不知道，不编一个数字。
                 placeholder = { Text(identity?.default ?: "—", fontSize = 12.sp) },
                 modifier = Modifier.fillMaxWidth(),
             )
@@ -1644,6 +1671,145 @@ private fun SettingsTab(
 }
 
 /* ───────────── 小件 ───────────── */
+/**
+ * 灵犀智点明细（**逐账号**，一页一页翻）。
+ *
+ * ── 口径 ────────────────────────────────────────────────────
+ * 上游 `amount` 带符号：正 = 获取（签到 / 奖励），负 = 消耗（一次对话）。
+ * 颜色按国内习惯：**获取用红、消耗用绿**（与股票涨跌同一套约定）。
+ *
+ * ── 为什么必须由用户点开 ────────────────────────────────────
+ * 一条流水 = 一次上游请求。页面加载时替十几个账号各打一次，既慢又容易撞风控；
+ * 所以这里只在点「查看」后拉第一页，「加载更多」按游标往后翻。
+ *
+ * ── 读不出来 ────────────────────────────────────────────────
+ * 内核把失败写成 `upstreamStatus` + `error` 而不是空表；这里照它显示
+ * 「暂不可用」，绝不把「上游没回话」画成「这个账号没有流水」。
+ */
+@Composable
+private fun LingxiLedgerDialog(acc: AccountDto, onDismiss: () -> Unit) {
+    val C = agateColors()
+    val scope = rememberCoroutineScope()
+    var type by remember { mutableStateOf("all") }
+    var page by remember { mutableStateOf<LingxiOps.TxnPage?>(null) }
+    var items by remember { mutableStateOf<List<LingxiOps.Txn>>(emptyList()) }
+    var loading by remember { mutableStateOf(false) }
+
+    fun load(append: Boolean) {
+        if (loading) return
+        loading = true
+        scope.launch {
+            val next = LingxiOps.ledger(
+                accountId = acc.id,
+                type = type,
+                incomeCursor = if (append) page?.incomeCursor ?: 0 else 0,
+                expenseCursor = if (append) page?.expenseCursor ?: 0 else 0,
+            )
+            loading = false
+            if (next != null) {
+                page = next
+                items = if (append) items + next.items else next.items
+            }
+        }
+    }
+
+    // 换口径 = 重新从第一页拉（双向游标不能跨口径复用）
+    LaunchedEffect(acc.id, type) { load(append = false) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = C.cardBg,
+        title = {
+            Column {
+                Text("智点明细", color = C.textMain)
+                Text(acc.displayName, color = C.textDim, fontSize = 12.sp)
+            }
+        },
+        text = {
+            Column {
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    listOf("all" to "全部", "income" to "获取", "expense" to "消耗").forEach { (id, label) ->
+                        SmallAction(
+                            text = label,
+                            primary = type == id,
+                            enabled = !loading,
+                            onClick = { type = id },
+                        )
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                val current = page
+                when {
+                    loading && items.isEmpty() -> Text("读取中…", color = C.textDim, fontSize = 12.sp)
+                    current == null -> Text("读取中…", color = C.textDim, fontSize = 12.sp)
+                    current.unavailable -> Text(
+                        current.error ?: "暂不可用（上游没有返回可用流水）",
+                        color = C.red,
+                        fontSize = 12.sp,
+                    )
+                    items.isEmpty() -> Text("没有流水", color = C.textDim, fontSize = 12.sp)
+                    else -> Column(
+                        Modifier
+                            .heightIn(max = 340.dp)
+                            .verticalScroll(rememberScrollState()),
+                    ) {
+                        items.forEach { txn ->
+                            Row(
+                                Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Column(Modifier.weight(1f)) {
+                                    Text(
+                                        txn.title,
+                                        color = C.textMain,
+                                        fontSize = 12.5.sp,
+                                        maxLines = 1,
+                                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                    )
+                                    Text(
+                                        listOf(txn.source, txn.time).filter { it.isNotBlank() }
+                                            .joinToString(" · "),
+                                        color = C.textDim,
+                                        fontSize = 10.5.sp,
+                                        maxLines = 1,
+                                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                    )
+                                }
+                                Text(
+                                    (if (txn.amount > 0) "+" else "") + fmtNum(txn.amount),
+                                    color = if (txn.amount >= 0) C.red else C.green,
+                                    fontSize = 12.5.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                )
+                            }
+                        }
+                        if (current.hasMore) {
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                if (loading) "加载中…" else "加载更多 ›",
+                                color = C.accent,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier
+                                    .clickable(enabled = !loading) { load(append = true) }
+                                    .padding(vertical = 4.dp),
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("关闭", color = C.accent) }
+        },
+        dismissButton = {
+            TextButton(onClick = { load(append = false) }, enabled = !loading) {
+                Text("刷新", color = C.accent)
+            }
+        },
+    )
+}
+
 @Composable
 private fun Card(content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit) {
     val C = agateColors()

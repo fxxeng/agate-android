@@ -14,7 +14,7 @@ use crate::server::core::providers::ProviderKind;
 use crate::server::errors::GatewayError;
 use crate::server::logging;
 
-use super::{chat, classify, client, credentials, endpoints, models, session, usage};
+use super::{channel, chat, classify, client, credentials, endpoints, models, session, usage, ws};
 
 pub static LINGXI_ADAPTER: LingxiAdapter = LingxiAdapter;
 pub struct LingxiAdapter;
@@ -263,6 +263,134 @@ impl ProviderAdapter for LingxiAdapter {
 
     fn supports_refresh(&self) -> bool {
         false // 无续期接口（方案 L1）
+    }
+
+    /// **只有选 WS 通道时才是有状态的**（P3，2026-11-14）。
+    ///
+    /// 这个返回值决定编排层走哪条路：
+    ///   · `false`（默认，`channel::current() == Sse`）→ 现有单请求路径：
+    ///     `prepare_body` 三请求 + `build_chat_request` + `LingxiSse` 翻译器，
+    ///     一行都不用改；
+    ///   · `true` → [`Self::forward_conversation`]，里面只有 cowork WS 一条链。
+    ///
+    /// ⚠️ 为什么用「同一个 provider 按设置切形态」而不是开两家：WS 通道要的
+    /// `ForwardOutcome` 与 SSE 的 `reqwest::Response` 不是一个类型，无法共存于
+    /// 单请求路径；而另开一家 provider 会让模型清单/账号/Key 白名单各多一套，
+    /// 收益换不来复杂度。编排层每请求现读这个值，**切换下一条请求即生效**。
+    fn is_stateful(&self) -> bool {
+        channel::current() == channel::Channel::Ws
+    }
+
+    /// WS 通道的会话式转发（只有 `is_stateful()` 为真时会走到）。
+    ///
+    /// 与 SSE 通道的三处差异（单段文本入参 / 无 token 用量 / 代理只作用于建
+    /// 会话）在 `ws.rs` 模块头逐条写明 —— 界面与文档要按同一口径解释。
+    fn forward_conversation<'a>(
+        &'a self,
+        store: &'a AccountStore,
+        account_id: &'a str,
+        body: &'a Value,
+        _client_headers: &HeaderMap,
+        _proxy: Option<crate::server::core::proxies::ResolvedProxy>,
+        stream: bool,
+        _telemetry: &'a std::sync::Arc<
+            crate::server::core::upstream::usage::RequestTelemetry,
+        >,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<
+                        crate::server::core::upstream::ForwardOutcome,
+                        GatewayError,
+                    >,
+                > + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            let record = store.lingxi_account_record(account_id).ok_or_else(|| {
+                GatewayError::with_status(401, "没有可用的 WPS 灵犀账号，请先登录或粘贴 wps_sid")
+            })?;
+            let (sid, cookie, uid) = client::credentials_of(&record);
+            if sid.is_empty() {
+                return Err(GatewayError::with_status(
+                    401,
+                    "WPS 灵犀账号缺少 wps_sid，请重新登录或粘贴 Cookie",
+                ));
+            }
+            if let Some(error) = client::precheck(body) {
+                return Err(error);
+            }
+            let model = model_of(body);
+            if model.is_empty() {
+                return Err(GatewayError::with_status(400, "请求缺少 model"));
+            }
+            let device = credentials::device_id(&identity(&sid, &uid));
+            ws::forward(&sid, &device, cookie.as_deref(), model, body, stream).await
+        })
+    }
+
+    /// 灵犀支持网页登录（P1，2026-11-14）：登录页就是 `lingxi.wps.cn`，
+    /// 登录成功后 `wps_sid` 落在 `.wps.cn` 域，壳侧 `CookieManager` 读得到
+    /// （HttpOnly 不影响读）。**没有** OAuth 授权码可换，所以收尾走
+    /// `exchange_login_code`（`callbackUrl` 字段里装的是 Cookie 载荷，
+    /// 与豆包工作同一契约）。
+    fn supports_web_login(&self) -> bool {
+        true
+    }
+
+    /// 授权地址 = 登录首页；state 只用于把回调配回本次任务（没有 CSRF 换码语义）。
+    ///
+    /// ⚠️ 为什么不做「带 redirect 的回调页」：灵犀的登录是纯 Cookie 站点，
+    /// 官方页不会把任何码回推到本机端口；壳侧登录窗直接读 Cookie 交回即可
+    /// （Android 上比桌面 CDP 更简单，见方案 L3）。
+    fn build_login_url(&self) -> Option<(String, String)> {
+        Some((
+            format!("{}/", endpoints::LOGIN_HOST),
+            crate::server::core::upstream::request::new_request_id(),
+        ))
+    }
+
+    /// 网页登录收尾：Cookie 载荷 → 归一 → **上游探活** → 落账号。
+    ///
+    /// 探活是这条链唯一的正确性判据：`wps_sid` 约半天失效（方案 L1），
+    /// 而且同一浏览器后登录的账号会把前一个顶掉（L2）—— 不探活就落库，
+    /// 用户会得到一个「加进去了但一调就 401」的账号。
+    /// 探活只认「两个域都 401/403」为死号（`client::probe`），传输失败不算。
+    fn exchange_login_code<'a>(
+        &'a self,
+        store: &'a AccountStore,
+        code: &'a str,
+        _state: &'a str,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<String, GatewayError>> + Send + 'a>,
+    > {
+        Box::pin(async move {
+            let credential = credentials::normalize_paste(code).map_err(|reason| {
+                GatewayError::with_status(400, format!("登录窗口里没有拿到有效的 wps_sid：{reason}"))
+            })?;
+            let identity = credential.uid.clone().unwrap_or_else(|| credential.wps_sid.clone());
+            let device = credentials::device_id(&identity);
+            if !client::probe(&credential.wps_sid, &device, credential.cookie.as_deref()).await {
+                return Err(GatewayError::with_status(
+                    401,
+                    "WPS 灵犀登录态无效（另一个账号刚登录过会把上一个顶掉），请重新登录",
+                ));
+            }
+            let payload = json!({
+                "wps_sid": credential.wps_sid,
+                "cookie": credential.cookie,
+                "uid": credential.uid.unwrap_or_default(),
+            });
+            let account = store
+                .add_lingxi_account(&payload, None, "web")
+                .map_err(|error| GatewayError::with_status(error.status_code, error.message))?;
+            Ok(account
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string())
+        })
     }
 
     fn supports_default_model(&self) -> bool {

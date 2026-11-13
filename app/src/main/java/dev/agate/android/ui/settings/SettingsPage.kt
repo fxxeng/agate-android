@@ -46,6 +46,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import dev.agate.android.data.KeepalivePrefs
 import dev.agate.android.data.LogOps
+import dev.agate.android.data.LingxiOps
 import dev.agate.android.data.SettingsOps
 import dev.agate.android.ui.components.AgateAccordion
 import dev.agate.android.ui.components.AgateBadge
@@ -644,6 +645,68 @@ fun SettingsPage(
                         },
                     )
                 }
+            }
+
+            // ══ 5b. 灵犀通道（WPS 灵犀专用）══════════════════
+            //
+            // 为什么值得单独一组：两条通道**拿到的能力不同**，没有一条是全能的。
+            // SSE 保留多轮与 token 用量但拿不到工具执行；cowork WS 让上游真执行
+            // 工具与沙箱代码，但只收一段文本、也没有 token 用量。切换后**下一条
+            // 请求**即生效（内核 `is_stateful()` 每请求现读），不需要重启。
+            // 文案里的「各自拿到什么」由内核给（`options[].detail`），界面不编。
+            val ctx = LocalContext.current
+            var lingxiSetting by remember { mutableStateOf<Pair<String, List<LingxiOps.ChannelOption>>?>(null) }
+            var lingxiBusy by remember { mutableStateOf(false) }
+            LaunchedEffect(Unit) {
+                LingxiOps.configure(GatewayPrefs.apiKey(ctx))
+                lingxiSetting = LingxiOps.channel()
+            }
+            AgateAccordion(
+                title = "灵犀通道",
+                badge = {
+                    val current = lingxiSetting?.first
+                    AgateBadge(
+                        text = when (current) {
+                            null -> "读取中"
+                            "ws" -> "cowork WS"
+                            else -> "SSE（默认）"
+                        },
+                        tone = if (current == null) BadgeTone.GRAY else BadgeTone.BLUE,
+                    )
+                },
+            ) {
+                val setting = lingxiSetting
+                if (setting == null) {
+                    Text("读取失败，稍后重进本页再试", style = AgateType.Caption, color = C.textDim)
+                } else {
+                    setting.second.forEach { option ->
+                        ItemRow(label = option.label, desc = option.detail) {
+                            if (setting.first == option.id) {
+                                AgateBadge("当前", BadgeTone.GREEN)
+                            } else {
+                                MiniButton("切换", filled = false, enabled = !lingxiBusy) {
+                                    scope.launch {
+                                        lingxiBusy = true
+                                        val ok = LingxiOps.saveChannel(option.id)
+                                        lingxiBusy = false
+                                        if (ok) {
+                                            lingxiSetting = option.id to setting.second
+                                            setError("灵犀", null)
+                                        } else {
+                                            setError("灵犀", "切换失败（内核没保存成功）")
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Hint(
+                        "只影响 WPS 灵犀一家。WS 通道把多轮历史压平成一段文本，也没有 token 用量 —— " +
+                            "这些是上游协议本身的限制，不是开关没生效。",
+                        C,
+                    )
+                }
+                SetFeedback("灵犀", errors, notices, C)
             }
 
             // ══ 6. 脱敏与安全 ════════════════════════════════

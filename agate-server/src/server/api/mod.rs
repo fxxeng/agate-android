@@ -100,6 +100,9 @@ pub mod images;
 // `core::import_ccswitch`）
 pub mod import_sources;
 pub mod keys_api;
+// WPS 灵犀的任务中心 / 智点明细 / 通道设置（`/api/lingxi/settings` 与账号下的
+// `/api/accounts/{id}/lingxi/*` 子路径，见该模块头）
+pub mod lingxi_api;
 /// 保活换行丢弃开关（`/api/keepalive-strip`）：与 `/api/sanitize`、`/api/debug`
 /// 同形的单开关端点，独立成文件而不是塞进 config_api —— 理由见该模块头。
 pub mod keepalive;

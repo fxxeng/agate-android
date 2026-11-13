@@ -1065,6 +1065,44 @@ impl LoginService {
                 .await
                 .map(LoginCallbackSubmission::Completed);
         }
+        // WPS 灵犀（P1，2026-11-14）：`callbackUrl` 里装的同样是 **Cookie 载荷**
+        // （壳侧登录窗 `CookieManager.getCookie(https://lingxi.wps.cn/)` 的整段
+        // 串，或用户手输的裸 `wps_sid`）。与豆包工作同一条契约、同一个原因：
+        // 上游没有授权码可换，凭证就是登录态 Cookie 本身。
+        //
+        // 与豆包的差别只有一处：本家**不落 pending 表**（没有换码请求要防重放），
+        // 归属校验全靠 `tasks.get(state)` + `task.provider` 那一层；落库前的
+        // 上游探活放在 `exchange_login_code` 里（`wps_sid` 半天失效 + 多账号互斥，
+        // 见方案 L1/L2）。
+        if kind == ProviderKind::Lingxi {
+            return match adapter_for(kind)
+                .exchange_login_code(&self.store, callback_url, state)
+                .await
+            {
+                Ok(account_id) => {
+                    let session = json!({
+                        "accountUid": account_id,
+                        "nickname": Value::Null,
+                        "edition": task.edition,
+                        "provider": task.provider,
+                    });
+                    handle.update(|task| {
+                        task.done = true;
+                        task.session = Some(session);
+                        task.finished_at = Some(logging::now_ms());
+                    });
+                    Ok(LoginCallbackSubmission::Completed(account_id))
+                }
+                Err(error) => {
+                    finish_task_error(&handle, &error.message);
+                    logging::log(
+                        "[Login]",
+                        &format!("❌ WPS 灵犀网页登录换取凭证失败: {}", error.message),
+                    );
+                    Err(error)
+                }
+            };
+        }
         // 豆包工作：`callbackUrl` 里装的**不是 URL，而是 Cookie 载荷**
         // （JSON 行数组 / `{"cookies":[…]}` / Cookie 头串）。
         //

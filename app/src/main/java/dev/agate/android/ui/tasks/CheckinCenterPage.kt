@@ -35,6 +35,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.agate.android.data.CheckinCenter
 import dev.agate.android.data.CheckinOps
+import dev.agate.android.data.LingxiOps
 import dev.agate.android.data.PresetRegistry
 import dev.agate.core.GatewayPrefs
 import dev.agate.android.ui.components.AgateBadge
@@ -92,6 +93,7 @@ fun CheckinCenterPage(
         val key = GatewayPrefs.apiKey(ctx)
         CheckinCenter.configure(key)
         CheckinOps.configure(key)
+        LingxiOps.configure(key)
         CheckinCenter.startPolling()
         onDispose { CheckinCenter.stopPolling() }
     }
@@ -208,6 +210,10 @@ fun CheckinCenterPage(
 
             // ── 成长任务 ──
             GrowthCard(snap = snap, onToast = { toast(it) })
+
+            // ── 灵犀任务（WPS 灵犀的 4 个任务）──
+            TaskGap()
+            LingxiCard(snap = snap, onToast = { toast(it) })
 
             TaskGap(24)
         }
@@ -919,6 +925,211 @@ private fun GrowthCard(snap: CheckinCenter.Snap, onToast: (String) -> Unit) {
         )
     }
 }
+
+/* ── 灵犀任务卡（WPS 灵犀的 4 个任务） ── */
+
+/**
+ * 灵犀任务中心（P2）。
+ *
+ * ── 为什么和「成长任务」不是同一块 ──────────────────────────
+ * 上游只有 4 个任务（签到 / 专家模式 / 群聊 / 客户端），**没有 accept 与进度**：
+ * `status` 三态 `incomplete / claimable / claimed`，其中「专家 / 群聊 / 客户端」
+ * 三类必须产生**真实行为**（真对话 / 真建群）才会翻转，光点一下没有用。
+ * 所以这里给两种动作：`领取`（已达标）与`代跑`（未达标，网关替跑一次真实动作）。
+ *
+ * ── 三条界面纪律 ────────────────────────────────────────────
+ *   1. 打开页面**零上游请求**：每个账号要手点「查询」才问上游（与签到中心
+ *      其余卡片同一纪律）；
+ *   2. 「已领取」只认内核回读的任务状态，界面不按 HTTP 结果自己判；
+ *   3. 读不出时写「暂不可用」，不拿空表冒充「没有任务」。
+ */
+@Composable
+private fun LingxiCard(snap: CheckinCenter.Snap, onToast: (String) -> Unit) {
+    val C = agateColors()
+    val scope = rememberCoroutineScope()
+    val accounts = snap.groups.firstOrNull { it.id == "lingxi" }?.accounts.orEmpty()
+    if (accounts.isEmpty()) return
+    val boards = remember { mutableStateMapOf<String, LingxiOps.Board>() }
+    val expanded = remember { mutableStateMapOf<String, Boolean>() }
+    /** 正在执行的键（`{账号}:{动作}`），各自转圈互不牵连。 */
+    var busyKey by remember { mutableStateOf<String?>(null) }
+
+    fun query(acc: CheckinCenter.AccountRow) {
+        val key = "${acc.id}:query"
+        if (busyKey != null) return
+        busyKey = key
+        scope.launch {
+            val board = LingxiOps.board(acc.id)
+            busyKey = null
+            if (board == null) onToast("${acc.name} 查询失败")
+            else boards[acc.id] = board
+        }
+    }
+
+    /** 用一个动作接口的返回体重刷看板（内核把最新的任务表一起带回来了）。 */
+    fun absorb(acc: CheckinCenter.AccountRow, r: LingxiOps.OpResult) {
+        val data = r.data ?: return
+        // 领取 / 代跑的响应体与看板同形，这里直接复用解析：转成 JSON 再走一次
+        // 解析不值得，改为简单地从 data 里读回任务表字段。
+        val tasksArr = data.optJSONArray("tasks") ?: return
+        val tasks = (0 until tasksArr.length()).mapNotNull { i ->
+            tasksArr.optJSONObject(i)?.let { row ->
+                LingxiOps.Task(
+                    key = row.optString("key"),
+                    title = row.optString("title").ifBlank { row.optString("key") },
+                    status = row.optString("status"),
+                    claimable = row.optBoolean("claimable"),
+                    claimed = row.optBoolean("claimed"),
+                    reward = if (row.has("reward") && !row.isNull("reward")) row.optDouble("reward") else null,
+                    auto = row.optBoolean("auto"),
+                    hint = row.optString("hint"),
+                )
+            }
+        }
+        boards[acc.id] = LingxiOps.Board(
+            tasks = tasks,
+            incomplete = tasks.count { !it.claimable && !it.claimed },
+            claimable = tasks.count { it.claimable && !it.claimed },
+            claimed = tasks.count { it.claimed },
+            pendingCredit = tasks.filter { it.claimable && !it.claimed }.sumOf { it.reward ?: 0.0 },
+            claimedCredit = tasks.filter { it.claimed }.sumOf { it.reward ?: 0.0 },
+            checkedInToday = tasks.firstOrNull { it.key == "daily_check_in" }?.claimed ?: false,
+            unavailable = false,
+            error = null,
+        )
+    }
+
+    fun claim(acc: CheckinCenter.AccountRow, task: LingxiOps.Task) {
+        val key = "${acc.id}:${task.key}:claim"
+        if (busyKey != null) return
+        busyKey = key
+        scope.launch {
+            val r = LingxiOps.claim(acc.id, task.key)
+            busyKey = null
+            absorb(acc, r)
+            onToast("${acc.name} · ${task.title}：" + (r.message.ifBlank { if (r.ok) "已领取" else "领取失败" }))
+        }
+    }
+
+    fun run(acc: CheckinCenter.AccountRow, task: LingxiOps.Task) {
+        val key = "${acc.id}:${task.key}:run"
+        if (busyKey != null) return
+        busyKey = key
+        scope.launch {
+            val r = LingxiOps.run(acc.id, task.key)
+            busyKey = null
+            absorb(acc, r)
+            onToast("${acc.name} · ${task.title}：" + (r.message.ifBlank { if (r.ok) "已执行" else "执行失败" }))
+        }
+    }
+
+    TaskCard {
+        TaskCardHeader(
+            title = "灵犀任务",
+            subtitle = "WPS 灵犀 · 4 个任务：签到 / 专家模式 / 群聊 / 客户端",
+        )
+        accounts.forEach { acc ->
+            val board = boards[acc.id]
+            val open = expanded[acc.id] ?: false
+            TaskRow(
+                title = acc.name,
+                providerId = "lingxi",
+                label = PresetRegistry.labelOf("lingxi"),
+                subtitle = when {
+                    board == null -> "尚未查询"
+                    board.unavailable -> "上游任务中心读不出来 · 暂不可用"
+                    else -> buildString {
+                        append("可领 ${board.claimable} · 已领 ${board.claimed}")
+                        if (board.incomplete > 0) append(" · 待完成 ${board.incomplete}")
+                        if (board.pendingCredit > 0) append(" · 待领 ${fmtCredit(board.pendingCredit)}")
+                        if (board.checkedInToday) append(" · 今日已签到")
+                    }
+                },
+            ) {
+                TaskBtn(
+                    if (busyKey == "${acc.id}:query") "…" else "查询",
+                    outlined = true,
+                    enabled = busyKey == null,
+                ) { query(acc) }
+                if (!board?.tasks.isNullOrEmpty()) {
+                    TaskBtn(if (open) "收起" else "明细", outlined = true) {
+                        expanded[acc.id] = !open
+                    }
+                }
+            }
+            val tasks = board?.tasks
+            if (open && !tasks.isNullOrEmpty()) {
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(5.dp),
+                    modifier = Modifier.padding(start = 8.dp, bottom = 4.dp, end = 2.dp),
+                ) {
+                    tasks.forEach { task ->
+                        val actionKey = busyKey.orEmpty()
+                        val working = actionKey.startsWith("${acc.id}:${task.key}:")
+                        TaskSubRow {
+                            Text(
+                                if (task.claimed) "✓" else "○",
+                                color = if (task.claimed) C.green else C.textDim,
+                                fontSize = 12.sp,
+                            )
+                            Text(
+                                task.title,
+                                color = if (task.claimed) C.textDim else C.textMain,
+                                fontSize = 12.sp,
+                                modifier = Modifier.weight(1f),
+                            )
+                            if (task.reward != null && task.reward > 0) {
+                                Text(
+                                    "+${fmtCredit(task.reward)}",
+                                    style = AgateType.Caption,
+                                    color = C.textDim,
+                                )
+                            }
+                            Text(
+                                when {
+                                    task.claimed -> "已领取"
+                                    task.claimable -> "可领取"
+                                    task.auto -> "需真实操作"
+                                    else -> "未开放"
+                                },
+                                style = AgateType.Caption,
+                                color = when {
+                                    task.claimed -> C.green
+                                    task.claimable -> C.amber
+                                    task.auto -> C.textSub
+                                    else -> C.textDim
+                                },
+                            )
+                            if (task.claimable && !task.claimed) {
+                                TaskBtn(
+                                    if (working) "…" else "领取",
+                                    primary = true,
+                                    enabled = busyKey == null,
+                                ) { claim(acc, task) }
+                            } else if (!task.claimed && task.auto && task.key != "daily_check_in") {
+                                TaskBtn(
+                                    if (working) "…" else "代跑",
+                                    outlined = true,
+                                    enabled = busyKey == null,
+                                ) { run(acc, task) }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Spacer(Modifier.height(6.dp))
+        TaskFold(
+            "「代跑」是真的跑一次：专家模式 / 客户端会发起一次真实对话并上报 run 生命周期，" +
+                "群聊会真建一个群再解散 —— 上游按这些行为判定任务是否完成，模拟点击不会翻转。" +
+                "每日签到请用上面的「领取」。"
+        )
+    }
+}
+
+/** 智点数额：整数不带小数点，其余保留一位（与余额展示同口径）。 */
+private fun fmtCredit(value: Double): String =
+    if (value == value.toLong().toDouble()) value.toLong().toString() else String.format("%.1f", value)
 
 /* ── 轮次读数的说明（首页/总览用） ── */
 

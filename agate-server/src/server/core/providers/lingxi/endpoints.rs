@@ -142,6 +142,72 @@ pub fn claim_path(task: &str, date: &str) -> String {
     path
 }
 
+/// 智点明细流水（`GET`）。参数口径见 `ledger::list_query`。
+pub fn transaction_list_path() -> &'static str {
+    "/api/public/v1/credits/transaction/list"
+}
+
+/// 某个会话的消耗明细（`GET session_id&cursor&limit`）。
+pub fn transaction_expense_path() -> &'static str {
+    "/api/public/v1/credits/transaction/expense"
+}
+
+/// 群聊：建群 / 解散（`POST /api/imchat/v1/channels`、`DELETE …/{id}`）。
+pub fn imchat_channels_path() -> &'static str {
+    "/api/imchat/v1/channels"
+}
+
+pub fn imchat_channel_path(channel_id: &str) -> String {
+    format!("/api/imchat/v1/channels/{channel_id}")
+}
+
+/// ── WebSocket 两条通道（P3 + 群聊任务）──────────────────────
+///
+/// ⚠️ host 是 **`lingxi.kdocs.cn`**：插件作者实测「同一个 cookie 两边都认」，
+/// 且握手 `Origin` 必须是 `https://lingxi.kdocs.cn`（不是 wps.cn）——
+/// 换域会连不上或被拒。这里把 `https` 换成 `wss`，路径保持原样。
+///
+/// 两条不是同一个东西：
+///   · `cowork_ws_url`：`/api/aioffice/v1/cowork/sessions/{id}/sandbox/completions/ws`
+///     —— 对话主通道（思考 + 工具调用 + 真沙箱执行），会话由
+///     `POST /api/aioffice/v1/cowork/sessions` 创建；
+///   · `group_ws_url`：`/api/aioffice/v1/sessions/{id}/completions/ws`
+///     —— **群聊任务**的前置动作（建群前必须让该会话收到过一次 `user.input`），
+///     会话由 `POST /api/aioffice/v1/cowork/sessions` 以 `cowork_web` 类型创建。
+pub fn ws_host() -> &'static str {
+    FALLBACK_HOST
+}
+
+/// 握手 `Origin`（`wss` 与 `Origin` 都必须是 kdocs 域）。
+pub fn ws_origin() -> &'static str {
+    FALLBACK_HOST
+}
+
+pub fn cowork_ws_url(session_id: &str) -> String {
+    format!(
+        "wss://{}/api/aioffice/v1/cowork/sessions/{session_id}/sandbox/completions/ws",
+        host_of(FALLBACK_HOST)
+    )
+}
+
+pub fn group_ws_url(session_id: &str) -> String {
+    format!(
+        "wss://{}/api/aioffice/v1/sessions/{session_id}/completions/ws",
+        host_of(FALLBACK_HOST)
+    )
+}
+
+/// `https://host` → `host`（拼 `wss://` 时用；不引第二套字符串替换）。
+fn host_of(origin: &str) -> &str {
+    origin
+        .strip_prefix("https://")
+        .or_else(|| origin.strip_prefix("http://"))
+        .unwrap_or(origin)
+}
+
+/// 群聊任务用的会话类型（与对话缓存里的 `cowork_client` 不同）。
+pub const SESSION_TYPE_GROUP: &str = "cowork_web";
+
 /// 签到写请求开关。**2026-11-13 第二轮打开**：端点不再是猜的 ——
 /// `ketion/lingxi2api-panel` 的 `LXClaim` + `autotask.go`（真实在跑的每日
 /// 任务链）与 `RobbsLuo/Coding2API` 的 `EP_CLAIM` + `checkin()` 逐字一致。

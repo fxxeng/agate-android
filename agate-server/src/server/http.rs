@@ -308,6 +308,14 @@ pub fn panel_router(state: ServerState) -> Router {
             "/api/retry",
             get(api::retry_api::get_retry).put(api::retry_api::put_retry),
         )
+        // WPS 灵犀的通道选择（sse / ws）：GET 读、POST 写。
+        // 独立成端点而不混进 /api/config 的理由与 /api/retry 相同 —— 它只影响
+        // **一家 provider** 的转发形态，且切换后下一条请求即生效（见
+        // `providers::lingxi::channel` 的模块头）。
+        .route(
+            "/api/lingxi/settings",
+            get(api::lingxi_api::get_settings).post(api::lingxi_api::post_settings),
+        )
         // 上游请求超时（四项）：GET 读、PUT（允许部分字段）更新。
         // 与 /api/retry 同一模式、同一理由独立成端点：保存后对下一个请求
         // 立即生效（连接超时经由出网客户端，其余三项在各阶段自己的计时器上）。

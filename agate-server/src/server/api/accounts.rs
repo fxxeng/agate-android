@@ -444,6 +444,20 @@ pub async fn dispatch(
                 return super::onboarding::claim(&state, &id).await;
             }
         }
+        // WPS 灵犀任务中心（P2）：领取 / 代跑。写动作一律 POST（页面展开只查）。
+        // 两条后缀互不包含，先后不影响命中。
+        if let Some(id) = rest.strip_suffix("/lingxi/tasks/claim") {
+            let id = decode_segment(id);
+            if !id.is_empty() {
+                return super::lingxi_api::claim_task(&state, &id, body).await;
+            }
+        }
+        if let Some(id) = rest.strip_suffix("/lingxi/tasks/run") {
+            let id = decode_segment(id);
+            if !id.is_empty() {
+                return super::lingxi_api::run_task(&state, &id, body).await;
+            }
+        }
         // WorkBuddy 成长任务（国内版）：单任务执行 / 开学季 / 猫猫旅行，见
         // `api::growth`。三条后缀互不包含（各自以 /growth/xxx 结尾），先后不影响
         // 命中；读的时候按界面上按钮的顺序排列（单任务执行 → 开学季 → 旅行巡检）。
@@ -487,6 +501,22 @@ pub async fn dispatch(
             let id = decode_segment(id);
             if !id.is_empty() {
                 return super::growth::status(&state, &id).await;
+            }
+        }
+        // WPS 灵犀任务看板（只读）。与 growth 同一纪律：GET 只查不改状态，
+        // 领取/代跑是两条独立的 POST（见上面那一段）。
+        if let Some(id) = rest.strip_suffix("/lingxi/tasks") {
+            let id = decode_segment(id);
+            if !id.is_empty() {
+                return super::lingxi_api::get_tasks(&state, &id).await;
+            }
+        }
+        // WPS 灵犀智点明细（只读，分页靠双向游标）。读不出时仍然 200，
+        // 带 `upstreamStatus` 与 `error`，界面写「暂不可用」。
+        if let Some(id) = rest.strip_suffix("/lingxi/ledger") {
+            let id = decode_segment(id);
+            if !id.is_empty() {
+                return super::lingxi_api::get_ledger(&state, &id, query).await;
             }
         }
     }

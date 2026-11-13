@@ -111,6 +111,11 @@ pub const RESERVED_KV_KEYS: &[&str] = &[
     // 时生成并落库，只经 HMAC 使用、从不外发。属于「其它零散状态」，
     // 配置写入绝不能动它。
     "panelAltchaSecret",
+    // WPS 灵犀的通道选择（core::providers::lingxi::channel）：`{channel:"sse"|"ws"}`
+    // 一个键。属于「其它零散状态」——不是配置项（配置写入不能动它），因为它
+    // 是某一家 provider 的转发形态，跟着 `config::save_raw` 被删掉会让用户
+    // 选了 WS 却在改一次 API Key 后悄悄回到 SSE。
+    "lingxiChannel",
     // config.json 迁移的完成标记（db::migrate::config）。为什么配置这一项
     // **需要**标记键而其余项不需要：配置项是开放集合，没法问「配置迁过了
     // 没有」（理由与完整论证见 db::migrate::config 的模块头）。

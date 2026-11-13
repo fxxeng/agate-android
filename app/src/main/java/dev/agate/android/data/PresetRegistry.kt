@@ -570,15 +570,28 @@ object PresetRegistry {
         ),
 
         // WPS 灵犀（lingxi）：上游 agent2api 插件包没有这一家，按三个公开参考
-        // 实现原生移植（见 docs/WPS灵犀-移植方案.md）。首版**只开粘贴**：
-        // ① 无 OAuth / 无 refresh，wps_sid 约半天失效，只能重新粘贴；
-        // ② 同一浏览器只保留最近一次登录，Android WebView 的 Cookie 是全局的，
-        //    多账号互斥（方案 L2），所以首版不做网页登录，避免给出会互相顶号的入口；
-        // ③ 端点与字段尚未真机实测，desc 里如实写清，别让用户以为是稳定通道。
+        // 实现原生移植（见 docs/WPS灵犀-移植方案.md）。
+        //
+        // ── P1（2026-11-14）：加回内嵌网页登录 ────────────────────
+        // 登录页就是 `lingxi.wps.cn`，登录态只写在 `.wps.cn` 的 Cookie 里
+        // （`wps_sid`，HttpOnly），没有授权码可拦 ⇒ 与 KukuAI 同一形态：
+        // `webLoginCookies = true` + `sessionCookieNames`，由壳侧登录窗读
+        // Cookie 后走**通用回调**（`callbackUrl` 装 Cookie 串，内核
+        // `ProviderKind::Lingxi` 分支收尾并做上游探活）。
+        //
+        // ⚠️ 界面必须如实交代两条硬约束（方案 L1/L2）：
+        // ① `wps_sid` 约半天失效、没有续期接口 —— 失效后只能重新登录；
+        // ② **同一浏览器只保留最近一次登录**：Android 的 `CookieManager` 是
+        //    进程级全局、没法像桌面 Chrome 那样分 profile，所以**多账号只能
+        //    靠粘贴**；用网页登录添加第二个账号会把前一个顶掉（内核探活会
+        //    拦下真正死掉的那个，但界面不要假装两个都活着）。
+        // 因此网页登录只作为「单账号便捷入口」，粘贴始终保留。
         ProviderPreset(
-            "lingxi", "WPS 灵犀", "WPS 灵犀 · 粘贴 wps_sid / 整段 Cookie（非官方接口，可能随时失效）",
-            LoginKind.PASTE,
-            listOf(AuthChannel.PASTE),
+            "lingxi", "WPS 灵犀", "WPS 灵犀 · 网页登录 / 粘贴 wps_sid（非官方接口，可能随时失效）",
+            LoginKind.WEBVIEW,
+            listOf(AuthChannel.EMBEDDED, AuthChannel.PASTE),
+            webLoginCookies = true,
+            sessionCookieNames = listOf("wps_sid"),
             pasteHint = "在 lingxi.wps.cn 登录后复制整段 Cookie（含 wps_sid），或只粘 V02S 开头的裸 sid",
             pasteMultiline = false,
             supportsCheckin = true,

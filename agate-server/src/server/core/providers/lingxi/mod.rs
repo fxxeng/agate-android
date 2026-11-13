@@ -35,16 +35,20 @@
 //! 硬约束：release 是 `panic=abort`，本模块零 unwrap/expect/panic。
 
 pub mod adapter;
+pub mod channel;
 pub mod chat;
 pub mod checkin;
 pub mod client;
 pub mod classify;
 pub mod credentials;
 pub mod endpoints;
+pub mod ledger;
 pub mod models;
 pub mod session;
 pub mod stream;
+pub mod tasks;
 pub mod usage;
+pub mod ws;
 
 pub use adapter::LINGXI_ADAPTER;
 pub use endpoints::ID;
