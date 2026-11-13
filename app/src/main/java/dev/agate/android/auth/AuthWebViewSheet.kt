@@ -139,6 +139,9 @@ fun AuthWebViewSheet(
     val cookieSubmitted = remember { mutableStateOf(false) }
     // 交回失败（读到的是匿名 Cookie）后的冷却时刻，避免每 1.8s 打一次上游探活
     var retryAfter by remember { mutableStateOf(0L) }
+    // 上一次交回的 Cookie 串：**变了就立刻重试**（用户完成登录，值必然变），
+    // 没变就按冷却走 —— 既不刷上游，也不会因为一次网络抖动永远卡住。
+    var lastSubmitted by remember { mutableStateOf("") }
 
     // 完成检测：wait 轮询；结果只报一次（finished 防重复）。
     LaunchedEffect(session.state) {
@@ -150,26 +153,31 @@ fun AuthWebViewSheet(
             // CookieManager 读得到 HttpOnly 的会话 Cookie（`sessionid` 就是），
             // 因此这里读的是「完整 Cookie 串」，拼成 HTTP 头形态直接交回内核
             // （内核 `login::normalize_import` 认这个形态）。
-            if (cookieLogin && !cookieSubmitted.value && System.currentTimeMillis() >= retryAfter) {
+            if (cookieLogin && !cookieSubmitted.value) {
                 val cookie = firstCookieWithSession(cookieUrls, cookieNames)
-                if (cookie != null && !cookieSubmitted.value) {
-                    cookieSubmitted.value = true
-                    status = "已获取登录态，正在加入账号…"
-                    // 两种收尾形态：通用回调（把 Cookie 当 callbackUrl 交回，内核各家
-                    // 自己认）与专用端点（KukuAI：{state, cookie} → finish_kuku_login）
-                    val accepted = if (cookieCompletePath != null) {
-                        LoginClient.forwardCookie(session.state, cookie, cookieCompletePath)
-                    } else {
-                        LoginClient.forwardCallback(session.state, cookie)
-                    }
-                    if (!accepted) {
-                        // ⚠️ 未登录时通行证也会下发一条**匿名** `wps_sid`，内核探活
-                        // 回 401 是**正常中间态**（登录任务仍是 pending，见
-                        // `api::session::login_callback` 的 Err 分支）。这里复位
-                        // 标记继续等，别把「还没登录完」说成「登录失败」。
-                        cookieSubmitted.value = false
-                        retryAfter = System.currentTimeMillis() + 6_000L
-                        status = "还没登录成功 —— 在登录页完成登录后会自动继续"
+                if (cookie != null) {
+                    // Cookie 变了（用户刚登录完）立刻重试；没变则等冷却结束
+                    val due = cookie != lastSubmitted || System.currentTimeMillis() >= retryAfter
+                    if (due) {
+                        lastSubmitted = cookie
+                        cookieSubmitted.value = true
+                        status = "已获取登录态，正在加入账号…"
+                        // 两种收尾形态：通用回调（把 Cookie 当 callbackUrl 交回，内核各家
+                        // 自己认）与专用端点（KukuAI：{state, cookie} → finish_kuku_login）
+                        val accepted = if (cookieCompletePath != null) {
+                            LoginClient.forwardCookie(session.state, cookie, cookieCompletePath)
+                        } else {
+                            LoginClient.forwardCallback(session.state, cookie)
+                        }
+                        if (!accepted) {
+                            // ⚠️ 未登录时通行证也会下发一条**匿名** `wps_sid`，内核探活
+                            // 回 401 是**正常中间态**（登录任务仍是 pending，见
+                            // `api::session::login_callback` 的 Err 分支）。这里复位
+                            // 标记继续等，别把「还没登录完」说成「登录失败」。
+                            cookieSubmitted.value = false
+                            retryAfter = System.currentTimeMillis() + 30_000L
+                            status = "还没登录成功 —— 在登录页完成登录后会自动继续"
+                        }
                     }
                 }
             }
