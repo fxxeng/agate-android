@@ -104,18 +104,26 @@ fn credits_label(multiplier: Option<f64>) -> Option<String> {
 /// 把上游目录解析成本仓清单条目。**按小写去重**（同一 id 出现两次会让
 /// `/v1/models` 广告两遍，见 `catalog::advertised_names` 的既有判据）。
 pub fn parse_catalog(root: &Value) -> Vec<Value> {
-    let list: &[Value] = root
-        .get("data")
-        .and_then(|data| data.get("models"))
-        .and_then(Value::as_array)
-        .or_else(|| root.get("models").and_then(Value::as_array))
-        .or_else(|| root.as_array())
-        .map(Vec::as_slice)
-        .unwrap_or(&[]);
+    // ⚠️ 源码确认 `GET sessions/plans` 的 `data` 下有**两组**：`plans`（套餐，
+    // 不带倍率）与 `models`（带 `multiplier`）。两个参考实现都按这个顺序合并、
+    // 去重；只读 `models` 会漏掉套餐条目。
+    let data = root.get("data").unwrap_or(root);
+    let mut items: Vec<&Value> = Vec::new();
+    for key in ["plans", "models"] {
+        if let Some(list) = data.get(key).and_then(Value::as_array) {
+            items.extend(list.iter());
+        }
+    }
+    if items.is_empty() {
+        // 内置兜底 / 直接给数组的老形状
+        if let Some(list) = root.as_array() {
+            items.extend(list.iter());
+        }
+    }
 
     let mut claimed: HashSet<String> = HashSet::new();
     let mut out = Vec::new();
-    for item in list {
+    for item in items {
         let id = match item {
             Value::String(name) => name.trim().to_string(),
             Value::Object(_) => first_text(item, &["key", "id", "model", "name"])
@@ -165,6 +173,20 @@ mod tests {
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0]["id"], json!("qwen3.8_flash"));
         assert!(rows[0]["credits"].is_null(), "没给倍率时留 null，不拿 0 冒充");
+    }
+
+    #[test]
+    fn plans_and_models_groups_are_merged_in_that_order() {
+        let rows = parse_catalog(&json!({ "data": {
+            "plans": [{ "key": "plan_free", "name": "免费套餐" }],
+            "models": [{ "key": "qwen3.8_flash", "multiplier": 0.08 },
+                       "PLAN_FREE"]
+        } }));
+        // plans 先、models 后；同 id 在两组里出现两次也只广告一次
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0]["id"], json!("plan_free"));
+        assert!(rows[0]["credits"].is_null());
+        assert_eq!(rows[1]["id"], json!("qwen3.8_flash"));
     }
 
     #[test]

@@ -8,13 +8,17 @@
 //!     **绝不看 HTTP 200**；
 //!   · 待确认文案不许含「已签到 / 已领取」。
 //!
-//! ── 端点未验证时的行为（重要）─────────────────────────────────
-//! 三个公开参考实现**都没给出**签到领取 / 状态查询 / 余额的完整上游 URL，
-//! 只给了 `daily_check_in`、`status=claimed`、`total_balance` 这些语义字段。
-//! `endpoints::CLAIM_ENDPOINT_VERIFIED = false` 时本模块不发任何签到请求，
-//! 走完状态机得到 `KeepPending` ⇒ 如实回「签到结果待确认」，并带
-//! `endpointUnverified: true`。**不落 done、不写「已领取」、不反复打上游**。
-//! 真机探针确认端点后把那一个常量改成 true，整条链即启用。
+//! ── 2026-11-13 第二轮：端点由源码核实，链路真正启用 ───────────
+//! 第一批只按 README 语义猜路径，所以用一个开关把写请求关着。这一批复核了
+//! `ketion/lingxi2api-panel::internal/upstream/lingxi.go`（`LXClaim` +
+//! `autotask.go` 的真实每日任务链）与
+//! `RobbsLuo/Coding2API::src/provider/lingxi/client.py`（`EP_CLAIM` +
+//! `checkin()` + 测试），两者给出的端点、字段、流程逐字一致：
+//!   先读 `GET /api/public/v1/tasks` → `status == "claimed"` 直接返回已签；
+//!   否则 `POST /api/public/v1/tasks/daily_check_in/claim?date=…`；
+//!   奖励按领前/领后余额差算，差为 0 时读任务 `extra.today_reward` 回落。
+//! `CLAIM_ENDPOINT_VERIFIED` 现已打开；失效时状态机仍保留「待确认」、
+//! **不落 done、不写「已领取」、不反复打上游**。真机 2xx 仍是验收项。
 //!
 //! 台账写在账号记录自己的命名空间（`lingxiCheckin`），写法与
 //! `put_codearts_welfare_ledger` 同：锁内现读整条、只写自己的键。
@@ -150,11 +154,29 @@ pub async fn claim_for_account(
     let identity = if uid.is_empty() { sid.as_str() } else { uid.as_str() };
     let device = credentials::device_id(identity);
 
-    // 领前余额：读不出是 None，不拿 0 冒充。
+    // ① 领前余额：读不出是 None，不拿 0 冒充。
     let before = client::balance(&sid, &device, cookie.as_deref())
         .await
         .map(|balance| balance.total);
 
+    // ② 官方任务状态（只读）。两个参考实现都是「先查再领」：
+    //    `status == "claimed"` 说明今天已经签过，不该再提交一次。
+    let task = client::task_status(&sid, &device, cookie.as_deref()).await;
+    let date = task
+        .as_ref()
+        .map(|state| state.date.clone())
+        .unwrap_or_else(beijing::today_key);
+    let claimed_before = task.as_ref().map(|state| state.claimed);
+    if claimed_before == Some(true) {
+        write_ledger(store, account_id, &day, "done")?;
+        return Ok(json!({
+            "success": false,
+            "alreadyCompleted": true,
+            "msg": "今日已签到",
+        }));
+    }
+
+    // ③ 提交（仅 Idle）/ 只回查（Pending）。
     let (transport_ok, explicit_reject) = if state == Ledger::Pending {
         // 有 pending 只回查，**绝不重复提交**（重复领取回 200 假成功，
         // 再提交一次也不会多给，只会让台账与上游状态更对不上）。
@@ -162,10 +184,12 @@ pub async fn claim_for_account(
     } else {
         // 先落盘 pending 再发 claim：落盘失败就不发，避免「发了但没记住」。
         write_ledger(store, account_id, &day, "pending")?;
-        match client::task_claim(&sid, &device, cookie.as_deref()).await {
-            // status == 0 是「端点未验证、没发过请求」，不是上游 404。
+        match client::task_claim(&sid, &device, cookie.as_deref(), &date).await {
+            // status == 0 是「开关关着、没发过请求」，不是上游 404。
             Ok(reply) => (
-                endpoints::CLAIM_ENDPOINT_VERIFIED && (200..300).contains(&reply.status),
+                endpoints::CLAIM_ENDPOINT_VERIFIED
+                    && (200..300).contains(&reply.status)
+                    && !reply.explicit_reject,
                 reply.explicit_reject,
             ),
             // 传输失败/超时/读不出：台账保持 pending，不重发。
@@ -173,10 +197,15 @@ pub async fn claim_for_account(
         }
     };
 
+    // ④ 领后余额 + 回读任务状态。到账只认这两处证据，绝不看 HTTP 200。
     let after = client::balance(&sid, &device, cookie.as_deref())
         .await
         .map(|balance| balance.total);
-    let task_claimed = client::task_status(&sid, &device, cookie.as_deref()).await;
+    let task_after = client::task_status(&sid, &device, cookie.as_deref()).await;
+    let task_claimed = task_after
+        .as_ref()
+        .map(|state| state.claimed)
+        .or(claimed_before);
     let outcome = reconcile(state, transport_ok, explicit_reject, before, after, task_claimed);
     match outcome {
         Outcome::MarkDone | Outcome::AlreadyDone => {
@@ -264,9 +293,9 @@ mod tests {
     }
 
     #[test]
-    fn unverified_endpoint_never_reports_success() {
-        // 端点没验证 ⇒ transport_ok=false ⇒ 状态机只能停在待确认。
-        assert!(!endpoints::CLAIM_ENDPOINT_VERIFIED);
+    fn a_failed_or_disabled_claim_never_reports_success() {
+        // 开关被关掉 / 提交失败 ⇒ transport_ok=false ⇒ 只能停在待确认。
+        // 这条不依赖开关当前值：真机发现端点变更时一键停发，判据仍成立。
         assert_eq!(
             reconcile(Ledger::Pending, false, false, None, None, None),
             Outcome::KeepPending

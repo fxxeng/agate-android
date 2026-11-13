@@ -203,9 +203,16 @@ impl LingxiToChatMachine {
         }
         self.buffer.push_str(&String::from_utf8_lossy(chunk));
         let mut out = Vec::new();
-        while let Some(pos) = self.buffer.find("\n\n") {
-            let event: String = self.buffer.drain(..pos + 2).collect();
-            out.extend(self.one_event(&event));
+        // ⚠️ 上游**每帧是单行** `data:{…}`：Go 参考实现用 `bufio.Scanner`
+        // 逐行读，Python 的 `_frame_of` 也明说「不能用空行分帧，那会把多帧
+        // 吞成一帧」。第一批按 `\n\n` 分帧会让流式退化成一次性（上游不发
+        // 空行时甚至永远不吐帧）。这里按 `\n` 逐行，残缺的一段留在 buffer。
+        while let Some(pos) = self.buffer.find('\n') {
+            let line: String = self.buffer.drain(..pos + 1).collect();
+            out.extend(self.one_event(&line));
+            if self.finished {
+                break;
+            }
         }
         out
     }
@@ -292,5 +299,26 @@ mod tests {
         );
         let r = r.unwrap_or_else(|| Rewritten { chunk: Value::Null, finished: false, refused: false });
         assert!(r.refused);
+    }
+
+    #[test]
+    fn consecutive_single_line_frames_are_not_merged() {
+        // 上游每帧是单行、帧间没有空行（Go 用 bufio.Scanner、Python 明说
+        // 不能用空行分帧）。按 \n\n 分帧会把两帧一直堆到 EOF。
+        let mut machine = LingxiToChatMachine::new("m", None);
+        let bytes = b"data: {\"choices\":[{\"text\":\"A\"}]}\n\
+                     data: {\"choices\":[{\"text\":\"B\"}]}\n";
+        let out = machine.push(bytes);
+        assert_eq!(out.len(), 2, "两行必须各自出帧：{out:?}");
+        assert!(String::from_utf8_lossy(&out[0]).contains("\"content\":\"A\""));
+        assert!(String::from_utf8_lossy(&out[1]).contains("\"content\":\"B\""));
+    }
+
+    #[test]
+    fn an_incomplete_line_stays_in_the_buffer() {
+        let mut machine = LingxiToChatMachine::new("m", None);
+        assert!(machine.push(b"data: {\"choices\":[{\"text\":\"A\"").is_empty());
+        let out = machine.push(b"}]}\n");
+        assert_eq!(out.len(), 1);
     }
 }

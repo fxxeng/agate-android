@@ -1,13 +1,17 @@
 //! 智点余额解析（**两种来源形状都认**）。
 //!
-//! 方案 §1 标出的冲突：`Coding2API` 直接读 `total_balance`，
-//! `dsh-router-wpslingxi` 说上游没有这个字段、要累加
-//! `bonus_credits[].balance + purchased_credits[].balance`。
-//! 两个形状都解析；**都拿不到就返回 None**（界面写「暂不可用」），
-//! 绝不拿 0 冒充 —— 0 会被读成「额度用完了」，与「读不出」是两回事。
+//! **2026-11-13 源码复核**：`ketion/lingxi2api-panel` 的 `lxBalanceDetail`
+//! 与 `Coding2API::fetch_balance` 都读 `data.total_balance`，批次
+//! `bonus_credits[]` / `purchased_credits[]` 只是「积分构成」明细。所以
+//! `total_balance` 是主口径，批次累加留作兼容回落；**都拿不到返回 None**
+//! （界面写「暂不可用」），绝不拿 0 冒充 —— 0 会被读成「额度用完了」。
+//!
+//! ⚠️ `expire_time` 在两个实现里都是**字符串** `YYYY-MM-DD HH:mm[:ss]`
+//! （UTC+8），不是毫秒数；两种形状都认，解析不出就留 None。
 //!
 //! 硬约束：release 是 `panic=abort`，本文件零 unwrap/expect/panic。
 
+use chrono::TimeZone;
 use serde_json::Value;
 
 const EXPIRY_WINDOW_DAYS_MS: i64 = 15 * 24 * 3_600_000;
@@ -37,21 +41,37 @@ fn batch_sum(root: &Value, key: &str) -> f64 {
         .unwrap_or(0.0)
 }
 
+/// 上游的 `expire_time` 是北京时间字符串；旧形状也可能是毫秒数。
+fn expiry_ms(value: &Value) -> Option<i64> {
+    match value {
+        Value::String(raw) => {
+            let text = raw.trim();
+            let text = text.strip_suffix('Z').unwrap_or(text).replace('T', " ");
+            let naive = chrono::NaiveDateTime::parse_from_str(&text, "%Y-%m-%d %H:%M:%S")
+                .or_else(|_| chrono::NaiveDateTime::parse_from_str(&text, "%Y-%m-%d %H:%M"))
+                .ok()?;
+            let offset = chrono::FixedOffset::east_opt(8 * 3600)?;
+            offset
+                .from_local_datetime(&naive)
+                .single()
+                .map(|moment| moment.timestamp_millis())
+        }
+        other => other.as_i64(),
+    }
+}
+
 fn earliest_expiry(root: &Value, now_ms: i64) -> Option<i64> {
-    root.get("bonus_credits")
-        .and_then(Value::as_array)
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(|item| {
-                    item.get("expire_time")
-                        .or_else(|| item.get("expireTime"))
-                        .and_then(Value::as_i64)
-                })
-                .filter(|expire| *expire > now_ms && *expire - now_ms <= EXPIRY_WINDOW_DAYS_MS)
-                .min()
+    ["bonus_credits", "purchased_credits"]
+        .iter()
+        .filter_map(|key| root.get(*key).and_then(Value::as_array))
+        .flatten()
+        .filter_map(|item| {
+            item.get("expire_time")
+                .or_else(|| item.get("expireTime"))
+                .and_then(expiry_ms)
         })
-        .unwrap_or(None)
+        .filter(|expire| *expire > now_ms && *expire - now_ms <= EXPIRY_WINDOW_DAYS_MS)
+        .min()
 }
 
 /// `root` 可以是整包响应，也可以是 `data` 子对象。
@@ -111,6 +131,22 @@ mod tests {
     fn unreadable_balance_is_none_not_zero() {
         assert_eq!(parse_balance(&json!({ "data": {} }), 0), None);
         assert_eq!(parse_balance(&json!({ "error": "upstream busy" }), 0), None);
+    }
+
+    #[test]
+    fn upstream_expire_time_is_a_beijing_datetime_string() {
+        let now = chrono::FixedOffset::east_opt(8 * 3600)
+            .and_then(|offset| offset.with_ymd_and_hms(2026, 11, 13, 0, 0, 0).single())
+            .map(|moment| moment.timestamp_millis())
+            .unwrap_or(0);
+        let b = parse_balance(
+            &json!({ "data": {
+                "total_balance": 10,
+                "bonus_credits": [{ "balance": 5, "expire_time": "2026-11-20 00:00:00" }]
+            } }),
+            now,
+        );
+        assert!(b.and_then(|v| v.earliest_expiry_ms).is_some());
     }
 
     #[test]

@@ -1,42 +1,68 @@
 //! WPS 灵犀上游端点与出站头族。
 //!
-//! ⚠️ **本文件的字段来自三个公开参考实现（见 `docs/WPS灵犀-移植方案.md` §1），
-//! 尚未真机实测**。方案里标出的 4 处来源冲突（host / 额度字段 / 目录来源 /
-//! 通道）在 P0 探针端点验证前不要当既成事实改；每处冲突都在下面就近标注。
+//! ⚠️ **来源变了（2026-11-13 第二轮）**：此前只按三份 README 的语义字段猜
+//! 路径，后来逐项复核两个互相独立的公开实现**源码**，得到下面这张常量表：
+//!   · `ketion/lingxi2api-panel` → `internal/upstream/lingxi.go` 的 `LX*` 常量
+//!   · `RobbsLuo/Coding2API`      → `src/provider/lingxi/client.py` 的 `EP_*` 常量
+//! 两者逐字一致（`LXSessions/LXRuns/LXChat/LXPlans/LXBalance/LXTasks/LXClaim`）。
+//! 三请求 body、`execution_status` 路径与字段、任务状态字段名也由这两处给全。
+//! 之前那批占位路径已全部替换，见 `docs/WPS灵犀-移植方案.md` 的校正记录。
+//!
+//! **仍未真机实测 2xx**：路径不再是猜的，能不能领到奖励仍要真机确认。
 //!
 //! 硬约束：release 是 `panic=abort`，本文件零 unwrap/expect/panic。
 
-/// provider id（与注册表中的字符串契约一致；本批尚未注册 `ProviderKind`，
-/// 先在这里定死，接线时直接引用，避免又抄一份字面量）。
+/// provider id（与注册表字符串契约一致）。
 pub const ID: &str = "lingxi";
 
 /// 登录页 host（用户在这里拿 `wps_sid`）。
 pub const LOGIN_HOST: &str = "https://lingxi.wps.cn";
-/// API host。`dsh-router-wpslingxi` 实测「同一 cookie 两边都认」，与
-/// `lingxi2api-panel` 用 `lingxi.wps.cn` 的说法冲突 → 待 P0 探针实测。
-pub const API_HOST: &str = "https://lingxi.kdocs.cn";
+/// 主域：两个参考实现的 `bases()` / `lxBases` 都把它排第一。
+pub const API_HOST: &str = "https://lingxi.wps.cn";
+/// 回落域：kdocs 账号的 cookie 只在 `lingxi.kdocs.cn` 集群有效 ——
+/// **主域回 401 不代表死号**，必须换域再试一次才判失效。
+pub const FALLBACK_HOST: &str = "https://lingxi.kdocs.cn";
 
-/// 桌面客户端身份（三个参考实现一致给出 1.3.36）。
+/// 桌面客户端身份（两个实现一致给出 1.3.36 / lingxi_claw）。
 pub const APP_VERSION: &str = "1.3.36";
 pub const APP_NAME: &str = "win-lingxi-desktop";
 pub const CLIENT_TYPE: &str = "lingxi_claw";
+pub const CLIENT_LANG: &str = "zh-CN";
+pub const AGENT_VERSION: u8 = 2;
 pub const USER_AGENT: &str = concat!(
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) ",
     "Lingxi Claw/1.3.36 Chrome/144.0.7559.236 Electron/40.8.2 Safari/537.36",
 );
 
-/// 提示词超过约 320KB 上游直接 400「AI服务异常」，不提示「太长」。
-/// 本地预检按序列化字节数算，留 4KB 余量给头族与包装字段。
+/// 提示词超过约 320KB 上游直接 400「AI服务异常」。本地预检留 4KB 余量。
 pub const MAX_PROMPT_BYTES: usize = 316 * 1024;
 
 /// 会话 + run 按「账号 × 模型」缓存 1 小时，**不滑动续期**。
 pub const SESSION_TTL_MS: i64 = 3_600_000;
 
-/// 任务中心签到任务名。
+/// 任务中心签到任务名（两个实现都按 `task_key == "daily_check_in"` 找）。
 pub const TASK_DAILY_CHECK_IN: &str = "daily_check_in";
+
+/// 上游统一包络 `{result, data, hint, msg}`；`result` 非 ok/Success 即业务错。
+pub fn envelope_ok(body: &serde_json::Value) -> bool {
+    match body.get("result").and_then(serde_json::Value::as_str) {
+        None => true, // 没带 result 字段的不据此判错（SSE / 老形状）
+        Some(value) => value.eq_ignore_ascii_case("ok") || value.eq_ignore_ascii_case("success"),
+    }
+}
+
+/// 会不会因为这次响应而换域重试：401/403/404 在两个实现里都是换域信号。
+pub fn should_fallback(status: u16) -> bool {
+    matches!(status, 401 | 403 | 404)
+}
 
 fn url(path: &str) -> String {
     format!("{API_HOST}{path}")
+}
+
+/// 指定 host 拼 URL（回落域用）。
+pub fn url_on(host: &str, path: &str) -> String {
+    format!("{host}{path}")
 }
 
 /// ① 建 cowork 会话。
@@ -54,56 +80,149 @@ pub fn chat_url() -> String {
     url("/api/public/v1/agent-runtime/chat/completions")
 }
 
-/// run 终态上报：**结算触发点**。参考实现只给了 `PUT execution_status` 的
-/// 动作与 body，没给完整路径 —— 这一条是推断，P0 必须实测校正。
-pub fn execution_status_url(run_id: &str) -> String {
-    url(&format!("/api/public/v1/credits/runs/{run_id}/execution_status"))
+/// run 终态上报：⚠️ 用 **session_id**（不是 run_id），两个实现的源码都是
+/// `PUT /api/public/v1/sessions/{session_id}/execution_status`。
+pub fn execution_status_url(session_id: &str) -> String {
+    url(&format!("/api/public/v1/sessions/{session_id}/execution_status"))
 }
 
-/// 额度（智点）。dsh 插件实测带 `?credit_type=total`。
+/// 额度（智点）。两个实现都是这个路径，**没有** `?credit_type=total`。
 pub fn balance_url() -> String {
-    url("/api/public/v1/credits/balance?credit_type=total")
+    url("/api/public/v1/credits/balance")
 }
 
-/// 模型目录：与 `parse_catalog` 的两种形状对应（`key/multiplier` 来自网关项目，
-/// `data.models` 来自 dsh 插件）。
+/// 模型目录：响应 `data` 下有 `plans` 与 `models` 两组。
 pub fn plans_url() -> String {
     url("/api/aioffice/v1/sessions/plans")
 }
 
-/// ⚠️ **端点未验证开关**：三个公开参考实现只给了任务标识
-/// `daily_check_in`、`status=claimed`、`total_balance` 这些语义字段，
-/// 签到领取 / 状态查询 / 余额 / 目录的**上游完整路径一律没给出**。
-/// 下面这些路径是占位，真机探针确认前不发任何签到/额度写请求 ——
-/// 这是全仓唯一开关：验证后改成 `true` 即整条链启用，不用改调用点。
-/// 换成 `true` 的判据是「真机抓到一条 2xx 且字段能对上的响应」，
-/// 不是「看着像」。
-pub const CLAIM_ENDPOINT_VERIFIED: bool = false;
-
-/// 任务中心状态 / 领取（**占位路径，见 `CLAIM_ENDPOINT_VERIFIED`**）。
-pub fn task_url(task: &str) -> String {
-    url(&format!("/api/aioffice/v1/tasks/{task}"))
+/// 任务中心状态（只读）：`data.tasks[]` 里按 `task_key` 找，读 `status`。
+pub fn tasks_url() -> String {
+    url("/api/public/v1/tasks")
 }
 
-/// 出站头族。`wps_sid` 是 HttpOnly Cookie，只能整串放进 Cookie 头；
-/// `device_id` 由 `credentials::device_id(uid)` 按账号稳定派生。
-pub fn headers(wps_sid: &str, device_id: &str, cookie: Option<&str>) -> Vec<(String, String)> {
+/// 领取任务：`POST /api/public/v1/tasks/{task}/claim?date=YYYY-MM-DD`，body `{}`。
+pub fn claim_url(task: &str, date: &str) -> String {
+    let mut path = format!("/api/public/v1/tasks/{task}/claim");
+    if !date.trim().is_empty() {
+        path.push_str("?date=");
+        path.push_str(date.trim());
+    }
+    url(&path)
+}
+
+/// 路径段（供 `url_on` 做回落时复用，避免两处各拼一份）。
+pub fn sessions_path() -> &'static str {
+    "/api/aioffice/v1/cowork/sessions"
+}
+pub fn runs_path() -> &'static str {
+    "/api/public/v1/credits/runs"
+}
+pub fn chat_path() -> &'static str {
+    "/api/public/v1/agent-runtime/chat/completions"
+}
+pub fn execution_status_path(session_id: &str) -> String {
+    format!("/api/public/v1/sessions/{session_id}/execution_status")
+}
+pub fn balance_path() -> &'static str {
+    "/api/public/v1/credits/balance"
+}
+pub fn plans_path() -> &'static str {
+    "/api/aioffice/v1/sessions/plans"
+}
+pub fn tasks_path() -> &'static str {
+    "/api/public/v1/tasks"
+}
+pub fn claim_path(task: &str, date: &str) -> String {
+    let mut path = format!("/api/public/v1/tasks/{task}/claim");
+    if !date.trim().is_empty() {
+        path.push_str("?date=");
+        path.push_str(date.trim());
+    }
+    path
+}
+
+/// 签到写请求开关。**2026-11-13 第二轮打开**：端点不再是猜的 ——
+/// `ketion/lingxi2api-panel` 的 `LXClaim` + `autotask.go`（真实在跑的每日
+/// 任务链）与 `RobbsLuo/Coding2API` 的 `EP_CLAIM` + `checkin()` 逐字一致。
+/// 保留它的理由：万一上游改了协议，把这里改回 `false` 就能一键停发写请求，
+/// 而**不必删链路**。失效时 `checkin::reconcile` 仍会保留「待确认」、
+/// 不虚报已领取，所以打开后最坏情况是留一条待确认记录，不是假成功。
+/// ⚠️ 真机抓到 2xx 仍是必须补的验收项（见方案 §6），只是不阻塞代码落地。
+pub const CLAIM_ENDPOINT_VERIFIED: bool = true;
+
+/// 每请求一个 id（两个实现分别是 uuid4 / uuid4().hex）。这里不引新依赖：
+/// 毫秒时间戳 + 进程内序号，32 位 hex，形状与 uuid4().hex 一致。
+pub fn request_id() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+    format!("{:016x}{:016x}", crate::server::logging::now_ms() as u64, seq)
+}
+
+fn base_headers(
+    host: &str,
+    wps_sid: &str,
+    device_id: &str,
+    cookie: Option<&str>,
+    request_id: &str,
+    accept: &str,
+) -> Vec<(String, String)> {
     let cookie_value = match cookie {
         Some(full) if !full.trim().is_empty() => full.trim().to_string(),
         _ => format!("wps_sid={wps_sid}"),
     };
+    let rid = if request_id.is_empty() {
+        self::request_id()
+    } else {
+        request_id.to_string()
+    };
     vec![
-        ("Content-Type".to_string(), "application/json".to_string()),
-        ("Accept".to_string(), "text/event-stream".to_string()),
         ("Cookie".to_string(), cookie_value),
+        ("Content-Type".to_string(), "application/json".to_string()),
+        ("Accept".to_string(), accept.to_string()),
         ("User-Agent".to_string(), USER_AGENT.to_string()),
         ("X-Client-Type".to_string(), CLIENT_TYPE.to_string()),
+        ("X-Client-Lang".to_string(), CLIENT_LANG.to_string()),
+        ("X-Cc-Agent-Type".to_string(), CLIENT_TYPE.to_string()),
+        ("X-Request-Id".to_string(), rid),
         ("x-kso-app-name".to_string(), APP_NAME.to_string()),
         ("x-kso-app-version".to_string(), APP_VERSION.to_string()),
         ("x-kso-device-id".to_string(), device_id.to_string()),
-        ("Origin".to_string(), API_HOST.to_string()),
-        ("Referer".to_string(), format!("{API_HOST}/")),
+        ("Referer".to_string(), format!("{host}/")),
     ]
+}
+
+/// 账号面 / 三请求头（默认主域，Accept: application/json）。
+pub fn headers(wps_sid: &str, device_id: &str, cookie: Option<&str>) -> Vec<(String, String)> {
+    account_headers(API_HOST, wps_sid, device_id, cookie, "")
+}
+
+pub fn account_headers(
+    host: &str,
+    wps_sid: &str,
+    device_id: &str,
+    cookie: Option<&str>,
+    request_id: &str,
+) -> Vec<(String, String)> {
+    base_headers(host, wps_sid, device_id, cookie, request_id, "application/json")
+}
+
+/// 对话请求头：⚠️ `session_id`/`run_id` 只在**头**里（`x-cc-session-id` /
+/// `x-cc-run-id`），不进 body —— 两个实现的源码都这么写。
+pub fn chat_headers(
+    host: &str,
+    wps_sid: &str,
+    device_id: &str,
+    cookie: Option<&str>,
+    request_id: &str,
+    session_id: &str,
+    run_id: &str,
+) -> Vec<(String, String)> {
+    let mut out = base_headers(host, wps_sid, device_id, cookie, request_id, "text/event-stream");
+    out.push(("x-cc-session-id".to_string(), session_id.to_string()));
+    out.push(("x-cc-run-id".to_string(), run_id.to_string()));
+    out
 }
 
 #[cfg(test)]
@@ -111,10 +230,49 @@ mod tests {
     use super::*;
 
     #[test]
-    fn three_step_urls_are_on_the_same_host() {
+    fn three_step_urls_match_the_two_public_implementations() {
+        assert_eq!(sessions_path(), "/api/aioffice/v1/cowork/sessions");
+        assert_eq!(runs_path(), "/api/public/v1/credits/runs");
+        assert_eq!(chat_path(), "/api/public/v1/agent-runtime/chat/completions");
+        assert_eq!(balance_path(), "/api/public/v1/credits/balance");
+        assert_eq!(plans_path(), "/api/aioffice/v1/sessions/plans");
+        assert_eq!(tasks_path(), "/api/public/v1/tasks");
         for u in [sessions_url(), runs_url(), chat_url()] {
             assert!(u.starts_with(API_HOST), "{u}");
         }
+    }
+
+    #[test]
+    fn execution_status_uses_session_id_not_run_id() {
+        let u = execution_status_url("sess-1");
+        assert!(u.contains("/api/public/v1/sessions/sess-1/execution_status"), "{u}");
+        assert!(!u.contains("credits/runs"));
+    }
+
+    #[test]
+    fn claim_url_carries_the_signin_window_date() {
+        assert_eq!(
+            claim_path("daily_check_in", "2026-11-13"),
+            "/api/public/v1/tasks/daily_check_in/claim?date=2026-11-13"
+        );
+        assert_eq!(claim_path("daily_check_in", ""), "/api/public/v1/tasks/daily_check_in/claim");
+    }
+
+    #[test]
+    fn primary_host_is_wps_cn_and_kdocs_is_the_fallback() {
+        assert_eq!(API_HOST, "https://lingxi.wps.cn");
+        assert_eq!(FALLBACK_HOST, "https://lingxi.kdocs.cn");
+        assert!(should_fallback(401) && should_fallback(403) && should_fallback(404));
+        assert!(!should_fallback(429));
+    }
+
+    #[test]
+    fn envelope_result_gates_business_errors() {
+        use serde_json::json;
+        assert!(envelope_ok(&json!({ "result": "ok", "data": {} })));
+        assert!(envelope_ok(&json!({ "result": "Success" })));
+        assert!(envelope_ok(&json!({ "data": {} })));
+        assert!(!envelope_ok(&json!({ "result": "error", "hint": "今日已领取" })));
     }
 
     #[test]
@@ -132,10 +290,16 @@ mod tests {
     }
 
     #[test]
-    fn device_headers_are_always_present() {
-        let h = headers("V02S-abc", "dev-1", None);
-        for key in ["x-kso-app-name", "x-kso-app-version", "x-kso-device-id", "X-Client-Type"] {
-            assert!(h.iter().any(|(k, _)| k == key), "缺头 {key}");
-        }
+    fn account_and_chat_headers_differ_exactly_where_they_should() {
+        let a = account_headers(API_HOST, "V02S-a", "dev-1", None, "rid-1");
+        let c = chat_headers(API_HOST, "V02S-a", "dev-1", None, "rid-1", "sess", "run");
+        let get = |h: &[(String, String)], k: &str| h.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
+        assert_eq!(get(&a, "Accept"), Some("application/json"));
+        assert_eq!(get(&c, "Accept"), Some("text/event-stream"));
+        assert_eq!(get(&c, "x-cc-session-id"), Some("sess"));
+        assert_eq!(get(&c, "x-cc-run-id"), Some("run"));
+        assert_eq!(get(&a, "x-cc-session-id"), None);
+        assert_eq!(get(&c, "X-Client-Lang"), Some("zh-CN"));
+        assert_eq!(get(&c, "X-Request-Id"), Some("rid-1"));
     }
 }

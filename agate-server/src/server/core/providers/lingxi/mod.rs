@@ -12,9 +12,14 @@
 //! `UpstreamResponse::LingxiSse` + `upstream::translate::LingxiToChatStream`
 //! 私有 SSE 翻译器、流收尾的 `completed` 结算上报、客户端预设。
 //!
-//! ⚠️ **仍然没有任何真机实测**：所有端点与字段名都来自公开 README，方案 §1
-//! 列的 4 处来源冲突（host / 额度字段 / 目录来源 / 通道）在探针验证前不是事实。
-//! 代码已可编译、判据已被单测钉住，但「能不能真的调通」必须以真机为准。
+//! ⚠️ **端点已由源码交叉验证，但真机 2xx 仍待复验**（2026-11-13 第二轮）：
+//! 第一批按 README 语义猜的路径/body 已全部替换成
+//! `ketion/lingxi2api-panel::internal/upstream/lingxi.go` 与
+//! `RobbsLuo/Coding2API::src/provider/lingxi/client.py` 里逐字一致的常量与
+//! 请求形状（主域/回落域、三请求 body、`execution_status`、任务领取、目录/余额
+//! 字段、逐行 SSE）。**改了什么见各文件模块头**。方案 §1 的 4 处冲突收敛为
+//! 「host 主次」「额度字段主口径」「目录两组」「SSE 逐行」四条已定事实。
+//! 但代码能编译 ≠ 上游现在还认这套协议，真机探针仍是必须补的验收项。
 //!
 //! ── 已知限制对照（方案 §3）────────────────────────────────────
 //! L1 无续期 → `credentials` 不做有效期推算，`classify(401)` 才判死号；
@@ -59,9 +64,11 @@ mod tests {
         let body = json!({ "model": "qwen3.8_flash", "messages": [], "stream": true });
         assert!(!classify::oversized(&body));
 
-        let steps = chat::build_bodies(&body, "qwen3.8_flash", "s-1", "r-1");
+        let steps = chat::build_bodies(&body, "qwen3.8_flash", "s-1", "g-1", "dev-1");
         assert!(chat::report_lifecycle());
-        assert_eq!(steps.completed["execution_status"], json!("completed"));
+        assert_eq!(steps.completed["status"], json!("completed"));
+        assert_eq!(steps.completed["terminal_reason"], json!("completed"));
+        assert!(steps.chat.get("session_id").is_none());
 
         let key = session::cache_key("42", "qwen3.8_flash");
         let cache = session::SessionCache::new();
@@ -70,6 +77,8 @@ mod tests {
             session::Session {
                 session_id: "s-1".to_string(),
                 run_id: "r-1".to_string(),
+                group_id: "g-1".to_string(),
+                base: endpoints::API_HOST.to_string(),
                 created_ms: 1_000,
             },
         );

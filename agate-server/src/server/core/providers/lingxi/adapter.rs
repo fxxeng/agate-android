@@ -80,6 +80,7 @@ impl ProviderAdapter for LingxiAdapter {
                 &sid,
                 &device,
                 cookie.as_deref(),
+                body.get("messages").unwrap_or(&Value::Null),
                 cached,
             )
             .await?;
@@ -108,12 +109,27 @@ impl ProviderAdapter for LingxiAdapter {
             .ok_or_else(|| {
                 GatewayError::with_status(502, "灵犀会话未就绪（prepare_body 未成功）")
             })?;
-        let bodies = chat::build_bodies(body, model, &prepared.session_id, &prepared.run_id);
         let device = credentials::device_id(&identity(&sid, &uid));
+        // ⚠️ 沿用「建 run 成功的那个域」：对话由 provider_loop 直接发，不走
+        // client::request 的双域回落；只在 kdocs.cn 有效的账号用主域会 401。
+        let host = if prepared.base.is_empty() {
+            endpoints::API_HOST
+        } else {
+            prepared.base.as_str()
+        };
         Ok(ChatRequestPlan {
-            url: endpoints::chat_url(),
-            headers: endpoints::headers(&sid, &device, cookie.as_deref()),
-            body: bodies.chat,
+            url: endpoints::url_on(host, endpoints::chat_path()),
+            // session_id / run_id 只在头里，不进 body（两个参考实现源码一致）。
+            headers: endpoints::chat_headers(
+                host,
+                &sid,
+                &device,
+                cookie.as_deref(),
+                &endpoints::request_id(),
+                &prepared.session_id,
+                &prepared.run_id,
+            ),
+            body: chat::chat_body(body, model),
             response: UpstreamResponse::LingxiSse,
         })
     }
@@ -190,9 +206,9 @@ impl ProviderAdapter for LingxiAdapter {
         })
     }
 
-    /// 额度＝智点。`balance_url()` 的路径在公开资料里没给全（见
-    /// `endpoints.rs`），所以这里**读不出就降级**：`available: null` +
-    /// 空 wallets，由界面写「暂不可用」，绝不拿 0 冒充已查到。
+    /// 额度＝智点。`GET /api/public/v1/credits/balance` 已由两个参考实现源码
+    /// 核实；但仍**读不出就降级**：`available: null` + 空 wallets，由界面写
+    /// 「暂不可用」，绝不拿 0 冒充已查到（真机 2xx 未复验）。
     fn query_usage<'a>(
         &'a self,
         store: &'a AccountStore,
@@ -214,7 +230,7 @@ impl ProviderAdapter for LingxiAdapter {
             let device = credentials::device_id(&identity(&sid, &uid));
             let reply = client::request(
                 "GET",
-                &endpoints::balance_url(),
+                endpoints::balance_path(),
                 &sid,
                 &device,
                 cookie.as_deref(),

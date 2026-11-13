@@ -5,8 +5,12 @@
 //! 上游回 `SQLNoRows` /「会话不存在」时丢弃缓存**重建一次**。
 //!
 //! 本文件只实现可测的**缓存判据与状态机**：TTL、不滑动、失效重建一次。
-//! 真并发单飞由接编排层时用 `tokio::sync::Mutex` 包住「取缓存 → 建会话」
-//! 那一段（下一批接线做），这里不伪造一个假锁。
+//! 真并发单飞在 `client::prepare_conversation` 里用 `tokio::sync::Mutex`
+//! 包住「取缓存 → 建会话」并做锁内双检，这里不伪造一个假锁。
+//!
+//! ⚠️ `group_id` 是 run 响应里的第三个 id（缺省回落 `run_id`），
+//! `execution_status` 的 `group_id` / `run_token` 都用它 —— 两个参考实现
+//! 源码一致，别拿 run_id 顶替。
 //!
 //! 硬约束：release 是 `panic=abort`，本文件零 unwrap/expect/panic；
 //! 不持锁跨 await（本文件没有 async）。
@@ -20,6 +24,11 @@ use super::endpoints::SESSION_TTL_MS;
 pub struct Session {
     pub session_id: String,
     pub run_id: String,
+    /// run 响应的 `group_id`；上游没给时回落 `run_id`。
+    pub group_id: String,
+    /// 建 run 成功的那个域（`wps.cn` / `kdocs.cn`）。对话请求不走双域回落，
+    /// 必须沿用同一个域，否则只在回落域有效的 cookie 会在聊天时 401。
+    pub base: String,
     pub created_ms: i64,
 }
 
@@ -113,6 +122,8 @@ mod tests {
         Session {
             session_id: "s1".to_string(),
             run_id: "r1".to_string(),
+            group_id: "g1".to_string(),
+            base: "https://lingxi.wps.cn".to_string(),
             created_ms: 1_000,
         }
     }
