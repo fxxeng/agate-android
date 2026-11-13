@@ -150,6 +150,10 @@ pub mod images;
 /// 自定义家走独立通道」的两条路径。
 pub mod custom;
 pub mod kuku;
+/// WPS 灵犀（lingxi）协议判据层：P0 第一批只落纯函数与单测，**尚未注册
+/// `ProviderKind` / 适配器 / 账号存储**，不要把它当成已可调用的 provider。
+/// 边界与待实测项见 `lingxi/mod.rs` 模块头及 `docs/WPS灵犀-移植方案.md`。
+pub mod lingxi;
 pub mod loomy;
 /// MonkeyCode（长亭科技的开源 AI 开发平台）。适配实现在 `monkeycode/`：
 /// 账号管理（粘贴 session）+ 模型目录（`GET /api/v1/users/models`）+
