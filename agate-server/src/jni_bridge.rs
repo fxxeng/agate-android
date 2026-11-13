@@ -1572,35 +1572,43 @@ mod tests {
         assert!(cancelled.load(std::sync::atomic::Ordering::SeqCst));
     }
 
+    /// R52/T5 续：持续推进的账号不断续期空闲窗口，总时长超过单次窗口时也不得被判
+    /// idle 取消（wait 每轮读真实 Instant，不按整轮截断）。
+    ///
+    /// R53/T3：`begin_round` 与 `advance` 共用同一个 revision 计数器（`auto_checkin.rs`
+    /// 两者都做 `saturating_add(1)`，另重置空闲时钟），所以断言必须拿 `begin_round`
+    /// 之后的基线做增量，不能假定首个 `advance` 后 revision == 1；`begin_round` 也
+    /// 必须在起推进线程前调用，否则主线程与推进线程争同一计数器。
     #[test]
     fn checkin_account_progress_renews_wait_deadline() {
         let (tx, rx) = std::sync::mpsc::channel::<Option<Value>>();
         let progress = crate::server::core::auto_checkin::CheckinProgress::default();
+        progress.begin_round();
+        let base = progress.revision();
         let sender = std::thread::spawn({
             let progress = progress.clone();
             move || {
                 for revision in 1..=3 {
-                    std::thread::sleep(std::time::Duration::from_millis(20));
+                    std::thread::sleep(std::time::Duration::from_millis(40));
                     progress.advance();
-                    assert_eq!(progress.revision(), revision);
+                    assert_eq!(progress.revision(), base + revision);
                 }
                 let _ = tx.send(Some(json!({ "total": 3, "remaining": 0 })));
             }
         });
-        progress.begin_round();
         let reply = wait_for_checkin_result_with_limits(
             rx,
             &progress,
-            std::time::Duration::from_millis(50),
+            std::time::Duration::from_millis(100),
             std::time::Duration::from_millis(5),
             &|| panic!("持续推进账号不得触发 idle cancel"),
         );
         sender.join().expect("progress sender");
         assert!(reply["done"].as_bool() == Some(true));
         assert_eq!(reply["result"]["total"], json!(3));
-        // 使用 50ms 空闲窗口：账号每 20ms 推进，总轮次超过单次窗口。
-        // wait 每轮读取真实 Instant，不按整轮截断。
-        assert!(progress.revision() >= 3);
+        // 空闲窗口 100ms < 账号总推进时长 120ms（每 40ms 一次 × 3）：续期有效即不触发
+        // idle 分支；同时把每次推进相对窗口的余量从 30ms 拉到 60ms，抗 CI 调度抖动。
+        assert!(progress.revision() >= base + 3);
     }
 
     #[test]
