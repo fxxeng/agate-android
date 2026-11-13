@@ -279,8 +279,13 @@ B 的能力矩阵很漂亮，但本仓下游是 OpenAI 兼容客户端，不需�
 `ws.rs` 824 行 / `channel.rs` 169 行）+ `api/lingxi_api.rs` 448 行，接线 6 处
 （`api/accounts.rs` 四条子路径、`api/mod.rs`、`http.rs` 一条路由、`server/mod.rs`
 的 `channel::install`、`db/schema.rs` 保留键、`core/login.rs` 的 Lingxi 分支、
-`adapter.rs` 的四个覆写）；新增 25 条单测（tasks 6 / ledger 7 / ws 9 /
-channel 3 / api 4）。
+`adapter.rs` 的四个覆写）；新增 **29 条**单测（tasks 6 / ledger 7 / ws 9 /
+channel 3 / api 4）。CI `43424577548`（head `bffa5ae`）**全绿**：行尾体检 →
+`cargo test --lib` **1735 passed / 0 failed / 11 ignored**（1706 + 29）→
+交叉编译（rustls/ring + rusqlite bundled）→ gradle 单测 → assembleDebug；
+产物 `dist/agate-bffa5ae-arm64.apk`（36,541,705 B）+
+`dist/libagate_server-bffa5ae.so`（15,969,048 B）。与上一版 `0283a06` 的 APK
+逐条目比对：221 个条目、**只有 4 个 dex + `libagate_server.so` 变**，无增删。
 
 三条与 P0 一脉相承的判据（都写进了模块头，改代码时别绕过）：
 

@@ -176,9 +176,10 @@ pub const CHECKIN_PROVIDERS: [&str; 22] = [
     // 见 `providers::quwork::checkin`。追加在末尾（与上面同一理由）。
     "quwork",
     // WPS 灵犀：任务中心 daily_check_in，幂等台账见 `providers::lingxi::checkin`。
-    // ⚠️ 领取端点尚未真机验证（`CLAIM_ENDPOINT_VERIFIED=false`），当前轮次只
-    // 返回「待确认」、不发上游请求。登记在这里是为了让签到中心如实显示这一家
-    // 的状态，而不是把它藏起来当作「已支持」。追加在末尾（同一理由）。
+    // 第二轮已把 `CLAIM_ENDPOINT_VERIFIED` 打开（端点由两个独立实现的源码核实），
+    // 所以这条链**会真的提交领取请求**；到账仍只认「回读 status == claimed」，
+    // 200 假成功不算。⚠️ 真机 2xx 仍未验。登记在这里是为了让签到中心如实显示
+    // 这一家的状态，而不是把它藏起来当作「已支持」。追加在末尾（同一理由）。
     "lingxi",
 ];
 
