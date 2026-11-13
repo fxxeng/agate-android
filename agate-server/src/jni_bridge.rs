@@ -59,6 +59,8 @@ const LOG_WARN: i32 = 5;
 const LOG_ERROR: i32 = 6;
 const LOGCAT_TAG: &str = "AgateCore";
 
+/// Android liblog 入口；宿主 test 目标没有它（`logcat_write` 走空实现）。
+#[cfg(target_os = "android")]
 extern "C" {
     fn __android_log_write(prio: i32, tag: *const u8, text: *const u8) -> i32;
 }
@@ -145,13 +147,19 @@ thread_local! {
 // ── 日志转发（logging.rs::console_line 的 Android 挂钩入口）──────
 
 fn logcat_write(prio: i32, tag: &str, text: &str) {
-    use std::ffi::CString;
-    // CString 构造失败（内嵌 NUL）时丢弃该行：日志不值得为它 panic（release 是 abort）
-    if let (Ok(t), Ok(x)) = (CString::new(tag), CString::new(text)) {
-        unsafe {
-            __android_log_write(prio, t.as_ptr() as *const u8, x.as_ptr() as *const u8);
+    #[cfg(target_os = "android")]
+    {
+        use std::ffi::CString;
+        // CString 构造失败（内嵌 NUL）时丢弃该行：日志不值得为它 panic（release 是 abort）
+        if let (Ok(t), Ok(x)) = (CString::new(tag), CString::new(text)) {
+            unsafe {
+                __android_log_write(prio, t.as_ptr() as *const u8, x.as_ptr() as *const u8);
+            }
         }
     }
+    // 宿主 test 目标：无 logcat，丢弃该行（此分支只存在于测试编译，不进 Android 产物）。
+    #[cfg(not(target_os = "android"))]
+    let _ = (prio, tag, text);
 }
 
 fn prio_of(tag: &str, text: &str) -> i32 {

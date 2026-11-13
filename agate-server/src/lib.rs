@@ -55,8 +55,13 @@ pub async fn shutdown_core(timeout: std::time::Duration) -> CoreShutdownReport {
     CoreShutdownReport { sidecar, core }
 }
 
-/// Agate Android：JNI 控制面（src/jni_bridge.rs，仅 Android 目标编译）。
-#[cfg(target_os = "android")]
+/// Agate Android：JNI 控制面（src/jni_bridge.rs）。
+///
+/// 生产构建仅 Android 目标编译；**宿主 test 目标也编译**（R53/T1）——该文件的
+/// 单元测试此前两头落空：宿主 portable 测试因模块被整体 cfg 掉而看不到它，
+/// android 目标的 `clippy --lib` 又不编译 `#[cfg(test)]`，于是 8 条测试从未被
+/// 执行、也从未被编译。生产宿主构建仍不含本模块（只放行 test cfg）。
+#[cfg(any(target_os = "android", test))]
 pub mod jni_bridge;
 
 use std::future::Future;

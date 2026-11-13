@@ -143,6 +143,11 @@ tower = { version = "0.5", features = ["util"] }
 # 只在测试目标里链，不进 release 产物；锁文件里本来就有这个包，没有新增解析结果。
 flate2 = "1"
 
+# R53/T1：jni_bridge 的单元测试要在宿主 portable job 真跑（`cargo test --lib`），
+# 其 test cfg 需要 jni crate（Android 产出的声明仍在上面的 target 段）。这条只在
+# 测试目标里链；default-features = false 不引入 invocation 特性、不链 libjvm。
+jni = { version = "0.21", default-features = false }
+
 # ── Agate Android：JNI 控制面（src/jni_bridge.rs）──────────────
 # default-features = false 去掉 invocation 特性：Android 上只做
 # 「Rust → 已存在 JVM」的回调（AttachCurrentThread），不创建 JVM，不链 libjvm。
