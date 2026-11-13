@@ -117,7 +117,7 @@ mod tests {
     fn expiry_outside_the_15_day_window_is_not_reported() {
         let b = parse_balance(
             &json!({ "data": {
-                "bonus_credits": [{ "balance": 100, "expire_time": 30 * 86_400_000 }]
+                "bonus_credits": [{ "balance": 100, "expire_time": 30_i64 * 86_400_000_i64 }]
             } }),
             0,
         );

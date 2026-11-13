@@ -6,6 +6,10 @@
 //!
 //! 硬约束：release 是 `panic=abort`，本文件零 unwrap/expect/panic。
 
+/// provider id（与注册表中的字符串契约一致；本批尚未注册 `ProviderKind`，
+/// 先在这里定死，接线时直接引用，避免又抄一份字面量）。
+pub const ID: &str = "lingxi";
+
 /// 登录页 host（用户在这里拿 `wps_sid`）。
 pub const LOGIN_HOST: &str = "https://lingxi.wps.cn";
 /// API host。`dsh-router-wpslingxi` 实测「同一 cookie 两边都认」，与
