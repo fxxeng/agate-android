@@ -339,11 +339,17 @@ impl ProviderAdapter for LingxiAdapter {
         true
     }
 
-    /// 授权地址 = 登录首页；state 只用于把回调配回本次任务（没有 CSRF 换码语义）。
+    /// 授权地址 = **WPS 通行证登录页**（`account.wps.cn`，服务端直出的手机号
+    /// 登录表单）；state 只用于把回调配回本次任务（没有 CSRF 换码语义）。
     ///
     /// ⚠️ 为什么不做「带 redirect 的回调页」：灵犀的登录是纯 Cookie 站点，
     /// 官方页不会把任何码回推到本机端口；壳侧登录窗直接读 Cookie 交回即可
     /// （Android 上比桌面 CDP 更简单，见方案 L3）。
+    ///
+    /// ⚠️ 为什么不加载灵犀自己的网页版（`lingxi.kdocs.cn`）：那个域对移动 UA
+    /// 返回的是 **WPS 客户端容器页**（依赖 `window.wps` JSBridge），普通 WebView
+    /// 里就是一片空白；桌面 UA 下虽然出 SPA，但首屏要拉 CDN 上十几个带 SRI 的
+    /// ES module，移动网络下很容易白屏。详见 `endpoints::LOGIN_HOST` 的注释。
     fn build_login_url(&self) -> Option<(String, String)> {
         Some((
             format!("{}/", endpoints::LOGIN_HOST),

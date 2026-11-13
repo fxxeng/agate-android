@@ -136,6 +136,19 @@ data class ProviderPreset(
      * 所以这条能力只能由注册表声明、由表单渲染一个独立按钮来表达。
      */
     val guestLogin: Boolean = false,
+    /**
+     * `webLoginCookies = true` 时，**除登录页自身域之外**还要读 Cookie 的域（有序）。
+     *
+     * 为什么需要它：有些家的登录态 Cookie 不落在登录页那个域上 ——
+     * 灵犀的登录页是 WPS 通行证 `account.wps.cn`（`.wps.cn` 域），而转发要用的
+     * `wps_sid` 在少数流程里只会落在 `lingxi.kdocs.cn` 的集群域。只读登录页
+     * 一域会表现为「用户明明登录成功了，客户端却一直判不出登录态」。
+     *
+     * 读取顺序：登录页 URL 优先，然后从左到右；**第一个读到登录态 Cookie 的域
+     * 整串交回**（不跨域拼接 —— 不同域的 Cookie 混成一段会让内核拿到互相矛盾的
+     * `wps_sid`）。空列表 = 只读登录页那一域（绝大多数家都是这样）。
+     */
+    val extraCookieHosts: List<String> = emptyList(),
 )
 
 object PresetRegistry {
@@ -573,11 +586,20 @@ object PresetRegistry {
         // 实现原生移植（见 docs/WPS灵犀-移植方案.md）。
         //
         // ── P1（2026-11-14）：加回内嵌网页登录 ────────────────────
-        // 登录页就是 `lingxi.wps.cn`，登录态只写在 `.wps.cn` 的 Cookie 里
-        // （`wps_sid`，HttpOnly），没有授权码可拦 ⇒ 与 KukuAI 同一形态：
-        // `webLoginCookies = true` + `sessionCookieNames`，由壳侧登录窗读
-        // Cookie 后走**通用回调**（`callbackUrl` 装 Cookie 串，内核
+        // 登录页是 **WPS 通行证 `account.wps.cn`**（服务端直出的手机号登录
+        // 表单），不是灵犀自己的网页版：`lingxi.kdocs.cn` 对移动 UA 返回的是
+        // WPS 客户端容器页（依赖 `window.wps` JSBridge），普通 WebView 里
+        // 一片空白 —— 这就是「登录页已就绪但整屏空着」的真因，见内核
+        // `providers/lingxi/endpoints.rs::LOGIN_HOST` 的注释。
+        //
+        // 登录态是 `wps_sid`（HttpOnly），没有授权码可拦 ⇒ 与 KukuAI 同一
+        // 形态：`webLoginCookies = true` + `sessionCookieNames`，由壳侧登录窗
+        // 读 Cookie 后走**通用回调**（`callbackUrl` 装 Cookie 串，内核
         // `ProviderKind::Lingxi` 分支收尾并做上游探活）。
+        //
+        // ⚠️ 未登录时通行证也会下发一条**匿名** `wps_sid`，所以「读到 wps_sid」
+        // 不等于「已登录」：探活失败（401）是**正常中间态**，内核那里任务仍
+        // 保持 pending，壳侧复位标记后再读一次 —— 用户真正登录后那次就通过了。
         //
         // ⚠️ 界面必须如实交代两条硬约束（方案 L1/L2）：
         // ① `wps_sid` 约半天失效、没有续期接口 —— 失效后只能重新登录；
@@ -592,7 +614,10 @@ object PresetRegistry {
             listOf(AuthChannel.EMBEDDED, AuthChannel.PASTE),
             webLoginCookies = true,
             sessionCookieNames = listOf("wps_sid"),
-            pasteHint = "在 lingxi.wps.cn 登录后复制整段 Cookie（含 wps_sid），或只粘 V02S 开头的裸 sid",
+            // 登录页在 `.wps.cn`（通行证域），转发用的会话可能只落在灵犀集群域：
+            // 两处都读一遍，读到哪个域就用哪个域的整串。
+            extraCookieHosts = listOf("https://lingxi.wps.cn/", "https://lingxi.kdocs.cn/"),
+            pasteHint = "粘贴整段 Cookie（含 wps_sid）或 V02S 开头的裸 sid；浏览器里 wps_sid 是 HttpOnly，需从开发者工具的 Cookies 面板复制",
             pasteMultiline = false,
             supportsCheckin = true,
         ),

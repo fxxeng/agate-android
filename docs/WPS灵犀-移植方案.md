@@ -1,6 +1,8 @@
 # WPS 灵犀（lingxi）移植方案
 
 > 状态：**P0 / P1 / P2 / P3 全部落地（`329ba90`），仅差真机 2xx 复验** · 2026-11-13
+> 2026-11-14：真机反馈「登录窗整片空白」已修（登录页换 `account.wps.cn`，
+> 见 §6 末）。
 > 已拍板：先 SSE（WS 作可选通道，设置页切换）· run 生命周期上报默认开启 ·
 > 首版含额度与签到 · 任务中心四项 / 智点明细 / 网页登录 / cowork WS 全部要实现
 >
@@ -229,7 +231,7 @@ B 的能力矩阵很漂亮，但本仓下游是 OpenAI 兼容客户端，不需�
 | 阶段 | 内容 | 验收判据 |
 | --- | --- | --- |
 | **P0 协议 / 凭证 / 额度 / 签到**（首版，用户已定） | 粘贴 `wps_sid` → 三请求（含 **run 生命周期上报默认开启**）→ SSE 改写 → usage 重算 → 401/402/429 分类 → 320KB 预检 → 审核 200 折错；session/run 缓存 + 单飞；模型目录；**智点余额（两种形状容错）+ `daily_check_in` 幂等台账 + 任务状态回查** | `cargo test --lib` 新增 ≥14 条纯函数单测（帧改写、usage、缓存单飞、三形态凭证、长度预检、错误分类、额度两形状、台账三态）；离线编译客户端；CI 出包；真机 5 条：能对话 / 多轮不丢上下文 / 关掉账号后 401 不换号误判 / 额度读得出（读不出写「暂不可用」不拿 0 冒充）/ 签到 200 假成功不写「已领取」 |
-| **P1 登录与治理**（已落地 2026-11-13） | 网页登录抓 `wps_sid`（`supports_web_login` + `build_login_url` + `exchange_login_code`：Cookie 载荷 → 归一 → **上游探活** → 落账号；L2「本家多账号互斥」的 401 文案随探活一起给出）、账号探活「验证全部」（既有链路）、429 顺延池按模型收窄（既有链路） | 真机：网页登录 → 落盘 → 余额 200；二次登录不同账号后旧号被标「需重新登录」 |
+| **P1 登录与治理**（已落地 2026-11-13，登录页 2026-11-14 改 `account.wps.cn`） | 网页登录抓 `wps_sid`（`supports_web_login` + `build_login_url` + `exchange_login_code`：Cookie 载荷 → 归一 → **上游探活** → 落账号；L2「本家多账号互斥」的 401 文案随探活一起给出）、账号探活「验证全部」（既有链路）、429 顺延池按模型收窄（既有链路） | 真机：网页登录 → 落盘 → 余额 200；二次登录不同账号后旧号被标「需重新登录」 |
 | **P2 观测增强**（已落地 2026-11-13） | 智点明细流水对账（`ledger.rs` + `GET /api/accounts/{id}/lingxi/ledger`，双向游标；上游延迟归账，与余额两套口径分开显示）、任务状态看板（`tasks.rs` + `/lingxi/tasks`，4 个任务 + 汇总 + 领取回读）、代跑一次性任务（专家 / 客户端 / 群聊） | 明细缺失时降级说明（`upstreamStatus` + `error`），不拿估算值冒充真实流水；领取后**只有** `status == "claimed"` 才写「已领取」 |
 | **P3 可选**（已落地 2026-11-13，默认关闭） | `ws.rs` cowork 通道（工具执行折 Markdown、多轮压平、无 token 用量）+ `channel.rs` 设置在「设置 → 灵犀通道」里切；默认 `sse`，切换后下一条请求即生效 | 见 §6 末「P1/P2/P3 落地状态」 |
 
@@ -307,6 +309,55 @@ channel 3 / api 4）。CI `43424577548`（head `bffa5ae`）**全绿**：行尾�
 **一处如实说明的取舍**：WS 通道拿不到 token 用量（`run.end` 只给智点消耗），
 所以那条通道的请求日志 token 记 0，**不拿估算值冒充**；界面在设置页写明了
 「多轮压平 + 无 token 用量」是上游限制。
+
+### 第一处真机反馈：登录窗整片空白（2026-11-14 修）
+
+**现象**：真机点「WPS 灵犀 → 登录」，弹窗标题与状态都在（「登录页已就绪，
+完成授权后自动关闭」），但页面区**一片空白**，等下去只会 5 分钟超时。
+
+**根因（实测，不是推断）**：登录页原先指向 `lingxi.wps.cn`，它 302 到
+`lingxi.kdocs.cn`，而那个域对**移动 UA** 返回的根本不是网页版，而是
+**WPS 客户端容器页**：
+
+```
+<title>WPS AI</title>
+<div id="app-loading"><div id="close-app" onclick="window.wps.closeWeb()">
+```
+
+它假定自己跑在 WPS App 的 WebView 里，靠 `window.wps` 这个 JSBridge 干活；
+普通 Android WebView 里没有 `window.wps`，页面就停在 `#app-loading`。
+而 `onPageFinished` 照常触发 —— 于是状态行**谎报**「已就绪」，这是第二个错。
+
+桌面 UA 下 kdocs 确实会出完整 SPA，但首屏要拉 `qn.cache.wpscdn.cn` 上十几个
+带 SRI 的 ES module（CDN 本身没问题，实测 `access-control-allow-origin: *`），
+移动网络下依然脆，不适合当登录窗。
+
+**修法**：登录页换成 **WPS 通行证 `https://account.wps.cn`** —— 服务端直出的
+手机号 + 短信验证码登录表单，自带移动视口，无 SPA、无 CDN 依赖，登录后把
+`wps_sid` 下发到 `.wps.cn` 域（正是转发层要的那条）。各家网页登录本来也都加载
+该家的**登录页**而不是应用首页。
+
+同时修掉四处会让「登录了也判不出」的问题：
+
+1. **Cookie 只读一个域**：原先只 `getCookie(登录页URL)`。现在按
+   `登录页 → lingxi.wps.cn → lingxi.kdocs.cn` 顺序读，**交第一个读到登录态
+   Cookie 的域自己的整串**（不跨域拼接 —— 同名 Cookie 在不同域可能是两个值，
+   拼起来取到哪个全看顺序）。声明在 `ProviderPreset.extraCookieHosts`。
+2. **匿名 `wps_sid` 被当成登录成功**：通行证在**未登录**时也会下发一条匿名
+   `wps_sid`，交回内核探活必回 401。这是正常中间态（`login_callback` 的 Err
+   分支不动任务，任务仍 pending），所以壳侧把失败复位 + 6 秒冷却后重读，
+   状态写「还没登录成功 —— 在登录页完成登录后会自动继续」，不再说成登录失败。
+3. **清理与加载赛跑**：`CookieManager.removeAllCookies` 是**异步**的，原先紧接
+   着 `loadUrl`，清理可能在页面首个请求之后完成、把刚下发的 Cookie 清掉。
+   改成清理回调里再加载（带 2 秒兜底，防止个别 WebView 不回调）。
+4. **界面只说好话**：补 `WebChromeClient`（console error 留底）+
+   `onReceivedError` + `onReceivedHttpError`；`onPageFinished` 之后 6 秒用
+   `document.body.innerText` 数可见字符，为 0 就如实写「登录页没有显示出内容
+   —— 可改用粘贴通道」。顺带开 `useWideViewPort` / `loadWithOverviewMode`，
+   桌面布局的登录页也能按宽度缩放（否则只能看到左上角）。
+
+回归钉子：`endpoints.rs` 里 `login_page_is_the_wps_sso_form_not_the_kdocs_app_shell`
+钉住「登录页不许再指回 kdocs」。
 
 ---
 

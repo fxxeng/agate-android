@@ -15,8 +15,23 @@
 /// provider id（与注册表字符串契约一致）。
 pub const ID: &str = "lingxi";
 
-/// 登录页 host（用户在这里拿 `wps_sid`）。
-pub const LOGIN_HOST: &str = "https://lingxi.wps.cn";
+/// 登录页 host（用户在这里拿 `wps_sid`）：**WPS 通行证的 SSR 登录页**。
+///
+/// ⚠️ 2026-11-14 实测推翻「登录页就是 lingxi.wps.cn」这个假设：
+///   · `lingxi.wps.cn` 302 到 `lingxi.kdocs.cn`（多一跳跨域）；
+///   · `lingxi.kdocs.cn` 对**移动 UA** 返回的是 **WPS 客户端容器页**
+///     （`<title>WPS AI</title>`、`onclick="window.wps.closeWeb()"`）——
+///     它假定自己跑在 WPS App 的 WebView 里，普通 Android WebView 没有
+///     `window.wps` 这个 JSBridge，页面就停在 `#app-loading` 一片空白。
+///     真机表现正是「登录页已就绪，但整片空白」。
+///   · 桌面 UA 下 kdocs 会出完整 SPA，可首屏要拉 `qn.cache.wpscdn.cn` 上
+///     十几个带 SRI 的 ES module，移动 WebView 里又慢又脆（CDN 一抖就白屏）。
+///
+/// `account.wps.cn` 是**服务端直出的手机号登录表单**（自带移动视口、7 个
+/// input、无 SPA、无 CDN 依赖），登录后把 `wps_sid` 下发到 `.wps.cn` 域 ——
+/// 这正是转发层要的那条凭证。各家网页登录本来也都加载该家的登录页而不是
+/// 应用首页，这里没有特例。
+pub const LOGIN_HOST: &str = "https://account.wps.cn";
 /// 主域：两个参考实现的 `bases()` / `lxBases` 都把它排第一。
 pub const API_HOST: &str = "https://lingxi.wps.cn";
 /// 回落域：kdocs 账号的 cookie 只在 `lingxi.kdocs.cn` 集群有效 ——
@@ -322,6 +337,15 @@ mod tests {
             "/api/public/v1/tasks/daily_check_in/claim?date=2026-11-13"
         );
         assert_eq!(claim_path("daily_check_in", ""), "/api/public/v1/tasks/daily_check_in/claim");
+    }
+
+    #[test]
+    fn login_page_is_the_wps_sso_form_not_the_kdocs_app_shell() {
+        // 回归钉子：`lingxi.kdocs.cn` 对移动 UA 返回的是 WPS 客户端容器页
+        // （依赖 `window.wps` JSBridge），在普通 WebView 里是空白页。
+        // 登录窗必须加载 SSR 的 WPS 通行证登录页。
+        assert_eq!(LOGIN_HOST, "https://account.wps.cn");
+        assert!(!LOGIN_HOST.contains("kdocs"));
     }
 
     #[test]

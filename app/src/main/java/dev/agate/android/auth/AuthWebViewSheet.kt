@@ -1,9 +1,13 @@
 package dev.agate.android.auth
 
 import android.annotation.SuppressLint
+import android.webkit.ConsoleMessage
 import android.webkit.CookieManager
-import android.webkit.WebStorage
+import android.webkit.WebChromeClient
+import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
+import android.webkit.WebStorage
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.compose.foundation.layout.Arrangement
@@ -36,6 +40,7 @@ import dev.agate.android.data.PresetRegistry
 import dev.agate.android.ui.components.AgateBadge
 import dev.agate.android.ui.components.BadgeTone
 import dev.agate.android.ui.theme.agateColors
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -58,6 +63,26 @@ private fun hasSessionCookie(cookie: String, names: List<String>): Boolean {
         val value = part.substringAfter('=', "").trim()
         name in names && value.isNotEmpty()
     }
+}
+
+/**
+ * 按 [urls] 顺序读 Cookie，返回**第一个含登录态 Cookie 的域**的整串。
+ *
+ * 为什么不是「各域合并成一段」：同名 Cookie 在不同域上可能是两个值
+ * （灵犀的 `wps_sid` 就可能一边是未登录的匿名会话、一边是登录态），
+ * 拼在一起会让内核 `normalize_paste` 取到哪一个全看拼接顺序。
+ * 这里改成「挑一个域，交它自己的整串」—— 顺序即优先级，登录页那一域排第一
+ * （用户在那个域上刚刚完成登录，它的 `wps_sid` 一定是新的）。
+ *
+ * 读不到（或该域没有登录态）返回 null，调用方继续等下一拍。
+ */
+private fun firstCookieWithSession(urls: List<String>, names: List<String>): String? {
+    if (names.isEmpty()) return null
+    urls.forEach { url ->
+        val raw = runCatching { CookieManager.getInstance().getCookie(url) }.getOrNull()
+        if (raw != null && hasSessionCookie(raw, names)) return raw
+    }
+    return null
 }
 
 /** 登录会话参数：AddProviderSheet 点卡片 → start 成功后产生。 */
@@ -98,11 +123,22 @@ fun AuthWebViewSheet(
     val cookieLogin = preset?.webLoginCookies == true
     // 该认哪些 Cookie 名算登录成功（各家不同，见 ProviderPreset.sessionCookieNames）
     val cookieNames = preset?.sessionCookieNames.orEmpty()
+    // 读 Cookie 的域（登录页那一域优先，其余见 ProviderPreset.extraCookieHosts）
+    val cookieUrls = remember(session.authUrl, preset) {
+        buildList {
+            add(session.authUrl)
+            preset?.extraCookieHosts?.forEach { host ->
+                if (host != session.authUrl) add(host)
+            }
+        }
+    }
     // 交回去的端点：null = 通用回调；KukuAI 这类走专用收尾（{state, cookie}）
     val cookieCompletePath = preset?.cookieCompletePath
     // Cookie 只交回一次（登录成功后页面还会继续导航，每拍都交会重复 POST；
     // 内核那边虽然幂等，但没必要反复发）
     val cookieSubmitted = remember { mutableStateOf(false) }
+    // 交回失败（读到的是匿名 Cookie）后的冷却时刻，避免每 1.8s 打一次上游探活
+    var retryAfter by remember { mutableStateOf(0L) }
 
     // 完成检测：wait 轮询；结果只报一次（finished 防重复）。
     LaunchedEffect(session.state) {
@@ -114,19 +150,26 @@ fun AuthWebViewSheet(
             // CookieManager 读得到 HttpOnly 的会话 Cookie（`sessionid` 就是），
             // 因此这里读的是「完整 Cookie 串」，拼成 HTTP 头形态直接交回内核
             // （内核 `login::normalize_import` 认这个形态）。
-            if (cookieLogin && !cookieSubmitted.value) {
-                val cookie = runCatching {
-                    CookieManager.getInstance().getCookie(session.authUrl)
-                }.getOrNull()
-                if (cookie != null && hasSessionCookie(cookie, cookieNames) && !cookieSubmitted.value) {
+            if (cookieLogin && !cookieSubmitted.value && System.currentTimeMillis() >= retryAfter) {
+                val cookie = firstCookieWithSession(cookieUrls, cookieNames)
+                if (cookie != null && !cookieSubmitted.value) {
                     cookieSubmitted.value = true
                     status = "已获取登录态，正在加入账号…"
                     // 两种收尾形态：通用回调（把 Cookie 当 callbackUrl 交回，内核各家
                     // 自己认）与专用端点（KukuAI：{state, cookie} → finish_kuku_login）
-                    if (cookieCompletePath != null) {
+                    val accepted = if (cookieCompletePath != null) {
                         LoginClient.forwardCookie(session.state, cookie, cookieCompletePath)
                     } else {
                         LoginClient.forwardCallback(session.state, cookie)
+                    }
+                    if (!accepted) {
+                        // ⚠️ 未登录时通行证也会下发一条**匿名** `wps_sid`，内核探活
+                        // 回 401 是**正常中间态**（登录任务仍是 pending，见
+                        // `api::session::login_callback` 的 Err 分支）。这里复位
+                        // 标记继续等，别把「还没登录完」说成「登录失败」。
+                        cookieSubmitted.value = false
+                        retryAfter = System.currentTimeMillis() + 6_000L
+                        status = "还没登录成功 —— 在登录页完成登录后会自动继续"
                     }
                 }
             }
@@ -224,15 +267,29 @@ private fun WebViewBlock(
                 setBackgroundColor(C.cardBg.toArgb())
                 settings.javaScriptEnabled = true
                 settings.domStorageEnabled = true
+                // 桌面布局的登录页按宽度缩放（移动布局本身有 viewport，不受影响）。
+                // 少了这两行，桌面版登录页在手机上只能看到左上角一块。
+                settings.useWideViewPort = true
+                settings.loadWithOverviewMode = true
+                settings.setSupportZoom(true)
+                settings.builtInZoomControls = false
+                settings.displayZoomControls = false
                 CookieManager.getInstance().setAcceptCookie(true)
                 CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
-                // F4 会话隔离：每次登录用全新会话，清掉上一家/上一账号的
-                // Cookie 与站点存储，防止串号。removeAllCookies 异步，但
-                // 登录页首个网络请求前通常已完成，浏览器态对时序不敏感。
-                CookieManager.getInstance().removeAllCookies(null)
-                CookieManager.getInstance().removeSessionCookies(null)
-                CookieManager.getInstance().flush()
-                WebStorage.getInstance().deleteAllData()
+
+                // ── 出错时如实说 ────────────────────────────────────
+                // 这个弹窗过去只会说「已就绪」：页面加载完成但一片空白时，用户对着
+                // 空白等满 5 分钟超时，日志里什么都没有。下面三处（主文档错误、
+                // HTTP 错误、加载后无可见文字）把它变成可诊断的状态。
+                var consoleError: String? = null
+                webChromeClient = object : WebChromeClient() {
+                    override fun onConsoleMessage(msg: ConsoleMessage): Boolean {
+                        if (msg.messageLevel() == ConsoleMessage.MessageLevel.ERROR) {
+                            consoleError = msg.message()
+                        }
+                        return true
+                    }
+                }
                 webViewClient = object : WebViewClient() {
                     override fun shouldOverrideUrlLoading(
                         view: WebView,
@@ -248,12 +305,69 @@ private fun WebViewBlock(
                         return true
                     }
 
+                    override fun onReceivedError(
+                        view: WebView,
+                        request: WebResourceRequest,
+                        error: WebResourceError,
+                    ) {
+                        // 子资源（图片/字体）失败不打断登录，只有主文档才报
+                        if (!request.isForMainFrame) return
+                        val desc = error.description?.toString().orEmpty()
+                        onPageHint("登录页打不开：$desc（错误码 ${error.errorCode}）")
+                    }
+
+                    override fun onReceivedHttpError(
+                        view: WebView,
+                        request: WebResourceRequest,
+                        errorResponse: WebResourceResponse,
+                    ) {
+                        if (!request.isForMainFrame) return
+                        onPageHint(
+                            "登录页被拒绝：HTTP ${errorResponse.statusCode}" +
+                                "（站点可能不允许内嵌浏览器）"
+                        )
+                    }
+
                     override fun onPageFinished(view: WebView, url: String) {
                         onPageHint("登录页已就绪，完成授权后自动关闭")
+                        // 加载完成 ≠ 显示出来。6 秒后仍没有任何可见文字，就如实
+                        // 说明并指出还能走哪条路，而不是让用户对着空白等超时。
+                        view.postDelayed({
+                            view.evaluateJavascript(JS_VISIBLE_CHARS) { raw ->
+                                val chars = raw?.trim()?.trim('"')?.toIntOrNull() ?: -1
+                                if (chars == 0) {
+                                    val detail = consoleError?.take(80)?.let { "（$it）" }.orEmpty()
+                                    onPageHint(
+                                        "登录页没有显示出内容$detail —— 可改用「粘贴 wps_sid」通道"
+                                    )
+                                }
+                            }
+                        }, 6_000L)
                     }
                 }
-                loadUrl(authUrl)
+
+                // F4 会话隔离：每次登录用全新会话，清掉上一家/上一账号的
+                // Cookie 与站点存储，防止串号。
+                // ⚠️ removeAllCookies 是**异步**的，紧跟着 loadUrl 会让清理与页面
+                // 第一个请求赛跑（登录页刚下发的 Cookie 可能被随后清掉，表现为
+                // 「登录了但一直判不出登录态」）。改成清理完成后再加载。
+                WebStorage.getInstance().deleteAllData()
+                val started = AtomicBoolean(false)
+                val loadOnce = {
+                    if (started.compareAndSet(false, true)) loadUrl(authUrl)
+                }
+                CookieManager.getInstance().removeAllCookies {
+                    CookieManager.getInstance().flush()
+                    loadOnce()
+                }
+                // 兜底：个别 WebView 不回调（回调丢了就永远不加载）
+                postDelayed({ loadOnce() }, 2_000L)
             }
         },
     )
 }
+
+/** 页面里有多少个非空白字符；`-1` = 读不到（不据此报警）。 */
+private const val JS_VISIBLE_CHARS =
+    "(function(){try{var b=document.body;if(!b)return -1;" +
+        "var t=(b.innerText||'').replace(/\\s+/g,'');return t.length;}catch(e){return -1}})()"
