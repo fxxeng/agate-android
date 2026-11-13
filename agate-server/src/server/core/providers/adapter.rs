@@ -1506,6 +1506,12 @@ pub fn implemented_kinds() -> Vec<ProviderKind> {
         ProviderKind::Astudio,
         // QuWork：适配器已接真身（对话 / 目录 / 续期 / 积分 / 签到），有公开远程目录
         ProviderKind::QuWork,
+        // WPS 灵犀：适配器已接真身（三请求转发 / 私有 SSE 翻译 / 目录 / 额度 /
+        // 签到 / 账号粘贴）。⚠️ 目录端点来自公开资料的占位路径、尚未真机实测，
+        // 但**仍必须列进来**：本列表回答的是「接线了没有」，不是「端点验证过没有」。
+        // 漏登记的症状是刷新循环从不过问这一家、清单永远停在内置兜底 7 条，
+        // 与 DeepSeekWeb / ZCode 的处置同理。
+        ProviderKind::Lingxi,
     ]
 }
 
