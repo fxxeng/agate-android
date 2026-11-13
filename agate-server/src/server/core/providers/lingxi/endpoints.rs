@@ -289,17 +289,22 @@ mod tests {
         assert_eq!(cookie, Some("wps_sid=V02S-abc"));
     }
 
+    fn header<'a>(list: &'a [(String, String)], key: &str) -> Option<&'a str> {
+        list.iter()
+            .find(|(name, _)| name == key)
+            .map(|(_, value)| value.as_str())
+    }
+
     #[test]
     fn account_and_chat_headers_differ_exactly_where_they_should() {
         let a = account_headers(API_HOST, "V02S-a", "dev-1", None, "rid-1");
         let c = chat_headers(API_HOST, "V02S-a", "dev-1", None, "rid-1", "sess", "run");
-        let get = |h: &[(String, String)], k: &str| h.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
-        assert_eq!(get(&a, "Accept"), Some("application/json"));
-        assert_eq!(get(&c, "Accept"), Some("text/event-stream"));
-        assert_eq!(get(&c, "x-cc-session-id"), Some("sess"));
-        assert_eq!(get(&c, "x-cc-run-id"), Some("run"));
-        assert_eq!(get(&a, "x-cc-session-id"), None);
-        assert_eq!(get(&c, "X-Client-Lang"), Some("zh-CN"));
-        assert_eq!(get(&c, "X-Request-Id"), Some("rid-1"));
+        assert_eq!(header(&a, "Accept"), Some("application/json"));
+        assert_eq!(header(&c, "Accept"), Some("text/event-stream"));
+        assert_eq!(header(&c, "x-cc-session-id"), Some("sess"));
+        assert_eq!(header(&c, "x-cc-run-id"), Some("run"));
+        assert_eq!(header(&a, "x-cc-session-id"), None);
+        assert_eq!(header(&c, "X-Client-Lang"), Some("zh-CN"));
+        assert_eq!(header(&c, "X-Request-Id"), Some("rid-1"));
     }
 }
