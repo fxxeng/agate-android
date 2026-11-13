@@ -89,6 +89,13 @@ jobs:
           cargo ndk -t arm64-v8a clippy --locked --lib --target aarch64-linux-android -- \
             -D clippy::unwrap_used -D clippy::expect_used -D clippy::panic \
             -D clippy::unreachable -D clippy::todo -D clippy::unimplemented
+      # R53/T2：Android 目标的 `#[cfg(test)]` 代码此前无人编译（上面那步只有
+      # `--lib`，测试 cfg 不参与），jni_bridge 的单元测试因此长期「既没跑过、
+      # 也没编过」。这里补编译门；不带 panic 六 lint（测试代码按设计豁免）。
+      - name: Android target test build (cfg test compile gate)
+        run: |
+          cd agate-server
+          cargo ndk -t arm64-v8a clippy --locked --lib --tests --target aarch64-linux-android
       # CI-Fix9: build both ABIs in ONE cargo invocation (shared dependency
       # compilation). APK ABI purity is guaranteed by ndk.abiFilters in
       # app/build.gradle.kts, not by build order, so having the x86_64 .so
