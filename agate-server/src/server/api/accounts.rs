@@ -224,18 +224,21 @@ fn quwork_credentials_from_b64_file(
         })
 }
 
-/// KukuAI 文件导入的临时 Cookies 文件路径（系统临时目录 + 随机文件名）。
+/// KukuAI 文件导入的临时 Cookies 文件路径（`core::scratch` 下的随机文件名）。
 ///
 /// 随机段与 `proxy_pool::new_id` / `upstream::request::new_request_id` 同一手法
 /// （`RandomState` 的随机种子 + 毫秒 + 进程号，不引第三方依赖）：只要求并发写
 /// 不撞名，不承担安全语义（文件读完即删）。
+///
+/// ⚠️ 目录走 `core::scratch::dir()`：Android 的 `std::env::temp_dir()` 是
+/// `/data/local/tmp`，app 写不进去（真机上这句话会变成 `Permission denied`）。
 fn kuku_temp_cookies_path() -> std::path::PathBuf {
     use std::hash::{BuildHasher, Hasher};
     let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
     hasher.write_u64(logging::now_ms() as u64);
     hasher.write_u64(std::process::id() as u64);
     let suffix = (hasher.finish() & 0xffff_ffff) as u32;
-    std::env::temp_dir().join(format!(
+    crate::server::core::scratch::dir().join(format!(
         "kuku-cookies-{}-{}-{suffix:08x}",
         std::process::id(),
         logging::now_ms()

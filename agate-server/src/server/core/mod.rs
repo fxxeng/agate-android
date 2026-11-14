@@ -104,6 +104,7 @@ pub mod proxies;
 pub mod routing;
 pub mod sanitize;
 pub mod scheduled_tasks;
+pub mod scratch;
 pub mod sub_kernel;
 pub mod subscriptions;
 pub mod task_state;
