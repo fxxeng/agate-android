@@ -342,9 +342,11 @@ object PresetRegistry {
             pasteHint = "粘贴会话 Cookie（session）", pasteMultiline = true,
         ),
         // Command Code：粘贴 user_ Key
+        // Command Code：粘贴 API Key；也收官方 `~/.commandcode/auth.json`
+        // （明文 `user_…`），见内核 `api::accounts` 的 CommandCode 分支。
         ProviderPreset(
             "commandcode", "Command Code", "粘贴 user_ API Key", LoginKind.PASTE,
-            listOf(AuthChannel.PASTE),
+            listOf(AuthChannel.PASTE, AuthChannel.IMPORT_FILE),
             pasteHint = "API Key（user_ 开头）",
         ),
         // Antigravity：Google OAuth loopback；可粘贴 refresh token
@@ -355,14 +357,19 @@ object PresetRegistry {
             pasteSecondaryHint = "Google 账号邮箱（可选，同账号去重）",
             needsGateway = true,
         ),
-        // OfficeAce：服务端中介轮询
+        // OfficeAce：服务端中介轮询；也可直接导入桌面端的 models.json
+        // （里面的网关凭据是一条拼好的 Basic 头，内核会拆成 key/secret）。
         ProviderPreset(
-            "officeace", "OfficeAce 果办", "网页登录", LoginKind.WEBVIEW, WEB, supportsCheckin = true,
+            "officeace", "OfficeAce 果办", "网页登录", LoginKind.WEBVIEW,
+            listOf(AuthChannel.EMBEDDED, AuthChannel.EXTERNAL, AuthChannel.IMPORT_FILE),
+            supportsCheckin = true,
         ),
-        // OrcaTerm：回调由壳提交，只能内嵌
+        // OrcaTerm：回调由壳提交，只能内嵌；但桌面端 `data.bin` 是**明文 JSON**
+        // （Tauri store，含 `oauth_access_token`），拷到手机选一次即可 —— 这是
+        // 手机上唯一走得通的路，所以必须给 IMPORT_FILE。
         ProviderPreset(
             "orcaterm", "OrcaTerm", "网页登录", LoginKind.WEBVIEW,
-            listOf(AuthChannel.EMBEDDED),
+            listOf(AuthChannel.EMBEDDED, AuthChannel.IMPORT_FILE),
         ),
         // LobsterAI（网易有道「有道龙虾」）：**只有浏览器登录一条入口**。
         //
@@ -394,7 +401,13 @@ object PresetRegistry {
         // `supportsCheckin = true`。归 **Agent 分段**（编程客户端）。
         ProviderPreset(
             "atomcode", "AtomCode", "AtomGit · 浏览器授权 / 粘贴令牌", LoginKind.WEBVIEW,
-            listOf(AuthChannel.EMBEDDED, AuthChannel.EXTERNAL, AuthChannel.PASTE),
+            // `IMPORT_FILE` 收官方 CLI 的 auth.toml（TOML）与登录输出的 JSON：
+            // 内核 `atomcode::parse_credential_file` 两种都解析，字段归一仍只有
+            // `normalize_paste` 一份（`access_token` 与 `accessToken` 都认）。
+            listOf(
+                AuthChannel.EMBEDDED, AuthChannel.EXTERNAL,
+                AuthChannel.PASTE, AuthChannel.IMPORT_FILE,
+            ),
             pasteHint = "粘贴 accessToken（登录输出里的 access_token）",
             pasteSecondaryHint = "续期令牌 refreshToken（可选；留空则到期后需重新登录）",
             supportsCheckin = true,

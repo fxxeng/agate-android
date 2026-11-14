@@ -131,6 +131,22 @@ impl AccountStore {
             }
         };
         if access_token.is_empty() {
+            // ⚠️ 新版官方客户端把令牌换成了**信封加密**：
+            //   `accessToken: {"$wbEncrypted": 1, "envelope": "…"}`
+            // 解开 envelope 得到 `{suite, keyId, nonce, authTag, ciphertext}`，
+            // 密钥不在文件里（keyId 指向客户端自己的密钥库），所以**换到别的
+            // 机器上解不开**（2026-11 实测本机 `workbuddy-desktop.info`）。
+            // 这里必须单独说清：否则用户看到的是「缺少 accessToken」，会以为
+            // 自己粘错了，反复试同一份文件。
+            if let Some(Value::Object(envelope)) = auth.get("accessToken") {
+                if envelope.contains_key("$wbEncrypted") {
+                    return Err(AccountStoreError::bad_request(
+                        "这份 WorkBuddy 登录态是加密信封（新版客户端用 $wbEncrypted 包裹\
+                         accessToken，密钥不在文件里），换一台设备解不开。请改用「网页登录」，\
+                         或在能解密的机器上导出明文 accessToken 后粘贴",
+                    ));
+                }
+            }
             return Err(AccountStoreError::bad_request("缺少 accessToken"));
         }
         if access_token.chars().count() > MAX_TOKEN_LENGTH

@@ -1813,22 +1813,45 @@ private fun ImportFileForm(preset: ProviderPreset, onDone: (Boolean, String) -> 
     }
 
     Text(
-        if (preset.id == "quwork") {
-            // 用户问的就是「能不能把桌面客户端的授权路径告诉我，我自己拷过来导入」——
-            // 能，而且这是 QuWork 拿到 accessToken（账号面）最省事的一条路：
-            // 登录态是**明文** SQLite，不是 DPAPI 密文，拷过来就能解。
-            "在电脑上找到 QuWork 桌面客户端的登录库，拷到手机后选它：\n" +
-                "· Windows：%APPDATA%\\qurwork-desktop\\qurwork-desktop.sqlite\n" +
-                "· macOS：~/Library/Application Support/qurwork-desktop/qurwork-desktop.sqlite\n" +
-                "· Linux：~/.config/qurwork-desktop/qurwork-desktop.sqlite\n" +
-                "拷之前请先完全退出客户端（退出时会把最新的 -wal 合并回主库）；\n" +
-                "如果导入时说「没有登录会话」，多半是客户端没退干净、登录态还在 -wal 里，" +
-                "退出后重新拷一次主库即可。\n" +
-                "只要模型凭证的话，也可以选家目录下的 " +
-                "~/.qurwork-desktop-dsh/.dsh/.credentials.yaml（里面有 QURIVS_LLM_API_KEY 行）。"
-        } else {
-            "选择桌面客户端导出的凭证文件（auth.json / providers.json / Cookie 库）。" +
-                "文本 JSON 直接解析，二进制（KukuAI 的 Cookies SQLite）自动转 base64。"
+        when (preset.id) {
+            "quwork" ->
+                // 用户问的就是「能不能把桌面客户端的授权路径告诉我，我自己拷过来导入」——
+                // 能，而且这是 QuWork 拿到 accessToken（账号面）最省事的一条路：
+                // 登录态是**明文** SQLite，不是 DPAPI 密文，拷过来就能解。
+                "在电脑上找到 QuWork 桌面客户端的登录库，拷到手机后选它：\n" +
+                    "· Windows：%APPDATA%\\qurwork-desktop\\qurwork-desktop.sqlite\n" +
+                    "· macOS：~/Library/Application Support/qurwork-desktop/qurwork-desktop.sqlite\n" +
+                    "· Linux：~/.config/qurwork-desktop/qurwork-desktop.sqlite\n" +
+                    "拷之前请先完全退出客户端（退出时会把最新的 -wal 合并回主库）；\n" +
+                    "如果导入时说「没有登录会话」，多半是客户端没退干净、登录态还在 -wal 里，" +
+                    "退出后重新拷一次主库即可。\n" +
+                    "只要模型凭证的话，也可以选家目录下的 " +
+                    "~/.qurwork-desktop-dsh/.dsh/.credentials.yaml（里面有 QURIVS_LLM_API_KEY 行）。"
+            "orcaterm" ->
+                // Tauri store，明文 JSON，里面就是那枚 oauth_access_token
+                "在电脑上找到 OrcaTerm 桌面客户端的登录态文件，拷到手机后选它：\n" +
+                    "· Windows：%APPDATA%\\com.orcaterm-desktop.app\\data.bin\n" +
+                    "· macOS：~/Library/Application Support/com.orcaterm-desktop.app/data.bin\n" +
+                    "文件是明文 JSON，直接选即可（不是二进制，也不用改名）。\n" +
+                    "导入时会当场校验一次令牌：校验不过会明确告诉你，不会落一条用不了的账号。"
+            "commandcode" ->
+                "在电脑上找到 Command Code 的凭证文件，拷到手机后选它：\n" +
+                    "· Windows：%USERPROFILE%\\.commandcode\\auth.json\n" +
+                    "· macOS / Linux：~/.commandcode/auth.json\n" +
+                    "也接受整份就是那枚 user_ 开头的 Key 的纯文本文件。"
+            "officeace" ->
+                "在电脑上找到 OfficeAce 桌面端的 models.json，拷到手机后选它：\n" +
+                    "· Windows：%USERPROFILE%\\.office-claw\\.jiuwenclaw\\config\\" +
+                    "routing_state\\users\\<账号ID>\\models.json\n" +
+                    "文件里的网关凭据是一条已经拼好的 `Authorization: Basic …`，" +
+                    "会自动拆成 key / secret，不用你手工 base64 解码。"
+            "atomcode" ->
+                "可以直接选 AtomCode 官方 CLI 生成的 auth.toml（TOML 与 JSON 都认），" +
+                    "也可以选登录输出那份含 access_token 的 JSON。" +
+                    "文件里需要有 access_token（有 refresh_token 更好，到期能自动续期）。"
+            else ->
+                "选择桌面客户端导出的凭证文件（auth.json / providers.json / Cookie 库）。" +
+                    "文本 JSON 直接解析，二进制（KukuAI 的 Cookies SQLite）自动转 base64。"
         },
         color = C.textSub, fontSize = 12.sp,
     )

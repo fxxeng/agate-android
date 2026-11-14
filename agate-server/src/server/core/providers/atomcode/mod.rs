@@ -162,14 +162,45 @@ pub fn secret_from_bundle(bundle: TokenBundle) -> Value {
     secret
 }
 
+/// 凭证文件 → JSON 载荷（**文件导入的唯一入口**）。
+///
+/// ── 为什么这里要认两种格式 ──────────────────────────────────
+/// 上游对本家的文件导入只解 JSON，理由是「官方 `auth.toml` 是它自己 CLI 的
+/// 落盘形态，字段与我们的记录不同」。但字段其实**只差一层命名**：
+/// `auth.toml` 里是 `access_token` / `refresh_token`，而 [`normalize_paste`]
+/// 的取值链本来就认这两个下划线名（见它的三种形态）。真正差的是**序列化格式**
+/// （TOML 不是 JSON），所以这里按格式试探，字段归一仍交给 `normalize_paste`
+/// —— 不新增第二套字段解析。
+///
+/// 顺序：JSON 优先（用户从别处导出的、以及本仓自己产的备份都是 JSON），
+/// 失败再当 TOML。两种都失败才报错，且文案把两种格式都说出来。
+pub fn parse_credential_file(content: &str) -> Result<Value, GatewayError> {
+    let trimmed = content.trim();
+    if let Ok(value) = serde_json::from_str::<Value>(trimmed) {
+        return Ok(value);
+    }
+    match toml::from_str::<toml::Value>(trimmed) {
+        Ok(value) => serde_json::to_value(value).map_err(|_| {
+            GatewayError::with_status(
+                400,
+                "凭证文件里的值没法转成 JSON（auth.toml 里不要放日期时间那类 TOML 专有类型）",
+            )
+        }),
+        Err(_) => Err(GatewayError::with_status(
+            400,
+            "凭证文件既不是 JSON 也不是 TOML：AtomCode 认官方 auth.toml，\
+             或登录输出那份含 access_token 的 JSON",
+        )),
+    }
+}
+
 /// 把粘贴的令牌包归一成可落库的 secret（`api::accounts` 的 AtomCode 分支调它）。
 ///
-/// ── 为什么只认「粘贴令牌」而拒绝文件 / 桌面端 ──────────────────
-/// AtomCode 的凭证是代理下发的一对令牌，既没有「客户端导出的凭证文件」这个
-/// 约定（官方 `auth.toml` 是它自己 CLI 的落盘形态，字段与我们的记录不同），
-/// 也没有可实时读取的本机登录态。硬凑出来的实现只会在用户点下去之后失败，
-/// 现在就说清「请用浏览器登录」反倒省事 —— 与上游插件 `normalize_account`
-/// 对 `FileBase64` / `Desktop` 的两种回绝逐字同口径。
+/// ── 三种来源：粘贴 / 文件（JSON 或 TOML）/ 浏览器登录 ──────────
+/// 文件导入由 [`parse_credential_file`] 先把内容转成 JSON 载荷，本函数不关心
+/// 它从哪来 —— 字段归一只有这一份（驼峰与下划线两种写法都在下面的取值链里）。
+/// `FileBase64` 与 `Desktop` 仍然回绝：前者没有任何二进制形态（凭证是纯文本），
+/// 后者读的是本机固定路径，手机上没有那个文件。
 ///
 /// 接受三种形态（都是同一件事的不同叫法，见 `from_record` 的取值链）：
 ///   - `{accessToken, refreshToken?}`：面板粘贴的标准形态；
@@ -248,6 +279,35 @@ pub fn normalize_paste(payload: &Value) -> Result<Value, GatewayError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 官方 `auth.toml` 与登录输出的 JSON 都要能进同一条归一链
+    /// （字段只差下划线/驼峰，`normalize_paste` 两种都认）
+    #[test]
+    fn credential_file_takes_toml_and_json() {
+        let toml_text = "access_token = \"at-1\"\nrefresh_token = \"rt-1\"\n";
+        let from_toml = parse_credential_file(toml_text).expect("auth.toml 要能解析");
+        let secret = normalize_paste(&from_toml).expect("下划线名要能被归一");
+        assert_eq!("at-1", secret["accessToken"]);
+        assert_eq!("rt-1", secret["refreshToken"]);
+
+        let json_text = r#"{"access_token":"at-2"}"#;
+        let from_json = parse_credential_file(json_text).expect("JSON 要能解析");
+        assert_eq!(
+            "at-2",
+            normalize_paste(&from_json).expect("归一")["accessToken"]
+        );
+    }
+
+    /// 两种格式都不是时，文案要同时点出两种（否则用户对着「不是合法 JSON」发呆）
+    #[test]
+    fn credential_file_says_which_formats_it_accepts() {
+        let error = parse_credential_file("this is not a credential")
+            .err()
+            .map(|error| error.message)
+            .unwrap_or_default();
+        assert!(error.contains("TOML"), "实际文案：{error}");
+        assert!(error.contains("JSON"), "实际文案：{error}");
+    }
 
     /// provider id 与注册表一致（落盘契约）
     #[test]

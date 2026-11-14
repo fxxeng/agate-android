@@ -29,11 +29,122 @@
 //! ── 硬约束 ──────────────────────────────────────────────────
 //! release 是 `panic=abort`：本文件零 unwrap/expect/panic。
 
+use base64::Engine as _;
 use serde_json::Value;
 
 use crate::server::errors::GatewayError;
 
 use super::signer::Credential as SigningCredential;
+
+/// 遍历整棵 JSON，把「键 → 字符串值」交给回调（数组逐项下钻）。
+///
+/// 为什么按**键名**而不是固定层级找：桌面端 `models.json` 的包装层随版本变过
+/// （顶层对象 / `models` 数组 / 再套一层 provider 描述），模块头只保证「文件里
+/// 有 `api_base` 与一个 Basic 头」。按层级写死等于给未来版本埋一个静默失效。
+fn walk_strings(value: &Value, visit: &mut impl FnMut(&str, &str)) {
+    match value {
+        Value::Object(map) => {
+            for (key, child) in map {
+                match child {
+                    Value::String(text) => visit(key, text),
+                    other => walk_strings(other, visit),
+                }
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                walk_strings(item, visit);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// 把桌面端 `models.json` 原文归一成「可落库的凭据对象」（文件导入的唯一入口）。
+///
+/// 依据在 `officeace/mod.rs` 的模块头：桌面端把这张表落在
+/// `~/.office-claw/.jiuwenclaw/config/routing_state/users/<账号ID>/models.json`，
+/// 里面的网关凭据是**已经拼好的** `Authorization: Basic base64(key:secret)` 加
+/// 一个 `api_base`。用户从别的机器拷这份文件过来时，不该再让他自己把 Basic 拆成
+/// 两段（那正是最容易抄错的一步，且拆错的表现是转发 401）。
+///
+/// 因此本函数做三件事，任一步失败都给出可操作文案：
+///   1. 找基址（`api_base` / `apiBase` / `baseUrl` / `base_url`）；
+///   2. 取网关凭据：优先文件里已分开的 `modelAppKey` / `appKey` 一对，
+///      否则解 Basic 头；
+///   3. 组装成 `from_record` 认的字段名（别处不再重复这套映射）。
+pub fn from_desktop_models_json(value: &Value) -> Result<Value, GatewayError> {
+    let mut base_url = String::new();
+    let mut app_key = String::new();
+    let mut app_secret = String::new();
+    let mut basic = String::new();
+    walk_strings(value, &mut |key, text| {
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+        let lower = key.to_ascii_lowercase();
+        match lower.as_str() {
+            "api_base" | "apibase" | "base_url" | "baseurl" if base_url.is_empty() => {
+                base_url = trimmed.to_string();
+            }
+            "modelappkey" | "appkey" | "model_app_key" if app_key.is_empty() => {
+                app_key = trimmed.to_string();
+            }
+            "modelappsecret" | "appsecret" | "model_app_secret" if app_secret.is_empty() => {
+                app_secret = trimmed.to_string();
+            }
+            "authorization" if basic.is_empty() => {
+                // 大小写不固定（`Basic` / `basic` 都见过），只认这两种
+                let rest = trimmed
+                    .strip_prefix("Basic ")
+                    .or_else(|| trimmed.strip_prefix("basic "));
+                if let Some(rest) = rest {
+                    basic = rest.trim().to_string();
+                }
+            }
+            _ => {}
+        }
+    });
+    // ── Basic → key:secret（只在文件没给分开的两个键时才用）─────────
+    if (app_key.is_empty() || app_secret.is_empty()) && !basic.is_empty() {
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(basic.as_bytes())
+            .or_else(|_| base64::engine::general_purpose::STANDARD_NO_PAD.decode(basic.as_bytes()));
+        if let Ok(bytes) = decoded {
+            if let Ok(text) = String::from_utf8(bytes) {
+                if let Some((key, secret)) = text.split_once(':') {
+                    if app_key.is_empty() {
+                        app_key = key.trim().to_string();
+                    }
+                    if app_secret.is_empty() {
+                        app_secret = secret.trim().to_string();
+                    }
+                }
+            }
+        }
+    }
+    if base_url.is_empty() {
+        return Err(GatewayError::with_status(
+            400,
+            "这份文件里没有网关基址（需要 api_base / baseUrl）：\
+             请选择桌面端 models.json，或手动填写 API 基址与网关凭据",
+        ));
+    }
+    if app_key.is_empty() || app_secret.is_empty() {
+        return Err(GatewayError::with_status(
+            400,
+            "这份文件里没有可用的网关凭据（需要 modelAppKey + modelAppSecret，\
+             或一条 `Authorization: Basic …` 头）：请选择桌面端 models.json，\
+             或手动把 Basic 解成 key:secret 后填写",
+        ));
+    }
+    Ok(serde_json::json!({
+        "baseUrl": base_url,
+        "modelAppKey": app_key,
+        "modelAppSecret": app_secret,
+    }))
+}
 
 /// 从账号记录取值：优先 `keys` 里的名字，取第一个非空字符串。
 fn pick(record: &Value, keys: &[&str]) -> String {
@@ -141,9 +252,45 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// 桌面端 `models.json`：基址 + 一条**拼好的** Basic 头 → 拆成两段
+    /// （这是「拷文件导入」最实用的一条：用户不必自己 base64 解码）
     #[test]
-    fn reads_the_house_field_names() {
-        let record = json!({
+    fn desktop_models_json_unpacks_the_basic_header() {
+        let file = json!({
+            "models": [
+                {
+                    "api_base": "https://modelgw-0004.example.com/v2",
+                    "custom_headers": {
+                        "Authorization": "Basic dGVzdC1rZXk6dGVzdC1zZWNyZXQ="
+                    }
+                }
+            ]
+        });
+        let record = from_desktop_models_json(&file).expect("Basic 头要能拆成两段");
+        assert_eq!("https://modelgw-0004.example.com/v2", record["baseUrl"]);
+        assert_eq!("test-key", record["modelAppKey"]);
+        assert_eq!("test-secret", record["modelAppSecret"]);
+        // 解析产物必须能被正常落库入口接受（两处字段名别分叉）
+        assert!(from_record(Some(&record)).map(|c| c.can_forward()).unwrap_or(false));
+    }
+
+    /// 缺什么就说什么：基址与网关凭据分开报，别给一句通用的「格式不正确」
+    #[test]
+    fn desktop_models_json_names_the_missing_piece() {
+        let no_base = from_desktop_models_json(&json!({ "foo": "bar" }))
+            .err()
+            .map(|error| error.message)
+            .unwrap_or_default();
+        assert!(no_base.contains("基址"), "实际文案：{no_base}");
+        let no_credential = from_desktop_models_json(&json!({ "api_base": "https://x" }))
+            .err()
+            .map(|error| error.message)
+            .unwrap_or_default();
+        assert!(no_credential.contains("网关凭据"), "实际文案：{no_credential}");
+    }
+
+    #[test]
+    fn reads_the_house_field_names() {        let record = json!({
             "id": "a1",
             "baseUrl": "https://gw.example.com",
             "modelAppKey": "k",
