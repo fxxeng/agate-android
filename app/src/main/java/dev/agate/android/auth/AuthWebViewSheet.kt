@@ -1,8 +1,10 @@
 package dev.agate.android.auth
 
 import android.annotation.SuppressLint
+import android.net.http.SslError
 import android.webkit.ConsoleMessage
 import android.webkit.CookieManager
+import android.webkit.SslErrorHandler
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
@@ -17,15 +19,18 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -114,8 +119,19 @@ fun AuthWebViewSheet(
     val scope = rememberCoroutineScope()
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
-    var status by remember { mutableStateOf("正在打开登录页…") }
+    // 登录页主机名：既让用户看得见「到底在打开谁」，也顺带成为**新老包的标记**
+    // —— 老版本的这一行只会说「登录页已就绪」，从不带域名。
+    val loginHost = remember(session.authUrl) {
+        runCatching { java.net.URI(session.authUrl).host }.getOrNull()
+            ?: session.authUrl
+                .removePrefix("https://")
+                .removePrefix("http://")
+                .substringBefore('/')
+    }
+    var status by remember { mutableStateOf("正在打开 $loginHost…") }
     var finished by remember { mutableStateOf(false) }
+    // 「重新加载」：AndroidView 的 factory 只跑一次，重载指令用计数器传给 WebViewBlock
+    var reloadTick by remember { mutableIntStateOf(0) }
 
     val label = PresetRegistry.labelOf(session.providerId)
     // 这家是不是「靠读登录窗口的 Cookie 收尾」（见 ProviderPreset.webLoginCookies）
@@ -223,6 +239,8 @@ fun AuthWebViewSheet(
             Spacer(Modifier.height(8.dp))
             WebViewBlock(
                 authUrl = session.authUrl,
+                host = loginHost,
+                reloadTick = reloadTick,
                 onPageHint = { status = it },
                 onSchemeCallback = { url ->
                     // state 来自本次登录会话：内核靠它认任务（缺了必 400）
@@ -235,7 +253,13 @@ fun AuthWebViewSheet(
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp),
                 horizontalArrangement = Arrangement.End,
+                verticalAlignment = Alignment.CenterVertically,
             ) {
+                // 白屏/出错时不必重开弹窗（重开会浪费一次登录任务）
+                TextButton(onClick = { reloadTick += 1 }) {
+                    Text("重新加载", color = C.textDim)
+                }
+                Spacer(Modifier.width(8.dp))
                 Button(onClick = {
                     scope.launch {
                         LoginClient.cancel(session.state)
@@ -252,11 +276,17 @@ fun AuthWebViewSheet(
 @Composable
 private fun WebViewBlock(
     authUrl: String,
+    host: String,
+    reloadTick: Int,
     onPageHint: (String) -> Unit,
     onSchemeCallback: (String) -> Unit,
 ) {
     val C = agateColors()
     var web by remember { mutableStateOf<WebView?>(null) }
+    // 「重新加载」：factory 只跑一次，重载指令靠计数器传进来
+    LaunchedEffect(reloadTick) {
+        if (reloadTick > 0) web?.reload()
+    }
     // sheet 关闭即销毁 WebView，避免 native 资源滞留（登录频次低，泄漏也该关）。
     DisposableEffect(Unit) {
         onDispose {
@@ -282,14 +312,28 @@ private fun WebViewBlock(
                 settings.setSupportZoom(true)
                 settings.builtInZoomControls = false
                 settings.displayZoomControls = false
+                // 去掉 WebView 指纹（UA 里的 `; wv)` 与 ` Version/4.0`）：不少站点见到
+                // WebView 就改发「请用 App 打开」或客户端容器页 —— 灵犀自己就是这样
+                // （`lingxi.kdocs.cn` 给 WPS App 的容器页，普通 WebView 里全白）。
+                // **只删标记、不改引擎版本号**：版本号决定站点下发哪套语法，编造会坏页。
+                settings.userAgentString?.let { ua ->
+                    settings.userAgentString =
+                        ua.replace("; wv)", ")").replace(" Version/4.0", "")
+                }
                 CookieManager.getInstance().setAcceptCookie(true)
                 CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
 
                 // ── 出错时如实说 ────────────────────────────────────
                 // 这个弹窗过去只会说「已就绪」：页面加载完成但一片空白时，用户对着
-                // 空白等满 5 分钟超时，日志里什么都没有。下面三处（主文档错误、
-                // HTTP 错误、加载后无可见文字）把它变成可诊断的状态。
+                // 空白等满 5 分钟超时，日志里什么都没有。下面四处（主文档错误、HTTP
+                // 错误、证书错误、加载后无可见文字）把它变成可诊断的状态。
+                //
+                // ⚠️ `mainFrameError` 是**粘性**的：主文档出错时 onReceivedError 先到、
+                // onPageFinished 后到，后写的会把真正的错误覆盖成「已就绪」—— 这正是
+                // 上一版把「打不开」说成「已就绪」的原因。
+                var mainFrameError: String? = null
                 var consoleError: String? = null
+                var blankRetries = 0
                 webChromeClient = object : WebChromeClient() {
                     override fun onConsoleMessage(msg: ConsoleMessage): Boolean {
                         if (msg.messageLevel() == ConsoleMessage.MessageLevel.ERROR) {
@@ -321,7 +365,8 @@ private fun WebViewBlock(
                         // 子资源（图片/字体）失败不打断登录，只有主文档才报
                         if (!request.isForMainFrame) return
                         val desc = error.description?.toString().orEmpty()
-                        onPageHint("登录页打不开：$desc（错误码 ${error.errorCode}）")
+                        mainFrameError = "打不开 $host：$desc（错误码 ${error.errorCode}）"
+                        onPageHint(mainFrameError.orEmpty())
                     }
 
                     override fun onReceivedHttpError(
@@ -330,25 +375,48 @@ private fun WebViewBlock(
                         errorResponse: WebResourceResponse,
                     ) {
                         if (!request.isForMainFrame) return
-                        onPageHint(
-                            "登录页被拒绝：HTTP ${errorResponse.statusCode}" +
-                                "（站点可能不允许内嵌浏览器）"
-                        )
+                        val code = errorResponse.statusCode
+                        // 3xx 由 WebView 自己跟，不算拒绝；只有 4xx/5xx 才是站点拒绝
+                        if (code < 400) return
+                        mainFrameError = "登录页被拒绝：HTTP $code（$host）"
+                        onPageHint(mainFrameError.orEmpty())
+                    }
+
+                    override fun onReceivedSslError(
+                        view: WebView,
+                        handler: SslErrorHandler,
+                        error: SslError,
+                    ) {
+                        // 证书错误就地说明并取消，**不 proceed**（放行等于自毁 TLS 校验）
+                        mainFrameError = "证书校验失败：主错误码 ${error.primaryError}（$host）"
+                        onPageHint(mainFrameError.orEmpty())
+                        handler.cancel()
                     }
 
                     override fun onPageFinished(view: WebView, url: String) {
-                        onPageHint("登录页已就绪，完成授权后自动关闭")
-                        // 加载完成 ≠ 显示出来。6 秒后仍没有任何可见文字，就如实
-                        // 说明并指出还能走哪条路，而不是让用户对着空白等超时。
+                        // 有错就不再改口（见上面 `mainFrameError` 的说明）
+                        if (mainFrameError == null) {
+                            onPageHint("$host 已打开，登录完成后自动关闭")
+                        }
+                        // 加载完成 ≠ 显示出来。6 秒后探一次：可见文字为 0 或文档高度
+                        // 塌成 0（首次布局高度为 0、脚本抢跑都可能），先自动重载一次，
+                        // 再不行就如实说明并指出还能走哪条路。
                         view.postDelayed({
-                            view.evaluateJavascript(JS_VISIBLE_CHARS) { raw ->
-                                val chars = raw?.trim()?.trim('"')?.toIntOrNull() ?: -1
-                                if (chars == 0) {
-                                    val detail = consoleError?.take(80)?.let { "（$it）" }.orEmpty()
-                                    onPageHint(
-                                        "登录页没有显示出内容$detail —— 可改用「粘贴 wps_sid」通道"
-                                    )
+                            view.evaluateJavascript(JS_PAGE_PROBE) { raw ->
+                                val probe = parsePageProbe(raw) ?: return@evaluateJavascript
+                                if (!probe.blank) return@evaluateJavascript
+                                if (blankRetries < 1) {
+                                    blankRetries += 1
+                                    onPageHint("$host 打开了但没显示出内容，正在重试…")
+                                    view.reload()
+                                    return@evaluateJavascript
                                 }
+                                onPageHint(
+                                    mainFrameError
+                                        ?: "登录页没有显示出内容${
+                                            consoleError?.take(80)?.let { "（$it）" }.orEmpty()
+                                        } —— 可改用「粘贴」通道"
+                                )
                             }
                         }, 6_000L)
                     }
@@ -375,7 +443,30 @@ private fun WebViewBlock(
     )
 }
 
-/** 页面里有多少个非空白字符；`-1` = 读不到（不据此报警）。 */
-private const val JS_VISIBLE_CHARS =
-    "(function(){try{var b=document.body;if(!b)return -1;" +
-        "var t=(b.innerText||'').replace(/\\s+/g,'');return t.length;}catch(e){return -1}})()"
+/** 页面探针：`可见文字数|文档高度`；`-1|-1` = 读不到（不据此报警）。 */
+private const val JS_PAGE_PROBE =
+    "(function(){try{var b=document.body;if(!b)return '-1|-1';" +
+        "var t=(b.innerText||'').replace(/\\s+/g,'');" +
+        "return t.length+'|'+(b.scrollHeight||0);}catch(e){return '-1|-1'}})()"
+
+/** 探针结果：`blank` = 一个可见字符都没有，或文档高度塌成 0（都等于白屏）。 */
+private data class PageProbe(val chars: Int, val scrollHeight: Int) {
+    val blank: Boolean get() = chars == 0 || scrollHeight < 24
+}
+
+/**
+ * 解析 [JS_PAGE_PROBE] 的返回值。
+ *
+ * `evaluateJavascript` 回的是 **JSON 值**：字符串带引号、读不到时是字面量
+ * `null`。任何一步对不上都回 `null`（= 不据此报警）—— 宁可不出提示，也不冤枉页面。
+ */
+private fun parsePageProbe(raw: String?): PageProbe? {
+    val text = raw?.trim()?.trim('"') ?: return null
+    if (text.isEmpty() || text == "null") return null
+    val parts = text.split('|')
+    if (parts.size < 2) return null
+    val chars = parts[0].toIntOrNull() ?: return null
+    val scroll = parts[1].toIntOrNull() ?: return null
+    if (chars < 0 || scroll < 0) return null
+    return PageProbe(chars, scroll)
+}
