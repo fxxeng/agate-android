@@ -372,7 +372,7 @@ mod tests {
     #[test]
     fn order_accepts_number_and_digits_but_rejects_the_rest() {
         assert_eq!(
-            parse_redeem_input(&json!({ "orderId": 1234567890123456 }))
+            parse_redeem_input(&json!({ "orderId": 1234567890123456_i64 }))
                 .ok()
                 .map(|input| input.kind()),
             Some("order")
@@ -403,7 +403,7 @@ mod tests {
     #[test]
     fn both_fields_at_once_is_refused() {
         let error = parse_redeem_input(&json!({
-            "orderId": 1234567890123456,
+            "orderId": 1234567890123456_i64,
             "inviteCode": "AB12CD",
         }))
         .err()
