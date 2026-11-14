@@ -76,13 +76,17 @@ pub fn validate(config: &Value) -> Result<(), String> {
         if provider.get("api").and_then(Value::as_str) != Some(endpoints::MODEL_API) {
             return Err("QuWork 模型接口协议已变化，请更新网关".into());
         }
-        if provider
+        let base_url = provider
             .get("baseURL")
             .and_then(Value::as_str)
             .map(|url| url.trim_end_matches('/'))
-            != Some(endpoints::MODEL_ORIGIN)
-        {
-            return Err("QuWork 模型服务地址已变化，未向未确认的地址发送凭证".into());
+            .unwrap_or("");
+        if !endpoints::MODEL_ORIGINS.contains(&base_url) {
+            return Err(format!(
+                "QuWork 模型服务地址已变更为 {base_url}（不在已确认的白名单内），\
+                 未向未确认的地址发送凭证。已知地址：{}",
+                endpoints::MODEL_ORIGINS.join(" / ")
+            ));
         }
         let rows = provider
             .get("models")
@@ -115,6 +119,28 @@ pub fn validate(config: &Value) -> Result<(), String> {
 /// 当前目录（进程缓存优先，没有则内置兜底）
 pub fn current() -> Catalog {
     cached().unwrap_or_else(fallback)
+}
+
+/// 当前生效的模型网关地址（**转发唯一的取址入口**）。
+///
+/// 取「远程配置里那台已校验过的网关」，而不是常量：官方换域时只要地址落在
+/// `MODEL_ORIGINS` 白名单里就照它的走，不必再改代码发一版。拖不到配置 / 配置里
+/// 的地址不在白名单（理论上已被 `validate` 挡掉）都回落白名单第一项。
+pub fn model_origin() -> String {
+    current()
+        .config
+        .get("providers")
+        .and_then(Value::as_array)
+        .and_then(|providers| {
+            providers.iter().find(|provider| {
+                provider.get("id").and_then(Value::as_str) == Some(endpoints::MODEL_PROVIDER_ID)
+            })
+        })
+        .and_then(|provider| provider.get("baseURL").and_then(Value::as_str))
+        .map(|url| url.trim_end_matches('/'))
+        .filter(|url| endpoints::MODEL_ORIGINS.contains(url))
+        .map(str::to_string)
+        .unwrap_or_else(|| endpoints::MODEL_ORIGIN.to_string())
 }
 
 /// 是否真的从远程拉到过（供 `catalog::refresh_meta` 的「来源」列）
@@ -262,6 +288,28 @@ mod tests {
     #[test]
     fn validate_accepts_the_builtin_catalog() {
         assert!(validate(&valid_config()).is_ok());
+    }
+
+    #[test]
+    fn validate_accepts_every_whitelisted_origin() {
+        // 官方 2026-11 的配置把 baseURL 从 qurwork-llm.rrzu.com/v1 换成了
+        // llm.quwork.cn/v1。白名单必须两个都收，否则「提取模型」报「服务地址
+        // 已变化」而界面上只是刷不出模型（真机反馈就是这个）。
+        for origin in endpoints::MODEL_ORIGINS {
+            let mut config = valid_config();
+            config["providers"][0]["baseURL"] = json!(origin);
+            assert!(validate(&config).is_ok(), "白名单地址被拒：{origin}");
+        }
+    }
+
+    #[test]
+    fn model_origin_always_lands_on_a_whitelisted_gateway() {
+        // 转发取址只能落在已确认的域上：内置目录（旧域）与远程配置（新域）都算
+        let origin = model_origin();
+        assert!(
+            endpoints::MODEL_ORIGINS.contains(&origin.as_str()),
+            "实际取到：{origin}"
+        );
     }
 
     #[test]

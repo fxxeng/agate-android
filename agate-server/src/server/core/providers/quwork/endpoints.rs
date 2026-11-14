@@ -19,8 +19,21 @@ pub const CLIENT_VERSION: &str = "1.6.0";
 
 /// 账号服务域（积分 / 续期 / 每日奖励）
 pub const ACCOUNT_ORIGIN: &str = "https://llm.rrzu.com";
-/// 模型网关域（OpenAI 兼容 chat/completions，末尾不带斜杠）
-pub const MODEL_ORIGIN: &str = "https://qurwork-llm.rrzu.com/v1";
+/// 已确认的模型网关域白名单（**顺序 = 优先级**，末尾都不带斜杠）。
+///
+/// 远程配置 `providers[qurwork].baseURL` 落在这里面才允许发凭证 —— 这是
+/// 「地址被换掉就把 llmToken 发给野域名」的那道安全边界（见 `models::validate`）。
+///
+/// ⚠️ 白名单必须跟着官方配置走，否则整家看起来是坏的：2026-11 官方配置把
+/// baseURL 从 `qurwork-llm.rrzu.com/v1` 换成了 `llm.quwork.cn/v1`，而校验还在
+/// 硬等旧域名 ⇒ 每次「提取模型」都报「服务地址已变化」，界面上就是刷不出模型
+/// （实测两个域对同一枚令牌都回 200，旧域只是仍在线、已不在配置里）。
+pub const MODEL_ORIGINS: [&str; 2] = [
+    "https://llm.quwork.cn/v1",
+    "https://qurwork-llm.rrzu.com/v1",
+];
+/// 默认模型网关域（白名单第一项：官方配置没拉到时用它）
+pub const MODEL_ORIGIN: &str = MODEL_ORIGINS[0];
 /// 公开模型目录配置（无鉴权）
 pub const CATALOG_URL: &str =
     "https://img1.rrzuji.cn/qurvis-package/latest/qurvis-desktop-model-config.json";

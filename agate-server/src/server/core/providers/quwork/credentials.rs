@@ -99,6 +99,21 @@ pub fn token(value: &str, label: &str) -> Result<String, GatewayError> {
             format!("QuWork {label}格式不正确"),
         ));
     }
+    // 结构残留：粘进来的是「冒号周围那段文本」而不是令牌本身（yaml 的逗号 /
+    // 花括号、JSON 的引号）。这类串能过上面的长度与 ASCII 校验，却稳定
+    // 401 `Invalid token`，所以入口就拒 —— 别让它悄悄落库、等调用模型才失败。
+    let junk = |byte: Option<&u8>| {
+        byte.is_some_and(|byte| matches!(*byte, b',' | b'}' | b'{' | b'"' | b'\''))
+    };
+    if junk(value.as_bytes().first()) || junk(value.as_bytes().last()) {
+        return Err(GatewayError::with_status(
+            400,
+            format!(
+                "QuWork {label}里混进了 yaml / JSON 的结构字符（逗号、引号或花括号），\
+                 请只取冒号后面那一串"
+            ),
+        ));
+    }
     Ok(value.to_string())
 }
 
@@ -205,24 +220,70 @@ fn parse_text_inner(content: &str, depth: usize) -> Result<Value, GatewayError> 
             .map_err(|_| GatewayError::with_status(400, "QuWork 凭证 JSON 格式不正确"))?;
         return parse_inner(&value, depth + 1);
     }
-    if content
-        .lines()
-        .any(|line| line.trim_start().starts_with("QURIVS_LLM_API_KEY:"))
-    {
-        let value = content
-            .lines()
-            .find_map(|line| line.trim().strip_prefix("QURIVS_LLM_API_KEY:"))
-            .unwrap_or("")
-            .trim();
-        let value = if value.starts_with('"') {
-            serde_json::from_str::<String>(value)
-                .map_err(|_| GatewayError::with_status(400, "QuWork 模型凭证格式不正确"))?
-        } else {
-            value.trim_matches('\'').to_string()
-        };
+    if content.contains("QURIVS_LLM_API_KEY") {
+        let raw = qurivs_key_from_yaml(content).unwrap_or("");
+        if raw.is_empty() {
+            return Err(GatewayError::with_status(
+                400,
+                "QuWork 凭证里 QURIVS_LLM_API_KEY 是空的：请补上冒号后面的令牌",
+            ));
+        }
+        let value = unquote_yaml(raw)?;
         return parse_inner(&json!({ "llmToken": value }), depth + 1);
     }
+    // 看着像 yaml / key: value 但没有那一行时，别再整篇当令牌（那样只会得到
+    // 一句「格式不正确」，用户完全不知道该怎么办）。
+    if content.lines().count() > 1 && content.contains(':') {
+        return Err(GatewayError::with_status(
+            400,
+            "QuWork 凭证里没有 QURIVS_LLM_API_KEY 这一行。\
+             从 .credentials.yaml 导入时需要 refs 里有 QURIVS_LLM_API_KEY: sk-…；\
+             也可以直接粘贴纯 llmToken",
+        ));
+    }
     parse_inner(&json!({ "llmToken": content }), depth + 1)
+}
+
+/// 从 `.credentials.yaml` 里取 `QURIVS_LLM_API_KEY` 的值（**唯一取值的入口**）。
+///
+/// ⚠️ 桌面端写的是 flow mapping，键值后面跟着「表示下一项」的逗号或收尾的 `}`：
+/// ```text
+///   refs:
+///     {
+///       QURIVS_LLM_API_KEY: sk-xxx,
+///       DEEPSEEK_API_KEY: sk-yyy,
+///     }
+/// ```
+/// 只做 `strip_prefix` + `trim` 会取到 `sk-xxx,` —— 这枚带逗号的令牌**能通过**
+/// 长度 / ASCII 校验（逗号既不是空白也不是控制字符），于是悄悄落库、之后每次
+/// 调用都是 401 `Invalid token`，界面上表现为「导入成功但调用模型失败」（实测）。
+/// 所以这里按 yaml 结构截到第一个逗号 / 换行，再剥掉收尾的 `}`；引号交给
+/// `unquote_yaml`。用 `find` 而不是逐行匹配，是为了同一行写成
+/// `{ QURIVS_LLM_API_KEY: sk-xxx }` 时也能取到。
+fn qurivs_key_from_yaml(content: &str) -> Option<&str> {
+    const KEY: &str = "QURIVS_LLM_API_KEY";
+    let start = content.find(KEY)?;
+    let rest = content[start + KEY.len()..].trim_start();
+    let rest = rest.strip_prefix(':')?;
+    let raw = rest.trim();
+    Some(
+        raw.split(|ch: char| ch == ',' || ch == '\n' || ch == '\r')
+            .next()
+            .unwrap_or(raw)
+            .trim()
+            .trim_end_matches('}')
+            .trim(),
+    )
+}
+
+/// 去掉 yaml 值的引号（单引号 / 双引号两种写法）
+fn unquote_yaml(value: &str) -> Result<String, GatewayError> {
+    if value.starts_with('"') {
+        return serde_json::from_str::<String>(value).map_err(|_| {
+            GatewayError::with_status(400, "QuWork 模型凭证格式不正确（yaml 里的双引号没闭合）")
+        });
+    }
+    Ok(value.trim_matches('\'').to_string())
 }
 
 /// 从 JWT 的 `exp` 兜底出过期时间（accessToken 没带 expiresAt 时）
@@ -511,6 +572,47 @@ mod tests {
             bare.get("llmToken").and_then(Value::as_str),
             Some("llm-bare-token")
         );
+    }
+
+    #[test]
+    fn yaml_flow_mapping_value_drops_the_trailing_comma() {
+        // 实测形态（桌面端 1.6.x 自己写的 .credentials.yaml）：`refs` 是 flow
+        // mapping，值后面跟着「下一项」的逗号。只做 trim 会取到 `sk-70c,` ——
+        // 它能过长度/ASCII 校验，于是悄悄落库，之后每次调用都是 401
+        // `Invalid token`，界面上表现为「导入成功、提取模型和调用模型都失败」。
+        let yaml = "version: 1\nrefs:\n  {\n    QURIVS_LLM_API_KEY: sk-70c,\n    \
+                    DEEPSEEK_API_KEY: sk-other,\n  }\nrecords:\n  \
+                    client-connection/browser-session:\n    kind: browser\n";
+        let parsed = parse_text(yaml).unwrap_or(Value::Null);
+        assert_eq!(
+            parsed.get("llmToken").and_then(Value::as_str),
+            Some("sk-70c")
+        );
+    }
+
+    #[test]
+    fn yaml_without_the_qurivs_line_says_where_to_look() {
+        // 整篇 yaml 当令牌只会得到一句「格式不正确」，用户不知道该改哪
+        let yaml = "version: 1\nrecords:\n  client-connection/x:\n    kind: browser\n";
+        let err = parse_text(yaml).err().unwrap_or(GatewayError::new(""));
+        assert_eq!(err.status_code, 400);
+        assert!(
+            err.message.contains("QURIVS_LLM_API_KEY"),
+            "实际文案：{}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn token_refuses_yaml_structure_residue() {
+        // 这几个形状都能过长度 / ASCII 校验，但每次调用都是 401 Invalid token
+        for value in ["sk-abc,", "{sk-abc}", "\"sk-abc\"", "sk-abc}"] {
+            let err = token(value, "模型凭证")
+                .err()
+                .unwrap_or(GatewayError::new(""));
+            assert_eq!(err.status_code, 400, "应当拒收：{value}");
+        }
+        assert!(token("sk-abc", "模型凭证").is_ok());
     }
 
     #[test]

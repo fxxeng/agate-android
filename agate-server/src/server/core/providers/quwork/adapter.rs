@@ -21,7 +21,7 @@ use crate::server::core::providers::adapter::{
 use crate::server::core::providers::ProviderKind;
 use crate::server::errors::GatewayError;
 
-use super::{chat, credentials, endpoints, models, refresh, usage};
+use super::{chat, credentials, models, refresh, usage};
 
 /// `adapter_for(ProviderKind::QuWork)` 取它
 pub static QUWORK_ADAPTER: QuWorkAdapter = QuWorkAdapter;
@@ -66,7 +66,7 @@ impl ProviderAdapter for QuWorkAdapter {
             ));
         }
         Ok(ChatRequestPlan::chat(
-            format!("{}/chat/completions", endpoints::MODEL_ORIGIN),
+            format!("{}/chat/completions", models::model_origin()),
             chat::headers(&token),
             chat::request_body(body),
         ))
