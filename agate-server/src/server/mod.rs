@@ -233,11 +233,11 @@ impl Drop for ServeDoneGuard {
 /// 返回 500，请求根本进不到 handler，现象却像业务逻辑坏了。
 /// 字段保持私有、只暴露 `ip()` —— 面板只需要 IP，不需要端口，也不该能改它。
 #[derive(Clone, Debug)]
-pub(crate) struct ClientAddr(SocketAddr);
+pub struct ClientAddr(SocketAddr);
 
 impl ClientAddr {
     /// 来源 IP（端口对失败锁定与日志都没有意义）。
-    pub(crate) fn ip(&self) -> IpAddr {
+    pub fn ip(&self) -> IpAddr {
         self.0.ip()
     }
 }
