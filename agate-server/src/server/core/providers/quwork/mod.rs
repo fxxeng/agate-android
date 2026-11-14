@@ -16,8 +16,12 @@
 //!   - `desktop.rs`：读 Windows APPDATA / macOS 的 QuWork SQLite 登录库与
 //!     `.credentials.yaml`（Android 上没有那个客户端，给入口只会稳定失败）；
 //!   - `login.rs`：本机导入 / 设备码登录流程（本家只支持粘贴）；
-//!   - `benefits.rs`：月度赠送、兑换码、读本机 `device-identity.json`（设备标识
-//!     与远程兑换是桌面端专属，去桌面化后不做）；
+//!   - `benefits.rs`：月度赠送列表与兑换码激活（`claim_status` / `claim` /
+//!     `benefits.redeem` 三个动作）。**未移植**：兑换是桌面端专属入口（上游
+//!     读本机 `device-identity.json` 取设备标识，再拿远程兑换码/16 位订单号
+//!     去 `/api/user/benefit/*`、`/api/user/activate`），本仓没有那条链路。
+//!     兑换码需要的 `deviceIdentifier` 字段本身会随凭证保存（见
+//!     `credentials::parse`），将来接上时不必让用户重粘；
 //!   - SDK 的 `PluginCtx.settings_get/set` 落盘缓存 → 本仓用进程内
 //!     `OnceLock<Mutex<…>>`；`ctx.ledger_get/put` → 进程内领取台账。
 //!

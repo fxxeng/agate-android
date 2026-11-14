@@ -3,8 +3,9 @@
 //! ── 去桌面化 ────────────────────────────────────────────────
 //! 只搬上游 `accounts.rs::parse` / `parse_text` 的**协议逻辑**：JSON、纯
 //! `llmToken` 文本、`.credentials.yaml` 里的 `QURIVS_LLM_API_KEY:` 行、
-//! `secret/session/data` 与 `credentials` 嵌套。`desktop.rs` 的读盘、
-//! `login.rs` 的设备码、`benefits.rs` 的设备标识一律不搬。
+//! `secret/session/data` 与 `credentials` 嵌套、`deviceIdentifier` 校验。
+//! `desktop.rs` 的读盘与 `login.rs` 的本机导入一律不搬（Android 上没有
+//! QuWork 客户端）；`benefits.rs` 的兑换码/月度赠送**尚未移植**（见 `mod.rs`）。
 //!
 //! ── 两套凭据各管一段（命名刻意与本仓区分）──────────────────────
 //! ```text
@@ -154,12 +155,22 @@ fn parse_inner(value: &Value, depth: usize) -> Result<Value, GatewayError> {
     if let Some(expires) = expires {
         parsed["expiresAt"] = json!(expires);
     }
-    let name = text(&input, &["name"]);
-    if !name.is_empty() {
-        if name.len() > MAX_NAME_BYTES || name.chars().any(char::is_control) {
+    // 展示名与两个设备标识（上游 `accounts.rs::parse` 逐个校验后**保留**）。
+    // `deviceIdentifier` 是远程兑换码激活的入参：上游要求它必须是 64 位十六进制，
+    // 长度不对说明粘错了字段，宁可报错也不要存一个到兑换时才炸的值。
+    for key in ["name", "deviceIdentifier", "deviceUuid"] {
+        let value = text(&input, &[key]);
+        if value.is_empty() {
+            continue;
+        }
+        if value.len() > MAX_NAME_BYTES
+            || value.chars().any(char::is_control)
+            || (key == "deviceIdentifier"
+                && (value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit())))
+        {
             return Err(GatewayError::with_status(400, "QuWork 账号字段格式不正确"));
         }
-        parsed["name"] = json!(name);
+        parsed[key] = json!(value);
     }
     if text(&parsed, &["llmToken"]).is_empty() {
         return Err(GatewayError::with_status(
@@ -222,6 +233,43 @@ pub fn jwt_expiry(token: &str) -> Option<i64> {
         .ok()?;
     let body: Value = serde_json::from_slice(&bytes).ok()?;
     client::timestamp(body.get("exp"))
+}
+
+/// 导入时补一次账号信息（上游 `accounts.rs::normalize` 的同款动作）。
+///
+/// ── 为什么必须补 ────────────────────────────────────────────
+/// 身份串优先用 `user.uid`：只粘 `llmToken` 时 upstream 会给账号信息接口一次
+/// 机会，拿到 uid 后再落库，同一个 QuWork 账号重复粘贴才落在**同一条记录**上。
+/// 少了这一步，身份退化成「模型凭证指纹」—— 用户在客户端重新登录换了
+/// `llmToken` 再粘一次，就会多出一条看着一样、其实串了号的账号。
+///
+/// ── 为什么是「尽力而为」─────────────────────────────────────
+/// 上游在这步失败会拒收整份凭证。本仓不这么做：模型凭证本身**独立可用**
+/// （对话只需要 `llmToken`），一次账号接口抖动就把凭证退回给用户，代价远大于
+/// 收益。探不到就按捏到的信息落库，公开视图里 `uid` 为空是事实，不编造。
+pub async fn enrich_user(secret: &mut Value) {
+    let login = login_token_of(secret);
+    if login.is_empty() {
+        return;
+    }
+    let known = secret
+        .get("user")
+        .and_then(|user| user.get("uid"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if !known.is_empty() {
+        return;
+    }
+    let Ok(reply) = client::request("GET", endpoints::SELF_PATH, &login, None).await else {
+        return;
+    };
+    let Ok(data) = reply.data("账号信息") else {
+        return;
+    };
+    if !data.is_object() {
+        return;
+    }
+    secret["user"] = user_view(&data);
 }
 
 /// 稳定身份：`quwork:{uid}`，否则 `quwork:key:{llmToken 摘要}`。
@@ -463,6 +511,29 @@ mod tests {
             bare.get("llmToken").and_then(Value::as_str),
             Some("llm-bare-token")
         );
+    }
+
+    #[test]
+    fn parse_keeps_device_fields_and_rejects_a_short_identifier() {
+        // 上游 `accounts.rs::parse`：deviceIdentifier 必须是 64 位十六进制，
+        // 它是远程兑换码激活的入参 —— 长度不对说明粘错了字段，当场报错。
+        let good = "a".repeat(64);
+        let parsed = parse(&json!({
+            "llmToken": "llm-1",
+            "deviceIdentifier": good,
+            "deviceUuid": "uuid-1",
+        }))
+        .unwrap_or(Value::Null);
+        assert_eq!(
+            parsed.get("deviceIdentifier").and_then(Value::as_str),
+            Some(good.as_str())
+        );
+        assert_eq!(
+            parsed.get("deviceUuid").and_then(Value::as_str),
+            Some("uuid-1")
+        );
+        let short = json!({ "llmToken": "llm-1", "deviceIdentifier": "abc" });
+        assert!(parse(&short).is_err(), "63 位/非十六进制的设备标识要拒收");
     }
 
     #[test]

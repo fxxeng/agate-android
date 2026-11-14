@@ -186,6 +186,13 @@ impl AccountStore {
         if let Some(expires) = secret.get("expiresAt").filter(|value| value.is_number()) {
             record.insert("expiresAt".to_string(), expires.clone());
         }
+        // 设备标识：上游远程兑换码激活要带 `device_identifier`（16 位订单号那条
+        // 路不带）。用户能粘就原样留着 —— 不存下来，将来接兑换时只能让他重粘。
+        for key in ["deviceIdentifier", "deviceUuid"] {
+            if let Some(value) = secret.get(key).filter(|value| value.is_string()) {
+                record.insert(key.to_string(), value.clone());
+            }
+        }
         record.insert("source".to_string(), Value::String(source.to_string()));
         record.insert("priority".to_string(), Value::from(priority));
         record.insert(

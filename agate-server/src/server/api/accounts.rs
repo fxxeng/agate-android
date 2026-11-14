@@ -1708,7 +1708,15 @@ pub async fn add_account(state: &ServerState, body: &Bytes) -> Response {
                 None => payload,
             };
             match crate::server::core::providers::quwork::credentials::normalize_paste(&pasted) {
-                Ok(secret) => store.add_quwork_account(&secret, import_name, "manual"),
+                Ok(mut secret) => {
+                    // 给了登录凭证就先补一次账号信息（uid / 昵称 / 手机号）：
+                    // 上游 `normalize_account` 同款动作，身份串靠 `uid` 才能把
+                    // 「同一个账号换了 llmToken 再粘一次」收敛到同一条记录。
+                    // 探不到不阻断（模型凭证本身独立可用），见该函数注释。
+                    crate::server::core::providers::quwork::credentials::enrich_user(&mut secret)
+                        .await;
+                    store.add_quwork_account(&secret, import_name, "manual")
+                }
                 Err(error) => Err(AccountStoreError::new(error.message, error.status_code)),
             }
         }
