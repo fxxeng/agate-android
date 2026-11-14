@@ -224,9 +224,23 @@ impl Drop for ServeDoneGuard {
     }
 }
 
-/// listener 存活期与端口释放记账绑定，连接不再延长 released 的含义。
+/// 请求来源地址：`axum::serve` 把它带进 handler 就用这个类型
+/// （面板登录的失败锁定按来源 IP 计，见 `server::access`）。
+///
+/// 包一层元组结构而不是直接用 `SocketAddr`，是为了让「connect info 的类型」
+/// 在注入侧（本模块 `start_tracked`）与提取侧（`api::panel` 的两个
+/// handler）由**同一份定义**确定：两侧类型一旦不一致，axum 只在提取阶段
+/// 返回 500，请求根本进不到 handler，现象却像业务逻辑坏了。
+/// 字段保持私有、只暴露 `ip()` —— 面板只需要 IP，不需要端口，也不该能改它。
 #[derive(Clone, Debug)]
-struct ClientAddr(#[allow(dead_code)] SocketAddr);
+pub(crate) struct ClientAddr(SocketAddr);
+
+impl ClientAddr {
+    /// 来源 IP（端口对失败锁定与日志都没有意义）。
+    pub(crate) fn ip(&self) -> IpAddr {
+        self.0.ip()
+    }
+}
 
 impl axum::extract::connect_info::Connected<axum::serve::IncomingStream<'_, TrackedListener>>
     for ClientAddr
@@ -1605,5 +1619,101 @@ mod serve_done_tests {
             .expect("force-close 后排空必须有界")
             .expect("serve task 不得 panic")
             .expect("serve 应正常收尾");
+    }
+}
+
+#[cfg(test)]
+mod panel_connect_info_tests {
+    use super::{ClientAddr, ServeDone, ServeDoneGuard, TrackedListener};
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::sync::watch;
+    use tokio_util::sync::CancellationToken;
+
+    /// 面板登录的 `ConnectInfo` 必须是注入侧那个 `ClientAddr`。
+    ///
+    /// 提取侧类型写错时 axum **在提取阶段**就 500，请求进不到 handler ——
+    /// 现象是「注册 / 登录页一提交就 500」，看着像业务逻辑坏了。所以判别点
+    /// 是「不是 5xx」而不是「登录成功」：测试环境没有管理员，正常路径本来就
+    /// 返回 400（`panel_login` 第一句就是「未注册管理员 → 400」）。
+    #[tokio::test]
+    async fn panel_login_does_not_500_when_connect_info_type_matches() {
+        let std_listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind test listener");
+        let addr = std_listener.local_addr().expect("test listener addr");
+        std_listener
+            .set_nonblocking(true)
+            .expect("nonblocking test listener");
+        let listener = tokio::net::TcpListener::from_std(std_listener).expect("tokio listener");
+        let done = Arc::new(ServeDone::new(1));
+        let token = CancellationToken::new();
+        let tracked = TrackedListener::new(listener, ServeDoneGuard(done.clone()), token.clone());
+
+        // 停机只能走 watch 广播：`token` 只强制唤醒在途 IO，停不下 accept
+        // 循环，光 cancel 再 join 会挂住（与 `start_tracked` 的停机形态一致）。
+        let (stop_tx, mut stop_rx) = watch::channel(false);
+        let app = axum::Router::new().route(
+            "/api/panel/login",
+            axum::routing::post(crate::server::api::panel::panel_login),
+        );
+        let serve = tokio::spawn(async move {
+            axum::serve(
+                tracked,
+                app.into_make_service_with_connect_info::<ClientAddr>(),
+            )
+            .with_graceful_shutdown(async move {
+                let _ = stop_rx.wait_for(|stop| *stop).await;
+            })
+            .await
+        });
+
+        let body = br#"{"username":"probe","password":"probe-password"}"#;
+        let head = format!(
+            "POST /api/panel/login HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        let mut client = tokio::net::TcpStream::connect(addr)
+            .await
+            .expect("connect test server");
+        client
+            .write_all(head.as_bytes())
+            .await
+            .expect("write request head");
+        client
+            .write_all(body.as_slice())
+            .await
+            .expect("write request body");
+
+        // `Connection: close` 让服务端回完即断，读到 EOF 就是整条响应；
+        // 外面再套一层超时，免得提取阶段出岔子时测试挂死在 read 上。
+        let mut response = Vec::new();
+        tokio::time::timeout(Duration::from_secs(5), client.read_to_end(&mut response))
+            .await
+            .expect("响应必须在上限内读完")
+            .expect("read response");
+        drop(client);
+
+        let text = String::from_utf8_lossy(&response);
+        let status_line = text.lines().next().unwrap_or_default();
+        let status: u16 = status_line
+            .split_whitespace()
+            .nth(1)
+            .and_then(|code| code.parse::<u16>().ok())
+            .unwrap_or_else(|| panic!("响应首行不是状态行: {status_line:?}"));
+        assert!(
+            !(500..600).contains(&status),
+            "ConnectInfo 类型不匹配会在提取阶段 500，实际状态行: {status_line}"
+        );
+
+        stop_tx.send(true).expect("send graceful stop");
+        tokio::time::timeout(Duration::from_millis(500), done.wait())
+            .await
+            .expect("停机后 listener 必须按时释放");
+        token.cancel();
+        let joined = tokio::time::timeout(Duration::from_millis(300), serve)
+            .await
+            .expect("force-close 后 serve 必须有界收尾")
+            .expect("serve task 不得 panic");
+        assert!(joined.is_ok(), "serve 应正常收尾: {joined:?}");
     }
 }

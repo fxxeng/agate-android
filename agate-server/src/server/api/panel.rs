@@ -20,10 +20,10 @@ use axum::body::Bytes;
 use axum::extract::{ConnectInfo, Query};
 use axum::http::{header::SET_COOKIE, HeaderMap};
 use axum::response::Response;
-use std::net::SocketAddr;
 
 use crate::server::access;
 use crate::server::altcha;
+use crate::server::ClientAddr;
 use crate::server::config;
 use crate::server::errors;
 use crate::server::http::{ok_json, parse_body};
@@ -268,7 +268,7 @@ pub async fn panel_status() -> Response {
 pub async fn panel_setup(
     headers: HeaderMap,
     Query(query): Query<std::collections::HashMap<String, String>>,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    ConnectInfo(addr): ConnectInfo<ClientAddr>,
     body: Bytes,
 ) -> Response {
     if access::admin_registered() {
@@ -319,7 +319,7 @@ pub async fn panel_setup(
 pub async fn panel_login(
     headers: HeaderMap,
     Query(query): Query<std::collections::HashMap<String, String>>,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    ConnectInfo(addr): ConnectInfo<ClientAddr>,
     body: Bytes,
 ) -> Response {
     if !access::admin_registered() {
