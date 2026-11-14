@@ -10,18 +10,17 @@
 //!   refresh.rs     → refresh.rs      续期 / model_token 容错 / 比较-再写
 //!   usage.rs       → usage.rs        积分（amount×100 / total_points 不乘）
 //!   checkin.rs     → checkin.rs      每日奖励（结果不明不重复提交）
+//!   benefits.rs    → benefits.rs     月度赠送（只读）+ 订单号 / 邀请码兑换
 //!   client/endpoints → client/endpoints.rs  auth_http::send_raw 封装 + 常量
 //! ```
 //! **没搬**（桌面 / SDK / WASM）：
 //!   - `desktop.rs`：读 Windows APPDATA / macOS 的 QuWork SQLite 登录库与
-//!     `.credentials.yaml`（Android 上没有那个客户端，给入口只会稳定失败）；
-//!   - `login.rs`：本机导入 / 设备码登录流程（本家只支持粘贴）；
-//!   - `benefits.rs`：月度赠送列表与兑换码激活（`claim_status` / `claim` /
-//!     `benefits.redeem` 三个动作）。**未移植**：兑换是桌面端专属入口（上游
-//!     读本机 `device-identity.json` 取设备标识，再拿远程兑换码/16 位订单号
-//!     去 `/api/user/benefit/*`、`/api/user/activate`），本仓没有那条链路。
-//!     兑换码需要的 `deviceIdentifier` 字段本身会随凭证保存（见
-//!     `credentials::parse`），将来接上时不必让用户重粘；
+//!     `.credentials.yaml`（Android 上没有那个客户端，**不按本机固定路径读**）；
+//!     改成「用户自己把文件拷过来」：文本 yaml 走粘贴，`qurwork-desktop.sqlite`
+//!     走 `authFileB64`（见 `desktop_import.rs`，只解析这一次请求带来的字节）；
+//!   - `login.rs`：本机导入 / 设备码登录流程（本家只支持粘贴 / 文件导入）；
+//!   - `benefits.rs` 里读本机 `device-identity.json` 的那一段：本仓不读本机文件，
+//!     设备标识来自凭证里的 `deviceIdentifier`（有就随兑换请求带上，实测可选）；
 //!   - SDK 的 `PluginCtx.settings_get/set` 落盘缓存 → 本仓用进程内
 //!     `OnceLock<Mutex<…>>`；`ctx.ledger_get/put` → 进程内领取台账。
 //!
@@ -34,10 +33,12 @@
 //! release 是 `panic=abort`：本模块零 unwrap/expect/panic，不持锁跨 await。
 
 pub mod adapter;
+pub mod benefits;
 pub mod chat;
 pub mod checkin;
 pub mod client;
 pub mod credentials;
+pub mod desktop_import;
 pub mod endpoints;
 pub mod models;
 pub mod refresh;

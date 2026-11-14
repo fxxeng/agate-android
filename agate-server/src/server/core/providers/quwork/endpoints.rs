@@ -33,6 +33,12 @@ pub const REFRESH_PATH: &str = "/api/user/refresh";
 pub const DAILY_STATUS_PATH: &str = "/api/user/daily-reward/status";
 /// `POST` 每日奖励领取
 pub const DAILY_CLAIM_PATH: &str = "/api/user/daily-reward/claim";
+/// `GET` 月度赠送列表（**只读**：上游没有「领取月度赠送」的写端点）
+pub const MONTHLY_GIFTS_PATH: &str = "/api/user/benefit/monthly-gifts";
+/// `POST` 订单号兑换（body `{ order_id: <int64> }`）
+pub const REDEEM_ORDER_PATH: &str = "/api/user/benefit/redeem";
+/// `POST` 邀请码激活（body `{ invite_code: "..." }`）
+pub const ACTIVATE_INVITE_PATH: &str = "/api/user/activate";
 
 /// 单条响应体上限（上游 `read_reply` 的安全边界）
 pub const MAX_RESPONSE_BYTES: usize = 1_048_576;

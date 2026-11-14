@@ -572,12 +572,21 @@ object PresetRegistry {
         // 内核 `api::accounts` 的 QuWork 分支把整段凭证交给
         // `quwork::credentials::normalize_paste` 按内容判（JSON / 纯 token /
         // `QURIVS_LLM_API_KEY:` yaml 行），客户端不写第二套解析。
+        //
+        // ── 两条入口（2026-11-14 起）──────────────────────────────
+        // ① 粘贴：整段凭证 JSON / 纯 llmToken / `.credentials.yaml` 里的
+        //    `QURIVS_LLM_API_KEY:` 行；
+        // ② 导入文件：用户在电脑上把桌面客户端的登录库 `qurwork-desktop.sqlite`
+        //    拷到手机，选它 → 内核只解析本次请求带来的字节（明文 SQLite，
+        //    不是 DPAPI 密文，所以拷文件这条路是通的）。
+        // ⚠️ 不提供「桌面登录态」通道：那条要**按本机固定路径实时读**，手机上
+        // 没有 `%APPDATA%\qurwork-desktop`，给了入口只会稳定失败。
         ProviderPreset(
-            "quwork", "QuWork", "QuWork 1.6.0 · 粘贴凭证",
+            "quwork", "QuWork", "QuWork 1.6.0 · 粘贴凭证 / 导入桌面登录库",
             LoginKind.PASTE,
-            listOf(AuthChannel.PASTE),
+            listOf(AuthChannel.PASTE, AuthChannel.IMPORT_FILE),
             pasteHint = "模型凭证 llmToken 必填：粘贴凭证 JSON（含 llmToken，可选 accessToken）、纯 llmToken，或 QURIVS_LLM_API_KEY: 的 yaml 行",
-            pasteSecondaryHint = "登录凭证 accessToken（可选；填写后可用积分 / 续期 / 每日奖励）",
+            pasteSecondaryHint = "登录凭证 accessToken（可选；填写后可用积分 / 续期 / 每日奖励 / 权益兑换）",
             pasteMultiline = true,
             supportsCheckin = true,
         ),

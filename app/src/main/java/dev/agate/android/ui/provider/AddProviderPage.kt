@@ -1773,8 +1773,23 @@ private fun ImportFileForm(preset: ProviderPreset, onDone: (Boolean, String) -> 
     }
 
     Text(
-        "选择桌面客户端导出的凭证文件（auth.json / providers.json / Cookie 库）。" +
-            "文本 JSON 直接解析，二进制（KukuAI 的 Cookies SQLite）自动转 base64。",
+        if (preset.id == "quwork") {
+            // 用户问的就是「能不能把桌面客户端的授权路径告诉我，我自己拷过来导入」——
+            // 能，而且这是 QuWork 拿到 accessToken（账号面）最省事的一条路：
+            // 登录态是**明文** SQLite，不是 DPAPI 密文，拷过来就能解。
+            "在电脑上找到 QuWork 桌面客户端的登录库，拷到手机后选它：\n" +
+                "· Windows：%APPDATA%\\qurwork-desktop\\qurwork-desktop.sqlite\n" +
+                "· macOS：~/Library/Application Support/qurwork-desktop/qurwork-desktop.sqlite\n" +
+                "· Linux：~/.config/qurwork-desktop/qurwork-desktop.sqlite\n" +
+                "拷之前请先完全退出客户端（退出时会把最新的 -wal 合并回主库）；\n" +
+                "如果导入时说「没有登录会话」，多半是客户端没退干净、登录态还在 -wal 里，" +
+                "退出后重新拷一次主库即可。\n" +
+                "只要模型凭证的话，也可以选家目录下的 " +
+                "~/.qurwork-desktop-dsh/.dsh/.credentials.yaml（里面有 QURIVS_LLM_API_KEY 行）。"
+        } else {
+            "选择桌面客户端导出的凭证文件（auth.json / providers.json / Cookie 库）。" +
+                "文本 JSON 直接解析，二进制（KukuAI 的 Cookies SQLite）自动转 base64。"
+        },
         color = C.textSub, fontSize = 12.sp,
     )
     Spacer(Modifier.height(10.dp))

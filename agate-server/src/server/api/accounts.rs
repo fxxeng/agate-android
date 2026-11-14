@@ -195,6 +195,35 @@ fn kuku_credentials_from_b64_file(
     })
 }
 
+/// QuWork 文件导入（`authFileB64`）：用户拷来的 `qurwork-desktop.sqlite` → 凭证。
+///
+/// 与 KukuAI 那条同一处置（base64 → 临时文件 → 读 → 删），区别只在解析器：
+/// QuWork 读的是桌面客户端自己的 `auth_session.session_json`（明文），
+/// 见 `quwork::desktop_import` 的模块头。
+///
+/// 为什么允许这条路而不是继续 400：用户问的就是「能不能把桌面客户端的授权
+/// 拷过来自己导入」。答案是能 —— Android 读不到电脑上的固定路径，但**文件本身
+/// 可以被用户搬过来**，而它是明文 SQLite（不是 DPAPI 密文），搬过来就能解。
+/// 状态码一律 400：这是「这次请求给的文件有问题」，不是服务端故障。
+fn quwork_credentials_from_b64_file(
+    encoded: &str,
+    auth_file_name: Option<&str>,
+) -> Result<Value, AccountStoreError> {
+    let bytes = BASE64.decode(encoded).map_err(|error| {
+        describe_file_import_error(
+            AccountStoreError::new(
+                format!("authFileB64 不是合法的 base64（{error}）；请重新选择文件后再试"),
+                400,
+            ),
+            auth_file_name,
+        )
+    })?;
+    crate::server::core::providers::quwork::desktop_import::credentials_from_sqlite_bytes(&bytes)
+        .map_err(|message| {
+            describe_file_import_error(AccountStoreError::new(message, 400), auth_file_name)
+        })
+}
+
 /// KukuAI 文件导入的临时 Cookies 文件路径（系统临时目录 + 随机文件名）。
 ///
 /// 随机段与 `proxy_pool::new_id` / `upstream::request::new_request_id` 同一手法
@@ -458,6 +487,14 @@ pub async fn dispatch(
                 return super::lingxi_api::run_task(&state, &id, body).await;
             }
         }
+        // QuWork 权益兑换（写）：订单号或邀请码，见 `api::quwork_benefits` 的模块头。
+        // 与上面的 provider 专属端点同一纪律：查询走 GET、动权益走 POST。
+        if let Some(id) = rest.strip_suffix("/quwork/redeem") {
+            let id = decode_segment(id);
+            if !id.is_empty() {
+                return super::quwork_benefits::redeem(&state, &id, body).await;
+            }
+        }
         // WorkBuddy 成长任务（国内版）：单任务执行 / 开学季 / 猫猫旅行，见
         // `api::growth`。三条后缀互不包含（各自以 /growth/xxx 结尾），先后不影响
         // 命中；读的时候按界面上按钮的顺序排列（单任务执行 → 开学季 → 旅行巡检）。
@@ -517,6 +554,14 @@ pub async fn dispatch(
             let id = decode_segment(id);
             if !id.is_empty() {
                 return super::lingxi_api::get_ledger(&state, &id, query).await;
+            }
+        }
+        // QuWork 月度赠送列表（只读）。读不出时仍然 200，带 `ok:false` 与 `error`，
+        // 界面写「暂不可用」，见 `api::quwork_benefits`。
+        if let Some(id) = rest.strip_suffix("/quwork/benefits") {
+            let id = decode_segment(id);
+            if !id.is_empty() {
+                return super::quwork_benefits::monthly(&state, &id).await;
             }
         }
     }
@@ -1685,40 +1730,52 @@ pub async fn add_account(state: &ServerState, body: &Bytes) -> Response {
                 Err(error) => Err(AccountStoreError::new(error.message, error.status_code)),
             }
         }
-        // QuWork（1.6.0）：**粘贴凭证 JSON / 纯 llmToken / yaml 行** → 本地归一
-        // → 落账号。只支持粘贴：Android 上没有 QuWork 桌面客户端可读登录态
-        // （去桌面化，见 `quwork/mod.rs`）。
+        // QuWork（1.6.0）：**粘贴凭证 / 导入桌面客户端登录库** 两条入口，最终都
+        // 走同一个 `quwork::credentials::parse` 校验 + `add_quwork_account` 落库。
+        //
+        // ⚠️ `importDesktop` 仍然是**不支持的**：那条路径要求「按本机固定路径实时
+        // 读官方客户端」，而 Android 上没有 `%APPDATA%\qurwork-desktop`。差别在于
+        // 文件导入：用户可以把电脑上的 `qurwork-desktop.sqlite` 自己拷过来，本仓
+        // 只解析这次请求带来的字节（见 `quwork::desktop_import`）。
         Some(crate::server::core::providers::ProviderKind::QuWork) => {
             if import_desktop {
                 return management_error(
                     400,
-                    "QuWork 不支持导入桌面端登录态（Android 上没有 QuWork 客户端），\
-                     请粘贴凭证 JSON 或模型凭证 llmToken",
+                    "QuWork 不按本机路径读桌面客户端（手机上不存在客户端目录）。\
+                     请在电脑上把 qurwork-desktop.sqlite 拷到手机，用「导入凭证文件」选它；\
+                     也可以直接粘贴凭证 JSON、llmToken，或 .credentials.yaml 里的 QURIVS_LLM_API_KEY 行",
                 );
             }
-            if auth_file_b64.is_some() && auth_file_content.is_none() {
-                return management_error(
-                    400,
-                    "QuWork 的凭证是文本 JSON / 纯令牌，不支持二进制凭证文件；\
-                     请选择文本文件或改用「填写凭证」",
-                );
-            }
-            let pasted = match auth_file_content {
-                Some(content) => json!({ "text": content }),
-                None => payload,
-            };
-            match crate::server::core::providers::quwork::credentials::normalize_paste(&pasted) {
-                Ok(mut secret) => {
-                    // 给了登录凭证就先补一次账号信息（uid / 昵称 / 手机号）：
-                    // 上游 `normalize_account` 同款动作，身份串靠 `uid` 才能把
-                    // 「同一个账号换了 llmToken 再粘一次」收敛到同一条记录。
-                    // 探不到不阻断（模型凭证本身独立可用），见该函数注释。
-                    crate::server::core::providers::quwork::credentials::enrich_user(&mut secret)
-                        .await;
-                    store.add_quwork_account(&secret, import_name, "manual")
+            let mut secret = match auth_file_b64.filter(|_| auth_file_content.is_none()) {
+                // 二进制：用户拷来的桌面客户端登录库（只有它走这条）
+                Some(encoded) => {
+                    match quwork_credentials_from_b64_file(encoded, auth_file_name) {
+                        Ok(secret) => secret,
+                        Err(error) => return store_error(error),
+                    }
                 }
-                Err(error) => Err(AccountStoreError::new(error.message, error.status_code)),
-            }
+                // 文本 / 手动粘贴：原路径不变
+                None => {
+                    let pasted = match auth_file_content {
+                        Some(content) => json!({ "text": content }),
+                        None => payload,
+                    };
+                    match crate::server::core::providers::quwork::credentials::normalize_paste(
+                        &pasted,
+                    ) {
+                        Ok(secret) => secret,
+                        Err(error) => {
+                            return management_error(error.status_code, error.message)
+                        }
+                    }
+                }
+            };
+            // 给了登录凭证就先补一次账号信息（uid / 昵称 / 手机号）：
+            // 上游 `normalize_account` 同款动作，身份串靠 `uid` 才能把
+            // 「同一个账号换了 llmToken 再粘一次」收敛到同一条记录。
+            // 探不到不阻断（模型凭证本身独立可用），见该函数注释。
+            crate::server::core::providers::quwork::credentials::enrich_user(&mut secret).await;
+            store.add_quwork_account(&secret, import_name, "manual")
         }
         // WPS 灵犀：**只支持粘贴**（方案 L4：Android 上没有 WPS 桌面客户端
         // Cookie 库可读，也没有 OAuth / refresh）。整段 Cookie 或裸 wps_sid

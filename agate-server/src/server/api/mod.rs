@@ -124,6 +124,9 @@ pub mod protocol;
 pub mod proxies;
 pub mod qoder_umid;
 pub mod queue_api;
+// QuWork 权益：月度赠送（只读）与订单号 / 邀请码兑换
+// （`/api/accounts/{id}/quwork/*`，见该模块头）
+pub mod quwork_benefits;
 pub mod retry_api;
 // 开发者角色兼容开关（GET/PUT /api/developer-role-compat）：与 /api/sanitize
 // 同形的单开关端点，转换实施点在 `core::upstream::payload` 的 send_body，

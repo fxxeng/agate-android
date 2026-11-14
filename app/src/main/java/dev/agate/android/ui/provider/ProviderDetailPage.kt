@@ -58,6 +58,7 @@ import dev.agate.android.data.CustomProviderOps
 import dev.agate.android.data.ProviderIdentityOps
 import dev.agate.android.data.GatewayRepository
 import dev.agate.android.data.LingxiOps
+import dev.agate.android.data.QuworkOps
 import dev.agate.android.data.ScheduledTaskOps
 import dev.agate.android.data.PresetRegistry
 import dev.agate.android.data.dto.AccountDto
@@ -981,6 +982,32 @@ private fun AccountBlock(
                 LingxiLedgerDialog(acc = acc, onDismiss = { showLedger = false })
             }
         }
+        // ── 权益（QuWork，**账号级**）───────────────────────────────
+        //
+        // 两家口径别混：月度赠送是**只读**（上游没有领取端点，实测），
+        // 兑换是另一条写路径（订单号 → benefit/redeem、邀请码 → activate）。
+        // 挂在账号上而不是「这家的设置」：兑换用的是该账号的登录凭证，
+        // 同家两个账号的权益互不相通。
+        // 打开才拉（默认收起）：一次上游请求，页面加载不该替用户打。
+        if (acc.provider == "quwork") {
+            var showBenefits by remember { mutableStateOf(false) }
+            Row(
+                Modifier.fillMaxWidth().padding(top = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("权益 · 月度赠送", color = C.textSub, fontSize = 12.sp, modifier = Modifier.weight(1f))
+                Text(
+                    "查看 ›",
+                    color = C.accent,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.clickable { showBenefits = true },
+                )
+            }
+            if (showBenefits) {
+                QuworkBenefitsDialog(acc = acc, onDismiss = { showBenefits = false })
+            }
+        }
         // ── 套餐通道（ZCode 专属，**按账号**而不是按家）───────────────
         //
         // 为什么必须按账号：`zcodePlan` 存在账号自己的 raw 里（内核
@@ -1807,6 +1834,230 @@ private fun LingxiLedgerDialog(acc: AccountDto, onDismiss: () -> Unit) {
                 Text("刷新", color = C.accent)
             }
         },
+    )
+}
+
+/**
+ * QuWork 权益弹窗：月度赠送（只读）+ 兑换（订单号 / 邀请码，二选一）。
+ *
+ * ── 为什么「月度赠送」没有领取按钮 ──────────────────────────
+ * 上游没有「领取月度赠送」的写端点（`/api/user/benefit/monthly-gifts` 只有 GET，
+ * 实测），赠送由官方按月下发。给按钮就是骗点击。
+ *
+ * ── 为什么兑换是二选一、而不是一个框自动判断 ──────────────────
+ * 两条走的是**不同端点**：16 位订单号 → `/api/user/benefit/redeem`（body 是数字
+ * `order_id`），邀请码 → `/api/user/activate`（body 是 `invite_code`）。按长度猜
+ * 会把「6 位数字的邀请码」误判成订单号 —— 所以让用户填在哪个框，就按哪个兑。
+ * 两个都填时本地先拦（内核同样 400）。
+ *
+ * ── 成功文案为什么写「上游确认」而不是「已到账」────────────────
+ * 上游回执没有「本次增加多少积分」这个字段；弹窗里的积分是**另一次回读**的
+ * 当前值。把回读值当增量写，就是把推导当事实。
+ */
+@Composable
+private fun QuworkBenefitsDialog(acc: AccountDto, onDismiss: () -> Unit) {
+    val C = agateColors()
+    val scope = rememberCoroutineScope()
+    var board by remember { mutableStateOf<QuworkOps.Benefits?>(null) }
+    var loading by remember { mutableStateOf(false) }
+    var orderId by remember { mutableStateOf("") }
+    var inviteCode by remember { mutableStateOf("") }
+    var redeemBusy by remember { mutableStateOf(false) }
+    var hint by remember { mutableStateOf<String?>(null) }
+    var okHint by remember { mutableStateOf<String?>(null) }
+
+    fun load() {
+        if (loading) return
+        loading = true
+        scope.launch {
+            board = QuworkOps.benefits(acc.id)
+            loading = false
+        }
+    }
+
+    LaunchedEffect(acc.id) { load() }
+
+    fun submit() {
+        if (redeemBusy) return
+        val order = orderId.trim()
+        val invite = inviteCode.trim()
+        when {
+            order.isNotEmpty() && invite.isNotEmpty() -> {
+                okHint = null
+                hint = "订单号与邀请码只能填一项：兑换码填邀请码，官网订单填订单号"
+                return
+            }
+            order.isEmpty() && invite.isEmpty() -> {
+                okHint = null
+                hint = "请填写订单号（16 位数字）或邀请码"
+                return
+            }
+        }
+        redeemBusy = true
+        hint = null
+        okHint = null
+        scope.launch {
+            val result = QuworkOps.redeem(
+                acc.id,
+                orderId = order.takeIf { it.isNotEmpty() },
+                inviteCode = invite.takeIf { it.isNotEmpty() },
+            )
+            redeemBusy = false
+            if (result.ok) {
+                okHint = result.message.ifBlank { "上游已确认兑换成功" }
+                orderId = ""
+                inviteCode = ""
+                // 兑换可能带来一条新的月度赠送记录：重拉一次（读失败也只是展示不变）
+                board = QuworkOps.benefits(acc.id)
+            } else {
+                hint = result.message.ifBlank { "兑换失败" }
+            }
+        }
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = C.cardBg,
+        title = {
+            Column {
+                Text("权益 · 月度赠送", color = C.textMain)
+                Text(acc.displayName, color = C.textDim, fontSize = 12.sp)
+            }
+        },
+        text = {
+            Column(Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState())) {
+                Text("月度赠送", color = C.textSub, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                Text(
+                    "官方按月下发，这里只读（上游没有领取接口）",
+                    color = C.textDim, fontSize = 10.5.sp,
+                )
+                Spacer(Modifier.height(6.dp))
+                val current = board
+                when {
+                    current == null ->
+                        Text("读取中…", color = C.textDim, fontSize = 12.sp)
+                    current.unavailable -> Text(
+                        current.error ?: "暂不可用（上游没有返回月度赠送）",
+                        color = C.red,
+                        fontSize = 12.sp,
+                    )
+                    current.items.isEmpty() -> Text(
+                        if (loading) "读取中…" else "当前没有月度赠送记录",
+                        color = C.textDim,
+                        fontSize = 12.sp,
+                    )
+                    else -> current.items.forEach { gift ->
+                        Column(Modifier.fillMaxWidth().padding(vertical = 5.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    gift.period.ifBlank { "赠送记录" },
+                                    color = C.textMain,
+                                    fontSize = 12.5.sp,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                if (gift.status.isNotBlank()) {
+                                    Text(gift.status, color = C.textSub, fontSize = 11.sp)
+                                }
+                            }
+                            val times = buildList {
+                                fmtGiftDate(gift.expectedAt)?.let { add("应到账 $it") }
+                                fmtGiftDate(gift.actualAt)?.let { add("实际 $it") }
+                            }
+                            if (times.isNotEmpty()) {
+                                Text(
+                                    times.joinToString(" · "),
+                                    color = C.textDim,
+                                    fontSize = 10.5.sp,
+                                )
+                            }
+                            if (gift.extra.isNotEmpty()) {
+                                Text(
+                                    gift.extra.joinToString(" · ") { (key, value) -> "$key $value" },
+                                    color = C.textDim,
+                                    fontSize = 10.5.sp,
+                                    maxLines = 2,
+                                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                )
+                            }
+                        }
+                    }
+                }
+
+                Spacer(Modifier.height(10.dp))
+                Text("权益兑换", color = C.textSub, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                Text(
+                    "订单号（官网订单，16 位数字）",
+                    color = C.textDim, fontSize = 10.5.sp,
+                    modifier = Modifier.padding(top = 4.dp),
+                )
+                OutlinedTextField(
+                    value = orderId,
+                    onValueChange = { orderId = it.trim().take(19) },
+                    singleLine = true,
+                    placeholder = { Text("例如 1234567890123456", fontSize = 12.sp, color = C.textDim) },
+                    modifier = Modifier.fillMaxWidth().padding(top = 2.dp),
+                )
+                Text(
+                    "或 邀请码（含字母的那种兑换码）",
+                    color = C.textDim, fontSize = 10.5.sp,
+                    modifier = Modifier.padding(top = 6.dp),
+                )
+                OutlinedTextField(
+                    value = inviteCode,
+                    onValueChange = { inviteCode = it.trim().take(64) },
+                    singleLine = true,
+                    placeholder = { Text("例如 AB12CD", fontSize = 12.sp, color = C.textDim) },
+                    modifier = Modifier.fillMaxWidth().padding(top = 2.dp),
+                )
+                Spacer(Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    SmallAction(
+                        text = if (redeemBusy) "兑换中…" else "兑换",
+                        primary = true,
+                        enabled = !redeemBusy,
+                        onClick = { submit() },
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        "需要登录凭证（accessToken）",
+                        color = C.textDim, fontSize = 10.5.sp,
+                    )
+                }
+                okHint?.let {
+                    Spacer(Modifier.height(6.dp))
+                    Text(it, color = C.green, fontSize = 12.sp)
+                }
+                hint?.let {
+                    Spacer(Modifier.height(6.dp))
+                    Text(it, color = C.red, fontSize = 12.sp)
+                }
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "兑换成功只代表上游确认受理；到账时间以上游为准。",
+                    color = C.textDim, fontSize = 10.5.sp,
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("关闭", color = C.accent) }
+        },
+        dismissButton = {
+            TextButton(onClick = { load() }, enabled = !loading) {
+                Text("刷新", color = C.accent)
+            }
+        },
+    )
+}
+
+/** 赠送时间只显示到日（上游给的是毫秒时间戳；0 / 缺失时返回 null，不写「1970」）。 */
+private fun fmtGiftDate(ms: Long): String? {
+    if (ms <= 0) return null
+    val cal = java.util.Calendar.getInstance().apply { timeInMillis = ms }
+    return String.format(
+        "%04d-%02d-%02d",
+        cal.get(java.util.Calendar.YEAR),
+        cal.get(java.util.Calendar.MONTH) + 1,
+        cal.get(java.util.Calendar.DAY_OF_MONTH),
     )
 }
 
