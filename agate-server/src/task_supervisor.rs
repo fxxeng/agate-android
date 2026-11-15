@@ -24,10 +24,14 @@ use tokio::task::JoinHandle;
 use tokio::time::{timeout_at, Instant};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+/// 任务归属。
+///
+/// 只有 `Core`、`Sidecar` 两个真的有人在用：`Gateway` 与 `Request` 自 R50 起
+/// 没有任何调用方（网关启停被 B2 定为「纯端口服务开关」，业务循环全部常驻
+/// Core），R54/T1.5 按「不留无调用方的变体」把这两个删掉。若将来某循环确实
+/// 需要随网关启停，再加回来，并同时在 PHASE2 清单里补对应验收项。
 pub enum TaskScope {
     Core,
-    Gateway,
-    Request,
     Sidecar,
 }
 
@@ -444,8 +448,8 @@ mod tests {
             .unwrap();
         supervisor
             .spawn(
-                TaskScope::Gateway,
-                "gateway",
+                TaskScope::Sidecar,
+                "sidecar",
                 move |mut cancellation| async move {
                     let _ = other_tx.send(());
                     cancellation.cancelled().await;
@@ -461,12 +465,12 @@ mod tests {
         assert_eq!(report.tasks_joined, 1);
         assert!(!report.timed_out);
         assert_eq!(supervisor.active_count(TaskScope::Core), 0);
-        assert_eq!(supervisor.active_count(TaskScope::Gateway), 1);
+        assert_eq!(supervisor.active_count(TaskScope::Sidecar), 1);
         assert!(supervisor
             .spawn(TaskScope::Core, "late", |_| async {})
             .is_err());
         let _ = supervisor
-            .shutdown_scope(TaskScope::Gateway, Duration::from_secs(1))
+            .shutdown_scope(TaskScope::Sidecar, Duration::from_secs(1))
             .await;
     }
 

@@ -134,6 +134,15 @@ Android 闹钟 ──JNI trigger_task(直调)──▶ Core 态即可跑签到�
 
 ### D2 后台任务分级：按 1.3 表归属 ★（归属判定本身 ☆可调���
 
+> **【R54/T1.5 修订，2026-11-14】本节归属已由 B2 语义取代**：签到调度、
+> `scheduled_tasks`、zcode `config_sync`、usage sweeper 四个循环自 R50 起以
+> `TaskScope::Core` 常驻，不随网关启停；Gateway 态只保留「端口监听 + Sidecar
+> autostart」。原因是 D3 要求「网关停着，闹钟到点照样签到」，签到调度若不
+> 常驻 Core 则该决策不成立。
+>
+> **实际验收以 `docs/PHASE2_REAL_DEVICE_ACCEPTANCE_CHECKLIST.md` §13 的 D2-1
+> （B2 口径）为准，本节以下内容仅作历史记录。**
+
 - Core 态保留：凭证维护 loop、模型目录刷新（账号健康管理，低频）。
 - Gateway 态启停：签到循环 / scheduled_tasks / zcode config_sync /
   usage sweeper / sub_kernel worker。

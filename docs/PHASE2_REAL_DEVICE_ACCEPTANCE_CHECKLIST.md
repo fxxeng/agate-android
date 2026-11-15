@@ -262,8 +262,19 @@ R50 的 STOP 相位、管理面缓存、TICK、签到超时、日志、闹钟、
 
 | # | 场景 | 期望 | 状态 |
 |---|---|---|---|
-| D2-1 | 停网关后后台任务分级 | Gateway 停：签到循环 / scheduled_tasks / zcode config_sync / usage sweeper / sub_kernel worker 不再跑；Core 凭证维护与模型目录刷新仍可跑 | 未执行 |
+| D2-1 | 停网关后后台循环**照常运行**（B2 口径，2026-11-14 修订） | 网关停：端口释放、`/v1` 不再监听；但签到调度 / scheduled_tasks / zcode config_sync / usage sweeper 仍随 Core 运行（`TaskScope::Core`），本机浏览器不再能访问 8787。Core 凭证维护与模型目录刷新同样照跑 | 未执行 |
 | D2-2 | 启停 3 次幂等 | 各 loop 不重复、不残留；停后 60s 无定时行为、无重复请求 | 未执行 |
 | D3-1 | 网关停着立即签到 | 「立即触发签到」走 Core 直调 `POST /api/auto-checkin/run`，不要求 8787 监听，`checkin_done` 正常 | 未执行 |
 | D3-2 | 网关运行定时签到 | 闹钟直调与 Gateway 调度双轨不重复触发同一条目，结果只落账一次 | 未执行 |
 | D4-1 | Core 态 SSE 降级 | 徽标显示「Core · 轮询」，不建立 SSE；网关运行后 SSE 恢复正常 | 未执行 |
+
+> **D2 口径修订说明（R54/T1.5，2026-11-14）**：方案 v2.0 §1.3 原把五个循环归为
+> Gateway 级，但同节已把「归属判定本身」标为 ☆可调点；R50 起按 B2 语义把
+> 签到调度 / scheduled_tasks / zcode config_sync / usage sweeper 全部以
+> `TaskScope::Core` 常驻（`jni_bridge.rs` 模块头原话：「随 Core 常驻，不监听任何
+> 端口，也不随网关启停」），Gateway 态只剩「端口监听 + Sidecar autostart」。
+>
+> 这一取舍由 D3 反推而来：D3 要求「网关停着，闹钟到点照样签到」，若不把签到
+> 调度放在 Core，该决策无法成立。因此本清单按**实现口径**改写 D2-1，并把方案侧
+> 的旧表述在《方案 v2.0》§D2 就地标注为「已由 B2 修订」，避免下次再按旧语义验收。
+> 未使用的 `TaskScope::Gateway` / `TaskScope::Request` 已随之删除。
