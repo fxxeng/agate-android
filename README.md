@@ -1,9 +1,9 @@
 # Agate — Android-only Mainline Candidate
 
 - Verification branch: `verify/arch-8faa5f5`
-- Current batch: R52 / 停止生命周期与运行时根因整改（验证中）
-- Latest verified: `d28588c` — GitHub Actions Run `42751468673`（双 job 全绿；R51 旧登录/账号数据兼容移除）
-- 状态：R51 已验证 rust-tests **802 passed / 11 ignored**（CI 宿主口径；本机 809，环境差异以 CI 为准）、JVM **143/143**、JNI **15**、双 APK 仅 arm64-v8a + AArch64 ELF（debug 共享凭证指纹命中，release 未签名放行）、Instrumentation **2/2**；`cargo fmt --check` 与六 deny clippy 全绿。
+- Current batch: R54 / 两条 P1 收口 + 三个 P2 加固（**已全绿**）
+- Latest verified: `17e3510` — GitHub Actions Run `358`（双 job 全绿：rust-tests 11/11、android-build 23/23）
+- 状态：R54 已验证 rust-tests **817 passed / 11 ignored**、JVM 单测全过、JNI **15**、双 APK 仅 arm64-v8a + AArch64 ELF（debug 共享凭证指纹命中，release 未签名放行）、Instrumentation **2/2**；`cargo fmt --check` 与六 deny clippy 全绿。
 - 真机验收待做（APK 自取 run artifacts）；release 正式签名按委托方裁定暂缓。
 
 ## Direction
@@ -61,6 +61,55 @@ The repository already has no complete Tauri/Desktop UI Host. The remaining desk
 6. **保留当前登录/导入能力**：`account_transfer` 账号转移、WorkBuddy 桌面登录态手工导入入口（Android 平台门禁不可用）、各 provider 手动粘贴凭证的现行输入解析。
 
 净删除约 **2.3k 行**（21 文件，−2291/+135）；CI Run `42751468673` 双绿：Rust **802/11**（本机 809，环境差异以 CI 为准）、JVM **143/143**、JNI **15**、双 APK 仅 arm64-v8a、Instrumentation **2/2**。`cargo check --lib` 0 warning，`cargo fmt --check` 通过。
+
+## R54 changes — P1 收口与 P2 加固（2026-11-14）
+
+1. **面板登录/注册的 ConnectInfo 类型不匹配（P1）**：`panel_setup` / `panel_login`
+   仍按 `ConnectInfo<SocketAddr>` 提取，而 serve 注入的是 `ClientAddr` —— 类型不匹配
+   时 axum 在提取阶段直接 500，请求进不到 handler，现象却像业务逻辑坏了。自证：
+   `ClientAddr` 定义上原本挂着 `#[allow(dead_code)]`，正说明它包着的 `SocketAddr`
+   全仓没有任何读取点。改法：`ClientAddr` 提升为 `pub` 并只暴露 `ip()`（字段保持
+   私有），两个 handler 改按 `ConnectInfo<ClientAddr>` 提取，业务逻辑零改动。
+   新增 `panel_connect_info_tests`：真实 TcpListener + TrackedListener + axum::serve
+   + 真实 HTTP/1.1 POST，断言状态行不在 5xx（无管理员时正常路径是 400）。这条断言
+   就是判别点 —— 提取侧类型再写错就会变红。
+2. **签到等待的入场窗口被上一轮残留时间戳削减（P1）**：`checkin_run_and_wait` 在
+   spawn 后立刻进等待循环，而 fire 任务要先抢 running 标记、写盘、写库、发事件才走到
+   `begin_round()`。只要上次签到结束已超过 `CHECKIN_IDLE_LIMIT`(15min)，首轮
+   `wait = idle_limit.saturating_sub(idle_elapsed)` 就是 0，`recv_timeout(0)` 立刻
+   超时并取消本轮 —— 用户可见后果是「距上次签到超过 15 分钟后点立即签到必然误报
+   超时」。改法：等待循环区分入场首轮，首轮无条件给满 `idle_limit`，后续轮才用
+   `saturating_sub`；首轮仍有明确上限，旧轮次残留不会让等待永续。新增
+   `checkin_wait_survives_stale_progress_from_previous_round`（残留 600ms > idle
+   400ms、结果 120ms 到达），该测试在修复前必然红。
+3. **落盘失败不再升级为崩溃（P2）**：`setGatewayDesiredRunning` 原先
+   `check(commit())`，commit 失败即抛 `IllegalStateException`，而调用方有两处在
+   STOP 路径上 —— 磁盘满会让「停止网关」变成「App 崩溃」。改为返回
+   `DesiredPersist`（Committed/Degraded），失败时补 `apply()` 保证进程内意图仍生效
+   并记 `Log.w`；判定提成 internal 纯函数，JVM 单测覆盖两条分支。
+4. **前台通知收敛成单一构建入口（P2）**：同文件里原本有两套构建代码 —— 实例方法
+   `buildNotification`（带「停止」「打开」两个 action + contentIntent）与 companion
+   的 `refreshNotification`（手工 new 的精简 builder）。主通知走前者，可见 Activity
+   的心跳走后者，于是每 30 秒一次心跳就把两个按钮和 contentIntent 覆盖掉。改为
+   `Companion.buildNotification(context, text)` 单一来源 + `@JvmStatic`，实例方法
+   委托，`refreshNotification` 复用。判据：`Notification.Builder(` 构造点从 3 处降到
+   2 处（统一构建函数 + blocked 通知）。
+5. **`start_gateway` 等待旧实例时不再持 RUNNING 锁（P2）**：Stopping 分支的 while
+   循环（最长 5 秒）原在 `RUNNING` 锁作用域内，与紧邻注释「等待时不持 RUNNING 锁」
+   相反，期间 `status_json` 拿不到锁、状态查询被阻塞。改为锁内只读相位成快照后立即
+   释放、锁外等待，等到后重新加锁并重新判定相位（等待期间可能已被别人 start）。
+   5 秒上限与 `stopping:true` 语义不变。等待判据提成 `wait_until(is_done, limit)`
+   纯逻辑，新增两条毫秒级测试覆盖「立即完成」「到点放弃」两分支。
+6. **D2 口径统一（文档）**：方案 v2.0 §1.3/D2 原把签到调度、`scheduled_tasks`、
+   zcode `config_sync`、usage sweeper 归为 Gateway 级，清单 D2-1 照抄该语义，而实现
+   自 R50 起全部以 `TaskScope::Core` 常驻 —— 三份文档互相矛盾，按旧清单验收必然失败。
+   依据「方案同节已把归属判定标为可调点」且「D3 要求网关停着也能签到」，保留实现、
+   改写文档：清单 D2-1 改为 B2 口径并附修订说明，方案 §D2 就地加历史记录标注。
+   同时删除零调用方的 `TaskScope::Gateway` / `TaskScope::Request`（原 scope 隔离测试
+   语义由 `Sidecar` 承载，断言强度不变）。
+7. **测试稳定性**：`trae::callback_server` 的端口重绑断言改为有界重试（20 × 50ms）——
+   `bind()` 额外绑的 IPv6 兜底监听器退出不被 `close_and_wait` 等待，释放慢几毫秒就会
+   让同端口 IPv4 rebind 偶发 `AddrInUse`（Run 356 即此）。真泄漏时 1 秒后仍判失败。
 
 ## R52 changes — 运行时根因整改与升级边界
 

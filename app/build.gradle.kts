@@ -22,8 +22,8 @@ android {
         targetSdk = 35
         // 主版本号与上游内核同步溯源（方案 §2）
         // R50：版本号与验证轮次对齐（此前停在 0.4.0-m3/3，R49 已脱节）。
-        versionCode = 52
-        versionName = "0.5.2-r52"
+        versionCode = 53
+        versionName = "0.5.3-r54"
 
         // 正式构建默认只打 arm64-v8a，避免生成缺少 Native Core 的假 ABI。
         // CI Instrumentation 专用构建通过 -PagateInstrumentationAbi=x86_64
