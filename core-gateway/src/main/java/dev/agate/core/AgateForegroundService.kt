@@ -74,27 +74,51 @@ class AgateForegroundService : Service() {
          */
         fun start(context: Context): Boolean = launch(context, ACTION_START)
 
+        /**
+         * 前台服务通知的**唯一**构建入口（R54/T1.3）。
+         *
+         * 放在 companion 是为了让两条路径共用同一份构建代码：
+         *   · 服务自己 `startForeground` / 状态更新（实例方法委托到这里）；
+         *   · 可见 Activity 的心跳 `refreshNotification`。
+         * 此前心跳手工 new 了一个精简 builder（只有图标/标题/正文/setOngoing），
+         * 每 30 秒就把「停止」「打开」两个按钮和 contentIntent 覆盖掉 —— 用户手里
+         * 的通知会在无操作的情况下自己少两个按钮。
+         *
+         * PendingIntent requestCode 固定分配：停止=1、打开=2，互不覆盖。
+         */
+        @JvmStatic
+        fun buildNotification(context: Context, text: String): Notification {
+            val stopIntent = PendingIntent.getService(
+                context,
+                1,
+                Intent(context, AgateForegroundService::class.java).setAction(ACTION_STOP),
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+            )
+            val builder = Notification.Builder(context, CHANNEL_ID)
+                .setSmallIcon(R.drawable.ic_agate_logo)
+                .setContentTitle("Agate")
+                .setContentText(text)
+                .setOngoing(true)
+                .setOnlyAlertOnce(true)
+                .addAction(Notification.Action.Builder(null, "停止", stopIntent).build())
+            // contentTap 打开 App；再挂一个显式「打开」按钮（方案 §2 常驻通知规范）
+            context.packageManager.getLaunchIntentForPackage(context.packageName)?.let { launch ->
+                val openIntent = PendingIntent.getActivity(
+                    context,
+                    2,
+                    launch,
+                    PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+                )
+                builder.setContentIntent(openIntent)
+                builder.addAction(Notification.Action.Builder(null, "打开", openIntent).build())
+            }
+            return builder.build()
+        }
+
         /** 可见 Activity 的心跳只更新已有通知，不创建/启动服务。 */
         fun refreshNotification(context: Context, text: String) {
             val manager = context.getSystemService(NotificationManager::class.java)
-            val service = Intent(context, AgateForegroundService::class.java)
-            manager?.notify(
-                NOTIFICATION_ID,
-                Notification.Builder(context, CHANNEL_ID)
-                    .setSmallIcon(R.drawable.ic_agate_logo)
-                    .setContentTitle("Agate")
-                    .setContentText(text)
-                    .setOngoing(true)
-                    .setDeleteIntent(
-                        PendingIntent.getService(
-                            context,
-                            3,
-                            service.setAction(ACTION_STOP),
-                            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
-                        ),
-                    )
-                    .build(),
-            )
+            manager?.notify(NOTIFICATION_ID, buildNotification(context, text))
         }
 
         fun stop(context: Context) {
@@ -752,28 +776,8 @@ class AgateForegroundService : Service() {
         nm.notify(NOTIFICATION_ID, buildNotification(text))
     }
 
-    private fun buildNotification(text: String): Notification {
-        val stopIntent = PendingIntent.getService(
-            this, 1,
-            Intent(this, AgateForegroundService::class.java).setAction(ACTION_STOP),
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
-        )
-        val builder = Notification.Builder(this, CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_agate_logo)
-            .setContentTitle("Agate")
-            .setContentText(text)
-            .setOngoing(true)
-            .setOnlyAlertOnce(true)
-            .addAction(Notification.Action.Builder(null, "停止", stopIntent).build())
-        // contentTap 打开 App；再挂一个显式「打开」按钮（方案 §2 常驻通知规范）
-        packageManager.getLaunchIntentForPackage(packageName)?.let { launch ->
-            val openIntent = PendingIntent.getActivity(
-                this, 2, launch,
-                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
-            )
-            builder.setContentIntent(openIntent)
-            builder.addAction(Notification.Action.Builder(null, "打开", openIntent).build())
-        }
-        return builder.build()
-    }
+    /// 实例侧只做委托：构建逻辑收敛到 `Companion.buildNotification(context, text)`，
+    /// 避免「服务自己一套、Activity 心跳另一套」再次分叉（R54/T1.3）。
+    private fun buildNotification(text: String): Notification =
+        Companion.buildNotification(this, text)
 }

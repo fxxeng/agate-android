@@ -65,4 +65,33 @@ class GatewayPrefsApiKeyTest {
         val keys = (1..64).map { GatewayPrefs.generateApiKey() }.toSet()
         assertEquals("64 次生成必须互不相同", 64, keys.size)
     }
+
+    /**
+     * R54/T1.3：运行意图落盘成功时必须报 Committed。
+     *
+     * 判定本身提成了纯函数，所以这两条测试不需要 Context / SharedPreferences ——
+     * 旧实现在 JVM 单测里根本覆盖不到（`check()` 的成功分支只能靠真设备跑出来）。
+     */
+    @Test
+    fun desiredRunningPersistReportsCommittedOnSuccess() {
+        assertEquals(
+            GatewayPrefs.DesiredPersist.Committed,
+            GatewayPrefs.persistOutcomeOf(true),
+        )
+    }
+
+    /**
+     * R54/T1.3：落盘失败必须降级而不是抛异常。
+     *
+     * 旧实现 `check(commit())` 在 commit 返回 false 时抛 IllegalStateException，
+     * 而调用方有两处在 STOP 路径上（AgateForegroundService 196/674），等于把
+     * 「磁盘满」升级成「停止网关时 App 崩溃」。
+     */
+    @Test
+    fun desiredRunningPersistDegradesInsteadOfThrowingOnFailure() {
+        assertEquals(
+            GatewayPrefs.DesiredPersist.Degraded,
+            GatewayPrefs.persistOutcomeOf(false),
+        )
+    }
 }

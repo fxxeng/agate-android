@@ -933,6 +933,32 @@ pub extern "system" fn Java_dev_agate_core_Gateway_nativeApiCancel<'local>(
     json_reply(&mut env, reply)
 }
 
+/// 旧 listener 释放的等待上限（R54/T1.3：原先是内联在 start_gateway 里的 5 秒）。
+const STOP_SETTLE_LIMIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// 轮询判据：在 `limit` 内反复问 `is_done()`，到点仍未完成返回 false。
+///
+/// 抽成接收闭包的形式是为了让单测用极短上限 + 假探针覆盖两条分支
+/// （立即为真 / 到点仍为假），不必真睡 5 秒 —— 那个等待在生产里是有意义的，
+/// 在测试里只会拖慢 CI 并引入 flaky。
+fn wait_until(mut is_done: impl FnMut() -> bool, limit: std::time::Duration) -> bool {
+    let deadline = Instant::now() + limit;
+    loop {
+        if is_done() {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+}
+
+/// 等旧 listener 释放：`start_gateway` 遇到 Stopping 相位时用。
+fn wait_for_stop_done(done: &server::ServeDone, limit: std::time::Duration) -> bool {
+    wait_until(|| done.is_done(), limit)
+}
+
 fn start_gateway(data_dir: &str, port: u16, bind_lan: bool, api_key: Option<&str>) -> Value {
     let Ok(_op) = GATEWAY_OP.lock() else {
         return json!({ "ok": false, "error": "gateway operation lock poisoned" });
@@ -940,13 +966,71 @@ fn start_gateway(data_dir: &str, port: u16, bind_lan: bool, api_key: Option<&str
     // 先判断运行态，再触碰进程级鉴权环境变量。否则「LAN 正在运行时，
     // 重复发起本机模式 start」会先 remove_var，再返回 already_running，
     // 导致正在运行的 LAN 网关瞬间失去 API Key。
-    {
+    // R54/T1.3：先把相位读成快照再放锁。旧实现在 RUNNING 锁的作用域里等旧
+    // listener 收尾（最长 5 秒），与上面那句「等待时不持 RUNNING 锁」的注释相反，
+    // 期间 status_json 拿不到锁，状态查询会被一起阻塞。
+    enum PhaseSnapshot {
+        AlreadyRunning { port: u16, bind_lan: bool },
+        WaitForDone {
+            done: Arc<server::ServeDone>,
+            port: u16,
+            bind_lan: bool,
+        },
+        Stopped,
+    }
+
+    let snapshot = {
         let Ok(mut guard) = RUNNING.lock() else {
             return json!({ "ok": false, "error": "state poisoned" });
         };
         reap_finished_phase(&mut guard);
         match &*guard {
-            GatewayPhase::Running(r) => {
+            GatewayPhase::Running(r) => PhaseSnapshot::AlreadyRunning {
+                port: r.port,
+                bind_lan: r.bind_lan,
+            },
+            GatewayPhase::Stopping(s) => PhaseSnapshot::WaitForDone {
+                done: s.done.clone(),
+                port: s.port,
+                bind_lan: s.bind_lan,
+            },
+            GatewayPhase::Stopped => PhaseSnapshot::Stopped,
+        }
+    };
+
+    match snapshot {
+        PhaseSnapshot::AlreadyRunning { port, bind_lan } => {
+            return json!({
+                "ok": false,
+                "error": "already_running",
+                "port": port,
+                "bind_lan": bind_lan,
+                "version": VERSION
+            });
+        }
+        PhaseSnapshot::WaitForDone {
+            done,
+            port,
+            bind_lan,
+        } => {
+            // 锁外等待：主动 reaper 与 status 都能推进/读取真实状态。
+            if !wait_for_stop_done(&done, STOP_SETTLE_LIMIT) {
+                return json!({
+                    "ok": false,
+                    "error": "stopping",
+                    "port": port,
+                    "bind_lan": bind_lan,
+                    "stopping": true,
+                    "version": VERSION
+                });
+            }
+            // 等到了：重新加锁归位。等待期间别的线程可能已经又 start 起来了，
+            // 所以这里必须重新判定相位，不能假定一定是 Stopped。
+            let Ok(mut guard) = RUNNING.lock() else {
+                return json!({ "ok": false, "error": "state poisoned" });
+            };
+            reap_finished_phase(&mut guard);
+            if let GatewayPhase::Running(r) = &*guard {
                 return json!({
                     "ok": false,
                     "error": "already_running",
@@ -955,28 +1039,8 @@ fn start_gateway(data_dir: &str, port: u16, bind_lan: bool, api_key: Option<&str
                     "version": VERSION
                 });
             }
-            GatewayPhase::Stopping(s) => {
-                // 给旧 listener 有界收尾时间。等待时不持 RUNNING 锁，主动
-                // reaper 与 status 都能推进/读取真实状态；绝不提前 bind。
-                let (done, port, previous_lan) = (s.done.clone(), s.port, s.bind_lan);
-                let deadline = Instant::now() + std::time::Duration::from_secs(5);
-                while !done.is_done() && Instant::now() < deadline {
-                    std::thread::sleep(std::time::Duration::from_millis(25));
-                }
-                if !done.is_done() {
-                    return json!({
-                        "ok": false,
-                        "error": "stopping",
-                        "port": port,
-                        "bind_lan": previous_lan,
-                        "stopping": true,
-                        "version": VERSION
-                    });
-                }
-                reap_finished_phase(&mut guard);
-            }
-            GatewayPhase::Stopped => {}
         }
+        PhaseSnapshot::Stopped => {}
     }
     // 登录期可能临时占着该端口（Core 态收回调用，见 core::login_listener）：
     // 必须先释放并等端口归还，否则下面的 bind 会撞自己。
@@ -1667,6 +1731,28 @@ mod tests {
         assert_eq!(reply["result"]["ok"], json!(true));
         // 本轮结果正常到达，不应请求取消。
         assert!(!cancelled.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    /// R54/T1.3：等待旧 listener 释放用的轮询判据必须两条分支都对，
+    /// 且不得让测试真睡生产上限（5 秒）——所以这里用毫秒级上限。
+    #[test]
+    fn wait_until_returns_true_as_soon_as_done() {
+        let started = Instant::now();
+        assert!(wait_until(|| true, std::time::Duration::from_millis(80)));
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(80),
+            "已经完成时不得继续轮询到上限"
+        );
+    }
+
+    #[test]
+    fn wait_until_gives_up_at_deadline() {
+        let started = Instant::now();
+        assert!(!wait_until(|| false, std::time::Duration::from_millis(60)));
+        assert!(
+            started.elapsed() >= std::time::Duration::from_millis(55),
+            "未完成时必须等满上限才放弃"
+        );
     }
 
     #[test]

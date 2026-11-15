@@ -1,6 +1,7 @@
 package dev.agate.core
 
 import android.content.Context
+import android.util.Log
 
 /**
  * M1 保活壳层设置（方案 §6.2）。SharedPreferences 即可：
@@ -11,6 +12,7 @@ import android.content.Context
 object GatewayPrefs {
 
     private const val FILE = "gateway_prefs"
+    private const val TAG = "GatewayPrefs"
 
     private const val KEY_BIND_LAN = "bind_lan"
     private const val KEY_API_KEY = "api_key"
@@ -115,10 +117,31 @@ object GatewayPrefs {
     fun gatewayDesiredRunning(ctx: Context): Boolean =
         prefs(ctx).getBoolean(KEY_GATEWAY_DESIRED, false)
 
-    fun setGatewayDesiredRunning(ctx: Context, value: Boolean) {
-        check(prefs(ctx).edit().putBoolean(KEY_GATEWAY_DESIRED, value).commit()) {
-            "网关运行意图无法持久化"
+    /** 运行意图的持久化结果：`Committed` 已落盘；`Degraded` 落盘失败但进程内已生效。 */
+    enum class DesiredPersist { Committed, Degraded }
+
+    /** commit 结果 → 持久化结果。纯函数，JVM 单测可直接覆盖（不必 mock Context）。 */
+    internal fun persistOutcomeOf(committed: Boolean): DesiredPersist =
+        if (committed) DesiredPersist.Committed else DesiredPersist.Degraded
+
+    /**
+     * 持久化「网关应当运行」的用户意图。
+     *
+     * R54/T1.3：不再用 `check()` 把落盘失败升级成崩溃。调用方里 STOP 路径
+     * （`AgateForegroundService` 的 196 / 674）就在服务回调上，磁盘满或
+     * SharedPreferences 异常时抛出去会让进程直接死掉 —— 用户看到的是「网关停在
+     * 半途且 App 被杀」，比「重启后意图回退」严重得多。改法是降级：commit 失败
+     * 就补一次 apply()（进程内仍按新意图执行）并记一条警告。
+     */
+    fun setGatewayDesiredRunning(ctx: Context, value: Boolean): DesiredPersist {
+        val committed = prefs(ctx).edit().putBoolean(KEY_GATEWAY_DESIRED, value).commit()
+        val outcome = persistOutcomeOf(committed)
+        if (outcome == DesiredPersist.Degraded) {
+            // commit 失败后原 editor 的状态不可依赖，重新取一份走 apply()。
+            prefs(ctx).edit().putBoolean(KEY_GATEWAY_DESIRED, value).apply()
+            Log.w(TAG, "网关运行意图落盘失败，已降级为进程内生效（重启后可能回退）")
         }
+        return outcome
     }
 
     fun bindLan(ctx: Context): Boolean =
