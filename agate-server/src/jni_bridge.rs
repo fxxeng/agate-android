@@ -483,8 +483,20 @@ fn wait_for_checkin_result_with_limits(
     settle_limit: std::time::Duration,
     cancel_current: &dyn Fn(),
 ) -> Value {
+    // R54/T1：入场首轮必须给满 idle_limit，不能用 progress 里可能来自「上一轮」的
+    // 残留时间戳来削减它。checkin_run_and_wait 在 spawn 后立刻进入等待循环，而 fire
+    // 任务要先抢锁、写盘、写库、发事件才走到 begin_round；若上一轮结束已超过
+    // idle_limit，旧写法会得到 wait=0 → recv_timeout(0) 立刻超时，当场取消这一轮
+    // 健康签到。残留时间戳只证明上一轮早已结束，不能证明本轮已经卡住。
+    // 首轮窗口仍有明确上限（idle_limit），旧轮次残留不会让等待永续。
+    let mut first_wait = true;
     loop {
-        let wait = idle_limit.saturating_sub(progress.idle_elapsed());
+        let wait = if first_wait {
+            idle_limit
+        } else {
+            idle_limit.saturating_sub(progress.idle_elapsed())
+        };
+        first_wait = false;
         match rx.recv_timeout(wait) {
             Ok(Some(result)) => {
                 return json!({ "ok": true, "done": true, "result": result });
@@ -1609,6 +1621,52 @@ mod tests {
         // 空闲窗口 100ms < 账号总推进时长 120ms（每 40ms 一次 × 3）：续期有效即不触发
         // idle 分支；同时把每次推进相对窗口的余量从 30ms 拉到 60ms，抗 CI 调度抖动。
         assert!(progress.revision() >= base + 3);
+    }
+
+    /// R54/T1：上一轮残留的进展时间戳早于 idle 上限，不得削减本轮**首次**等待窗口。
+    ///
+    /// 缺陷场景：上次签到在 20 分钟前结束 → `idle_elapsed()` 已远超 idle_limit。
+    /// 旧实现首轮取 `wait = idle_limit.saturating_sub(idle_elapsed) == 0`，
+    /// `recv_timeout(0)` 立刻返回 Timeout，随即按「本轮已 idle 满额」取消本轮并报
+    /// idle_timeout —— 而 fire 任务此刻还没走到 `begin_round`（中间隔着写盘/写库）。
+    /// 残留时间戳只能证明上一轮早就结束，不能证明本轮已卡住。
+    ///
+    /// 时间轴（idle_limit=400ms、settle=10ms）：先让「上一轮」时间戳沉淀 600ms
+    /// （> idle_limit），结果在约 120ms 到达（40ms 处 `advance` 一次 + 80ms 后发送），
+    /// 总等待 120ms 远小于 idle_limit，给 CI 留 280ms 余量，不靠「卡窗口边界」取证。
+    #[test]
+    fn checkin_wait_survives_stale_progress_from_previous_round() {
+        let (tx, rx) = std::sync::mpsc::channel::<Option<Value>>();
+        let progress = crate::server::core::auto_checkin::CheckinProgress::default();
+        // 制造「上一轮」的进展时间戳，并让它沉淀到 idle 上限之外。
+        progress.begin_round();
+        std::thread::sleep(std::time::Duration::from_millis(600));
+        let cancelled = std::sync::atomic::AtomicBool::new(false);
+        let sender = std::thread::spawn({
+            let progress = progress.clone();
+            move || {
+                std::thread::sleep(std::time::Duration::from_millis(40));
+                progress.advance();
+                std::thread::sleep(std::time::Duration::from_millis(80));
+                let _ = tx.send(Some(json!({ "ok": true })));
+            }
+        });
+        let reply = wait_for_checkin_result_with_limits(
+            rx,
+            &progress,
+            std::time::Duration::from_millis(400),
+            std::time::Duration::from_millis(10),
+            &|| cancelled.store(true, std::sync::atomic::Ordering::SeqCst),
+        );
+        sender.join().expect("result sender");
+        assert!(
+            reply.get("error").is_none(),
+            "残留进展时间戳不得让本轮误报超时: {reply}"
+        );
+        assert_eq!(reply["done"], json!(true));
+        assert_eq!(reply["result"]["ok"], json!(true));
+        // 本轮结果正常到达，不应请求取消。
+        assert!(!cancelled.load(std::sync::atomic::Ordering::SeqCst));
     }
 
     #[test]
