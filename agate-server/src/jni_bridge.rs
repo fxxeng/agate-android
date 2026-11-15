@@ -969,13 +969,11 @@ fn start_gateway(data_dir: &str, port: u16, bind_lan: bool, api_key: Option<&str
     // R54/T1.3：先把相位读成快照再放锁。旧实现在 RUNNING 锁的作用域里等旧
     // listener 收尾（最长 5 秒），与上面那句「等待时不持 RUNNING 锁」的注释相反，
     // 期间 status_json 拿不到锁，状态查询会被一起阻塞。
+    // 元组变体（而非命名字段）：字段少且含义在下方 match 处一览即知，
+    // 同时避开 rustfmt 对多字段 struct 变体的换行规则差异。
     enum PhaseSnapshot {
-        AlreadyRunning { port: u16, bind_lan: bool },
-        WaitForDone {
-            done: Arc<server::ServeDone>,
-            port: u16,
-            bind_lan: bool,
-        },
+        AlreadyRunning(u16, bool),
+        WaitForDone(Arc<server::ServeDone>, u16, bool),
         Stopped,
     }
 
@@ -985,21 +983,16 @@ fn start_gateway(data_dir: &str, port: u16, bind_lan: bool, api_key: Option<&str
         };
         reap_finished_phase(&mut guard);
         match &*guard {
-            GatewayPhase::Running(r) => PhaseSnapshot::AlreadyRunning {
-                port: r.port,
-                bind_lan: r.bind_lan,
-            },
-            GatewayPhase::Stopping(s) => PhaseSnapshot::WaitForDone {
-                done: s.done.clone(),
-                port: s.port,
-                bind_lan: s.bind_lan,
-            },
+            GatewayPhase::Running(r) => PhaseSnapshot::AlreadyRunning(r.port, r.bind_lan),
+            GatewayPhase::Stopping(s) => {
+                PhaseSnapshot::WaitForDone(s.done.clone(), s.port, s.bind_lan)
+            }
             GatewayPhase::Stopped => PhaseSnapshot::Stopped,
         }
     };
 
     match snapshot {
-        PhaseSnapshot::AlreadyRunning { port, bind_lan } => {
+        PhaseSnapshot::AlreadyRunning(port, bind_lan) => {
             return json!({
                 "ok": false,
                 "error": "already_running",
@@ -1008,11 +1001,7 @@ fn start_gateway(data_dir: &str, port: u16, bind_lan: bool, api_key: Option<&str
                 "version": VERSION
             });
         }
-        PhaseSnapshot::WaitForDone {
-            done,
-            port,
-            bind_lan,
-        } => {
+        PhaseSnapshot::WaitForDone(done, port, bind_lan) => {
             // 锁外等待：主动 reaper 与 status 都能推进/读取真实状态。
             if !wait_for_stop_done(&done, STOP_SETTLE_LIMIT) {
                 return json!({
