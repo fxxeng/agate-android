@@ -391,7 +391,17 @@ mod tests {
             "close 之后 next_callback 必须回 None，等待方才认这一轮已结束"
         );
         // 端口随监听任务退出释放：同一个端口再绑一次要成功（绑不上就说明还占着）。
-        let again = TcpListener::bind((Ipv4Addr::LOCALHOST, port)).await;
-        assert!(again.is_ok(), "close 后端口 {port} 应当已归还系统");
+        // 但 bind() 还会起一个 IPv6 兜底监听器，它的退出不被 close_and_wait 等待，
+        // 释放可能慢几毫秒，同端口的 IPv4 rebind 会偶发 AddrInUse（CI 误报）。
+        // 所以有界重试（20 × 50ms = 1s）：抖动被兜住，真泄漏仍在 1s 后判失败。
+        let mut bound = None;
+        for _ in 0..20 {
+            if let Ok(listener) = TcpListener::bind((Ipv4Addr::LOCALHOST, port)).await {
+                bound = Some(listener);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(bound.is_some(), "close 后端口 {port} 应当已归还系统");
     }
 }
