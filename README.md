@@ -3,7 +3,7 @@
 - Verification branch: `verify/arch-8faa5f5`
 - Current batch: R54 / 两条 P1 收口 + 三个 P2 加固（**已全绿**）
 - Latest verified: `17e3510` — GitHub Actions Run `358`（双 job 全绿：rust-tests 11/11、android-build 23/23）
-- 状态：R54 已验证 rust-tests **817 passed / 11 ignored**、JVM 单测全过、JNI **15**、双 APK 仅 arm64-v8a + AArch64 ELF（debug 共享凭证指纹命中，release 未签名放行）、Instrumentation **2/2**；`cargo fmt --check` 与六 deny clippy 全绿。
+- 状态：R54 已验证 rust-tests **818 passed / 11 ignored**（总数 829）、JVM 单测全过、JNI **15**、双 APK 仅 arm64-v8a + AArch64 ELF（debug 共享凭证指纹命中，release 未签名放行）、Instrumentation **2/2**；`cargo fmt --check` 与六 deny clippy 全绿。
 - 真机验收待做（APK 自取 run artifacts）；release 正式签名按委托方裁定暂缓。
 
 ## Direction
