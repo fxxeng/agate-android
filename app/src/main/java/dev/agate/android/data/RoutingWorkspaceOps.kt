@@ -111,7 +111,7 @@ object RoutingWorkspaceOps {
          * 队首 id。预演在队列为空时发 **null**，工作台发**空串**；
          * 两种都折成空串，界面判空只需比 `""`。
          */
-        val pickedId: String = o.optString("pickedId")
+        val pickedId: String = if (o.isNull("pickedId")) "" else o.optString("pickedId")
         val ordered: List<QueueRow> = jsonObjects(o, "ordered").map { QueueRow(it) }
         val blocked: List<QueueRow> = jsonObjects(o, "blocked").map { QueueRow(it) }
 
@@ -136,7 +136,7 @@ object RoutingWorkspaceOps {
          * 而不是空串：界面据此区分「全局」与「某个模型」，混成 `""` 会后端
          * 语义错位（`?model=` 空值等于不带）。
          */
-        val model: String? = o.optString("model").ifBlank { null }
+        val model: String? = if (o.isNull("model")) null else o.optString("model").ifBlank { null }
 
         /** 该模型有独立档案（不含「被路由组接管」这一种）。 */
         val customized: Boolean = o.optBoolean("customized", false)
