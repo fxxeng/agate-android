@@ -34,7 +34,7 @@ use axum::extract::Request;
 use axum::http::{header, HeaderValue, Method, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{any, get, patch, post};
+use axum::routing::{any, get, patch, post, put};
 use axum::{Json, Router};
 use serde_json::{json, Value};
 
@@ -331,6 +331,14 @@ pub fn panel_router(state: ServerState) -> Router {
         )
         // 模型页的两块路由配置（标题生成 / 上下文压缩）：整块 GET+PUT，
         // 按修订号防覆盖。数据形态与校验在 config::{title,compact}_routes。
+        // 路由工作台：模型覆盖 / 参与名单 / 队列可见化 / 会话粘滞。
+        .route("/api/routing/workspace", get(api::routing_workspace::get_workspace))
+        .route("/api/routing/profile", put(api::routing_workspace::put_profile))
+        .route("/api/routing/sticky", get(api::routing_workspace::get_sticky))
+        .route(
+            "/api/routing/sticky/clear",
+            post(api::routing_workspace::clear_sticky),
+        )
         .route(
             "/api/models/title-routes",
             get(api::title_routes::get_routes).put(api::title_routes::put_routes),

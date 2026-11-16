@@ -357,6 +357,43 @@ impl RouteState {
         Some(entry.0.clone())
     }
 
+    /// 当前活跃的粘滞会话清单（路由工作台「会话粘滞」面板读它）。
+    ///
+    /// 只读不改：不刷新 last_seen（刷新会让「看一眼」变成「用一次」，
+    /// 会话过期时间被人为延长）。过期项按 ttl*8 的宽限过滤，与
+    /// sticky_lookup 的惰性清扫同一口径。
+    pub(crate) fn sticky_sessions(&self, now: i64, ttl_ms: i64) -> Vec<(String, String, i64)> {
+        let Ok(table) = self.sticky.lock() else {
+            return Vec::new();
+        };
+        let mut rows: Vec<(String, String, i64)> = table
+            .iter()
+            .filter(|(_, (_, last_seen))| ttl_ms <= 0 || now - *last_seen <= ttl_ms * 8)
+            .map(|(key, (account, last_seen))| (key.clone(), account.clone(), *last_seen))
+            .collect();
+        rows.sort_by(|left, right| right.2.cmp(&left.2));
+        rows
+    }
+
+    /// 清除粘滞会话。`keys` 为空 = 全清；返回实际清除条数。
+    pub(crate) fn forget_sticky(&self, keys: &[String]) -> usize {
+        let Ok(mut table) = self.sticky.lock() else {
+            return 0;
+        };
+        if keys.is_empty() {
+            let count = table.len();
+            table.clear();
+            return count;
+        }
+        let mut count = 0;
+        for key in keys {
+            if table.remove(key).is_some() {
+                count += 1;
+            }
+        }
+        count
+    }
+
     /// 绑定会话 → 账号（成功转发后调用；只对新账号改写）
     pub(super) fn sticky_bind(&self, key: &str, account_id: &str, now: i64) {
         if key.is_empty() || account_id.is_empty() {

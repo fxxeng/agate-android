@@ -150,7 +150,7 @@ pub async fn put_routing(State(_state): State<ServerState>, body: Bytes) -> Resp
     ok_json(routing_json(config::routing_settings()))
 }
 
-fn routing_json(settings: RoutingSettings) -> Value {
+pub(super) fn routing_json(settings: RoutingSettings) -> Value {
     json!({
         config::KEY_ROUTING_STRATEGY: settings.strategy.as_str(),
         config::KEY_ROUTING_STICKY: settings.sticky.as_str(),
@@ -174,7 +174,7 @@ fn routing_json(settings: RoutingSettings) -> Value {
 /// 抄一份到新端点，将来转发层加第七道门时这里不会跟着变 —— 界面就会开始
 /// 显示「3 个可用」而实际只有 2 个。这类分叉在真机上极难定位，
 /// 所以宁可让两个端点共用同一个 `plan_route` 调用点。
-struct PlanFacts {
+pub(super) struct PlanFacts {
     accounts: Vec<Value>,
     counts: HashMap<String, usize>,
     limiter_blocked: HashSet<String>,
@@ -186,7 +186,7 @@ struct PlanFacts {
 }
 
 impl PlanFacts {
-    fn collect(state: &ServerState) -> Self {
+    pub(super) fn collect(state: &ServerState) -> Self {
         let accounts = routing::accounts_of(&state.store().list_accounts());
         let now = crate::server::logging::now_ms();
         let counts: HashMap<String, usize> = state
@@ -224,7 +224,7 @@ impl PlanFacts {
     ///
     /// 候选收窄与转发用同一个函数（`router::route_for_forward`）：界面看到的
     /// 「谁能接这个模型」必须就是转发时真的会去试的那些家。
-    fn plan_for(&self, model: Option<&str>) -> routing::RoutePlan {
+    pub(super) fn plan_for(&self, model: Option<&str>) -> routing::RoutePlan {
         let providers: Vec<String> = model.map(router::route_for_forward).unwrap_or_default();
         let scoped: Vec<Value> = match model {
             // 点名了模型但没有任何家认它 → 不收窄（与队列面板的既有口径一致：

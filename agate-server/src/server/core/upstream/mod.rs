@@ -321,6 +321,16 @@ impl UpstreamService {
     ///
     /// 返回克隆（内部 `Arc`）而不是引用：`ServerState` 的 handler 各持一份克隆，
     /// 读到的都是同一张表。
+    /// 活跃粘滞会话清单（key, account, last_seen），按最近使用倒序。
+    pub fn sticky_sessions(&self, now: i64, ttl_ms: i64) -> Vec<(String, String, i64)> {
+        self.route.sticky_sessions(now, ttl_ms)
+    }
+
+    /// 清除粘滞会话（空 keys = 全清），返回清除条数。
+    pub fn forget_sticky_sessions(&self, keys: &[String]) -> usize {
+        self.route.forget_sticky(keys)
+    }
+
     pub fn connections(&self) -> Connections {
         self.connections.clone()
     }
