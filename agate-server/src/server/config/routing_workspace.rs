@@ -123,8 +123,8 @@ pub fn save_workspace(
 
 /// 把档案里的「组顺位 + 组内顺位」编译成全局账号队列。
 ///
-/// 不在档案名单里的账号保持原相对顺序排在参与账号之后 ——
-/// 与上游一致：不参与路由 ≠ 从队列里消失。
+/// 参与组按档案顺序前置；不在档案名单里的组保持原相对顺序接在后面 ——
+/// 不参与路由 ≠ 从队列里消失，但也不占队首。
 fn build_global_queue(visible: &[Value], profile: &RoutingProfile) -> Result<Vec<String>, String> {
     let mut groups = crate::server::core::account_order::manual_groups(visible);
     for (provider, members) in &mut groups {
@@ -155,15 +155,16 @@ fn build_global_queue(visible: &[Value], profile: &RoutingProfile) -> Result<Vec
         .cloned()
         .collect();
     selected.sort_by_key(|(id, _)| positions.get(id.as_str()).copied().unwrap_or(usize::MAX));
-    let mut replacement = selected.into_iter();
-    for group in &mut groups {
-        if positions.contains_key(group.0.as_str()) {
-            if let Some(next) = replacement.next() {
-                *group = next;
-            }
-        }
-    }
-    Ok(groups
+    // 参与组按档案顺序**前置**，非参与组保持原相对顺序排后 ——
+    // 「不参与路由」的账号不消失，但也不该占着队首（上游 save_workspace
+    // 的全局分支同语义：新队列先给参与账号编号，其余账号接续）。
+    let mut ordered: Vec<(String, Vec<Value>)> = selected;
+    ordered.extend(
+        groups
+            .into_iter()
+            .filter(|(id, _)| !positions.contains_key(id.as_str())),
+    );
+    Ok(ordered
         .into_iter()
         .flat_map(|(_, members)| {
             members
