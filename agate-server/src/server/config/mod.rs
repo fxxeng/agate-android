@@ -84,7 +84,10 @@ pub use account_sort::{
 };
 pub use assistant_config::*;
 pub(crate) use mutations::try_update_raw_field;
-pub use routing_groups::{RoutingGroup, RoutingMember};
+pub use routing_groups::{
+    revision as routing_group_revision, save as routing_group_save,
+    validate as routing_group_validate, RoutingGroup, RoutingMember,
+};
 pub use routing_profiles::{
     normalize_model as normalize_routing_model, routing_profiles, routing_snapshot,
     save_routing_profile, settings_for_model, validate_shape as validate_routing_profile,

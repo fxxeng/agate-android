@@ -332,6 +332,16 @@ pub fn panel_router(state: ServerState) -> Router {
         // 模型页的两块路由配置（标题生成 / 上下文压缩）：整块 GET+PUT，
         // 按修订号防覆盖。数据形态与校验在 config::{title,compact}_routes。
         // 路由工作台：模型覆盖 / 参与名单 / 队列可见化 / 会话粘滞。
+        // 路由组：GET 列表 / PUT 保存（同路径双语义，与上游一致）；
+        // 预演走 /api/routing/preview（零副作用，不推进轮转）。
+        .route(
+            "/api/routing/groups",
+            get(api::routing_groups::get_groups).put(api::routing_groups::put_group),
+        )
+        .route(
+            "/api/routing/preview",
+            post(api::routing_groups::preview),
+        )
         .route(
             "/api/routing/workspace",
             get(api::routing_workspace::get_workspace),
