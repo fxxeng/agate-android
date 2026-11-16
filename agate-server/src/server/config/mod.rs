@@ -66,11 +66,15 @@ use serde_json::{json, Map, Value};
 use crate::server::db::Db;
 
 mod assistant_config;
+pub mod compact_routes;
+mod mutations;
 pub(crate) mod parse;
 pub(crate) mod sql;
+pub mod title_routes;
 mod types;
 
 pub use assistant_config::*;
+pub use mutations::try_update_raw_field;
 pub use types::*;
 
 use parse::*;
