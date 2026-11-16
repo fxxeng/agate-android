@@ -240,19 +240,12 @@ impl RequestStats {
                          FROM selected WHERE session_id <> '' \
                          GROUP BY request_model, session_id{activity})"
                     );
-                    let matched: i64 = conn.query_row(
-                        &matched_sql,
-                        parameters,
-                        |row| row.get(0),
-                    )?;
-                    let unknown_sql = format!(
-                        "{BASE} SELECT COUNT(*) FROM selected WHERE session_id = ''"
-                    );
-                    let unknown: i64 = conn.query_row(
-                        &unknown_sql,
-                        parameters,
-                        |row| row.get(0),
-                    )?;
+                    let matched: i64 =
+                        conn.query_row(&matched_sql, parameters, |row| row.get(0))?;
+                    let unknown_sql =
+                        format!("{BASE} SELECT COUNT(*) FROM selected WHERE session_id = ''");
+                    let unknown: i64 =
+                        conn.query_row(&unknown_sql, parameters, |row| row.get(0))?;
                     let sessions_sql = format!(
                         "{BASE},
   sessions AS (
@@ -319,11 +312,10 @@ impl RequestStats {
                      THEN json_array(request_model, session_id) END), \
                      COALESCE(SUM(session_id = ''), 0) FROM selected"
                 );
-                let totals: (i64, i64, i64, i64) = conn.query_row(
-                    &totals_sql,
-                    parameters,
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-                )?;
+                let totals: (i64, i64, i64, i64) =
+                    conn.query_row(&totals_sql, parameters, |row| {
+                        Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                    })?;
                 let (requests, running, sessions, unknown) = totals;
                 let paths_sql = format!(
                     "{BASE} SELECT json_array({group}), client, request_model, provider, \

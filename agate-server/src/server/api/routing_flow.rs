@@ -29,7 +29,10 @@ const CLIENT_UNKNOWN: &str = "__unknown";
 
 /// 取一个查询串字段（去首尾空白；缺省空串）。
 fn text_of(params: &Params, key: &str) -> String {
-    params.get(key).map(|value| value.trim().to_string()).unwrap_or_default()
+    params
+        .get(key)
+        .map(|value| value.trim().to_string())
+        .unwrap_or_default()
 }
 
 /// GET /api/routing/flow?minutes=&model=&scope=&search=&sessionSearch=&path=
@@ -39,13 +42,20 @@ fn text_of(params: &Params, key: &str) -> String {
 /// 缺省则是不按客户端过滤 —— 这两个语义在存储层靠 `Option<String>` 区分。
 pub async fn get_flow(State(state): State<ServerState>, Query(params): Query<Params>) -> Response {
     let scope = text_of(&params, "scope");
-    let minutes = params.get("minutes").and_then(|value| value.parse::<i64>().ok()).unwrap_or(10);
+    let minutes = params
+        .get("minutes")
+        .and_then(|value| value.parse::<i64>().ok())
+        .unwrap_or(10);
     if ![5, 10, 30, 60].contains(&minutes) {
         return errors::management_error(400, "时间范围必须为 5、10、30 或 60 分钟");
     }
-    let client = params
-        .get("client")
-        .map(|value| if value == CLIENT_UNKNOWN { String::new() } else { value.clone() });
+    let client = params.get("client").map(|value| {
+        if value == CLIENT_UNKNOWN {
+            String::new()
+        } else {
+            value.clone()
+        }
+    });
     let query = FlowQuery {
         model: text_of(&params, "model"),
         minutes,
@@ -58,7 +68,10 @@ pub async fn get_flow(State(state): State<ServerState>, Query(params): Query<Par
         provider: text_of(&params, "provider"),
         account: text_of(&params, "account"),
         activity: text_of(&params, "activity"),
-        offset: params.get("offset").and_then(|value| value.parse().ok()).unwrap_or(0),
+        offset: params
+            .get("offset")
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(0),
         limit: params
             .get("limit")
             .and_then(|value| value.parse::<usize>().ok())

@@ -70,8 +70,14 @@ impl RequestStats {
                     sql::REQUEST_COLUMNS,
                 );
                 let mut stmt = conn.prepare(&query)?;
-                let mut rows =
-                    stmt.query(params![model, start, end, search, limit as i64, offset as i64])?;
+                let mut rows = stmt.query(params![
+                    model,
+                    start,
+                    end,
+                    search,
+                    limit as i64,
+                    offset as i64
+                ])?;
                 let mut entries = Vec::new();
                 while let Some(row) = rows.next()? {
                     entries.push((

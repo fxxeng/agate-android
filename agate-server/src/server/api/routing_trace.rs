@@ -22,10 +22,7 @@ fn text_of(params: &Params, key: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-pub async fn get_trace(
-    State(state): State<ServerState>,
-    Query(params): Query<Params>,
-) -> Response {
+pub async fn get_trace(State(state): State<ServerState>, Query(params): Query<Params>) -> Response {
     let model = text_of(&params, "model");
     let search = text_of(&params, "search").unwrap_or_default();
     let status = text_of(&params, "status").unwrap_or_default();
