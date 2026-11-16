@@ -317,7 +317,7 @@ fun ModelsPage(
     var availToken by remember { mutableStateOf(0) }
 
     /**
-     * **有账号的家**（`/api/session` 的 `providers` 计数，不含模型信息）。
+     * **有账号的家**——「登录过」这一件事实，与「有没有模型清单」无关。
      *
      * ── 为什么模型页需要它（2026-11-16 真实故障：魔搭授权后不显示）────
      * 一批家**没有内置兜底清单**（ModelScope / Loomy / AtomCode / Trae…）：清单
@@ -328,11 +328,17 @@ fun ModelsPage(
      * 合成死循环：「要有模型才能拉模型」。自定义家当年踩过同一个坑（见
      * `scopes` 里 `fromCustoms` 的注释），内置家当时漏了。
      *
-     * 事实源是**账号库**（`snap.providerCounts` 来自 `/api/session`），不是
-     * 「谁有模型」——「已授权」是账号的事实，与清单拉没拉到无关。
+     * ⚠️ **不能用 `snap.providerCounts` 当这个判据**（第一版就是这么错的）：
+     * 内核 `provider_summary` 走 `providers::summary_json`，它对**注册表里每一家**
+     * 都输出一行、没账号的给 `count: 0` —— 拿它的 `keys` 等于「37 家全列出来」，
+     * 与「授权后才出现」正好相反。判据必须是**真实的账号行**（`accountList`，
+     * 每条带 provider），它只含有账号的家。
+     *
+     * 判据只问「加过账号没有」，不问「现在能不能用」：可用性由转发选路回答
+     * （enabled + 凭证），而这里回答的是「这家该不该出现在页面上」。
      */
-    val accountProviders = remember(snap.providerCounts) {
-        snap.providerCounts.keys.filter { it.isNotBlank() }.toSet()
+    val accountProviders = remember(snap.accountList) {
+        snap.accountList.map { it.provider.trim() }.filter { it.isNotEmpty() }.toSet()
     }
 
     /**
@@ -1211,7 +1217,10 @@ fun ModelsPage(
                     // 而它其实是用户刚授权完、正等着看模型的那一家。
                     val noModelsAtAll = allRows.none { it.provider == pid }
                     if (query.isBlank() && noModelsAtAll && pid in accountProviders) {
-                        val accounts = snap.providerCounts[pid] ?: 0
+                        // 账号数从**真实账号行**数（`providerCounts` 是注册表全集，
+                        // 那里的数字对没账号的家是 0、对有账号的家才是真值 —— 这里
+                        // 既然已经按 accountList 判定了成员，数字也走同一份来源）。
+                        val accounts = snap.accountList.count { it.provider == pid }
                         Row(
                             Modifier
                                 .fillMaxWidth()
