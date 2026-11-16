@@ -52,7 +52,8 @@ impl RoutingProfile {
     /// 缺范围标记时按 Selected（名单）处理：无法区分「主动移除」与「后来新增」，
     /// 保留原有限制比放开更安全。
     pub fn scope(&self) -> RoutingProviderScope {
-        self.provider_scope.unwrap_or(RoutingProviderScope::Selected)
+        self.provider_scope
+            .unwrap_or(RoutingProviderScope::Selected)
     }
 
     /// 该家此刻是否参与：范围命中且不在停用名单。
@@ -211,8 +212,16 @@ pub fn validate_shape(profile: &RoutingProfile) -> Result<(), String> {
         Ok(())
     }
     unique(&profile.providers, MAX_ROUTING_PROVIDERS, "提供商列表")?;
-    unique(&profile.disabled_providers, MAX_ROUTING_PROVIDERS, "停用提供商列表")?;
-    unique(&profile.excluded_accounts, MAX_ROUTING_ACCOUNTS, "排除账号列表")?;
+    unique(
+        &profile.disabled_providers,
+        MAX_ROUTING_PROVIDERS,
+        "停用提供商列表",
+    )?;
+    unique(
+        &profile.excluded_accounts,
+        MAX_ROUTING_ACCOUNTS,
+        "排除账号列表",
+    )?;
     if profile.scope() == RoutingProviderScope::Selected
         && profile
             .disabled_providers

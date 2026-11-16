@@ -102,9 +102,7 @@ pub fn validate(group: &RoutingGroup) -> Result<(), String> {
     {
         return Err("组名不能为空或超过 64 个字符，说明不能超过 500 个字符".into());
     }
-    if group.model.is_empty()
-        || super::normalize_routing_model(&group.model)? != group.model
-    {
+    if group.model.is_empty() || super::normalize_routing_model(&group.model)? != group.model {
         return Err("对外模型 ID 不能为空，请去掉首尾空格并使用小写英文字母".into());
     }
     super::validate_routing_profile(&group.profile())?;
@@ -186,31 +184,31 @@ pub fn save(id: &str, group: Option<RoutingGroup>, expected: &str) -> Result<(),
                 if old.is_none() && profiles.groups.len() >= MAX_GROUPS {
                     return Err("自定义路由组数量已达上限".into());
                 }
-                let taken_by_group = profiles.groups.values().any(|known| {
-                    known.id != id && known.model.eq_ignore_ascii_case(&group.model)
-                });
+                let taken_by_group = profiles
+                    .groups
+                    .values()
+                    .any(|known| known.id != id && known.model.eq_ignore_ascii_case(&group.model));
                 let taken_by_profile = profiles.models.contains_key(&group.model);
                 let taken_by_catalog =
                     !crate::server::core::providers::catalog::providers_for_model(&group.model)
                         .is_empty();
                 let taken_by_mapping =
                     crate::server::core::model_rules::current().has_alias(&group.model);
-                let taken_by_custom = crate::server::core::custom_providers::list()
-                    .iter()
-                    .any(|provider| {
-                        provider
-                            .get("mappings")
-                            .and_then(Value::as_array)
-                            .is_some_and(|items| {
-                                items.iter().any(|item| {
-                                    item.get("alias")
-                                        .and_then(Value::as_str)
-                                        .is_some_and(|alias| {
-                                            alias.eq_ignore_ascii_case(&group.model)
-                                        })
+                let taken_by_custom =
+                    crate::server::core::custom_providers::list()
+                        .iter()
+                        .any(|provider| {
+                            provider
+                                .get("mappings")
+                                .and_then(Value::as_array)
+                                .is_some_and(|items| {
+                                    items.iter().any(|item| {
+                                        item.get("alias").and_then(Value::as_str).is_some_and(
+                                            |alias| alias.eq_ignore_ascii_case(&group.model),
+                                        )
+                                    })
                                 })
-                            })
-                    });
+                        });
                 if taken_by_group
                     || taken_by_profile
                     || taken_by_catalog

@@ -105,6 +105,8 @@ pub mod proxy_rotate;
 pub mod proxy_settings;
 pub mod response_observation;
 pub mod routing;
+pub mod routing_order;
+pub mod routing_scope;
 pub mod sanitize;
 pub mod scheduled_tasks;
 pub mod sub_kernel;

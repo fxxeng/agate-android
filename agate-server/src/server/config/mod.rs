@@ -82,13 +82,13 @@ pub use account_sort::{
     KEY_ACCOUNT_SORT,
 };
 pub use assistant_config::*;
+pub(crate) use mutations::try_update_raw_field;
 pub use routing_groups::{RoutingGroup, RoutingMember};
 pub use routing_profiles::{
     normalize_model as normalize_routing_model, routing_profiles, routing_snapshot,
     save_routing_profile, settings_for_model, validate_shape as validate_routing_profile,
     RoutingProfile, RoutingProfiles, RoutingProviderScope, KEY_ROUTING_PROFILES,
 };
-pub(crate) use mutations::try_update_raw_field;
 pub use types::*;
 
 use parse::*;
