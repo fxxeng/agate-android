@@ -65,8 +65,10 @@ pub mod checkin_runs;
 // 总开关仍在 /api/auto-checkin，条目 CRUD 在这里，见该文件模块头
 pub mod checkin_schedules;
 pub mod cline_headers;
+pub mod compact_routes;
 pub mod codearts_welfare;
 pub mod config_api;
+pub mod title_routes;
 // WorkBuddy 成长任务（查询 / 执行 / 开学季 / 猫猫旅行）：从参考项目
 // workbuddy2api 的 task_runner.py 移植，见该文件模块头
 pub mod growth;

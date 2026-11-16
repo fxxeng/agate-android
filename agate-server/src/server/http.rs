@@ -329,6 +329,16 @@ pub fn panel_router(state: ServerState) -> Router {
             "/api/routing/availability",
             post(api::routing_api::post_routing_availability),
         )
+        // 模型页的两块路由配置（标题生成 / 上下文压缩）：整块 GET+PUT，
+        // 按修订号防覆盖。数据形态与校验在 config::{title,compact}_routes。
+        .route(
+            "/api/models/title-routes",
+            get(api::title_routes::get_routes).put(api::title_routes::put_routes),
+        )
+        .route(
+            "/api/models/compact-routes",
+            get(api::compact_routes::get_routes).put(api::compact_routes::put_routes),
+        )
         // ── 调试模式（设置页「通用 → 调试模式」）──
         // GET/PUT 开关；traffic 是按 id 取原始报文的详情端点（列表接口不返回
         // 报文，见 debug_api 的模块头）。挂 protected：报文含上游 URL 与请求体。
