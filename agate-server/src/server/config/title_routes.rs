@@ -93,7 +93,10 @@ pub struct TitleRoutes {
 
 impl Default for TitleRoutes {
     fn default() -> Self {
-        Self { enabled: true, rules: Vec::new() }
+        Self {
+            enabled: true,
+            rules: Vec::new(),
+        }
     }
 }
 
@@ -120,7 +123,10 @@ pub fn model_key(model: &str) -> String {
 
 /// 客户端 id → 展示名。
 pub fn client_label(id: &str) -> Option<&'static str> {
-    CLIENTS.iter().find(|(key, _)| *key == id).map(|(_, label)| *label)
+    CLIENTS
+        .iter()
+        .find(|(key, _)| *key == id)
+        .map(|(_, label)| *label)
 }
 
 /// 校验配置。返回给界面直接展示的中文原因。
@@ -131,7 +137,9 @@ pub fn validate(settings: &TitleRoutes) -> Result<(), String> {
     for (index, rule) in settings.rules.iter().enumerate() {
         let at = index + 1;
         if rule.clients.len() > MAX_CLIENTS {
-            return Err(format!("标题生成路由第 {at} 条规则最多支持 {MAX_CLIENTS} 个客户端"));
+            return Err(format!(
+                "标题生成路由第 {at} 条规则最多支持 {MAX_CLIENTS} 个客户端"
+            ));
         }
         let mut seen = HashSet::new();
         for client in &rule.clients {
@@ -190,7 +198,10 @@ fn from_value(value: Option<&Value>) -> TitleRoutesSnapshot {
                 Ok(settings)
             }),
     };
-    TitleRoutesSnapshot { settings, revision: revision(value) }
+    TitleRoutesSnapshot {
+        settings,
+        revision: revision(value),
+    }
 }
 
 /// 从 `raw` 底稿构建快照。
@@ -268,20 +279,30 @@ mod tests {
     fn empty_raw_yields_default_snapshot() {
         let raw = Map::new();
         let snapshot = from_raw(&raw);
-        assert!(snapshot.settings.is_ok());
-        assert!(snapshot.settings.unwrap().rules.is_empty());
+        let rules_empty = snapshot
+            .settings
+            .as_ref()
+            .map(|settings| settings.rules.is_empty())
+            .unwrap_or(false);
+        assert!(rules_empty);
     }
 
     #[test]
     fn validate_rejects_unknown_client() {
-        let settings = TitleRoutes { enabled: true, rules: vec![rule(&["nope"], "m")] };
+        let settings = TitleRoutes {
+            enabled: true,
+            rules: vec![rule(&["nope"], "m")],
+        };
         assert!(validate(&settings).is_err());
     }
 
     #[test]
     fn validate_rejects_duplicate_client() {
-        let settings = TitleRoutes { enabled: true, rules: vec![rule(&["zcode", "zcode"], "m")] };
-        let error = validate(&settings).unwrap_err();
+        let settings = TitleRoutes {
+            enabled: true,
+            rules: vec![rule(&["zcode", "zcode"], "m")],
+        };
+        let error = validate(&settings).err().unwrap_or_default();
         assert!(error.contains("重复出现"));
     }
 
@@ -290,7 +311,10 @@ mod tests {
         // 总开关关掉时，规则里缺客户端/模型不该判非法。
         let mut half = rule(&[], "");
         half.enabled = false;
-        let settings = TitleRoutes { enabled: false, rules: vec![half] };
+        let settings = TitleRoutes {
+            enabled: false,
+            rules: vec![half],
+        };
         assert!(validate(&settings).is_ok());
     }
 
@@ -300,8 +324,24 @@ mod tests {
             enabled: true,
             rules: vec![rule(&["zcode"], "first"), rule(&["zcode"], "second")],
         };
-        let hit = match_rule(&settings, "zcode").unwrap();
-        assert_eq!(hit.model, "first");
+        let model = match_rule(&settings, "zcode")
+            .map(|rule| rule.model)
+            .unwrap_or_default();
+        assert_eq!(model, "first");
+    }
+
+    #[test]
+    fn match_rule_skips_disabled_rule() {
+        let mut off = rule(&["zcode"], "disabled");
+        off.enabled = false;
+        let settings = TitleRoutes {
+            enabled: true,
+            rules: vec![off, rule(&["zcode"], "active")],
+        };
+        let model = match_rule(&settings, "zcode")
+            .map(|rule| rule.model)
+            .unwrap_or_default();
+        assert_eq!(model, "active");
     }
 
     #[test]

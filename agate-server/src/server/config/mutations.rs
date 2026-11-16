@@ -39,17 +39,18 @@ pub(crate) fn try_update_raw_field<T, E>(
     mutate: impl FnOnce(&mut Value) -> Result<T, E>,
     storage_error: impl FnOnce() -> E,
 ) -> Result<T, E> {
-    let key = key.to_string();
-    // `update` 内的闭包是 `FnOnce(&mut RuntimeConfig)`，不能把 `mutate` 与
-    // `storage_error` 都 move 进去后还指望在外层再用 —— 所以结果先攒在这里。
+    // `update` 的闭包签名是 `FnOnce(&mut RuntimeConfig)`，不返回结果，
+    // 所以结果先攒在这里。这里**不写 `move`**：`outcome` 要被外层读取，
+    // 让编译器按需捕获（outcome 按 `&mut` 借用、mutate 按所有权移动）。
+    // 写 `move` 会把 outcome 整体搬进闭包，外层就读不到了（E0382）。
     let mut outcome: Option<Result<T, E>> = None;
-    let saved = super::update(move |config| {
-        let before = config.raw.get(&key).cloned().unwrap_or(Value::Null);
+    let saved = super::update(|config| {
+        let before = config.raw.get(key).cloned().unwrap_or(Value::Null);
         let mut value = before.clone();
         match mutate(&mut value) {
             Ok(result) => {
                 if value != before {
-                    config.raw.insert(key.clone(), value);
+                    config.raw.insert(key.to_string(), value);
                 }
                 outcome = Some(Ok(result));
             }
@@ -58,7 +59,7 @@ pub(crate) fn try_update_raw_field<T, E>(
     });
     match outcome {
         Some(Ok(result)) if saved => Ok(result),
-        // 闭包通过但没写盘成功：内存已换新，磁盘没落 —— 必须让调用方知道。
+        // 闭包通过但没写盘成功：内存已换新、磁盘没落 —— 必须让调用方知道。
         Some(Ok(_)) => Err(storage_error()),
         Some(Err(error)) => Err(error),
         // 理论上不可达：闭包总会写入 outcome。保守地按存储失败处理。

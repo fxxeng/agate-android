@@ -43,7 +43,10 @@ pub struct CompactRoutes {
 
 impl Default for CompactRoutes {
     fn default() -> Self {
-        Self { enabled: true, rules: Vec::new() }
+        Self {
+            enabled: true,
+            rules: Vec::new(),
+        }
     }
 }
 
@@ -113,7 +116,10 @@ fn from_value(value: Option<&Value>) -> CompactRoutesSnapshot {
                 Ok(settings)
             }),
     };
-    CompactRoutesSnapshot { settings, revision: revision(value) }
+    CompactRoutesSnapshot {
+        settings,
+        revision: revision(value),
+    }
 }
 
 /// 从 `raw` 底稿构建快照。
@@ -188,33 +194,53 @@ mod tests {
     fn validate_rejects_unsupported_client() {
         let mut rule = route("a", "b");
         rule.client = "other".into();
-        let settings = CompactRoutes { enabled: true, rules: vec![rule] };
+        let settings = CompactRoutes {
+            enabled: true,
+            rules: vec![rule],
+        };
         assert!(validate(&settings).is_err());
     }
 
     #[test]
     fn validate_rejects_same_source_and_target() {
-        let settings = CompactRoutes { enabled: true, rules: vec![route("m1", "M1")] };
-        let error = validate(&settings).unwrap_err();
+        let settings = CompactRoutes {
+            enabled: true,
+            rules: vec![route("m1", "M1")],
+        };
+        let error = validate(&settings).err().unwrap_or_default();
         assert!(error.contains("不能相同"));
     }
 
     #[test]
     fn validate_rejects_duplicate_source() {
-        let settings =
-            CompactRoutes { enabled: true, rules: vec![route("m1", "m2"), route("m1", "m3")] };
-        let error = validate(&settings).unwrap_err();
+        let settings = CompactRoutes {
+            enabled: true,
+            rules: vec![route("m1", "m2"), route("m1", "m3")],
+        };
+        let error = validate(&settings).err().unwrap_or_default();
         assert!(error.contains("不能重复"));
     }
 
     #[test]
     fn validate_accepts_well_formed_rules() {
-        let settings = CompactRoutes { enabled: true, rules: vec![route("long-ctx", "short-ctx")] };
+        let settings = CompactRoutes {
+            enabled: true,
+            rules: vec![route("long-ctx", "short-ctx")],
+        };
         assert!(validate(&settings).is_ok());
     }
 
     #[test]
     fn model_key_is_case_insensitive() {
         assert_eq!(model_key("  GPT-4O "), "gpt-4o");
+    }
+
+    #[test]
+    fn default_has_no_enabled_rules() {
+        // 默认配置「开 + 无规则」：`active()` 依赖全局 CONFIG，不在纯函数层
+        // 断言；这里只钉住默认形状，避免以后把默认值改成带规则。
+        let settings = CompactRoutes::default();
+        assert!(settings.enabled);
+        assert!(!settings.rules.iter().any(|rule| rule.enabled));
     }
 }

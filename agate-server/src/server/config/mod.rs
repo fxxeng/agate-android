@@ -74,7 +74,7 @@ pub mod title_routes;
 mod types;
 
 pub use assistant_config::*;
-pub use mutations::try_update_raw_field;
+pub(crate) use mutations::try_update_raw_field;
 pub use types::*;
 
 use parse::*;
