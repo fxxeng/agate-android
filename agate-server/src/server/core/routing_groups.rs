@@ -143,16 +143,12 @@ pub fn choices(store: &AccountStore) -> Vec<Value> {
         .iter()
         .map(|account| routing::provider_of(account).to_string())
         .collect();
-    ids.extend(
-        custom_providers::list()
-            .iter()
-            .filter_map(|provider| {
-                provider
-                    .get("id")
-                    .and_then(Value::as_str)
-                    .map(str::to_string)
-            }),
-    );
+    ids.extend(custom_providers::list().iter().filter_map(|provider| {
+        provider
+            .get("id")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    }));
     ids.sort();
     ids.dedup();
     let mut result = Vec::new();
@@ -187,7 +183,9 @@ pub fn candidate_key(member: &str, account: &str) -> String {
 }
 
 pub fn account_key(key: &str) -> &str {
-    key.split_once('\0').map(|(_, account)| account).unwrap_or(key)
+    key.split_once('\0')
+        .map(|(_, account)| account)
+        .unwrap_or(key)
 }
 
 pub fn member_key(key: &str) -> Option<&str> {
@@ -331,9 +329,7 @@ pub fn validate_members(
             })
         });
         match catalog_model(store, &member.provider, &member.model) {
-            Some(item) if model_is_image(&item) => {
-                return Err("对话路由组不能加入生图模型".into())
-            }
+            Some(item) if model_is_image(&item) => return Err("对话路由组不能加入生图模型".into()),
             None if previous.is_none() => {
                 return Err(format!("提供商中找不到模型 {}，请刷新后重试", member.model))
             }
@@ -359,11 +355,7 @@ pub fn validate_members(
 ///
 /// 能力位取「全部可用成员都支持才支持」的交集口径；组没有任何
 /// 可用成员时不出现（避免客户端选到一个永远失败的模型）。
-pub fn append_public(
-    store: &AccountStore,
-    scope: Option<&KeyScope>,
-    data: &mut Vec<Value>,
-) {
+pub fn append_public(store: &AccountStore, scope: Option<&KeyScope>, data: &mut Vec<Value>) {
     let accounts = routing::accounts_of(&store.list_accounts());
     for group in config::routing_profiles().groups.values() {
         if !key_scope::allows_model(scope, &group.model)
@@ -441,7 +433,10 @@ mod tests {
 
     #[test]
     fn reason_flags_unsupported_capability() {
-        let needs = RequestNeeds { tools: true, ..Default::default() };
+        let needs = RequestNeeds {
+            tools: true,
+            ..Default::default()
+        };
         let item = serde_json::json!({ "supportsToolCall": false });
         let reason = needs.reason(&item).unwrap_or_default();
         assert!(reason.contains("不支持工具调用"));
@@ -449,7 +444,10 @@ mod tests {
 
     #[test]
     fn reason_flags_undeclared_capability() {
-        let needs = RequestNeeds { images: true, ..Default::default() };
+        let needs = RequestNeeds {
+            images: true,
+            ..Default::default()
+        };
         let item = serde_json::json!({});
         let reason = needs.reason(&item).unwrap_or_default();
         assert!(reason.contains("未声明"));
@@ -457,7 +455,10 @@ mod tests {
 
     #[test]
     fn reason_passes_when_supported() {
-        let needs = RequestNeeds { tools: true, ..Default::default() };
+        let needs = RequestNeeds {
+            tools: true,
+            ..Default::default()
+        };
         let item = serde_json::json!({ "supportsToolCall": true });
         assert!(needs.reason(&item).is_none());
     }

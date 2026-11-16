@@ -82,7 +82,11 @@ pub async fn put_group(State(state): State<ServerState>, body: Bytes) -> Respons
     {
         Ok(Ok(value)) => ok_json(value),
         Ok(Err(error)) => errors::management_error(
-            if error.starts_with("路由配置已在其他位置修改") { 409 } else { 400 },
+            if error.starts_with("路由配置已在其他位置修改") {
+                409
+            } else {
+                400
+            },
             error,
         ),
         Err(error) => errors::management_error(500, error.to_string()),
@@ -209,8 +213,11 @@ fn preview_json(state: &ServerState, payload: Preview) -> Value {
             profile
         } else {
             routing_scope::materialize_profile_with(
-            &accounts, &providers, &payload.model, &snapshot,
-        )
+                &accounts,
+                &providers,
+                &payload.model,
+                &snapshot,
+            )
         };
         routing_scope::project_accounts(&accounts, &profile)
             .into_iter()
