@@ -65,6 +65,7 @@ use serde_json::{json, Map, Value};
 
 use crate::server::db::Db;
 
+pub mod account_sort;
 mod assistant_config;
 pub mod compact_routes;
 mod mutations;
