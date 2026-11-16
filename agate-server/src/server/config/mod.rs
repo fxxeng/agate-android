@@ -75,8 +75,9 @@ pub mod title_routes;
 mod types;
 
 pub use account_sort::{
-    AccountSortRule, AccountSortSettings, AddedSortDirection, BalanceSortDirection,
-    CreditSortDirection, KEY_ACCOUNT_SORT,
+    account_sort_settings, save_account_sort, validate_account_sort, AccountSortRule,
+    AccountSortSettings, AddedSortDirection, BalanceSortDirection, CreditSortDirection,
+    KEY_ACCOUNT_SORT,
 };
 pub use assistant_config::*;
 pub(crate) use mutations::try_update_raw_field;

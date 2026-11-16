@@ -115,7 +115,10 @@ pub fn supports_credit_expiry(provider: &str) -> bool {
     super::plugin_host::account_features_of(provider)
         .map(|features| features.credit_expiry)
         .unwrap_or_else(|| {
-            matches!(provider, "workbuddy" | "workbuddy-intl" | "trae" | "officeace")
+            matches!(
+                provider,
+                "workbuddy" | "workbuddy-intl" | "trae" | "officeace"
+            )
         })
 }
 
@@ -397,16 +400,17 @@ mod tests {
         let rules = rules_for("zcode", &settings);
         assert_eq!(rules.len(), 3);
         // 已配置的 Added 保持开启，补进来的 Credit/Balance 都是关闭。
-        let added_on = rules.iter().any(|rule| {
-            matches!(rule, AccountSortRule::Added { on: true, .. })
-        });
+        let added_on = rules
+            .iter()
+            .any(|rule| matches!(rule, AccountSortRule::Added { on: true, .. }));
         assert!(added_on);
-        let others_off = rules.iter().filter(|rule| rule.key() != "added").all(|rule| {
-            match rule {
+        let others_off = rules
+            .iter()
+            .filter(|rule| rule.key() != "added")
+            .all(|rule| match rule {
                 AccountSortRule::Credit { on, .. } | AccountSortRule::Balance { on, .. } => !on,
                 AccountSortRule::Added { on, .. } => *on,
-            }
-        });
+            });
         assert!(others_off);
     }
 
@@ -419,11 +423,7 @@ mod tests {
         ];
         let groups = manual_groups(&accounts);
         assert_eq!(groups[0].0, "q");
-        let ids: Vec<&str> = groups[1]
-            .1
-            .iter()
-            .filter_map(routing::account_id)
-            .collect();
+        let ids: Vec<&str> = groups[1].1.iter().filter_map(routing::account_id).collect();
         assert_eq!(ids, vec!["a", "b"]);
     }
 
