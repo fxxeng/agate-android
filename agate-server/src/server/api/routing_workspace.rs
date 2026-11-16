@@ -250,7 +250,10 @@ fn put_profile_blocking(state: ServerState, payload: Value) -> Response {
                         profile.account_order.values().any(|ids| ids.contains(id))
                     })
                 {
-                    return errors::management_error(400, format!("账号「{id}」不存在，请刷新路由"));
+                    return errors::management_error(
+                        400,
+                        format!("账号「{id}」不存在，请刷新路由"),
+                    );
                 }
             }
         }
@@ -263,9 +266,7 @@ fn put_profile_blocking(state: ServerState, payload: Value) -> Response {
         else {
             return errors::management_error(400, "配置版本无效，请刷新当前配置");
         };
-        if let Err(error) =
-            config::save_workspace(state.store(), &model, profile, revision)
-        {
+        if let Err(error) = config::save_workspace(state.store(), &model, profile, revision) {
             let status = if error.starts_with("路由配置已在其他位置修改") {
                 409
             } else {
@@ -284,24 +285,25 @@ fn put_profile_blocking(state: ServerState, payload: Value) -> Response {
                 "provider" => None,
                 "account" => match order.get("provider").and_then(Value::as_str) {
                     Some(provider) => Some(provider),
-                    None => {
-                        return errors::management_error(400, "账号顺序修改缺少 provider 字段")
-                    }
+                    None => return errors::management_error(400, "账号顺序修改缺少 provider 字段"),
                 },
                 _ => {
-                    return errors::management_error(400, "顺序修改 kind 必须为 provider 或 account")
+                    return errors::management_error(
+                        400,
+                        "顺序修改 kind 必须为 provider 或 account",
+                    )
                 }
             };
             let Some(profile) = &profile else {
                 return errors::management_error(400, "修改顺序必须提供路由配置");
             };
             let accounts = routing::accounts_of(&state.store().list_accounts());
-            let ids =
-                match crate::server::core::routing_order::global_queue(&accounts, profile, provider)
-                {
-                    Ok(ids) => ids,
-                    Err(error) => return errors::management_error(400, error),
-                };
+            let ids = match crate::server::core::routing_order::global_queue(
+                &accounts, profile, provider,
+            ) {
+                Ok(ids) => ids,
+                Err(error) => return errors::management_error(400, error),
+            };
             if let Err(error) = state.store().reorder_accounts(&ids) {
                 return super::accounts::store_error(error);
             }
