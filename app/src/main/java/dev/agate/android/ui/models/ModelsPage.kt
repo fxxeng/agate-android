@@ -2256,8 +2256,13 @@ private fun ProviderModelGroup(
             // 混合模式的 pin 是「把这条以 `provider/名字` 加进客户端清单」，所以
             // 名字必须是**客户端会看到的那个**。改名之后清单里只有别名，用原名
             // 写进去的 pin 一个也匹配不上（内核按对外名比），开关看起来像没生效。
+            // 对外名 = 上游 id 本身（内核 `advertised_names` 给的就是它，单条 pin 的
+            // 键是 `provider/对外名`）。这里**不能**取最后一段：魔搭的 id 带组织段
+            // （`deepseek-ai/DeepSeek-V4-Flash-0731`），取末段拼出来的 pin
+            // （`modelscope/DeepSeek-V4-Flash-0731`）内核认不出 —— 那颗「前缀」
+            // 按钮点了不会有任何效果（与开关那条同一类错，见 `splitExposedName`）。
             fun publicName(row: GatewayRepository.ModelRow): String =
-                if ('/' in row.id) row.id.substringAfterLast('/') else row.id
+                wireModelId(row.id, row.provider)
             fun pinName(row: GatewayRepository.ModelRow): String =
                 row.aliases.firstOrNull() ?: publicName(row)
             onRows.forEach { m ->
