@@ -63,8 +63,7 @@ pub fn global_queue(
                 .unwrap_or(usize::MAX)
         });
     } else {
-        let participating: HashSet<&str> =
-            profile.providers.iter().map(String::as_str).collect();
+        let participating: HashSet<&str> = profile.providers.iter().map(String::as_str).collect();
         let mut replacements: Vec<_> = groups
             .iter()
             .filter(|(id, _)| participating.contains(id.as_str()))

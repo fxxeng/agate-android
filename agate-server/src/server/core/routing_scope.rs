@@ -86,7 +86,10 @@ pub fn apply_accounts(accounts: &[Value], model: &str) -> Vec<Value> {
             ordered.retain(|account| {
                 profile.includes_provider(routing::provider_of(account))
                     && !routing::account_id(account).is_some_and(|id| {
-                        profile.excluded_accounts.iter().any(|excluded| excluded == id)
+                        profile
+                            .excluded_accounts
+                            .iter()
+                            .any(|excluded| excluded == id)
                     })
             });
         }
@@ -123,7 +126,10 @@ pub fn project_accounts(accounts: &[Value], profile: &RoutingProfile) -> Vec<Val
             .filter(|account| routing::provider_of(account) == provider)
             .filter(|account| {
                 routing::account_id(account).is_some_and(|id| {
-                    !profile.excluded_accounts.iter().any(|excluded| excluded == id)
+                    !profile
+                        .excluded_accounts
+                        .iter()
+                        .any(|excluded| excluded == id)
                 })
             })
             .cloned()
@@ -168,11 +174,14 @@ pub fn materialize_profile_with(
 ) -> RoutingProfile {
     let sorting = account_order::sorting(accounts, crate::server::logging::now_ms());
     let independent = profiles.model_profile(model).is_some();
-    let mut profile = profiles.effective(model).cloned().unwrap_or_else(|| RoutingProfile {
-        provider_scope: Some(RoutingProviderScope::All),
-        providers: available.to_vec(),
-        ..Default::default()
-    });
+    let mut profile = profiles
+        .effective(model)
+        .cloned()
+        .unwrap_or_else(|| RoutingProfile {
+            provider_scope: Some(RoutingProviderScope::All),
+            providers: available.to_vec(),
+            ..Default::default()
+        });
     let scope = profile.scope();
     profile.provider_scope = Some(scope);
     if independent && scope == RoutingProviderScope::All {
@@ -204,7 +213,9 @@ pub fn materialize_profile_with(
     if !independent && !model.is_empty() {
         profile.providers.retain(|id| available.contains(id));
         if scope == RoutingProviderScope::Selected {
-            profile.disabled_providers.retain(|id| profile.providers.contains(id));
+            profile
+                .disabled_providers
+                .retain(|id| profile.providers.contains(id));
         }
     }
     for provider in &profile.providers {

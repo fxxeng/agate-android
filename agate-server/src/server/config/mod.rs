@@ -72,6 +72,7 @@ mod mutations;
 pub(crate) mod parse;
 mod routing_groups;
 mod routing_profiles;
+mod routing_workspace;
 pub(crate) mod sql;
 pub mod title_routes;
 mod types;
@@ -89,6 +90,7 @@ pub use routing_profiles::{
     save_routing_profile, settings_for_model, validate_shape as validate_routing_profile,
     RoutingProfile, RoutingProfiles, RoutingProviderScope, KEY_ROUTING_PROFILES,
 };
+pub use routing_workspace::{revision as workspace_revision, save_workspace};
 pub use types::*;
 
 use parse::*;
