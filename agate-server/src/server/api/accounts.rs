@@ -2126,6 +2126,14 @@ pub async fn add_account(state: &ServerState, body: &Bytes) -> Response {
         Ok(account) => {
             // 落号成功后对账：新增引用补监听器、失去引用回收端口（lazy listeners）
             reconcile_kernel_listeners(state, &refs_before);
+            // 刚加完就补拉一次目录（后台）：没有内置兜底清单的家（ModelScope 等）
+            // 在清单落地前**在模型页上根本不存在**，用户也就无从「拉取模型」。
+            // 判据与细节见 `catalog_refresh::spawn_initial_refresh`。
+            crate::server::core::providers::catalog_refresh::spawn_initial_refresh(
+                state.store(),
+                account.get("provider").and_then(Value::as_str).unwrap_or(""),
+                account.get("id").and_then(Value::as_str).unwrap_or(""),
+            );
             ok_json(json!({
                 "account": account,
                 "list": store.list_accounts(),

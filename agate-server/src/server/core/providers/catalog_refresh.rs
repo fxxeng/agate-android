@@ -172,3 +172,62 @@ pub fn reschedule(interval_ms: i64) -> Result<(), String> {
     )?;
     Ok(())
 }
+
+/// 账号**刚加上**时补拉一次这家的目录（后台，不阻塞响应；清单非空时什么都不做）。
+///
+/// ── 这一步解决的是「刚授权成功、模型页里却找不到这家」（真实故障）──
+/// 有一批家**没有内置兜底清单**（ModelScope / Loomy / AtomCode / Trae 等：清单
+/// 只可能来自远程，编一份静态表会让用户看到自己其实调不通的模型）。此前「加
+/// 账号」只落库、不拉清单，于是这些家在两处**同时消失**：
+///   · 模型管理页没有它的行 —— `catalog::active_manifests` 把**空清单**的家整个
+///     滤掉（那里的判据是「有清单才算一家」）；
+///   · 「拉取模型」弹层的候选 = 页面上的家 ∪ 自定义家 ⇒ 它也不在候选里，用户
+///     连「对这家拉一次」都点不到。
+/// 两件事合成一个死循环：**要有模型才能拉模型**。补拉一次即解开 —— 清单落地后
+/// 页面有行，之后的手动刷新与定时任务照旧（自定义家早就有同样的处理，见客户端
+/// `PullModelsDialog` 对零模型家的候选保底）。
+///
+/// ── 为什么只在「清单为空」时打这一次 ────────────────────────
+/// 清单非空的家在页面上已经看得见、随时能手动刷新；在添加路径上无条件打一次
+/// 上游只会让「加账号」凭空多一次往返（批量导入时更明显）。空清单才是死循环
+/// 的那一半。
+///
+/// ── 为什么不看「模型目录刷新」定时任务的开关 ────────────────
+/// 那是**周期任务**的偏好（`scheduled_settings().model_refresh`）。用户刚按下
+/// 「添加账号」、界面上却什么都没有，是当次操作的直接后果，不该被一个周期开关
+/// 挡掉。
+///
+/// 自定义家（`custom-…`）不在这里补：它们不在 `ProviderKind` 里，目录走
+/// `custom_providers` 自己的拉取路径。
+pub fn spawn_initial_refresh(store: &AccountStore, provider_id: &str, account_id: &str) {
+    let provider = provider_id.trim();
+    let Some(kind) = super::kind_from_id(provider) else { return; };
+    let adapter = adapter_for(kind);
+    if !adapter.supports_model_refresh() || !adapter.list_models().is_empty() {
+        return;
+    }
+    // `AccountStore` 是 `Arc<Inner>` 的轻量句柄（见 `store.rs` 的说明），clone 只是
+    // 抬一次引用计数 —— 后台任务要独占一个句柄，不能借用请求里的那个。
+    let store = store.clone();
+    let account = account_id.trim().to_string();
+    let label = provider.to_string();
+    crate::spawn_task(async move {
+        let outcome = adapter.refresh_models(&store, &account, true).await;
+        if outcome.refreshed {
+            let count = outcome.count;
+            logging::log("[Models]", &format!("{label} 添加账号后补拉目录：落地 {count} 个模型"));
+        } else if let Some(reason) = outcome.message {
+            // 失败不往上抛（添加本身已经成功）：这条日志是用户唯一的线索 ——
+            // 清单仍为空时模型页会把这家藏起来，只有这里说得清为什么。
+            logging::log(
+                "[Models]",
+                &format!("{label} 添加账号后补拉目录失败（该家仍无模型可展示）：{reason}"),
+            );
+        } else {
+            logging::verbose(
+                "[Models]",
+                &format!("{label} 添加账号后补拉目录：本次没有新清单"),
+            );
+        }
+    });
+}
