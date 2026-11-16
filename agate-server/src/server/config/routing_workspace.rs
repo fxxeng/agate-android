@@ -55,8 +55,7 @@ pub fn save_workspace(
     if profiles.group_for_model(model).is_some() {
         return Err("此模型 ID 已被自定义路由组占用".into());
     }
-    let effective =
-        routing_scope::materialize_profile_with(&visible, &available, model, &profiles);
+    let effective = routing_scope::materialize_profile_with(&visible, &available, model, &profiles);
     let current_settings = profiles.settings_for(model, super::routing_settings());
     let customized = profiles.model_profile(model).is_some();
     if revision(&effective, current_settings, customized) != expected {
@@ -234,7 +233,11 @@ mod tests {
 
     #[test]
     fn queue_keeps_all_accounts() {
-        let visible = vec![account("a", "p", 0), account("b", "q", 1), account("c", "r", 2)];
+        let visible = vec![
+            account("a", "p", 0),
+            account("b", "q", 1),
+            account("c", "r", 2),
+        ];
         let profile = RoutingProfile {
             provider_scope: Some(RoutingProviderScope::Selected),
             providers: vec!["p".to_string()],
