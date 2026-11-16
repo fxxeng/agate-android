@@ -59,18 +59,9 @@ pub enum AddedSortDirection {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "key", rename_all = "camelCase", deny_unknown_fields)]
 pub enum AccountSortRule {
-    Credit {
-        on: bool,
-        dir: CreditSortDirection,
-    },
-    Balance {
-        on: bool,
-        dir: BalanceSortDirection,
-    },
-    Added {
-        on: bool,
-        dir: AddedSortDirection,
-    },
+    Credit { on: bool, dir: CreditSortDirection },
+    Balance { on: bool, dir: BalanceSortDirection },
+    Added { on: bool, dir: AddedSortDirection },
 }
 
 impl AccountSortRule {
@@ -186,11 +177,17 @@ mod tests {
     use super::*;
 
     fn credit() -> AccountSortRule {
-        AccountSortRule::Credit { on: true, dir: CreditSortDirection::Soon }
+        AccountSortRule::Credit {
+            on: true,
+            dir: CreditSortDirection::Soon,
+        }
     }
 
     fn balance() -> AccountSortRule {
-        AccountSortRule::Balance { on: true, dir: BalanceSortDirection::High }
+        AccountSortRule::Balance {
+            on: true,
+            dir: BalanceSortDirection::High,
+        }
     }
 
     #[test]
@@ -222,7 +219,10 @@ mod tests {
         let rules = vec![
             credit(),
             balance(),
-            AccountSortRule::Added { on: true, dir: AddedSortDirection::New },
+            AccountSortRule::Added {
+                on: true,
+                dir: AddedSortDirection::New,
+            },
             credit(),
         ];
         assert!(validate_account_sort("zcode", &rules).is_err());
@@ -233,7 +233,10 @@ mod tests {
         let rules = vec![
             credit(),
             balance(),
-            AccountSortRule::Added { on: true, dir: AddedSortDirection::New },
+            AccountSortRule::Added {
+                on: true,
+                dir: AddedSortDirection::New,
+            },
         ];
         assert!(validate_account_sort("zcode", &rules).is_ok());
     }

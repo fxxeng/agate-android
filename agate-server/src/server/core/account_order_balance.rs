@@ -47,13 +47,23 @@ impl AccountSortBalance {
             .map(str::trim)
             .filter(|unit| !unit.is_empty())
             .or_else(|| account_unit.map(str::trim).filter(|unit| !unit.is_empty()))
-            .unwrap_or_else(|| if usage.get("totalLeft").is_some() { "积分" } else { "" });
+            .unwrap_or_else(|| {
+                if usage.get("totalLeft").is_some() {
+                    "积分"
+                } else {
+                    ""
+                }
+            });
         let unit = if unit.eq_ignore_ascii_case("credit") || unit.eq_ignore_ascii_case("credits") {
             "积分"
         } else {
             unit
         };
-        Self { remaining, unlimited, unit: unit.to_string() }
+        Self {
+            remaining,
+            unlimited,
+            unit: unit.to_string(),
+        }
     }
 
     /// 可参与排序的数值。不限量、无单位、百分比都不可比。
@@ -100,11 +110,7 @@ pub fn state<'a>(
 
 /// 比较两个余额。**有值的一律排在无值之前**（无论方向），
 /// 因为「查不到余额」不该被当成「余额最低」而排到后面去用。
-pub fn compare(
-    left: Option<f64>,
-    right: Option<f64>,
-    direction: BalanceSortDirection,
-) -> Ordering {
+pub fn compare(left: Option<f64>, right: Option<f64>, direction: BalanceSortDirection) -> Ordering {
     match (left, right) {
         (Some(left), Some(right)) => {
             let order = left.partial_cmp(&right).unwrap_or(Ordering::Equal);
@@ -219,7 +225,10 @@ mod tests {
 
     #[test]
     fn compare_both_unknown_is_equal() {
-        assert_eq!(compare(None, None, BalanceSortDirection::High), Ordering::Equal);
+        assert_eq!(
+            compare(None, None, BalanceSortDirection::High),
+            Ordering::Equal
+        );
     }
 
     #[test]
