@@ -99,9 +99,8 @@ fn validate_models(state: &ServerState, settings: &CompactRoutes) -> Result<(), 
 
 pub async fn put_routes(State(state): State<ServerState>, body: Bytes) -> Response {
     let payload = match parse_body(&body).and_then(|value| {
-        serde_json::from_value::<SaveRoutes>(value).map_err(|error| {
-            GatewayError::bad_request(format!("压缩路由设置不完整：{error}"))
-        })
+        serde_json::from_value::<SaveRoutes>(value)
+            .map_err(|error| GatewayError::bad_request(format!("压缩路由设置不完整：{error}")))
     }) {
         Ok(value) => value,
         Err(error) => return errors::management_error(error.status_code, error.message),

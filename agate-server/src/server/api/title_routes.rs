@@ -94,9 +94,8 @@ fn validate_model(state: &ServerState, settings: &TitleRoutes) -> Result<(), Gat
 
 pub async fn put_routes(State(state): State<ServerState>, body: Bytes) -> Response {
     let payload = match parse_body(&body).and_then(|value| {
-        serde_json::from_value::<SaveRoutes>(value).map_err(|error| {
-            GatewayError::bad_request(format!("标题生成路由设置不完整：{error}"))
-        })
+        serde_json::from_value::<SaveRoutes>(value)
+            .map_err(|error| GatewayError::bad_request(format!("标题生成路由设置不完整：{error}")))
     }) {
         Ok(value) => value,
         Err(error) => return errors::management_error(error.status_code, error.message),
@@ -121,14 +120,5 @@ pub async fn put_routes(State(state): State<ServerState>, body: Bytes) -> Respon
         Ok(Ok(value)) => ok_json(value),
         Ok(Err(error)) => errors::management_error(error.status_code, error.message),
         Err(error) => errors::management_error(500, error.to_string()),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn module_compiles() {
-        // 端点逻辑依赖 ServerState 与账号库，端到端在 CI 的 JVM/接口层覆盖；
-        // 这里只保证模块能在 `cfg(test)` 下被编译进来。
     }
 }
