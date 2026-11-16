@@ -58,11 +58,11 @@ class RoutingWorkspaceOpsTest {
 
         // 复杂对象原样保留：界面改一个键再整块提交
         assertEquals("rotate", ws.profile.optString("strategy"))
-        assertEquals(2, ws.profile.optJSONArray("providers")!!.length())
+        assertEquals(2, ws.profile.optJSONArray("providers")!!.length)
         assertEquals("all", ws.inheritedProfile.optString("providerScope"))
 
         // 64 位十六进制是内核 revision 校验的硬条件，短一位就是 400
-        assertEquals(64, ws.revision.length())
+        assertEquals(64, ws.revision.length)
 
         assertEquals("order", ws.settings.optString("routingStrategy"))
         assertEquals("rotate", ws.globalSettings.optString("routingStrategy"))
@@ -105,10 +105,10 @@ class RoutingWorkspaceOpsTest {
         assertTrue(ws.providers.isEmpty())
         // 缺 profile / settings 时给空 JSONObject 而不是 null：
         // 界面可以直接 opt*，不用每个调用点都铺一层空判断
-        assertEquals(0, ws.profile.length())
-        assertEquals(0, ws.settings.length())
-        assertEquals(0, ws.globalSettings.length())
-        assertEquals(0, ws.accountStates.length())
+        assertEquals(0, ws.profile.length)
+        assertEquals(0, ws.settings.length)
+        assertEquals(0, ws.globalSettings.length)
+        assertEquals(0, ws.accountStates.length)
         assertEquals("", ws.revision)
         assertTrue(ws.queue.isEmpty)
         assertEquals("", ws.queue.pickedId)
@@ -178,12 +178,12 @@ class RoutingWorkspaceOpsTest {
         assertEquals("fast", row.group.optString("id"))
         assertEquals("极速组", row.group.optString("name"))
         val members = row.group.optJSONArray("members")!!
-        assertEquals(1, members.length())
+        assertEquals(1, members.length)
         assertEquals("openai", members.getJSONObject(0).optString("provider"))
-        assertEquals(1, members.getJSONObject(0).optJSONArray("accounts")!!.length())
+        assertEquals(1, members.getJSONObject(0).optJSONArray("accounts")!!.length)
 
-        assertEquals(64, row.revision.length())
-        assertEquals(64, snap.newRevision.length())
+        assertEquals(64, row.revision.length)
+        assertEquals(64, snap.newRevision.length)
         // 新建组与改既有组用的是两个不同的修订号，混用就是 409
         assertNotEquals(row.revision, snap.newRevision)
     }
@@ -198,7 +198,7 @@ class RoutingWorkspaceOpsTest {
         // label / name 缺键时回落到 id 与模型名，界面不该出现空白行
         assertEquals("google", row.providerLabel)
         assertEquals("gemini-2.5-pro", row.name)
-        assertEquals(0, row.capabilities.length())
+        assertEquals(0, row.capabilities.length)
         assertEquals(0L, row.accountCount)
     }
 
