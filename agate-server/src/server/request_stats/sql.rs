@@ -68,7 +68,8 @@ use super::report::{normalize_status_filter, SummaryRow};
 /// （见 `db/schema.rs` 的 `V2_SCHEMA`）。它们必须排在**最后**：`decode_request`
 /// 按序号取值，而「加列」这件事只有在末尾才不牵动前面的序号 —— 中间插一列会让
 /// 所有后续字段的序号整体挪一位，那种改动在整个文件里看不出错，只会静默取错值。
-const REQUEST_COLUMNS: &str = "id, ts, model, account_id, account_name, status, duration_ms, \
+pub(super) const REQUEST_COLUMNS: &str = "id, ts, model, account_id, \
+     account_name, status, duration_ms, \
      first_response_ms, attempts, error, prompt_tokens, completion_tokens, total_tokens, \
      cache_read_tokens, provider, client_model, upstream_model, attempt_details, sensitive_hits, \
      client_reasoning, upstream_reasoning, phase, phase_started_at, is_test, route, client";
@@ -105,7 +106,7 @@ const SUMMARY_COLUMNS: &str =
 ///
 /// 末尾两个 JSON 列走 [`decode_json_list`]：坏值退化成空表而不是让整条明细读不出来
 /// （理由见那个函数）。
-fn decode_request(row: &rusqlite::Row<'_>) -> rusqlite::Result<RequestEntry> {
+pub(super) fn decode_request(row: &rusqlite::Row<'_>) -> rusqlite::Result<RequestEntry> {
     let attempt_details: String = row.get(17)?;
     let sensitive_hits: String = row.get(18)?;
     Ok(RequestEntry {

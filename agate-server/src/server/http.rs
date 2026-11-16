@@ -329,6 +329,10 @@ pub fn panel_router(state: ServerState) -> Router {
             "/api/routing/availability",
             post(api::routing_api::post_routing_availability),
         )
+        // 请求流向（GET /api/routing/flow）：按时间窗聚合「客户端 × 模型 ×
+        // provider × 账号」的路径清单，`detail` 再下钻单条请求 / 会话 / 模型候选。
+        // 查询实现在 request_stats::flow，本路由只做参数校验与分派。
+        .route("/api/routing/flow", get(api::routing_flow::get_flow))
         // 模型页的两块路由配置（标题生成 / 上下文压缩）：整块 GET+PUT，
         // 按修订号防覆盖。数据形态与校验在 config::{title,compact}_routes。
         // 路由工作台：模型覆盖 / 参与名单 / 队列可见化 / 会话粘滞。
@@ -339,6 +343,11 @@ pub fn panel_router(state: ServerState) -> Router {
             get(api::routing_groups::get_groups).put(api::routing_groups::put_group),
         )
         .route("/api/routing/preview", post(api::routing_groups::preview))
+        .route("/api/routing/trace", get(api::routing_trace::get_trace))
+        .route(
+            "/api/routing/trace/request",
+            get(api::routing_trace::get_trace_request),
+        )
         .route(
             "/api/routing/workspace",
             get(api::routing_workspace::get_workspace),

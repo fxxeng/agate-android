@@ -117,7 +117,9 @@ pub mod retry_api;
 // 见该文件模块头
 pub mod role_compat;
 pub mod routing_api;
+pub mod routing_flow;
 pub mod routing_groups;
+pub mod routing_trace;
 pub mod routing_workspace;
 pub mod sanitize;
 // 零宽空格脱敏词表（GET/PUT /api/zwsp）：与 /api/sanitize 是**两层**，

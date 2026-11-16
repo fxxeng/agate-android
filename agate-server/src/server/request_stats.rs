@@ -70,6 +70,7 @@ pub(crate) mod legacy;
 // 数据库压缩）：各自的拆分理由见两个子模块的模块头。
 mod aggregate;
 mod daily;
+mod flow;
 mod maintenance;
 mod record;
 // 报表计算层（纯函数）与「模型请求日志」的查询实现。
@@ -80,6 +81,7 @@ mod record;
 // 对外暴露面收敛在这一层。
 mod report;
 mod sql;
+mod trace;
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
@@ -107,6 +109,10 @@ pub use record::{
     AttemptDetail, NewRequestEntry, RequestEntry, RequestQuery, Retention, RetryEvent,
     RunningProgress, SensitiveHit, DEFAULT_LIMIT, MAX_LIMIT, MAX_RAW_BODY_BYTES, MAX_RAW_ROWS,
 };
+
+// 流向查询的条件结构（`flow.rs`）：与 `RequestQuery` 同一取用形态 ——
+// `api::routing_flow` 按 `request_stats::FlowQuery` 取，不必知道它在哪个子模块。
+pub use flow::FlowQuery;
 
 /// 报表的**明细窗口**：从明细读行时按它下界，不必把整张明细表读回内存
 /// （明细是全量保留，没有条数上限）。

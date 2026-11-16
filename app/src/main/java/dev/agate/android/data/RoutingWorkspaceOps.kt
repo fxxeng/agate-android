@@ -8,7 +8,7 @@ import org.json.JSONObject
 /**
  * 路由工作台与路由组的数据层（「模型路由」页 / 「路由组」页）。
  *
- * 内核路由（`agate-server/src/server/http.rs` 的 `/api/routing/*` 注册块）：
+ * 内核路由（`agate-server/src/server/http.rs` 的 `/api/routing/…` 注册块）：
  * - `GET  /api/routing/workspace?model=`  模型覆盖 + 参与名单 + 队列 + 粘滞计数
  * - `PUT  /api/routing/profile`           保存 / 恢复继承 / 调账号顺序（同端点）
  * - `GET  /api/routing/sticky?model=`     会话粘滞快照（谁被钉在哪）
