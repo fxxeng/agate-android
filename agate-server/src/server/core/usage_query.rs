@@ -278,6 +278,14 @@ fn supports_usage(account: &Value) -> bool {
         .get("provider")
         .and_then(Value::as_str)
         .unwrap_or(crate::server::core::providers::DEFAULT_PROVIDER_ID);
+    supports_usage_provider(provider_id)
+}
+
+/// 按 provider id 判余额能力（账号排序等「还没有账号对象」的调用方用）。
+///
+/// 与 [`supports_usage`] 同一判据，只是入口从账号 JSON 换成裸 id：
+/// 自定义提供商看余额方案，内置家看适配器的恒定能力声明，未知 id 一律不支持。
+pub fn supports_usage_provider(provider_id: &str) -> bool {
     if crate::server::core::custom_providers::is_custom_provider_id(provider_id) {
         return crate::server::core::providers::custom::balance::supports_usage(provider_id);
     }
