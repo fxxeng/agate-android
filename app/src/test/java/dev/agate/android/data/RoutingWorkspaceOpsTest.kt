@@ -180,7 +180,7 @@ class RoutingWorkspaceOpsTest {
         val members = row.group.optJSONArray("members")!!
         assertEquals(1, members.length())
         assertEquals("openai", members.getJSONObject(0).optString("provider"))
-        assertEquals(1, members.getJSONObject(0).optJSONArray("accounts")!!.length)
+        assertEquals(1, members.getJSONObject(0).optJSONArray("accounts")!!.length())
 
         assertEquals(64, row.revision.length)
         assertEquals(64, snap.newRevision.length)
@@ -198,7 +198,7 @@ class RoutingWorkspaceOpsTest {
         // label / name 缺键时回落到 id 与模型名，界面不该出现空白行
         assertEquals("google", row.providerLabel)
         assertEquals("gemini-2.5-pro", row.name)
-        assertEquals(0, row.capabilities.length)
+        assertEquals(0, row.capabilities.length())
         assertEquals(0L, row.accountCount)
     }
 
