@@ -7,6 +7,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -31,14 +33,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.agate.android.data.GatewayRepository
 import dev.agate.android.data.RoutingOps
-import dev.agate.android.ui.components.AgateBadge
 import dev.agate.android.ui.components.AgatePageHeader
 import dev.agate.android.ui.components.AgateSegmented
-import dev.agate.android.ui.components.BadgeTone
 import dev.agate.android.ui.components.agateCard
 import dev.agate.android.ui.logs.FilterSheet
 import dev.agate.android.ui.theme.AgateShape
@@ -69,6 +70,7 @@ import kotlinx.coroutines.launch
  * 什么、多久回来」，但不会真的去打一次失败请求。宁可少一个按钮，
  * 也不做一个会把用户账号真的推进退避的假开关。
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun RoutingPage(
     onOpenDrawer: () -> Unit = {},
@@ -204,10 +206,14 @@ fun RoutingPage(
                 if (ordered.isEmpty()) {
                     Text("当前没有可用账号", fontSize = 12.sp, color = C.textDim)
                 } else {
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    // 窄屏横向排 6 个必被截断：FlowRow 自动折行，序号与名称同格、首位 accent 描边。
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
                         for (i in 0 until 6) {
                             val row = ordered[i % ordered.size]
-                            BadgeWithIndex(index = i + 1, name = row.name)
+                            BadgeWithIndex(index = i + 1, name = row.name, highlight = i == 0)
                         }
                     }
                     Spacer(Modifier.height(6.dp))
@@ -301,21 +307,31 @@ fun RoutingPage(
 //  子件
 // ══════════════════════════════════════════════════════════════
 
-/** 预演序列里的一格：`① 名称`。 */
+/** 预演序列里的一格：`① 名称`。首位（下一个请求的落点）用 accent 描边 + accent 序号强调。 */
 @Composable
-private fun BadgeWithIndex(index: Int, name: String) {
+private fun BadgeWithIndex(index: Int, name: String, highlight: Boolean = false) {
     val C = agateColors()
-    Box(
+    val shape = RoundedCornerShape(9.dp)
+    Row(
         Modifier
-            .border(1.dp, C.border, RoundedCornerShape(9.dp))
-            .background(C.insetBg, RoundedCornerShape(9.dp))
+            .background(C.insetBg, shape)
+            .border(1.dp, if (highlight) C.accent else C.border, shape)
             .padding(horizontal = 8.dp, vertical = 5.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
-            text = circleOf(index) + " " + name,
+            text = circleOf(index),
+            fontSize = 11.sp,
+            fontWeight = if (highlight) FontWeight.Bold else FontWeight.Normal,
+            color = if (highlight) C.accent else C.textDim,
+        )
+        Spacer(Modifier.width(4.dp))
+        Text(
+            text = name,
             fontSize = 11.sp,
             color = C.textSub,
             maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
         )
     }
 }
@@ -338,10 +354,22 @@ internal fun CandidateRow(
     isHead: Boolean,
 ) {
     val C = agateColors()
+    val rowShape = RoundedCornerShape(10.dp)
+    // 被跳过者按原因挂状态徽标；映射不到就不挂，避免替内核猜类别
+    val skipKind = if (dim) skipKindOf(reason) else null
     Row(
         Modifier
             .fillMaxWidth()
-            .padding(vertical = 8.dp),
+            .then(
+                if (isHead) {
+                    Modifier
+                        .background(C.accent.copy(alpha = 0.10f), rowShape)
+                        .border(1.dp, C.accent.copy(alpha = 0.45f), rowShape)
+                } else {
+                    Modifier
+                },
+            )
+            .padding(horizontal = if (isHead) 8.dp else 0.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(
@@ -362,26 +390,102 @@ internal fun CandidateRow(
         }
         Spacer(Modifier.width(9.dp))
         Column(Modifier.weight(1f)) {
-            Text(
-                text = name,
-                fontSize = 13.sp,
-                color = if (dim) C.textDim else C.textMain,
-                maxLines = 1,
-                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = name,
+                    modifier = Modifier.weight(1f, fill = false),
+                    fontSize = 13.sp,
+                    color = if (dim) C.textDim else C.textMain,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                if (isHead) {
+                    Spacer(Modifier.width(6.dp))
+                    HeadTag()
+                }
+            }
             Text(
                 text = if (reason.isBlank()) providerLabel else reason,
                 fontSize = 10.5.sp,
                 color = C.textDim,
                 maxLines = 1,
-                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                overflow = TextOverflow.Ellipsis,
             )
         }
-        if (isHead) AgateBadge("队首", tone = BadgeTone.GREEN)
+        if (skipKind != null) {
+            Spacer(Modifier.width(8.dp))
+            SkipBadge(skipKind)
+        }
+    }
+}
+
+/** 「队首」小胶囊：跟在名称后，accent 描边 + accent 文字。 */
+@Composable
+private fun HeadTag() {
+    val C = agateColors()
+    Box(
+        Modifier
+            .border(1.dp, C.accent, RoundedCornerShape(50))
+            .padding(horizontal = 6.dp, vertical = 1.dp),
+    ) {
+        Text(
+            text = "队首",
+            fontSize = 9.5.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = C.accent,
+            maxLines = 1,
+        )
+    }
+}
+
+/** 被跳过原因 → 状态徽标类别：只认这几组关键词，其余不显示（不猜类别）。 */
+private enum class SkipKind(val label: String) {
+    COOLING("冷却"),
+    CONCURRENCY("并发"),
+    CREDENTIAL("凭证"),
+    DISABLED("禁用"),
+}
+
+private fun skipKindOf(reason: String): SkipKind? = when {
+    reason.contains("冷却") || reason.contains("429") -> SkipKind.COOLING
+    reason.contains("并发") -> SkipKind.CONCURRENCY
+    reason.contains("凭证") || reason.contains("401") || reason.contains("403") -> SkipKind.CREDENTIAL
+    reason.contains("禁用") -> SkipKind.DISABLED
+    else -> null
+}
+
+/** 跳过原因的状态徽标：amber = 冷却 / 429，red = 凭证，textDim 中性 = 并发 / 禁用。 */
+@Composable
+private fun SkipBadge(kind: SkipKind) {
+    val C = agateColors()
+    val fg = when (kind) {
+        SkipKind.COOLING -> C.amber
+        SkipKind.CREDENTIAL -> C.red
+        SkipKind.CONCURRENCY, SkipKind.DISABLED -> C.textDim
+    }
+    val bg = when (kind) {
+        SkipKind.COOLING -> C.amberBg
+        SkipKind.CREDENTIAL -> C.redBg
+        SkipKind.CONCURRENCY, SkipKind.DISABLED -> C.textDim.copy(alpha = 0.12f)
+    }
+    Box(
+        Modifier
+            .background(bg, RoundedCornerShape(50))
+            .border(1.dp, fg.copy(alpha = 0.40f), RoundedCornerShape(50))
+            .padding(horizontal = 7.dp, vertical = 2.dp),
+    ) {
+        Text(
+            text = kind.label,
+            fontSize = 9.5.sp,
+            fontWeight = FontWeight.Medium,
+            color = fg,
+            maxLines = 1,
+        )
     }
 }
 
 /** 自愈演练：三种故障的规则说明 + 当前熔断参数。 */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun SelfHealCard(settings: RoutingOps.Settings?) {
     val C = agateColors()
@@ -417,22 +521,15 @@ private fun SelfHealCard(settings: RoutingOps.Settings?) {
                 FailRuleRow("5xx 退避", "连续失败累计，到阈值熔断，冷却结束后放行试一次")
                 FailRuleRow("余额不足", "被限制器拦下，等余额 / Token 周期窗口滚过去再回来")
                 Spacer(Modifier.height(10.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                    Text(
-                        "熔断阈值 ${settings?.breakerThreshold ?: "—"} 次",
-                        fontSize = 11.5.sp,
-                        color = C.textSub,
-                    )
-                    Text(
-                        "冷却 ${settings?.breakerTimeoutSeconds ?: "—"} 秒",
-                        fontSize = 11.5.sp,
-                        color = C.textSub,
-                    )
-                    Text(
-                        "恢复需连续成功 ${settings?.breakerSuccessThreshold ?: "—"} 次",
-                        fontSize = 11.5.sp,
-                        color = C.textSub,
-                    )
+                // RoutingOps.Settings 只有熔断三参数，没有并发闸门字段（maxConcurrent /
+                // concurrency 之类）：不凭空造字段，保持文本行，只把数值加粗提亮。
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    ParamStat("熔断阈值", settings?.breakerThreshold, "次")
+                    ParamStat("冷却", settings?.breakerTimeoutSeconds, "秒")
+                    ParamStat("恢复需连续成功", settings?.breakerSuccessThreshold, "次")
                 }
             }
         }
@@ -445,5 +542,21 @@ private fun FailRuleRow(name: String, desc: String) {
     Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
         Text(name, fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold, color = C.textMain)
         Text(desc, fontSize = 11.sp, color = C.textDim, lineHeight = 15.sp)
+    }
+}
+
+/** 自愈参数一栏：左标签 + 行尾加粗数值（13.sp / accent）+ 单位小字。 */
+@Composable
+private fun ParamStat(label: String, value: Long?, unit: String) {
+    val C = agateColors()
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text("$label ", fontSize = 11.5.sp, color = C.textSub)
+        Text(
+            text = value?.toString() ?: "—",
+            fontSize = 13.sp,
+            fontWeight = FontWeight.Bold,
+            color = C.accent,
+        )
+        Text(" $unit", fontSize = 10.5.sp, color = C.textDim)
     }
 }
