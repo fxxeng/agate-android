@@ -24,6 +24,7 @@ use serde_json::{json, Value};
 use crate::server::core::routing_groups::{self, RequestNeeds};
 use crate::server::core::{routing, routing_scope};
 use crate::server::http::{ok_json, parse_body};
+use crate::server::request_stats::RequestQuery;
 use crate::server::{config, errors, ServerState};
 
 /// 组列表 + 新建修订号 + 可选成员目录（编辑器一次拉全）。
@@ -36,6 +37,7 @@ pub fn groups_json(state: &ServerState) -> Value {
         })).collect::<Vec<_>>(),
         "newRevision": config::routing_group_revision(None),
         "catalog": routing_groups::choices(state.store()),
+        "replays": replays_json(state),
     })
 }
 
@@ -44,6 +46,81 @@ pub async fn get_groups(State(state): State<ServerState>) -> Response {
         Ok(value) => ok_json(value),
         Err(error) => errors::management_error(500, error.to_string()),
     }
+}
+
+/// 组回放列表 —— 近 30 天命中各组成员的请求，按时间降序每组前 20 条。
+///
+/// 数据源是 `request_stats` 的明细（`query_requests` 一次拉取、内存分桶），
+/// 不另建聚合表：明细只留 30 天，回放本来就是「最近发生了什么」的口径。
+pub async fn get_replays(State(state): State<ServerState>) -> Response {
+    match tokio::task::spawn_blocking(move || replays_json(&state)).await {
+        Ok(value) => ok_json(value),
+        Err(error) => errors::management_error(500, error.to_string()),
+    }
+}
+
+/// 每组的回放：{groupId, groupName, replays, total}。
+///
+/// 匹配口径：成员 `included` 且请求的 provider + accountId 落在该成员的
+/// `accounts` 里（accounts 为空 = 该成员没有参与账号，不命中任何请求，
+/// 与 core::routing_groups 的 blocked 口径一致）。组按 id 字典序输出，
+/// 保证两次调用顺序稳定。
+fn replays_json(state: &ServerState) -> Value {
+    const WINDOW_MS: i64 = 30 * 24 * 60 * 60 * 1000;
+    const PER_GROUP: usize = 20;
+    let profiles = config::routing_profiles();
+    let now = crate::server::logging::now_ms();
+    let page = state.request_stats().query_requests(&RequestQuery {
+        offset: 0,
+        limit: Some(500),
+        model: None,
+        provider: None,
+        status: None,
+        start: Some(now - WINDOW_MS),
+        end: None,
+    });
+    let entries = page
+        .get("entries")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut groups: Vec<_> = profiles.groups.values().collect();
+    groups.sort_by(|left, right| left.id.cmp(&right.id));
+    let mut out = Vec::with_capacity(groups.len());
+    for group in groups {
+        let mut hits: Vec<Value> = Vec::new();
+        for entry in &entries {
+            let provider = entry.get("provider").and_then(Value::as_str).unwrap_or("");
+            let account = entry.get("accountId").and_then(Value::as_str).unwrap_or("");
+            let matched = group.members.iter().any(|member| {
+                member.included
+                    && member.provider == provider
+                    && member.accounts.iter().any(|id| id == account)
+            });
+            if matched {
+                hits.push(json!({
+                    "ts": entry.get("ts").cloned().unwrap_or(json!(0)),
+                    "id": entry.get("id").cloned().unwrap_or(json!("")),
+                    "model": entry.get("model").cloned().unwrap_or(json!("")),
+                    "accountId": account,
+                    "accountName": entry.get("accountName").cloned().unwrap_or(json!("")),
+                    "status": entry.get("status").cloned().unwrap_or(json!(0)),
+                    "durationMs": entry.get("durationMs").cloned().unwrap_or(json!(0)),
+                    "attempts": entry.get("attempts").cloned().unwrap_or(json!(1)),
+                    "error": entry.get("error").cloned().unwrap_or(Value::Null),
+                }));
+            }
+        }
+        let total = hits.len();
+        hits.truncate(PER_GROUP);
+        out.push(json!({
+            "groupId": group.id,
+            "groupName": group.name,
+            "replays": hits,
+            "total": total,
+        }));
+    }
+    Value::Array(out)
 }
 
 #[derive(Deserialize)]
