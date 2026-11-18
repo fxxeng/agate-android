@@ -54,9 +54,14 @@ import org.json.JSONObject
 /**
  * 签到中心 —— 对齐上游 3.0.8 `CenterTab`（`checkin-page.tsx`）。
  *
- * ── 结构（与上游一一对应）──────────────────────────────────
- * 总览四格 → 每日签到（按提供商分组、可展开、单账号可签）→ 不参与折叠说明
- * → 新手福利 → 活动福利 → 成长任务。
+ * ── 结构 ───────────────────────────────────────────────────
+ * 顶部导航卡（两行 chips：任务档切换 + 功能页跳转）→ 总览四格
+ * → 每日签到（provider 筛选 chips + 按提供商分组、可展开、单账号可签）
+ * → 不参与折叠说明 → 新手福利 → 活动福利 → 成长任务。
+ *
+ * 导航卡是**本页对上游的唯一结构性增量**（上游把 7 个入口散在路由里）。
+ * 它只切「渲染哪张卡」与「显示哪家 provider 的账号行」，不参与任何取数：
+ * 默认档 `all` + 默认 provider `全部` 时，下面四张卡与改造前逐行等价。
  *
  * ── 这一页零上游请求 ────────────────────────────────────────
  * 进页面只打 `GET /api/checkin-center` 一条。新手福利 / 活动套餐 / 成长任务的
@@ -99,6 +104,15 @@ fun CheckinCenterPage(
      * 所以切档来回，用户展开过的分组仍然记得。
      */
     var taskTier by remember { mutableStateOf("all") }
+
+    /**
+     * 每日签到卡内的 provider 筛选：`null` = 全部（默认）。
+     *
+     * 与 `expanded` 一样留在页面级 —— 切档来回不丢筛选（`DailyCard` 会离开
+     * 组合树，状态留在这儿才记得住）。只做**渲染过滤**：分组与计数全部来自
+     * `snap.groups`（后端已按 provider 聚合好），这里不重发请求、不改数据层。
+     */
+    var providerFilter by remember { mutableStateOf<String?>(null) }
 
     fun toast(text: String) = Toast.makeText(ctx, text, Toast.LENGTH_SHORT).show()
 
@@ -168,35 +182,6 @@ fun CheckinCenterPage(
         ) {
             Spacer(Modifier.height(10.dp))
 
-            // ── 总览四格 ──
-            AgateStatRow(
-                cells = listOf(
-                    StatCell("今日签到", "${snap.todayDone}/${snap.todayEligible}"),
-                    StatCell("定时条目", "${snap.schedulesEnabled}/${snap.schedulesTotal}"),
-                    StatCell(
-                        "待查福利",
-                        "${snap.unsettledOnboarding}",
-                        if (snap.unsettledOnboarding > 0) C.amber else null,
-                    ),
-                    StatCell("累计轮次", "${snap.rounds.size}"),
-                ),
-            )
-            Spacer(Modifier.height(4.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Spacer(Modifier.weight(1f))
-                // snap 是由 collectAsState() 委托的属性，直接判 != null 无法智能转换，
-                // 先取局部变量（Compose 里这个值与本次重组绑定，不会中途变）。
-                val next = snap.nextRunAt
-                Text(
-                    if (next != null) relTime(next, prefix = "下次 ")
-                    else if (!snap.autoEnabled) "总开关关"
-                    else "无启用条目",
-                    style = AgateType.Caption,
-                    color = if (!snap.autoEnabled) C.textDim else C.accent,
-                )
-            }
-            TaskGap()
-
             // ── 导航卡：7 个入口收口成卡内两行 chips ──
             // 第一行只切「下面渲染哪张分组卡」，不碰任何卡内的取数、展开态与
             // 按钮转圈（busyKey 仍是页面级的）；第二行直接调 NavHost 传进来的
@@ -237,6 +222,35 @@ fun CheckinCenterPage(
             }
             TaskGap()
 
+            // ── 总览四格 ──
+            AgateStatRow(
+                cells = listOf(
+                    StatCell("今日签到", "${snap.todayDone}/${snap.todayEligible}"),
+                    StatCell("定时条目", "${snap.schedulesEnabled}/${snap.schedulesTotal}"),
+                    StatCell(
+                        "待查福利",
+                        "${snap.unsettledOnboarding}",
+                        if (snap.unsettledOnboarding > 0) C.amber else null,
+                    ),
+                    StatCell("累计轮次", "${snap.rounds.size}"),
+                ),
+            )
+            Spacer(Modifier.height(4.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Spacer(Modifier.weight(1f))
+                // snap 是由 collectAsState() 委托的属性，直接判 != null 无法智能转换，
+                // 先取局部变量（Compose 里这个值与本次重组绑定，不会中途变）。
+                val next = snap.nextRunAt
+                Text(
+                    if (next != null) relTime(next, prefix = "下次 ")
+                    else if (!snap.autoEnabled) "总开关关"
+                    else "无启用条目",
+                    style = AgateType.Caption,
+                    color = if (!snap.autoEnabled) C.textDim else C.accent,
+                )
+            }
+            TaskGap()
+
             // ── 每日签到 ──
             if (taskTier == "all" || taskTier == "daily") {
                 DailyCard(
@@ -244,6 +258,8 @@ fun CheckinCenterPage(
                     expanded = expanded,
                     busyKey = busyKey,
                     signingAll = signingAll,
+                    providerFilter = providerFilter,
+                    onProviderFilter = { providerFilter = it },
                     onToggleGroup = { id -> expanded[id] = !(expanded[id] ?: false) },
                     onSignAll = { signAll() },
                     onSignOne = { signOne(it) },
@@ -321,18 +337,31 @@ private fun countBadge(n: Int): String? = if (n > 0) n.toString() else null
 
 /* ── 每日签到 ── */
 
+/** 每日签到卡：`FlowRow` 在卡内换行，需在函数级再 @OptIn 一次（页面的 opt-in 不传递）。 */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun DailyCard(
     snap: CheckinCenter.Snap,
     expanded: MutableMap<String, Boolean>,
     busyKey: String?,
     signingAll: Boolean,
+    providerFilter: String?,
+    onProviderFilter: (String?) -> Unit,
     onToggleGroup: (String) -> Unit,
     onSignAll: () -> Unit,
     onSignOne: (CheckinCenter.AccountRow) -> Unit,
     onActivity: (CheckinCenter.AccountRow, String, String) -> Unit,
 ) {
     val C = agateColors()
+    // 选中的 provider 若在刷新后消失了（分组是后端给的，数量会变），按「全部」
+    // 处理：胶囊选中态与渲染列表都由这一处推导，不会出现「筛选仍在但什么都
+    // 不画」的死角，也不用在组合期去改页面级状态。
+    val activeProvider = providerFilter?.takeIf { id -> snap.groups.any { it.id == id } }
+    val visibleGroups = if (activeProvider == null) {
+        snap.groups
+    } else {
+        snap.groups.filter { it.id == activeProvider }
+    }
     TaskCard {
         TaskCardHeader(
             title = "每日签到",
@@ -353,6 +382,29 @@ private fun DailyCard(
             ),
         )
 
+        // ── provider 筛选（列表之上）──
+        // 计数直接用后端聚合好的 `totalCount`，不在这里重算、更不重查上游；
+        // 一家 provider 都没有（读取中 / 无账号）时不出这一行，免得只剩「全部」。
+        if (snap.groups.isNotEmpty()) {
+            val allBadge = countBadge(snap.groups.sumOf { it.totalCount })
+            Spacer(Modifier.height(8.dp))
+            FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                NavChip("全部", activeProvider == null, allBadge) { onProviderFilter(null) }
+                snap.groups.forEach { group ->
+                    NavChip(
+                        group.label,
+                        selected = activeProvider == group.id,
+                        badge = countBadge(group.totalCount),
+                    ) { onProviderFilter(group.id) }
+                }
+            }
+            Spacer(Modifier.height(6.dp))
+        }
+
         if (snap.groups.isEmpty()) {
             Spacer(Modifier.height(10.dp))
             Text(
@@ -362,7 +414,7 @@ private fun DailyCard(
             )
         }
 
-        snap.groups.forEach { group ->
+        visibleGroups.forEach { group ->
             val open = expanded[group.id] ?: false
             val tone = when {
                 group.totalCount == 0 -> C.textDim
