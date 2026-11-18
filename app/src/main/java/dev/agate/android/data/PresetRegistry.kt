@@ -261,6 +261,10 @@ object PresetRegistry {
             pasteHint = "粘贴明文凭证 JSON（token / refreshToken / deviceId）",
             pasteSecondaryHint = "客户端自带的 auth.json 是 DPAPI 密文，换设备解不开",
             pasteMultiline = true,
+            // OAuth 的回调落在网关端口（localhost:<port>/auth/callback-zai|google），
+            // Core 态不监听 ⇒ 网关没运行时浏览器得到 ERR_CONNECTION_REFUSED（实测）。
+            // 上方那张「先运行网关」提示正是读这个字段；粘贴 / 导入不受影响，提示里已写明。
+            needsGateway = true,
             supportsCheckin = true,
         ),
         // Qoder：设备码 + PAT 粘贴

@@ -66,6 +66,8 @@ import org.json.JSONObject
 @Composable
 internal fun AutoClawOAuthForm(
     preset: ProviderPreset,
+    /** 网关是否在监听。OAuth 回调走浏览器打 `localhost:<port>`，不能用 JNI 直调顶替。 */
+    gatewayUp: Boolean?,
     onDone: (Boolean, String) -> Unit,
 ) {
     val providerId = preset.id
@@ -119,11 +121,29 @@ internal fun AutoClawOAuthForm(
     }
 
     Text(
-        "官方登录需要完成一次滑块风控，之后会在系统浏览器打开 Zai / Google 授权页；" +
-            "网关需处于运行状态（回调落在网关端口）",
+        "官方登录需要先在浏览器完成一次滑块风控，再由系统浏览器打开 Zai / Google 授权页。" +
+            "回调地址是 localhost:<网关端口>，必须先运行网关，否则浏览器会得到「拒绝连接」。",
         color = C.textSub, fontSize = 12.sp,
     )
-    Spacer(Modifier.height(12.dp))
+    Spacer(Modifier.height(10.dp))
+    if (gatewayUp == false) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .background(C.amber.copy(alpha = 0.10f), RoundedCornerShape(10.dp))
+                .border(1.dp, C.amber.copy(alpha = 0.45f), RoundedCornerShape(10.dp))
+                .padding(10.dp),
+        ) {
+            Text("网关未运行：现在发起会在授权完成后卡在 localhost 回调。", color = C.textMain, fontSize = 12.sp)
+            Spacer(Modifier.height(8.dp))
+            Button(
+                onClick = { dev.agate.core.AgateForegroundService.start(ctx) },
+                colors = ButtonDefaults.buttonColors(containerColor = C.accent, contentColor = C.onAccent),
+            ) { Text("运行网关", fontWeight = FontWeight.SemiBold) }
+        }
+        Spacer(Modifier.height(10.dp))
+    }
+
 
     if (waiting) {
         Row(
@@ -152,6 +172,10 @@ internal fun AutoClawOAuthForm(
                 Button(
                     onClick = {
                         if (busy) return@Button
+                        if (gatewayUp == false) {
+                            hint = "请先运行网关，再发起网页登录（回调落在 localhost:<网关端口>）"
+                            return@Button
+                        }
                         busy = true
                         hint = null
                         scope.launch {
@@ -277,10 +301,16 @@ private fun AliyunCaptchaDialog(
             Spacer(Modifier.height(6.dp))
             Text("请在下方完成官方滑块验证，验证串只用于换取本次授权地址", color = C.textSub, fontSize = 12.sp)
             Spacer(Modifier.height(10.dp))
+            // ── WebView 视口必须是「设备宽度」而不是桌面宽度 ──────────
+            // 实测（2026-11-18）：`useWideViewPort=true` + `loadWithOverviewMode=true`
+            // 会让这条 data: 页按 980px 布局再整体缩小，阿里云的 fixed popup 于是
+            // 按 980px 定位 —— 在窄屏上左右被裁（「完成安全验证」只剩半个字）。
+            // HTML 里已有 `width=device-width,initial-scale=1`，这里再关掉桌面视口，
+            // 两边一起保证 popup 按 WebView 实宽渲染。
             AndroidView(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(340.dp)
+                    .height(420.dp)
                     .background(C.insetBg, RoundedCornerShape(10.dp)),
                 factory = { ctx ->
                     WebView(ctx).apply {
@@ -291,8 +321,11 @@ private fun AliyunCaptchaDialog(
                         @SuppressLint("SetJavaScriptEnabled")
                         settings.javaScriptEnabled = true
                         settings.domStorageEnabled = true
-                        settings.useWideViewPort = true
-                        settings.loadWithOverviewMode = true
+                        settings.useWideViewPort = false
+                        settings.loadWithOverviewMode = false
+                        // popup 里的「确认」按钮可能由 SDK 用 window.open 触发；
+                        // 不给多窗口会把那一步静默吞掉，看起来就是滑块点不动。
+                        settings.javaScriptCanOpenWindowsAutomatically = true
                         webChromeClient = WebChromeClient()
                         webViewClient = WebViewClient()
                         addJavascriptInterface(bridge, "AgateCaptcha")
