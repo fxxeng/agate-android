@@ -482,6 +482,73 @@ object RoutingWorkspaceOps {
      * 写端点不能用它：那边要把内核的中文 error（400 / 409）原样带给用户，
      * 所以走 [write]。
      */
+    // ── 读：路由追踪 / 回放（R63 批5 时间线与回放页）──────────────
+
+    /** 追踪/回放明细的一行（时间线渲染必须的标量；route 原样存字符串备用）。 */
+    class TraceRow(o: JSONObject) {
+        val ts: Long = o.optLong("ts", 0L)
+        val id: String = o.optString("id")
+        val model: String = o.optString("model")
+        val accountId: String = o.optString("accountId")
+        val accountName: String = o.optString("accountName")
+        val status: Long = o.optLong("status", 0L)
+        val durationMs: Long = o.optLong("durationMs", 0L)
+        val attempts: Long = o.optLong("attempts", 1L)
+        val error: String? = if (o.isNull("error")) null else o.optString("error")
+        val route: String = o.optJSONObject("route")?.toString() ?: ""
+    }
+
+    /** 追踪/回放的分页快照（两个端点同形：entries + matched + offset + limit）。 */
+    class TraceSnapshot(o: JSONObject) {
+        val entries: List<TraceRow> = jsonObjects(o, "entries").map { TraceRow(it) }
+        val matched: Long = o.optLong("matched", 0L)
+    }
+
+    /**
+     * 路由追踪：带选路快照的请求明细（时间线数据源）。
+     *
+     * 查询参数与内核 `/api/routing/trace` 逐字对齐；`status` 只认
+     * error / ok / running / switched / sticky（其余值内核按无过滤处理）。
+     * 详情行不在此处二次解析 route —— 界面只判断 stickyHit 与显示摘要。
+     */
+    suspend fun trace(
+        model: String? = null,
+        search: String = "",
+        status: String = "",
+        offset: Int = 0,
+        limit: Int = 30,
+    ): OpResult<TraceSnapshot> {
+        val parts = mutableListOf<String>()
+        if (!model.isNullOrBlank()) parts += "model=${model.urlEnc()}"
+        if (search.isNotBlank()) parts += "search=${search.urlEnc()}"
+        if (status.isNotBlank()) parts += "status=${status.urlEnc()}"
+        if (offset > 0) parts += "offset=$offset"
+        parts += "limit=$limit"
+        val path = "/api/routing/trace?${parts.joinToString("&")}"
+        val data = get(path) ?: return OpResult(false, null, "无法连接内核")
+        return OpResult(true, TraceSnapshot(data), null)
+    }
+
+    /**
+     * 路由回放：按模型/状态翻页的选路明细（与追踪同一数据源、同形状）。
+     * `status` 只认 error / sticky（内核口径，见 `request_stats::routing`）。
+     */
+    suspend fun replays(
+        model: String? = null,
+        offset: Int = 0,
+        limit: Int = 30,
+        status: String = "",
+    ): OpResult<TraceSnapshot> {
+        val parts = mutableListOf<String>()
+        if (!model.isNullOrBlank()) parts += "model=${model.urlEnc()}"
+        if (offset > 0) parts += "offset=$offset"
+        parts += "limit=$limit"
+        if (status.isNotBlank()) parts += "status=${status.urlEnc()}"
+        val path = "/api/routing/replays?${parts.joinToString("&")}"
+        val data = get(path) ?: return OpResult(false, null, "无法连接内核")
+        return OpResult(true, TraceSnapshot(data), null)
+    }
+
     private suspend fun get(path: String): JSONObject? {
         val reply = withContext(Dispatchers.IO) { CoreTransport.get(path) }
         if (reply !is CoreTransport.Reply.Ok) return null

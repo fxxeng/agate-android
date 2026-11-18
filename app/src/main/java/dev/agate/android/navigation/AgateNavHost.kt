@@ -87,6 +87,7 @@ import dev.agate.android.ui.models.ModelSpeedtestFocus
 import dev.agate.android.ui.models.ModelSpeedtestPage
 import dev.agate.android.ui.models.ModelsPage
 import dev.agate.android.ui.routing.RoutingPage
+import dev.agate.android.ui.routing.RoutingOrchPage
 import dev.agate.android.ui.pages.GatewayControlPage
 import dev.agate.android.ui.pages.ShowcasePage
 import dev.agate.android.ui.provider.AddProviderPage
@@ -130,6 +131,7 @@ object Routes {
     const val APPLOGS = "applogs"
     const val PROXY = "proxy"
     const val ROUTING = "routing"
+    const val ROUTING_ORCH = "routing_orch"
     const val ASSISTANT = "assistant"
     const val SETTINGS = "settings"
     const val KEYS = "keys"
@@ -160,6 +162,7 @@ private val DrawerSections: List<DrawerSection> = listOf(
     DrawerSection("运维与路由", listOf(
         DrawerEntry(Routes.GATEWAY, "网关控制", Icons.Filled.Bolt),
         DrawerEntry(Routes.ROUTING, "路由预演", Icons.Filled.Route),
+        DrawerEntry(Routes.ROUTING_ORCH, "路由编排", Icons.Filled.Route),
         DrawerEntry(Routes.PROXY, "出网代理池", Icons.Filled.Lan),
         DrawerEntry(Routes.ASSISTANT, "AI 运维助手", Icons.Filled.Verified),
     )),
@@ -562,6 +565,10 @@ fun AgateNavHost(
                 composable(Routes.ROUTING) {
                     // 路由预演：三策略 + 候选队列（含跳过原因）+ 自愈规则
                     RoutingPage(onOpenDrawer = ::openDrawer)
+                }
+                composable(Routes.ROUTING_ORCH) {
+                    // 路由编排：分组列表 + 成员调序 + 追踪时间线（列表式，非画布）
+                    RoutingOrchPage(onBack = { navController.popBackStack() })
                 }
                 composable(Routes.ASSISTANT) {
                     // AI 运维助手：端口 SSE 流式对话 + 8 只工具（改动类先弹确认卡）
