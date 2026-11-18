@@ -33,6 +33,15 @@ enum class AuthChannel(val label: String) {
     EXTERNAL("浏览器登录"),
     DEVICE_CODE("设备码"),
     SMS("手机验证码"),
+    /**
+     * 官方主登录方式是 OAuth（当前只有 AutoClaw 国际版：Zai / Google）。
+     *
+     * ⚠️ 这类家**不能**走 EMBEDDED / EXTERNAL —— 内核在 `/api/session/login/start`
+     * 里对 AutoClaw 一律 400（授权地址要先过一次浏览器端阿里云风控，得从
+     * `/api/session/login/oauth/start` 拿）。通道列表里不放那两条，用户就不会
+     * 点到一个必然失败、还指向不存在按钮的入口。
+     */
+    OAUTH("Zai / Google 登录"),
     PASTE("粘贴凭证"),
     IMPORT_FILE("导入凭证文件"),
     IMPORT_DESKTOP("桌面登录态"),
@@ -234,12 +243,25 @@ object PresetRegistry {
         // AutoClaw 国内：手机验证码
         ProviderPreset(
             "autoclaw", "AutoClaw 国内版", "智谱 · 手机验证码", LoginKind.SMS,
-            listOf(AuthChannel.SMS), supportsCheckin = true,
+            // 内核的粘贴 / 明文文件导入两家都支持（accounts.rs 同一分支，地区由
+            // provider id 决定）；国内版 auth.json 是 DPAPI 密文，拷到手机解不开，
+            // 所以只对「明文凭证」开放这两条退路。
+            listOf(AuthChannel.SMS, AuthChannel.PASTE, AuthChannel.IMPORT_FILE),
+            pasteHint = "粘贴明文凭证 JSON（token / refreshToken / deviceId）",
+            pasteSecondaryHint = "客户端自带的 auth.json 是 DPAPI 密文，换设备解不开",
+            pasteMultiline = true,
+            supportsCheckin = true,
         ),
-        // AutoClaw 国际：loopback 回调
+        // AutoClaw 国际：官方主登录方式是 Zai / Google OAuth，授权地址要先在
+        // 浏览器里过一次阿里云滑块风控（`/api/session/login/oauth/start`），
+        // 所以走专用 OAUTH 通道；EMBEDDED / EXTERNAL 在内核里都会被 400 拦掉。
         ProviderPreset(
-            "autoclaw-intl", "AutoClaw 国际版", "autoglm.ai · 网页登录", LoginKind.WEBVIEW,
-            WEB, supportsCheckin = true,
+            "autoclaw-intl", "AutoClaw 国际版", "autoglm.ai · Zai / Google 网页登录", LoginKind.WEBVIEW,
+            listOf(AuthChannel.OAUTH, AuthChannel.PASTE, AuthChannel.IMPORT_FILE),
+            pasteHint = "粘贴明文凭证 JSON（token / refreshToken / deviceId）",
+            pasteSecondaryHint = "客户端自带的 auth.json 是 DPAPI 密文，换设备解不开",
+            pasteMultiline = true,
+            supportsCheckin = true,
         ),
         // Qoder：设备码 + PAT 粘贴
         ProviderPreset(

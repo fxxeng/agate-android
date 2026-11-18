@@ -34,7 +34,13 @@ object LoginClient {
     }
 
     sealed class StartResult {
-        data class Started(val state: String, val authUrl: String, val provider: String) : StartResult()
+        data class Started(
+            val state: String,
+            val authUrl: String,
+            val provider: String,
+            /** 本轮有降级时内核给的一句话（如回调端口被官方客户端占着）。 */
+            val warning: String? = null,
+        ) : StartResult()
         data class Failed(val reason: String) : StartResult()
     }
 
@@ -42,6 +48,75 @@ object LoginClient {
         object Pending : WaitResult()
         data class Done(val session: JSONObject?) : WaitResult()
         data class Failed(val reason: String) : WaitResult()
+    }
+
+    /** 风控配置（`/oauth/captcha-config` 的 data）：`enabled` 为假时别弹滑块。 */
+    data class CaptchaConfig(
+        val enabled: Boolean,
+        val region: String,
+        val prefix: String,
+        val sceneId: String,
+    )
+
+    /**
+     * POST /api/session/login/oauth/captcha-config {provider} —— 取阿里云滑块的
+     * `prefix` / `sceneId`（SDK 的必填参数，只能从上游拿）。
+     *
+     * ⚠️ 这条路由虽然也挂了 GET，但**地区从 body 读**（见内核 session.rs 的说明）；
+     * 用 GET 会问到国内版配置。这里一律 POST。
+     */
+    suspend fun captchaConfig(provider: String): Result<CaptchaConfig> = withContext(Dispatchers.IO) {
+        val body = JSONObject().put("provider", provider)
+        when (val r = postJson("/api/session/login/oauth/captcha-config", body)) {
+            is HttpResult.Ok -> {
+                val data = r.json.optJSONObject("data") ?: r.json
+                Result.success(
+                    CaptchaConfig(
+                        enabled = data.optBoolean("enabled"),
+                        region = data.optString("region", "ga").ifBlank { "ga" },
+                        prefix = data.optString("prefix"),
+                        sceneId = data.optString("sceneId").ifBlank { data.optString("scene_id") },
+                    )
+                )
+            }
+            else -> Result.failure(IllegalStateException(describe(r)))
+        }
+    }
+
+    /**
+     * POST /api/session/login/oauth/start {provider, vendor, captchaVerifyParam}
+     * → `{state, authUrl, warning?}`（与 `start` 同形状，等待逻辑可以直接复用）。
+     *
+     * [captchaVerifyParam] 是滑块 SDK 回调给前端的**不透明串**：原样回传，不做任何
+     * 解析或改写；空串会被上游当成「没过风控」拒掉（630014）。
+     */
+    suspend fun oauthStart(
+        provider: String,
+        vendor: String,
+        captchaVerifyParam: String,
+    ): StartResult = withContext(Dispatchers.IO) {
+        val body = JSONObject()
+            .put("provider", provider)
+            .put("vendor", vendor)
+            .put("captchaVerifyParam", captchaVerifyParam)
+        when (val r = postJson("/api/session/login/oauth/start", body)) {
+            is HttpResult.Ok -> {
+                val data = r.json.optJSONObject("data") ?: r.json
+                val state = data.optString("state")
+                val authUrl = data.optString("authUrl")
+                if (state.isBlank() || authUrl.isBlank()) {
+                    StartResult.Failed("内核未返回授权地址（风控可能未通过）")
+                } else {
+                    StartResult.Started(
+                        state = state,
+                        authUrl = authUrl,
+                        provider = data.optString("provider", provider),
+                        warning = data.optString("warning").ifBlank { null },
+                    )
+                }
+            }
+            else -> StartResult.Failed(describe(r))
+        }
     }
 
     /**

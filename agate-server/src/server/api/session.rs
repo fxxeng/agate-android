@@ -531,8 +531,8 @@ pub async fn login_start(State(state): State<ServerState>, body: Bytes) -> Respo
     // 「填写凭证」，而那条路只是绕远，不是必须。
     if let Some(region) = crate::server::core::providers::autoclaw::Region::from_kind(kind) {
         let message = if region == crate::server::core::providers::autoclaw::Region::Intl {
-            "AutoClaw 国际版的网页登录需要先完成一次风控验证，请回到「添加账号」弹窗，\
-             用「网页登录（Zai / Google）」发起"
+            "AutoClaw 国际版的网页登录需要先完成一次风控验证，\
+             请用本页的「Zai / Google」按钮发起（内嵌 / 浏览器两条普通通道都会走这条拦截）"
         } else {
             // 国内版确实没有 OAuth（上游 `oauth-captcha-config` 返回 enabled:false），
             // 它的官方唯一登录方式是手机验证码 —— 文案要指向那条
@@ -1423,10 +1423,12 @@ fn oauth_vendor_of(payload: &Value) -> Result<crate::server::core::providers::au
         .ok_or_else(|| management_error(400, format!("未知的登录方式「{raw}」（只支持 zai / google）")))
 }
 
-/// `GET /api/session/login/oauth/captcha-config` —— 取风控验证配置。
+/// `POST /api/session/login/oauth/captcha-config` —— 取风控验证配置。
 ///
 /// 前端据此初始化阿里云 SDK（`prefix` / `sceneId` 是 SDK 的必填参数）。
-/// `?provider=` 决定问哪个地区；缺省国内版。
+/// **地区从请求体的 `provider` 读**（`autoclaw` / `autoclaw-intl`），缺省国内版 ——
+/// 这条路由也挂了 GET（历史兼容），但 GET 没有 body，会问到国内版配置，所以
+/// 用它拿国际版的 sceneId 是拿不到的；新调用方一律 POST。
 ///
 /// ── 为什么这条单独成一个端点（不塞进 start）──────────────────
 /// 验证码要在**浏览器环境**里跑（SDK 是浏览器端 JS），而 SDK 初始化需要

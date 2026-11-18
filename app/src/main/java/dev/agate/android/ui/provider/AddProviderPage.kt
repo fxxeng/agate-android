@@ -410,6 +410,9 @@ fun AddProviderPage(onBack: () -> Unit, initialProviderId: String? = null) {
                                     onDone = onAdded,
                                 )
                             AuthChannel.SMS -> SmsLoginForm(preset = picked, onDone = onAdded)
+                            // AutoClaw 国际版：官方主方式是 Zai / Google OAuth，授权地址
+                            // 要先用浏览器端滑块过风控，走专用三段链（见 AutoClawOAuthForm）
+                            AuthChannel.OAUTH -> AutoClawOAuthForm(preset = picked, onDone = onAdded)
                             AuthChannel.PASTE -> PasteLoginForm(preset = picked, onDone = onAdded)
                             AuthChannel.IMPORT_FILE -> ImportFileForm(preset = picked, onDone = onAdded)
                             AuthChannel.IMPORT_DESKTOP -> Unit
