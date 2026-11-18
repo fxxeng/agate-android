@@ -346,6 +346,10 @@ pub fn panel_router(state: ServerState) -> Router {
             "/api/routing/groups/replays",
             get(api::routing_groups::get_replays),
         )
+        .route(
+            "/api/routing/replays",
+            get(api::routing_replays::get_replays),
+        )
         .route("/api/routing/preview", post(api::routing_groups::preview))
         .route("/api/routing/trace", get(api::routing_trace::get_trace))
         .route(

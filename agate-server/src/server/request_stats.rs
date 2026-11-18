@@ -80,6 +80,9 @@ mod record;
 // 模块内部各函数仍应是 `pub(super)`：只有 `request_stats.rs` 能调到它们，
 // 对外暴露面收敛在这一层。
 mod report;
+// 路由回放明细（`GET /api/routing/replays`）：逐条请求的选路决策快照，
+// 与 groups 维度的回放（`api::routing_groups`）不是同一件事。
+mod routing;
 mod sql;
 mod trace;
 

@@ -119,6 +119,7 @@ pub mod role_compat;
 pub mod routing_api;
 pub mod routing_flow;
 pub mod routing_groups;
+pub mod routing_replays;
 pub mod routing_trace;
 pub mod routing_workspace;
 pub mod sanitize;
