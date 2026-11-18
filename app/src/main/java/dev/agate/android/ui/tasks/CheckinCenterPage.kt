@@ -8,6 +8,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
@@ -34,6 +35,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.agate.android.data.CheckinCenter
@@ -55,7 +57,7 @@ import org.json.JSONObject
  * 签到中心 —— 对齐上游 3.0.8 `CenterTab`（`checkin-page.tsx`）。
  *
  * ── 结构 ───────────────────────────────────────────────────
- * 顶部导航卡（两行 chips：任务档切换 + 功能页跳转）→ 总览四格
+ * 总览四格 → 导航卡（两行 chips：任务档切换 + 功能页跳转）
  * → 每日签到（provider 筛选 chips + 按提供商分组、可展开、单账号可签）
  * → 不参与折叠说明 → 新手福利 → 活动福利 → 成长任务。
  *
@@ -182,46 +184,6 @@ fun CheckinCenterPage(
         ) {
             Spacer(Modifier.height(10.dp))
 
-            // ── 导航卡：7 个入口收口成卡内两行 chips ──
-            // 第一行只切「下面渲染哪张分组卡」，不碰任何卡内的取数、展开态与
-            // 按钮转圈（busyKey 仍是页面级的）；第二行直接调 NavHost 传进来的
-            // 三个回调 —— 本页自己不持有路由。
-            TaskCard {
-                TaskCardHeader(
-                    title = "快速入口",
-                    subtitle = if (taskTier == "all") "四档任务按原顺序全展开" else "只看当前档",
-                )
-                Spacer(Modifier.height(9.dp))
-                // 徽标数字全部取自 snap 的真实计数字段；0 说明这档没账号 / 没欠账，
-                // 此时不出数字（胶囊里留个「0」只是噪声，不许写死占位数字）。
-                val dailyBadge = countBadge(snap.todayEligible)
-                val onboardingBadge = countBadge(snap.unsettledOnboarding)
-                val plansBadge = countBadge(snap.plans.size)
-                val growthBadge = countBadge(snap.growth.size)
-                FlowRow(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    NavChip("全部", taskTier == "all") { taskTier = "all" }
-                    NavChip("每日签到", taskTier == "daily", dailyBadge) { taskTier = "daily" }
-                    NavChip("新手福利", taskTier == "onboarding", onboardingBadge) { taskTier = "onboarding" }
-                    NavChip("活动福利", taskTier == "plans", plansBadge) { taskTier = "plans" }
-                    NavChip("成长任务", taskTier == "growth", growthBadge) { taskTier = "growth" }
-                }
-                Spacer(Modifier.height(6.dp))
-                FlowRow(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    NavChip("定时签到", selected = false) { onOpenSchedule() }
-                    NavChip("签到记录", selected = false) { onOpenRecords() }
-                    NavChip("补签恢复", selected = false) { onOpenRecovery() }
-                }
-            }
-            TaskGap()
-
             // ── 总览四格 ──
             AgateStatRow(
                 cells = listOf(
@@ -248,6 +210,39 @@ fun CheckinCenterPage(
                     style = AgateType.Caption,
                     color = if (!snap.autoEnabled) C.textDim else C.accent,
                 )
+            }
+            TaskGap()
+
+            // ── 导航卡：7 个入口收口成卡内两行 chips（总览四格之后、分组卡之前）──
+            // 第一行只切「下面渲染哪张分组卡」，不碰任何卡内的取数、展开态与
+            // 按钮转圈（busyKey 仍是页面级的）；第二行直接调 NavHost 传进来的
+            // 三个回调 —— 本页自己不持有路由。
+            NavCard {
+                NavRowLabel("任务档")
+                Spacer(Modifier.height(4.dp))
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    NavChip("全部", taskTier == "all") { taskTier = "all" }
+                    NavChip("每日签到", taskTier == "daily") { taskTier = "daily" }
+                    NavChip("新手福利", taskTier == "onboarding") { taskTier = "onboarding" }
+                    NavChip("活动福利", taskTier == "plans") { taskTier = "plans" }
+                    NavChip("成长任务", taskTier == "growth") { taskTier = "growth" }
+                }
+                Spacer(Modifier.height(8.dp))
+                NavRowLabel("功能页")
+                Spacer(Modifier.height(4.dp))
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    NavChip("定时签到", selected = false) { onOpenSchedule() }
+                    NavChip("签到记录", selected = false) { onOpenRecords() }
+                    NavChip("补签恢复", selected = false) { onOpenRecovery() }
+                }
             }
             TaskGap()
 
@@ -291,12 +286,38 @@ fun CheckinCenterPage(
 }
 
 /**
- * 导航卡胶囊（第一行档位切换 + 第二行功能页跳转共用）。
+ * 导航卡外壳：与页面既有卡同色（`cardBg` 底 + `border` 描边 + 14dp 内边距）。
  *
- * 选中态：`accent@10%` 底 + `accent` 描边 + `accent` 粗字；未选中：`insetBg` 底 +
+ * 圆角按本批规格取 14dp，没有复用 TaskKit 的 `TaskCard`（那是 20dp 圆角）——
+ * 规格要求 12~16dp，而本批禁止改 TaskKit；如需四张卡 + 导航卡完全同半径，
+ * 应在 TaskKit 里统一调，而不是各自写一份。
+ */
+@Composable
+private fun NavCard(content: @Composable ColumnScope.() -> Unit) {
+    val C = agateColors()
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(C.cardBg, RoundedCornerShape(14.dp))
+            .border(1.dp, C.border, RoundedCornerShape(14.dp))
+            .padding(14.dp),
+        content = content,
+    )
+}
+
+/** 行首小标签（`任务档` / `功能页`）：10.5sp + `textDim`，只做视觉分组。 */
+@Composable
+private fun NavRowLabel(text: String) {
+    Text(text, color = agateColors().textDim, fontSize = 10.5.sp)
+}
+
+/**
+ * 导航卡胶囊（第一行档位切换 + 第二行功能页跳转 + 每日签到卡内的 provider 筛选共用）。
+ *
+ * 选中态：`accent@10%` 底 + `accent@45%` 描边 + `accent` 粗字；未选中：`insetBg` 底 +
  * `border` 描边 + `textSub` 字。颜色全部走语义色，页面里不出现任何色值字面量。
- * `badge` 是可选的数量尾巴（`textDim` 9.5sp、距文字 6dp），调用方只在拿到真实
- * 计数时才传，没有就不传。
+ * `badge` 是可选的数量尾巴（`textDim` 9.5sp、距文字 6dp），只有 provider 筛选
+ * 传真实计数，导航卡两行不传（数字属于 provider 行，不是档位）。
  */
 @Composable
 private fun NavChip(
@@ -311,8 +332,8 @@ private fun NavChip(
         modifier = Modifier
             .clickable(onClick = onClick)
             .background(if (selected) C.accent.copy(alpha = 0.10f) else C.insetBg, shape)
-            .border(1.dp, if (selected) C.accent else C.border, shape)
-            .padding(horizontal = 10.dp, vertical = 5.dp),
+            .border(1.dp, if (selected) C.accent.copy(alpha = 0.45f) else C.border, shape)
+            .padding(horizontal = 9.dp, vertical = 5.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
@@ -320,6 +341,10 @@ private fun NavChip(
             color = if (selected) C.accent else C.textSub,
             fontSize = 11.5.sp,
             fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+            // provider label 长短不一：长名不许把计数挤出去，也不许换行撑高胶囊
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f, fill = false),
         )
         if (badge != null) {
             Text(
@@ -332,7 +357,7 @@ private fun NavChip(
     }
 }
 
-/** 档位徽标：只有拿到正数才显示；0 视为「这档没有账号」，不出数字。 */
+/** provider 徽标：只有拿到正数才显示；0 视为「这家没账号」，不出数字。 */
 private fun countBadge(n: Int): String? = if (n > 0) n.toString() else null
 
 /* ── 每日签到 ── */
@@ -402,7 +427,7 @@ private fun DailyCard(
                     ) { onProviderFilter(group.id) }
                 }
             }
-            Spacer(Modifier.height(6.dp))
+            Spacer(Modifier.height(8.dp))
         }
 
         if (snap.groups.isEmpty()) {
