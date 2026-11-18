@@ -3,10 +3,13 @@ package dev.agate.android.ui.tasks
 import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -68,6 +71,7 @@ import org.json.JSONObject
  * 保活只维持活跃不领取、领取只探测并领奖、保活+领取两步都做。
  * 一颗按钮混做两件事，用户看不出「积分为什么没涨」。
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun CheckinCenterPage(
     onBack: () -> Unit,
@@ -86,6 +90,15 @@ fun CheckinCenterPage(
     /** 正在执行的键（账号 id + 动作），各自转圈互不牵连。 */
     var busyKey by remember { mutableStateOf<String?>(null) }
     var signingAll by remember { mutableStateOf(false) }
+
+    /**
+     * 导航卡选中的任务档：`all`（默认）/ `daily` / `onboarding` / `plans` / `growth`。
+     *
+     * 只决定**渲染哪张分组卡**，不参与任何取数：`all` 档与原版逐行等价（四张卡
+     * 按原顺序全渲染）；选某一档时其余卡不进入组合树。`expanded` 留在页面级，
+     * 所以切档来回，用户展开过的分组仍然记得。
+     */
+    var taskTier by remember { mutableStateOf("all") }
 
     fun toast(text: String) = Toast.makeText(ctx, text, Toast.LENGTH_SHORT).show()
 
@@ -170,9 +183,6 @@ fun CheckinCenterPage(
             )
             Spacer(Modifier.height(4.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                ShortcutText("定时签到 ›") { onOpenSchedule() }
-                ShortcutText("签到记录 ›") { onOpenRecords() }
-                ShortcutText("异常核实 ›") { onOpenRecovery() }
                 Spacer(Modifier.weight(1f))
                 // snap 是由 collectAsState() 委托的属性，直接判 != null 无法智能转换，
                 // 先取局部变量（Compose 里这个值与本次重组绑定，不会中途变）。
@@ -187,48 +197,127 @@ fun CheckinCenterPage(
             }
             TaskGap()
 
-            // ── 每日签到 ──
-            DailyCard(
-                snap = snap,
-                expanded = expanded,
-                busyKey = busyKey,
-                signingAll = signingAll,
-                onToggleGroup = { id -> expanded[id] = !(expanded[id] ?: false) },
-                onSignAll = { signAll() },
-                onSignOne = { signOne(it) },
-                onActivity = { acc, mode, label -> runActivity(acc, mode, label) },
-            )
+            // ── 导航卡：7 个入口收口成卡内两行 chips ──
+            // 第一行只切「下面渲染哪张分组卡」，不碰任何卡内的取数、展开态与
+            // 按钮转圈（busyKey 仍是页面级的）；第二行直接调 NavHost 传进来的
+            // 三个回调 —— 本页自己不持有路由。
+            TaskCard {
+                TaskCardHeader(
+                    title = "快速入口",
+                    subtitle = if (taskTier == "all") "四档任务按原顺序全展开" else "只看当前档",
+                )
+                Spacer(Modifier.height(9.dp))
+                // 徽标数字全部取自 snap 的真实计数字段；0 说明这档没账号 / 没欠账，
+                // 此时不出数字（胶囊里留个「0」只是噪声，不许写死占位数字）。
+                val dailyBadge = countBadge(snap.todayEligible)
+                val onboardingBadge = countBadge(snap.unsettledOnboarding)
+                val plansBadge = countBadge(snap.plans.size)
+                val growthBadge = countBadge(snap.growth.size)
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    NavChip("全部", taskTier == "all") { taskTier = "all" }
+                    NavChip("每日签到", taskTier == "daily", dailyBadge) { taskTier = "daily" }
+                    NavChip("新手福利", taskTier == "onboarding", onboardingBadge) { taskTier = "onboarding" }
+                    NavChip("活动福利", taskTier == "plans", plansBadge) { taskTier = "plans" }
+                    NavChip("成长任务", taskTier == "growth", growthBadge) { taskTier = "growth" }
+                }
+                Spacer(Modifier.height(6.dp))
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    NavChip("定时签到", selected = false) { onOpenSchedule() }
+                    NavChip("签到记录", selected = false) { onOpenRecords() }
+                    NavChip("补签恢复", selected = false) { onOpenRecovery() }
+                }
+            }
             TaskGap()
+
+            // ── 每日签到 ──
+            if (taskTier == "all" || taskTier == "daily") {
+                DailyCard(
+                    snap = snap,
+                    expanded = expanded,
+                    busyKey = busyKey,
+                    signingAll = signingAll,
+                    onToggleGroup = { id -> expanded[id] = !(expanded[id] ?: false) },
+                    onSignAll = { signAll() },
+                    onSignOne = { signOne(it) },
+                    onActivity = { acc, mode, label -> runActivity(acc, mode, label) },
+                )
+                TaskGap()
+            }
 
             // ── 新手福利 ──
-            OnboardingCard(snap = snap, busyKey = busyKey, onBusy = { busyKey = it }, onToast = { toast(it) })
-            TaskGap()
+            if (taskTier == "all" || taskTier == "onboarding") {
+                OnboardingCard(snap = snap, busyKey = busyKey, onBusy = { busyKey = it }, onToast = { toast(it) })
+                TaskGap()
+            }
 
             // ── 活动福利 ──
-            PlanCard(snap = snap, busyKey = busyKey, onBusy = { busyKey = it }, onToast = { toast(it) })
-            TaskGap()
+            if (taskTier == "all" || taskTier == "plans") {
+                PlanCard(snap = snap, busyKey = busyKey, onBusy = { busyKey = it }, onToast = { toast(it) })
+                TaskGap()
+            }
 
             // ── 成长任务 ──
-            GrowthCard(snap = snap, onToast = { toast(it) })
+            if (taskTier == "all" || taskTier == "growth") {
+                GrowthCard(snap = snap, onToast = { toast(it) })
+            }
 
             TaskGap(24)
         }
     }
 }
 
+/**
+ * 导航卡胶囊（第一行档位切换 + 第二行功能页跳转共用）。
+ *
+ * 选中态：`accent@10%` 底 + `accent` 描边 + `accent` 粗字；未选中：`insetBg` 底 +
+ * `border` 描边 + `textSub` 字。颜色全部走语义色，页面里不出现任何色值字面量。
+ * `badge` 是可选的数量尾巴（`textDim` 9.5sp、距文字 6dp），调用方只在拿到真实
+ * 计数时才传，没有就不传。
+ */
 @Composable
-private fun ShortcutText(text: String, onClick: () -> Unit) {
+private fun NavChip(
+    text: String,
+    selected: Boolean,
+    badge: String? = null,
+    onClick: () -> Unit,
+) {
     val C = agateColors()
-    Text(
-        text,
-        color = C.accent,
-        fontSize = 11.sp,
-        fontWeight = FontWeight.SemiBold,
+    val shape = RoundedCornerShape(50)
+    Row(
         modifier = Modifier
             .clickable(onClick = onClick)
-            .padding(vertical = 2.dp),
-    )
+            .background(if (selected) C.accent.copy(alpha = 0.10f) else C.insetBg, shape)
+            .border(1.dp, if (selected) C.accent else C.border, shape)
+            .padding(horizontal = 10.dp, vertical = 5.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text,
+            color = if (selected) C.accent else C.textSub,
+            fontSize = 11.5.sp,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+        )
+        if (badge != null) {
+            Text(
+                badge,
+                color = C.textDim,
+                fontSize = 9.5.sp,
+                modifier = Modifier.padding(start = 6.dp),
+            )
+        }
+    }
 }
+
+/** 档位徽标：只有拿到正数才显示；0 视为「这档没有账号」，不出数字。 */
+private fun countBadge(n: Int): String? = if (n > 0) n.toString() else null
 
 /* ── 每日签到 ── */
 
