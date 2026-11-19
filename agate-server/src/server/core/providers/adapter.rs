@@ -1008,6 +1008,20 @@ pub trait ProviderAdapter: Send + Sync {
         false
     }
 
+    /// 图片请求的构造：声明了生图能力的家必须实现（默认返回 400）。
+    fn build_image_request(
+        &self,
+        _account: &Value,
+        _body: &Value,
+        _client_headers: &HeaderMap,
+        _operation: super::images::ImageOperation,
+    ) -> Result<super::images::ImageRequestPlan, GatewayError> {
+        Err(GatewayError::bad_request(format!(
+            "{} 声明了生图能力但没有实现请求构造，请升级网关",
+            super::label_of(super::kind_id(self.kind()))
+        )))
+    }
+
     /// 查询某账号的余额 / 积分，返回**归一化后的 JSON**（模块头扩展 8）。
     ///
     /// ── 形状契约（`api::accounts` 的 `{results:[{id,name,usage,error}]}` 里
