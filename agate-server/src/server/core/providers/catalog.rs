@@ -239,6 +239,21 @@ pub(crate) fn refresh_meta(kind: ProviderKind) -> (bool, i64) {
             super::quwork::models::remote_refreshed(),
             super::quwork::models::last_refreshed_at(),
         ),
+        // DeepSeek 网页版：清单是编译期常量两条，无远程目录、不接缓存。
+        // 必须返回「有内容 = true」，否则界面会把有模型的家显示成空。
+        ProviderKind::DeepSeekWeb => (true, 0),
+        ProviderKind::Doubaowork => (
+            super::doubaowork::models::remote_refreshed(),
+            super::doubaowork::models::last_refreshed_at(),
+        ),
+        ProviderKind::Lingxi => (
+            super::lingxi::models::remote_refreshed(),
+            super::lingxi::models::last_refreshed_at(),
+        ),
+        ProviderKind::Tabbit | ProviderKind::TabbitIntl => (
+            super::tabbit::models::remote_refreshed(),
+            super::tabbit::models::last_refreshed_at(),
+        ),
     }
 }
 

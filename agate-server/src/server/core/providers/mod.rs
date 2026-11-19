@@ -131,9 +131,12 @@ pub mod content_block;
 /// 形态调用它 —— 挂在这里与其它子模块并列，便于对照「内置家走适配器、
 /// 自定义家走独立通道」的两条路径。
 pub mod custom;
+pub mod deepseek;
+pub mod doubaowork;
 pub mod images;
 pub mod kiro;
 pub mod kuku;
+pub mod lingxi;
 pub mod lobsterai;
 pub mod loomy;
 pub mod modelscope;
@@ -163,6 +166,7 @@ pub mod router;
 /// Trae（字节 AI IDE）。适配实现在 `trae/`：登录 / 凭据 / 目录 / 会话式转发
 /// 已接通（只支持国内 SOLO 通道；国际版是另一套协议，将来另立 kind），见
 /// `trae/mod.rs` 的模块头。
+pub mod tabbit;
 pub mod trae;
 pub mod workbuddy;
 pub mod zcode;
@@ -494,6 +498,15 @@ pub enum ProviderKind {
     Kiro,
     // QuWork（千问办公）。
     QuWork,
+    // DeepSeek 网页版（chat.deepseek.com）。
+    DeepSeekWeb,
+    // 豆包工作（www.doubao.com）。
+    Doubaowork,
+    // WPS 灵犀。
+    Lingxi,
+    // Tabbit 国内版 / 国际版（两地两身份）。
+    Tabbit,
+    TabbitIntl,
 }
 
 /// 一个提供商的静态元数据。
@@ -695,6 +708,26 @@ pub const PROVIDERS: &[ProviderMeta] = &[
         id: "quwork",
         label: "QuWork",
     },
+    ProviderMeta {
+        id: "deepseek-web",
+        label: "DeepSeek 网页",
+    },
+    ProviderMeta {
+        id: "doubaowork",
+        label: "豆包工作",
+    },
+    ProviderMeta {
+        id: "lingxi",
+        label: "WPS 灵犀",
+    },
+    ProviderMeta {
+        id: "tabbit",
+        label: "Tabbit 国内版",
+    },
+    ProviderMeta {
+        id: "tabbit-intl",
+        label: "Tabbit 国际版",
+    },
 ];
 
 /// provider id 在注册表里的下标（未知 id → None）。
@@ -787,6 +820,11 @@ pub fn kind_from_id(id: &str) -> Option<ProviderKind> {
         "astudio" => Some(ProviderKind::Astudio),
         "kiro" => Some(ProviderKind::Kiro),
         "quwork" => Some(ProviderKind::QuWork),
+        "deepseek-web" => Some(ProviderKind::DeepSeekWeb),
+        "doubaowork" => Some(ProviderKind::Doubaowork),
+        "lingxi" => Some(ProviderKind::Lingxi),
+        "tabbit" => Some(ProviderKind::Tabbit),
+        "tabbit-intl" => Some(ProviderKind::TabbitIntl),
         // 走到这里 = 上面的注册表判定已放行、这个 match 却没有对应分支：
         // 只可能是有人给 `PROVIDERS` 加了条目忘了加这里。开发期喊出来；
         // release 返回 None（见上：宁可为「未知」，不可误认成别家）。
@@ -837,6 +875,11 @@ pub const fn kind_id(kind: ProviderKind) -> &'static str {
         ProviderKind::Astudio => "astudio",
         ProviderKind::Kiro => "kiro",
         ProviderKind::QuWork => "quwork",
+        ProviderKind::DeepSeekWeb => "deepseek-web",
+        ProviderKind::Doubaowork => "doubaowork",
+        ProviderKind::Lingxi => "lingxi",
+        ProviderKind::Tabbit => "tabbit",
+        ProviderKind::TabbitIntl => "tabbit-intl",
     }
 }
 

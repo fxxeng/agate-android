@@ -112,6 +112,9 @@ pub const SCOPE_MODELSCOPE_CN: &str = "modelscopeCn";
 pub const SCOPE_MODELSCOPE_INTL: &str = "modelscopeIntl";
 pub const SCOPE_LOBSTERAI: &str = "lobsterai";
 pub const SCOPE_ATOMCODE: &str = "atomcode";
+pub const SCOPE_DOUBAOWORK: &str = "doubaowork";
+pub const SCOPE_TABBIT: &str = "tabbit";
+pub const SCOPE_TABBIT_INTL: &str = "tabbitIntl";
 
 /// 全部 scope（事实来源：`cached_scopes` 按它遍历；新增一家时加在这里）。
 pub const ALL_SCOPES: &[&str] = &[
@@ -134,7 +137,9 @@ pub const ALL_SCOPES: &[&str] = &[
     SCOPE_COMMANDCODE,
     SCOPE_ANTIGRAVITY,
     SCOPE_CHATGLM,
-];
+    SCOPE_DOUBAOWORK,
+    SCOPE_TABBIT,
+    SCOPE_TABBIT_INTL,];
 
 /// 一份清单缓存
 pub struct CachedCatalog {

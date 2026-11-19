@@ -1191,6 +1191,11 @@ pub fn adapter_for(kind: ProviderKind) -> &'static dyn ProviderAdapter {
         ProviderKind::Astudio => &super::astudio::ASTUDIO_ADAPTER,
         ProviderKind::Kiro => &super::kiro::KIRO_ADAPTER,
         ProviderKind::QuWork => &super::quwork::QUWORK_ADAPTER,
+        ProviderKind::DeepSeekWeb => &super::deepseek::DEEPSEEK_WEB_ADAPTER,
+        ProviderKind::Doubaowork => &super::doubaowork::DOUBAOWORK_ADAPTER,
+        ProviderKind::Lingxi => &super::lingxi::LINGXI_ADAPTER,
+        ProviderKind::Tabbit => &super::tabbit::TABBIT_ADAPTER,
+        ProviderKind::TabbitIntl => &super::tabbit::TABBIT_INTL_ADAPTER,
     }
 }
 
@@ -1301,6 +1306,12 @@ pub fn implemented_kinds() -> Vec<ProviderKind> {
         ProviderKind::Astudio,
         ProviderKind::Kiro,
         ProviderKind::QuWork,
+        // 豆包工作 / WPS 灵犀 / Tabbit 两地：有远程目录。
+        // DeepSeek 网页版**不进**本列表：它没有远程目录接口（清单是编译期常量）。
+        ProviderKind::Doubaowork,
+        ProviderKind::Lingxi,
+        ProviderKind::Tabbit,
+        ProviderKind::TabbitIntl,
     ]
 }
 
