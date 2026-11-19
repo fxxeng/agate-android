@@ -53,6 +53,8 @@ use crate::server::core::protocol::anthropic_outbound::ChatFromAnthropicStream;
 use crate::server::core::protocol::antigravity_stream::ChatFromAntigravityStream;
 use crate::server::core::protocol::chatglm_stream::ChatFromChatglmStream;
 use crate::server::core::protocol::commandcode_outbound::ChatFromCommandCodeStream;
+use crate::server::core::protocol::deepseek_stream::ChatFromDeepSeekStream;
+use crate::server::core::providers::lingxi::stream::LingxiToChatMachine;
 
 /// 上游 Anthropic SSE → 标准 chat SSE 的字节流（`reqwest::Response` 直接进来）。
 ///
@@ -452,6 +454,171 @@ impl Stream for ChatglmToChatStream {
                     self.upstream_done = true;
                     // 文案已在构造时描述好（见 inner 字段说明）：原样上抛，
                     // 由下游的流 / 聚合器转成错误帧或 502
+                    return Poll::Ready(Some(Err(error)));
+                }
+            }
+        }
+    }
+}
+
+/// 上游 DeepSeek 网页版 SSE → 标准 chat SSE 的字节流。
+///
+/// 管道与 `ChatglmToChatStream` 逐行同构（响应字节 → 空闲守卫 → 状态机 → 帧队列），
+/// 差别只有内部那台状态机：本家是 **JSON-Pointer patch 式**帧，而且是
+/// 「裸增量就是净增量」，**不做差分**（与 ChatGLM 恰恰相反，见
+/// `protocol::deepseek_stream` 的模块头）。
+pub struct DeepSeekToChatStream {
+    /// 上游字节流（已描述错误、已装空闲守卫）
+    inner: futures::stream::BoxStream<'static, Result<Bytes, std::io::Error>>,
+    /// 协议状态机（patch 帧 → 增量 chat 帧）
+    machine: ChatFromDeepSeekStream,
+    /// 已翻译待下发的帧
+    pending: VecDeque<Bytes>,
+    /// 上游已结束
+    upstream_done: bool,
+    /// 调试采集器（None = 未开启）
+    capture: Option<Arc<crate::server::core::debug_traffic::TrafficCapture>>,
+}
+
+impl DeepSeekToChatStream {
+    /// `model` 是**上游真名**（下发帧里的 `model` 字段）。
+    pub fn new(
+        response: reqwest::Response,
+        model: &str,
+        telemetry: &Arc<super::usage::RequestTelemetry>,
+    ) -> Self {
+        use futures::StreamExt;
+        let described = response.bytes_stream().map(|item| {
+            item.map_err(|error| {
+                std::io::Error::other(crate::server::core::egress::describe_error_detail(&error))
+            })
+        });
+        let guarded = super::stall::idle_guard(
+            Box::pin(described),
+            Duration::from_millis(crate::server::config::timeout_settings().stream_idle_ms()),
+        );
+        Self {
+            inner: guarded,
+            machine: ChatFromDeepSeekStream::new(model),
+            pending: VecDeque::new(),
+            upstream_done: false,
+            capture: telemetry.capture(),
+        }
+    }
+}
+
+impl Stream for DeepSeekToChatStream {
+    type Item = Result<Bytes, std::io::Error>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        use futures::StreamExt;
+        loop {
+            if let Some(frame) = self.pending.pop_front() {
+                return Poll::Ready(Some(Ok(frame)));
+            }
+            if self.upstream_done {
+                return Poll::Ready(None);
+            }
+            match self.inner.poll_next_unpin(cx) {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(None) => {
+                    self.upstream_done = true;
+                    for frame in self.machine.finish() {
+                        self.pending.push_back(frame);
+                    }
+                }
+                Poll::Ready(Some(Ok(bytes))) => {
+                    if let Some(capture) = &self.capture {
+                        capture.push(&bytes);
+                    }
+                    for frame in self.machine.push(&bytes[..]) {
+                        self.pending.push_back(frame);
+                    }
+                }
+                Poll::Ready(Some(Err(error))) => {
+                    self.upstream_done = true;
+                    return Poll::Ready(Some(Err(error)));
+                }
+            }
+        }
+    }
+}
+
+/// 上游灵犀（WPS）私有 SSE → 标准 chat SSE 的字节流。
+///
+/// 管道同上。`pending_run` 用**模型名**从 `lingxi::client` 的全局表里取
+/// （上游把 run 状态放在侧通道、流结束时才去回写，见那边的说明）。
+pub struct LingxiToChatStream {
+    /// 上游字节流（已描述错误、已装空闲守卫）
+    inner: futures::stream::BoxStream<'static, Result<Bytes, std::io::Error>>,
+    /// 协议状态机（`choices[].text` → `delta.content`）
+    machine: LingxiToChatMachine,
+    /// 已翻译待下发的帧
+    pending: VecDeque<Bytes>,
+    /// 上游已结束
+    upstream_done: bool,
+    /// 调试采集器（None = 未开启）
+    capture: Option<Arc<crate::server::core::debug_traffic::TrafficCapture>>,
+}
+
+impl LingxiToChatStream {
+    /// `model` 是**上游真名**（下发帧里的 `model` 字段）。
+    pub fn new(
+        response: reqwest::Response,
+        model: &str,
+        telemetry: &Arc<super::usage::RequestTelemetry>,
+    ) -> Self {
+        use futures::StreamExt;
+        let described = response.bytes_stream().map(|item| {
+            item.map_err(|error| {
+                std::io::Error::other(crate::server::core::egress::describe_error_detail(&error))
+            })
+        });
+        let guarded = super::stall::idle_guard(
+            Box::pin(described),
+            Duration::from_millis(crate::server::config::timeout_settings().stream_idle_ms()),
+        );
+        let pending_run = crate::server::core::providers::lingxi::client::take_pending_run(model);
+        Self {
+            inner: guarded,
+            machine: LingxiToChatMachine::new(model, pending_run),
+            pending: VecDeque::new(),
+            upstream_done: false,
+            capture: telemetry.capture(),
+        }
+    }
+}
+
+impl Stream for LingxiToChatStream {
+    type Item = Result<Bytes, std::io::Error>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        use futures::StreamExt;
+        loop {
+            if let Some(frame) = self.pending.pop_front() {
+                return Poll::Ready(Some(Ok(frame)));
+            }
+            if self.upstream_done {
+                return Poll::Ready(None);
+            }
+            match self.inner.poll_next_unpin(cx) {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(None) => {
+                    self.upstream_done = true;
+                    for frame in self.machine.finish() {
+                        self.pending.push_back(frame);
+                    }
+                }
+                Poll::Ready(Some(Ok(bytes))) => {
+                    if let Some(capture) = &self.capture {
+                        capture.push(&bytes);
+                    }
+                    for frame in self.machine.push(&bytes[..]) {
+                        self.pending.push_back(frame);
+                    }
+                }
+                Poll::Ready(Some(Err(error))) => {
+                    self.upstream_done = true;
                     return Poll::Ready(Some(Err(error)));
                 }
             }

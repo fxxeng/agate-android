@@ -1750,6 +1750,20 @@ async fn attempt_queue(
                         ctx.telemetry,
                     ))
                 }
+                // DeepSeek 网页版：JSON-Pointer patch 式帧，裸增量按片段类型分流
+                UpstreamResponse::DeepSeekWebSse => {
+                    Box::pin(super::translate::DeepSeekToChatStream::new(
+                        response,
+                        &wire_model,
+                        ctx.telemetry,
+                    ))
+                }
+                // 灵犀（WPS）：正文在 choices[].text，靠 finish_reason 收尾
+                UpstreamResponse::LingxiSse => Box::pin(super::translate::LingxiToChatStream::new(
+                    response,
+                    &wire_model,
+                    ctx.telemetry,
+                )),
                 UpstreamResponse::Chat => {
                     return Err(GatewayError::with_status(
                         500,

@@ -250,9 +250,14 @@ pub(crate) fn refresh_meta(kind: ProviderKind) -> (bool, i64) {
             super::lingxi::models::remote_refreshed(),
             super::lingxi::models::last_refreshed_at(),
         ),
-        ProviderKind::Tabbit | ProviderKind::TabbitIntl => (
-            super::tabbit::models::remote_refreshed(),
-            super::tabbit::models::last_refreshed_at(),
+        // tabbit 国内/国际两站各有一份清单缓存，realm 必须显式传。
+        ProviderKind::Tabbit => (
+            super::tabbit::models::remote_refreshed(super::tabbit::Realm::Cn),
+            super::tabbit::models::last_refreshed_at(super::tabbit::Realm::Cn),
+        ),
+        ProviderKind::TabbitIntl => (
+            super::tabbit::models::remote_refreshed(super::tabbit::Realm::Intl),
+            super::tabbit::models::last_refreshed_at(super::tabbit::Realm::Intl),
         ),
     }
 }

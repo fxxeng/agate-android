@@ -241,6 +241,14 @@ pub enum UpstreamResponse {
     AntigravityGemini,
     /// 智谱清言：SSE 帧混着增量与收尾全文快照（见 `providers::chatglm::plan`）
     ChatglmSnapshot,
+    /// DeepSeek 网页版：JSON-Pointer patch 式 SSE（`p`/`o`/`v` 三字母帧，
+    /// 外加不带 `p` 的裸增量；`response/fragments` 的 `v[0].type` 决定裸增量
+    /// 归思考链还是正文）。翻译机见 `protocol::deepseek_stream`。
+    DeepSeekWebSse,
+    /// 灵犀（WPS）：私有 SSE，正文在 `choices[].text`（不是 `delta.content`），
+    /// 上游不发 `[DONE]`、靠 `finish_reason` 收尾。
+    /// 翻译机见 `providers::lingxi::stream::LingxiToChatMachine`。
+    LingxiSse,
 }
 
 /// 上游错误分类（架构文档 §4.2；三个动作的语义见模块头）。
