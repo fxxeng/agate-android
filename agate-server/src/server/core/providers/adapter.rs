@@ -1008,6 +1008,20 @@ pub trait ProviderAdapter: Send + Sync {
         false
     }
 
+    /// 出站请求体的前置加工（返回 None = 不改动）。
+    ///
+    /// 有的家要在转发前改写 body（补字段 / 换模型名 / 剥字段），这一步在
+    /// 组装完 ChatRequestPlan 之后、真正发送之前执行。
+    fn prepare_body<'a>(
+        &'a self,
+        _account: &'a Value,
+        _body: &'a Value,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Option<Value>, GatewayError>> + Send + 'a>,
+    > {
+        Box::pin(async { Ok(None) })
+    }
+
     /// 图片请求的构造：声明了生图能力的家必须实现（默认返回 400）。
     fn build_image_request(
         &self,

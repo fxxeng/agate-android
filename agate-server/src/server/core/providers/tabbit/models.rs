@@ -383,7 +383,7 @@ pub async fn refresh(
     let proxy = match crate::server::core::proxies::resolve_account_proxy(record.get("proxy")) {
         Some(crate::server::core::proxies::ProxyResolution::Resolved(proxy)) => Some(proxy),
         Some(crate::server::core::proxies::ProxyResolution::Failed(reason)
-            | crate::server::core::proxies::ProxyResolution::Broken(reason)) => {
+            | crate::server::core::proxies::ProxyResolution::Failed(reason)) => {
             return ModelRefreshOutcome::failed(reason);
         }
         None => None,

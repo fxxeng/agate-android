@@ -173,6 +173,14 @@ pub(crate) const AUTOCLAW_PROVIDER_ID: &str =
 pub(crate) const AUTOCLAW_INTL_PROVIDER_ID: &str = crate::server::core::providers::kind_id(
     crate::server::core::providers::ProviderKind::AutoClawIntl,
 );
+pub(crate) const DEEPSEEK_WEB_PROVIDER_ID: &str = crate::server::core::providers::kind_id(
+    crate::server::core::providers::ProviderKind::DeepSeekWeb,
+);
+
+pub(crate) const DOUBAOWORK_PROVIDER_ID: &str = crate::server::core::providers::kind_id(
+    crate::server::core::providers::ProviderKind::Doubaowork,
+);
+
 
 /// Qoder provider id（账号存储内部多处要用；**从注册表推导**，同
 /// [`RACCOON_PROVIDER_ID`] 的口径）。Qoder 的账号形态与推理转发见
