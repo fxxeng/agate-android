@@ -105,6 +105,10 @@ fun AddProviderPage(onBack: () -> Unit, initialProviderId: String? = null) {
         )
     }
     var showPicker by remember { mutableStateOf(false) }
+    /** 当前打开的选择器属于哪一段（Agent / Web）。页面级持有，供弹层读取。 */
+    var pickerSegment by remember { mutableStateOf(ProviderCategory.AGENT) }
+    /** 当前页签：0 Agent / 1 Web / 2 预置 API / 3 自定义。 */
+    var tab by remember { mutableStateOf(0) }
     // 内核探活：登录/落账号都由网关执行，没起来时先给「启动网关」入口
     var kernelUp by remember { mutableStateOf<Boolean?>(null) }
     var loginSession by remember { mutableStateOf<LoginSession?>(null) }
@@ -123,6 +127,10 @@ fun AddProviderPage(onBack: () -> Unit, initialProviderId: String? = null) {
      */
     val wantCustomAdd = CustomProviderOps.isCustomProviderId(initialProviderId)
     var initialCustomTarget by remember { mutableStateOf<CustomProviderOps.Record?>(null) }
+    // 带自定义家 id 进来时直接落到「自定义」段（tab=3），否则停在 Agent 段。
+    LaunchedEffect(wantCustomAdd) {
+        if (wantCustomAdd) tab = 3
+    }
 
     /** 拉一次自定义提供商目录（建/删/改之后都要重拉，界面据此重判「建过没」）。 */
     fun reloadCustom() {
@@ -182,7 +190,7 @@ fun AddProviderPage(onBack: () -> Unit, initialProviderId: String? = null) {
                 .padding(bottom = 24.dp)
         ) {
             // ptabs：v44 胶囊页签（官方 / 中转 / 自定义），中转与自定义为占位
-            var tab by remember { mutableStateOf(if (wantCustomAdd) 2 else 0) }
+
             Row(
                 modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -254,7 +262,7 @@ fun AddProviderPage(onBack: () -> Unit, initialProviderId: String? = null) {
                             .fillMaxWidth()
                             .background(C.insetBg, RoundedCornerShape(14.dp))
                             .border(1.dp, C.accent.copy(alpha = 0.45f), RoundedCornerShape(14.dp))
-                            .clickable { showPicker = true }
+                            .clickable { pickerSegment = segment; showPicker = true }
                             .padding(horizontal = 12.dp, vertical = 10.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
@@ -426,7 +434,7 @@ fun AddProviderPage(onBack: () -> Unit, initialProviderId: String? = null) {
         ProviderPickerSheet(
             currentId = current?.id,
             // tab 1 = Web 段、tab 0 = Agent 段（与上面分段渲染同一判据）
-            category = if (tab == 1) ProviderCategory.WEB else ProviderCategory.AGENT,
+            category = pickerSegment,
             onPick = {
                 current = it
                 showPicker = false
