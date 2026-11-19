@@ -1348,6 +1348,11 @@ pub async fn add_account(state: &ServerState, body: &Bytes) -> Response {
         | Some(crate::server::core::providers::ProviderKind::Astudio)
         | Some(crate::server::core::providers::ProviderKind::Kiro)
         | Some(crate::server::core::providers::ProviderKind::QuWork)
+        | Some(crate::server::core::providers::ProviderKind::DeepSeekWeb)
+        | Some(crate::server::core::providers::ProviderKind::Doubaowork)
+        | Some(crate::server::core::providers::ProviderKind::Lingxi)
+        | Some(crate::server::core::providers::ProviderKind::Tabbit)
+        | Some(crate::server::core::providers::ProviderKind::TabbitIntl)
         | None => {
             let provider = crate::server::core::providers::kind_from_id(provider)
                 .map(crate::server::core::providers::kind_id);
