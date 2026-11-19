@@ -130,9 +130,7 @@ impl AccountStore {
                 let upstream = display_name.trim();
                 (!upstream.is_empty()).then(|| truncate_chars(upstream, MAX_NAME_LENGTH))
             })
-            .unwrap_or_else(|| {
-                format!("ModelScope {} {}", region.label(), token_tail_of(token))
-            });
+            .unwrap_or_else(|| format!("ModelScope {} {}", region.label(), token_tail_of(token)));
         let priority = match existing.as_ref() {
             Some(record) => record.priority(),
             None => {
@@ -161,7 +159,12 @@ impl AccountStore {
         record.insert("priority".to_string(), Value::from(priority));
         record.insert(
             "enabled".to_string(),
-            Value::Bool(existing.as_ref().map(StoredAccount::enabled).unwrap_or(true)),
+            Value::Bool(
+                existing
+                    .as_ref()
+                    .map(StoredAccount::enabled)
+                    .unwrap_or(true),
+            ),
         );
         record.insert(
             "addedAt".to_string(),

@@ -77,8 +77,7 @@ pub fn parse_identity(payload: &Value) -> Identity {
 
 /// 用令牌探一次身份（同时也是当日签到，见模块头）。
 pub async fn identify(region: Region, token: &str) -> Result<Identity, String> {
-    let (status, payload) =
-        client::site_get(region, LOGIN_INFO_PATH, token, "令牌校验").await?;
+    let (status, payload) = client::site_get(region, LOGIN_INFO_PATH, token, "令牌校验").await?;
     if status == 401 || status == 403 {
         return Err(client::expired_message(region, status, true));
     }
@@ -88,7 +87,10 @@ pub async fn identify(region: Region, token: &str) -> Result<Identity, String> {
     if !client::succeeded(&payload) {
         let message = client::message_of(&payload);
         return Err(if message.trim().is_empty() {
-            format!("ModelScope 令牌校验失败（上游 Code={}）", client::code_of(&payload))
+            format!(
+                "ModelScope 令牌校验失败（上游 Code={}）",
+                client::code_of(&payload)
+            )
         } else {
             format!("ModelScope 令牌校验失败：{message}")
         });

@@ -137,11 +137,11 @@ impl MultipartForm {
             let needle = boundary.as_bytes();
             // 逐段检查：图片是二进制，撞上分隔符时上游会把图切错，而它回的
             // 往往是一个 200 —— 用户看到的是「图是花的」，不是「请求失败」。
-            if self
-                .parts
-                .iter()
-                .any(|part| part.content().windows(needle.len()).any(|window| window == needle))
-            {
+            if self.parts.iter().any(|part| {
+                part.content()
+                    .windows(needle.len())
+                    .any(|window| window == needle)
+            }) {
                 continue;
             }
             return Ok(MultipartBody {
@@ -187,7 +187,9 @@ impl MultipartForm {
                         )
                         .as_bytes(),
                     );
-                    out.extend_from_slice(format!("Content-Type: {content_type}\r\n\r\n").as_bytes());
+                    out.extend_from_slice(
+                        format!("Content-Type: {content_type}\r\n\r\n").as_bytes(),
+                    );
                     out.extend_from_slice(bytes);
                 }
             }
@@ -278,8 +280,12 @@ mod tests {
     fn file_bytes_survive_verbatim() {
         let raw: &[u8] = b"\x89PNG\r\n\x1a\n--not-a-boundary\r\n\x00tail";
         let mut form = MultipartForm::new();
-        form.text("prompt", "改成蓝色背景")
-            .file("image", "reference-1.png", "image/png", raw.to_vec());
+        form.text("prompt", "改成蓝色背景").file(
+            "image",
+            "reference-1.png",
+            "image/png",
+            raw.to_vec(),
+        );
         let body = body_of(&form);
 
         let needle = raw;
@@ -305,7 +311,10 @@ mod tests {
         form.file("image", "reference-1.png", "image/png", vec![1u8, 2, 3])
             .file("image", "reference-2.jpg", "image/jpeg", vec![4u8, 5]);
         let body = body_of(&form);
-        assert_eq!(body.preview["image"][0]["filename"], json!("reference-1.png"));
+        assert_eq!(
+            body.preview["image"][0]["filename"],
+            json!("reference-1.png")
+        );
         assert_eq!(body.preview["image"][1]["bytes"], json!(2));
         // 文件内容**不**进 preview（日志里不该出现几 MB 的二进制）
         assert!(!body.preview.to_string().contains("reference-2.jpg\","));

@@ -42,7 +42,9 @@ fn pick_number(data: &Value, key: &str) -> Option<f64> {
     if let Some(number) = value.as_f64() {
         return Some(number);
     }
-    value.as_str().and_then(|text| text.trim().parse::<f64>().ok())
+    value
+        .as_str()
+        .and_then(|text| text.trim().parse::<f64>().ok())
 }
 
 /// 查询魔粒余额与今日用量。
@@ -64,7 +66,10 @@ pub async fn query(region: Region, token: &str) -> Result<Value, String> {
     if !client::succeeded(&balance_payload) {
         let message = client::message_of(&balance_payload);
         return Err(if message.trim().is_empty() {
-            format!("魔粒余额查询失败（上游 Code={}）", client::code_of(&balance_payload))
+            format!(
+                "魔粒余额查询失败（上游 Code={}）",
+                client::code_of(&balance_payload)
+            )
         } else {
             format!("魔粒余额查询失败：{message}")
         });
@@ -80,7 +85,10 @@ pub async fn query(region: Region, token: &str) -> Result<Value, String> {
             Ok((status, payload))
                 if (200..300).contains(&status) && client::succeeded(&payload) =>
             {
-                (pick_number(&client::data_of(&payload), "currentUsagePerDay"), payload)
+                (
+                    pick_number(&client::data_of(&payload), "currentUsagePerDay"),
+                    payload,
+                )
             }
             Ok((_, payload)) => (None, payload),
             Err(error) => {
@@ -135,6 +143,9 @@ mod tests {
         assert_eq!(pick_number(&data, "available_balance"), Some(106.5));
         assert_eq!(pick_number(&data, "frozen_amount"), Some(2.0));
         assert_eq!(pick_number(&data, "missing"), None);
-        assert_eq!(pick_number(&data, "available_balance").unwrap_or(0.0), 106.5);
+        assert_eq!(
+            pick_number(&data, "available_balance").unwrap_or(0.0),
+            106.5
+        );
     }
 }

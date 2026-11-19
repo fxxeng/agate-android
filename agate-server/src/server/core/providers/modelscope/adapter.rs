@@ -39,7 +39,9 @@ impl ModelscopeAdapter {
     /// 国内站实例
     pub const CN: ModelscopeAdapter = ModelscopeAdapter { region: Region::Cn };
     /// 国际站实例
-    pub const INTL: ModelscopeAdapter = ModelscopeAdapter { region: Region::Intl };
+    pub const INTL: ModelscopeAdapter = ModelscopeAdapter {
+        region: Region::Intl,
+    };
 }
 
 pub static MODELSCOPE_ADAPTER: ModelscopeAdapter = ModelscopeAdapter::CN;
@@ -164,7 +166,9 @@ impl ProviderAdapter for ModelscopeAdapter {
 
         if errors::is_insufficient_balance(status, raw) {
             return UpstreamErrorClass::QuotaLimited {
-                reset_at: Some(errors::next_day_boundary_ms(crate::server::logging::now_ms())),
+                reset_at: Some(errors::next_day_boundary_ms(
+                    crate::server::logging::now_ms(),
+                )),
                 message: format!(
                     "ModelScope {label}账号的魔粒已耗尽（上游：{raw}），将在下一个自然日\
                      （北京时间 0 点）自动恢复；给账号充值后立即恢复"
@@ -175,7 +179,9 @@ impl ProviderAdapter for ModelscopeAdapter {
         }
         if errors::is_unverified_account(status, raw) {
             return UpstreamErrorClass::QuotaLimited {
-                reset_at: Some(errors::next_day_boundary_ms(crate::server::logging::now_ms())),
+                reset_at: Some(errors::next_day_boundary_ms(
+                    crate::server::logging::now_ms(),
+                )),
                 message: format!(
                     "ModelScope {label}账号未完成邮箱验证，魔粒推理接口拒绝服务\
                      （上游：{raw}）——请到魔搭账号设置页完成邮箱验证，验证后次日自动恢复"
@@ -195,7 +201,11 @@ impl ProviderAdapter for ModelscopeAdapter {
                 status,
             };
         }
-        UpstreamErrorClass::Fatal { status, message, upstream_code }
+        UpstreamErrorClass::Fatal {
+            status,
+            message,
+            upstream_code,
+        }
     }
 
     /// 取可用令牌。本家**没有续期**：只做「记录里有没有令牌」的检查，服务端拒了
@@ -258,10 +268,7 @@ impl ProviderAdapter for ModelscopeAdapter {
         _client_headers: &HeaderMap,
         operation: crate::server::core::providers::images::ImageOperation,
     ) -> Result<crate::server::core::providers::images::ImageRequestPlan, GatewayError> {
-        let wire_model = body
-            .get("model")
-            .and_then(Value::as_str)
-            .unwrap_or("");
+        let wire_model = body.get("model").and_then(Value::as_str).unwrap_or("");
         // 操作类型由**入口**给（`/generations` 还是 `/edits`），不再从型号反推。
         // 型号能力在这里只做**一致性校验**：两个系列互斥（见 capabilities），
         // 拿生图型号去打编辑入口时上游会回一句看不出因果的 400，不如在这里说清。
@@ -288,9 +295,8 @@ impl ProviderAdapter for ModelscopeAdapter {
         &'a self,
         store: &'a AccountStore,
         account_id: &'a str,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<Value, GatewayError>> + Send + 'a>,
-    > {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value, GatewayError>> + Send + 'a>>
+    {
         Box::pin(async move {
             let record = store.modelscope_account_record(self.region, account_id);
             if !account_id.is_empty() && record.is_none() {
@@ -324,7 +330,10 @@ impl ProviderAdapter for ModelscopeAdapter {
                 if account_id.is_empty() {
                     crate::server::logging::verbose(
                         "[Models]",
-                        &format!("ModelScope {}模型目录刷新跳过：尚未添加账号", self.region.label()),
+                        &format!(
+                            "ModelScope {}模型目录刷新跳过：尚未添加账号",
+                            self.region.label()
+                        ),
                     );
                     return ModelRefreshOutcome::unchanged();
                 }
@@ -337,7 +346,6 @@ impl ProviderAdapter for ModelscopeAdapter {
             models::refresh(self.region, &token, force).await
         })
     }
-
 }
 
 #[cfg(test)]
@@ -350,7 +358,9 @@ mod tests {
     fn request_body_injects_include_usage() {
         let out = request_body(&json!({"model": "q", "stream": true}));
         assert_eq!(
-            out.get("stream_options").and_then(|o| o.get("include_usage")).and_then(Value::as_bool),
+            out.get("stream_options")
+                .and_then(|o| o.get("include_usage"))
+                .and_then(Value::as_bool),
             Some(true)
         );
         // 其余键原样保留
@@ -363,7 +373,10 @@ mod tests {
         let out = request_body(&json!({"stream_options": {"foo": 1, "include_usage": false}}));
         let options = out.get("stream_options").cloned().unwrap_or(Value::Null);
         assert_eq!(options.get("foo").and_then(Value::as_i64), Some(1));
-        assert_eq!(options.get("include_usage").and_then(Value::as_bool), Some(true));
+        assert_eq!(
+            options.get("include_usage").and_then(Value::as_bool),
+            Some(true)
+        );
     }
 
     /// 畸形 body 原样返回，不在这一层报错

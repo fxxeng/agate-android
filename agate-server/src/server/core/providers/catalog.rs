@@ -72,9 +72,7 @@ pub fn manifest_for_provider(provider_id: &str) -> Vec<Value> {
     }
     crate::server::core::custom_providers::list()
         .into_iter()
-        .find(|provider| {
-            provider.get("id").and_then(Value::as_str) == Some(provider_id)
-        })
+        .find(|provider| provider.get("id").and_then(Value::as_str) == Some(provider_id))
         .and_then(|provider| provider.get("models").and_then(Value::as_array).cloned())
         .unwrap_or_default()
 }

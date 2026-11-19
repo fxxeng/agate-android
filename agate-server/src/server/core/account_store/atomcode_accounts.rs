@@ -194,11 +194,23 @@ impl AccountStore {
         // 驼峰与下划线两种形态都认）。空值不落 —— 写空串等于把「上游没给」伪装成
         // 「给了一个空值」，展示名与续期合并都会据此走错分支。
         for (key, value) in [
-            ("userId", credentials::pick(secret, &["userId", "user_id", "uid"])),
-            ("username", credentials::pick(secret, &["username", "userName"])),
-            ("nickname", credentials::pick(secret, &["nickname", "displayName"])),
+            (
+                "userId",
+                credentials::pick(secret, &["userId", "user_id", "uid"]),
+            ),
+            (
+                "username",
+                credentials::pick(secret, &["username", "userName"]),
+            ),
+            (
+                "nickname",
+                credentials::pick(secret, &["nickname", "displayName"]),
+            ),
             ("email", credentials::pick(secret, &["email"])),
-            ("avatarUrl", credentials::pick(secret, &["avatarUrl", "avatar_url"])),
+            (
+                "avatarUrl",
+                credentials::pick(secret, &["avatarUrl", "avatar_url"]),
+            ),
         ] {
             if !value.is_empty() {
                 record.insert(key.to_string(), Value::String(value));
@@ -215,7 +227,12 @@ impl AccountStore {
         record.insert("priority".to_string(), Value::from(priority));
         record.insert(
             "enabled".to_string(),
-            Value::Bool(existing.as_ref().map(StoredAccount::enabled).unwrap_or(true)),
+            Value::Bool(
+                existing
+                    .as_ref()
+                    .map(StoredAccount::enabled)
+                    .unwrap_or(true),
+            ),
         );
         record.insert("addedAt".to_string(), Value::from(added_at));
         record.insert("updatedAt".to_string(), Value::from(now));
@@ -268,7 +285,10 @@ impl AccountStore {
         }
         record.set("accessToken", Value::String(access_token.to_string()));
         if !refresh_token.trim().is_empty() {
-            record.set("refreshToken", Value::String(refresh_token.trim().to_string()));
+            record.set(
+                "refreshToken",
+                Value::String(refresh_token.trim().to_string()),
+            );
         }
         record.set("tokenTail", Value::String(token_tail_of(access_token)));
         if expires_at > 0 {
@@ -357,11 +377,17 @@ mod tests {
     /// `expiresIn` 的数字字符串也要认（粘贴来的 JSON 常见这种形态）
     #[test]
     fn expires_in_accepts_numeric_strings() {
-        assert_eq!(credential_seconds(&json!({"expiresIn": 600}), &["expiresIn"]), 600);
+        assert_eq!(
+            credential_seconds(&json!({"expiresIn": 600}), &["expiresIn"]),
+            600
+        );
         assert_eq!(
             credential_seconds(&json!({"expiresIn": "600"}), &["expiresIn"]),
             600
         );
-        assert_eq!(credential_seconds(&json!({"expiresIn": "junk"}), &["expiresIn"]), 0);
+        assert_eq!(
+            credential_seconds(&json!({"expiresIn": "junk"}), &["expiresIn"]),
+            0
+        );
     }
 }

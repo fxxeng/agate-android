@@ -28,8 +28,8 @@
 
 use serde_json::{Map, Value};
 
-use crate::server::core::providers::lobsterai::oauth::TokenBundle;
 use crate::server::core::providers::kind_id;
+use crate::server::core::providers::lobsterai::oauth::TokenBundle;
 use crate::server::core::providers::ProviderKind;
 use crate::server::logging;
 
@@ -167,16 +167,28 @@ impl AccountStore {
                 Value::String(bundle.refresh_token.trim().to_string()),
             );
         }
-        record.insert("tokenTail".to_string(), Value::String(token_tail_of(access_token)));
+        record.insert(
+            "tokenTail".to_string(),
+            Value::String(token_tail_of(access_token)),
+        );
         // 三件载荷件（续期的全部前提，见模块头）
         record.insert(
             "uuid".to_string(),
             Value::String(installation_uuid.to_string()),
         );
-        record.insert("firstKeyfrom".to_string(), Value::String(keyfrom.to_string()));
-        record.insert("latestKeyfrom".to_string(), Value::String(keyfrom.to_string()));
+        record.insert(
+            "firstKeyfrom".to_string(),
+            Value::String(keyfrom.to_string()),
+        );
+        record.insert(
+            "latestKeyfrom".to_string(),
+            Value::String(keyfrom.to_string()),
+        );
         if !bundle.uid.trim().is_empty() {
-            record.insert("uid".to_string(), Value::String(bundle.uid.trim().to_string()));
+            record.insert(
+                "uid".to_string(),
+                Value::String(bundle.uid.trim().to_string()),
+            );
         }
         if !bundle.user_id.trim().is_empty() {
             record.insert(
@@ -195,7 +207,12 @@ impl AccountStore {
         record.insert("priority".to_string(), Value::from(priority));
         record.insert(
             "enabled".to_string(),
-            Value::Bool(existing.as_ref().map(StoredAccount::enabled).unwrap_or(true)),
+            Value::Bool(
+                existing
+                    .as_ref()
+                    .map(StoredAccount::enabled)
+                    .unwrap_or(true),
+            ),
         );
         record.insert(
             "addedAt".to_string(),
@@ -256,7 +273,10 @@ impl AccountStore {
         }
         record.set("accessToken", Value::String(access_token.to_string()));
         if !refresh_token.trim().is_empty() {
-            record.set("refreshToken", Value::String(refresh_token.trim().to_string()));
+            record.set(
+                "refreshToken",
+                Value::String(refresh_token.trim().to_string()),
+            );
         }
         record.set("tokenTail", Value::String(token_tail_of(access_token)));
         if expires_at > 0 {
@@ -317,7 +337,10 @@ mod tests {
         let record = StoredAccount::from_map({
             let mut map = Map::new();
             map.insert("id".into(), Value::String("lobsterai-42".into()));
-            map.insert("provider".into(), Value::String(LOBSTERAI_PROVIDER_ID.into()));
+            map.insert(
+                "provider".into(),
+                Value::String(LOBSTERAI_PROVIDER_ID.into()),
+            );
             map.insert("accessToken".into(), Value::String("at".into()));
             map.insert("refreshToken".into(), Value::String("rt".into()));
             map.insert("uuid".into(), Value::String("u-1".into()));

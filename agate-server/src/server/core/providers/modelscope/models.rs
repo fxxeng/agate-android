@@ -74,7 +74,9 @@ fn state(region: Region) -> &'static Mutex<Option<CatalogState>> {
 /// 模块头）。没有落盘缓存时进程一重启就是**空清单**，直到后台刷新才恢复。
 fn with_state<R>(region: Region, f: impl FnOnce(&mut Option<CatalogState>) -> R) -> R {
     let mutex = state(region);
-    let mut guard = mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut guard = mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if guard.is_none() {
         if let Some(cached) = restore_from_cache(region) {
             *guard = Some(cached);
@@ -138,20 +140,26 @@ pub fn parse_models(payload: &Value) -> Vec<Value> {
 /// 本地区当前的模型清单（内存缓存；没有时为空，由刷新路径填）
 pub fn list(region: Region) -> Vec<Value> {
     with_state(region, |slot| {
-        slot.as_ref().map(|state| state.models.clone()).unwrap_or_default()
+        slot.as_ref()
+            .map(|state| state.models.clone())
+            .unwrap_or_default()
     })
 }
 
 /// 清单是否来自远程（「有内容」就等于远程拉到过 —— 本家没有内置兜底表）
 pub fn remote_refreshed(region: Region) -> bool {
     with_state(region, |slot| {
-        slot.as_ref().map(|state| !state.models.is_empty()).unwrap_or(false)
+        slot.as_ref()
+            .map(|state| !state.models.is_empty())
+            .unwrap_or(false)
     })
 }
 
 /// 上次拉取时刻（毫秒；没拉过给 0）
 pub fn last_refreshed_at(region: Region) -> i64 {
-    with_state(region, |slot| slot.as_ref().map(|state| state.fetched_at).unwrap_or(0))
+    with_state(region, |slot| {
+        slot.as_ref().map(|state| state.fetched_at).unwrap_or(0)
+    })
 }
 
 /// 拉一次模型目录并落地（内存缓存）。
@@ -183,16 +191,17 @@ pub async fn refresh(region: Region, token: &str, force: bool) -> ModelRefreshOu
     }
     let models = parse_models(&payload);
     if models.is_empty() {
-        return ModelRefreshOutcome::failed(
-            "ModelScope 模型目录为空或格式不认识（保留现有清单）",
-        );
+        return ModelRefreshOutcome::failed("ModelScope 模型目录为空或格式不认识（保留现有清单）");
     }
     let count = models.len();
     // 落盘（进程重启后读回）：本家没有兜底表，这条缓存是「重启后还有模型」的
     // 唯一保障。两个站点写各自的 scope（见 `scope_of`）。
     crate::server::core::providers::catalog_cache::save(scope_of(region), &models, now);
     with_state(region, |slot| {
-        *slot = Some(CatalogState { models, fetched_at: now });
+        *slot = Some(CatalogState {
+            models,
+            fetched_at: now,
+        });
     });
     ModelRefreshOutcome::refreshed(count)
 }
@@ -213,8 +222,14 @@ mod tests {
             ]
         }));
         assert_eq!(parsed.len(), 1);
-        assert_eq!(parsed[0].get("name").and_then(Value::as_str), Some("Qwen/Qwen3.8-Flash-Next"));
-        assert_eq!(parsed[0].get("supportsToolCall").and_then(Value::as_bool), Some(true));
+        assert_eq!(
+            parsed[0].get("name").and_then(Value::as_str),
+            Some("Qwen/Qwen3.8-Flash-Next")
+        );
+        assert_eq!(
+            parsed[0].get("supportsToolCall").and_then(Value::as_bool),
+            Some(true)
+        );
         assert!(parsed[0].get("supportsReasoning").is_none());
     }
 

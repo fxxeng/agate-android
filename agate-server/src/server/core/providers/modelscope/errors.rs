@@ -59,7 +59,9 @@ fn contains_ci(haystack: &str, needle: &str) -> bool {
     if needle.is_empty() {
         return false;
     }
-    haystack.to_ascii_lowercase().contains(&needle.to_ascii_lowercase())
+    haystack
+        .to_ascii_lowercase()
+        .contains(&needle.to_ascii_lowercase())
 }
 
 /// `now_ms` 之后最近的**北京时间零点**（毫秒时间戳，纯函数）。
@@ -86,7 +88,10 @@ mod tests {
     fn account_level_verdicts_need_both_status_and_text() {
         assert!(is_insufficient_balance(429, "Insufficient Balance"));
         assert!(!is_insufficient_balance(400, "insufficient balance"));
-        assert!(is_unverified_account(403, "please finish Email Verification"));
+        assert!(is_unverified_account(
+            403,
+            "please finish Email Verification"
+        ));
         assert!(!is_unverified_account(400, "email verification"));
     }
 
