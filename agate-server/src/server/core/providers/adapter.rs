@@ -1188,6 +1188,9 @@ pub fn adapter_for(kind: ProviderKind) -> &'static dyn ProviderAdapter {
         ProviderKind::ModelscopeIntl => &super::modelscope::MODELSCOPE_INTL_ADAPTER,
         ProviderKind::Atomcode => &super::atomcode::ATOMCODE_ADAPTER,
         ProviderKind::LobsterAi => &super::lobsterai::LOBSTERAI_ADAPTER,
+        ProviderKind::Astudio => &super::astudio::ASTUDIO_ADAPTER,
+        ProviderKind::Kiro => &super::kiro::KIRO_ADAPTER,
+        ProviderKind::QuWork => &super::quwork::QUWORK_ADAPTER,
     }
 }
 
@@ -1294,6 +1297,10 @@ pub fn implemented_kinds() -> Vec<ProviderKind> {
         ProviderKind::Atomcode,
         // LobsterAI：远程目录（/api/models/available）。
         ProviderKind::LobsterAi,
+        // AStudio / Kiro / QuWork：均有远程目录。
+        ProviderKind::Astudio,
+        ProviderKind::Kiro,
+        ProviderKind::QuWork,
     ]
 }
 

@@ -227,6 +227,18 @@ pub(crate) fn refresh_meta(kind: ProviderKind) -> (bool, i64) {
             super::atomcode::models::remote_refreshed(),
             super::atomcode::models::last_refreshed_at(),
         ),
+        ProviderKind::Astudio => (
+            super::astudio::models::remote_refreshed(),
+            super::astudio::models::last_refreshed_at(),
+        ),
+        ProviderKind::Kiro => (
+            super::kiro::models::remote_refreshed(),
+            super::kiro::models::last_refreshed_at(),
+        ),
+        ProviderKind::QuWork => (
+            super::quwork::models::remote_refreshed(),
+            super::quwork::models::last_refreshed_at(),
+        ),
     }
 }
 
