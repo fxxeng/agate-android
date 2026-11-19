@@ -236,10 +236,7 @@ pub fn normalize_paste(payload: &Value) -> Result<Value, GatewayError> {
         // 且查库看不出原因（令牌字段真的不在）。
         let refresh_token = pick(payload, &["refreshToken", "refresh_token"]);
         if !refresh_token.is_empty() {
-            object.insert(
-                "refreshToken".to_string(),
-                Value::String(refresh_token),
-            );
+            object.insert("refreshToken".to_string(), Value::String(refresh_token));
         }
         // 搬运完成后删掉下划线原键，让落盘形态单一
         object.remove("access_token");
@@ -322,7 +319,10 @@ mod tests {
     /// 身份优先级：userId → username；落盘 id 带 `atomcode-` 前缀
     #[test]
     fn identity_prefers_user_id_and_ids_are_prefixed() {
-        assert_eq!(identity_of(&json!({"userId": "42", "username": "qq_1"})), "42");
+        assert_eq!(
+            identity_of(&json!({"userId": "42", "username": "qq_1"})),
+            "42"
+        );
         assert_eq!(identity_of(&json!({"username": "qq_1"})), "qq_1");
         assert_eq!(identity_of(&json!({})), "");
         assert_eq!(account_id_of(&json!({"userId": "42"})), "atomcode-42");
@@ -337,10 +337,7 @@ mod tests {
     fn display_name_chain() {
         assert_eq!(display_name_of(&json!({"name": "我的号"})), "我的号");
         assert_eq!(display_name_of(&json!({"username": "qq_1"})), "qq_1");
-        assert_eq!(
-            display_name_of(&json!({"userId": "42"})),
-            "AtomGit 账号 42"
-        );
+        assert_eq!(display_name_of(&json!({"userId": "42"})), "AtomGit 账号 42");
         assert_eq!(display_name_of(&json!({})), "AtomCode 账号");
     }
 
@@ -365,12 +362,11 @@ mod tests {
         );
         // 添加请求的字段不能进账号库
         assert!(secret.get("provider").is_none());
-        assert_eq!(
-            secret.get("name").and_then(Value::as_str),
-            Some("qq_1")
-        );
+        assert_eq!(secret.get("name").and_then(Value::as_str), Some("qq_1"));
         // 官方形态（下划线）也认，并统一成驼峰落盘
-        let snake = normalize_paste(&json!({"access_token": "b"})).ok().unwrap_or(Value::Null);
+        let snake = normalize_paste(&json!({"access_token": "b"}))
+            .ok()
+            .unwrap_or(Value::Null);
         assert_eq!(snake.get("accessToken").and_then(Value::as_str), Some("b"));
         assert!(snake.get("access_token").is_none());
         assert_eq!(
@@ -390,17 +386,20 @@ mod tests {
             user_id: "42".to_string(),
             ..Default::default()
         });
-        assert_eq!(secret.get("accessToken").and_then(Value::as_str), Some("at"));
-        assert_eq!(secret.get("expiresIn").and_then(Value::as_i64), Some(604_800));
+        assert_eq!(
+            secret.get("accessToken").and_then(Value::as_str),
+            Some("at")
+        );
+        assert_eq!(
+            secret.get("expiresIn").and_then(Value::as_i64),
+            Some(604_800)
+        );
         assert_eq!(secret.get("userId").and_then(Value::as_str), Some("42"));
         assert!(secret.get("refreshToken").is_none());
         assert!(secret.get("email").is_none());
         // 展示名的取值链是 `username → name → user_id → "AtomGit 账号"`
         // （见 `credentials::display_name`）：本例给了 `user_id="42"`，
         // 因此显示名就是 "42" —— 中性兜底只在三者**全空**时才出现
-        assert_eq!(
-            secret.get("name").and_then(Value::as_str),
-            Some("42")
-        );
+        assert_eq!(secret.get("name").and_then(Value::as_str), Some("42"));
     }
 }

@@ -229,11 +229,19 @@ mod tests {
     #[test]
     fn record_reads_token_through_alias_chain() {
         let read = |value: Value| from_record(Some(&value)).map(|c| c.access_token);
-        assert_eq!(read(json!({"accessToken": "a"})).ok(), Some("a".to_string()));
-        assert_eq!(read(json!({"access_token": "b"})).ok(), Some("b".to_string()));
+        assert_eq!(
+            read(json!({"accessToken": "a"})).ok(),
+            Some("a".to_string())
+        );
+        assert_eq!(
+            read(json!({"access_token": "b"})).ok(),
+            Some("b".to_string())
+        );
         assert_eq!(read(json!({"token": "c"})).ok(), Some("c".to_string()));
         assert_eq!(
-            from_record(Some(&json!({}))).err().map(|error| error.status_code),
+            from_record(Some(&json!({})))
+                .err()
+                .map(|error| error.status_code),
             Some(401)
         );
         assert!(from_record(None).is_err());
@@ -257,7 +265,10 @@ mod tests {
     /// 展示名优先级：用户名 → 显示名 → 用户 id → 兜底文案
     #[test]
     fn display_name_prefers_username() {
-        let mut bundle = TokenBundle { username: "qq_1".into(), ..Default::default() };
+        let mut bundle = TokenBundle {
+            username: "qq_1".into(),
+            ..Default::default()
+        };
         assert_eq!(display_name(&bundle), "qq_1");
         bundle.username.clear();
         bundle.name = "张三".into();

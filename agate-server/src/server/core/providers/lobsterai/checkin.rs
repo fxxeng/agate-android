@@ -146,9 +146,11 @@ fn credit_from_result(result: &Value) -> (f64, bool) {
         let Some(value) = result.get(key) else {
             continue;
         };
-        let number = value
-            .as_f64()
-            .or_else(|| value.as_str().and_then(|text| text.trim().parse::<f64>().ok()));
+        let number = value.as_f64().or_else(|| {
+            value
+                .as_str()
+                .and_then(|text| text.trim().parse::<f64>().ok())
+        });
         if let Some(number) = number {
             return (number, true);
         }
@@ -175,11 +177,16 @@ async fn request_json(
     ];
     let response = send_raw(method, url, body, &headers, None, Some(REQUEST_TIMEOUT_MS))
         .await
-        .map_err(|error| GatewayError::with_status(502, format!("LobsterAI {what}请求失败: {error}")))?;
+        .map_err(|error| {
+            GatewayError::with_status(502, format!("LobsterAI {what}请求失败: {error}"))
+        })?;
     if response.status == 401 || response.status == 403 {
         return Err(GatewayError::with_status(
             401,
-            format!("LobsterAI 凭据已失效（HTTP {}），请重新登录该账号", response.status),
+            format!(
+                "LobsterAI 凭据已失效（HTTP {}），请重新登录该账号",
+                response.status
+            ),
         ));
     }
     if !(200..300).contains(&response.status) {
@@ -215,7 +222,10 @@ fn already_claimed_result(activity_code: &str) -> Value {
 }
 
 /// 拿一个账号的凭证（读不到就报 401）
-fn credentials_for(store: &AccountStore, account_id: &str) -> Result<LobsterCredentials, GatewayError> {
+fn credentials_for(
+    store: &AccountStore,
+    account_id: &str,
+) -> Result<LobsterCredentials, GatewayError> {
     from_record(store.lobsterai_account_record(account_id).as_ref())
 }
 
@@ -308,7 +318,10 @@ pub async fn claim_for_account(
     };
     crate::server::logging::log(
         "[Checkin]",
-        &format!("LobsterAI {account_id}: {message}（活动 {}）", slot.activity_code),
+        &format!(
+            "LobsterAI {account_id}: {message}（活动 {}）",
+            slot.activity_code
+        ),
     );
     let mut outcome = json!({
         "success": true,
@@ -348,7 +361,9 @@ mod tests {
     fn both_prechecks_are_checked() {
         assert!(claimed_today(&json!({"state": {"claimedToday": true}})));
         assert!(!claimed_today(&json!({"state": {"claimedToday": false}})));
-        assert!(has_check_in_action(&json!({"actions": ["sign_in", "check_in"]})));
+        assert!(has_check_in_action(
+            &json!({"actions": ["sign_in", "check_in"]})
+        ));
         assert!(!has_check_in_action(&json!({"actions": ["sign_in"]})));
         // 活动在、但今天不可签：两支的结论必须不同（只看 claimedToday 会漏这格）
         let inactive = json!({"state": {"claimedToday": false}, "actions": ["sign_in"]});
@@ -358,8 +373,14 @@ mod tests {
     /// 发放额三段回退：creditsGranted → rewardCredits → credits
     #[test]
     fn credit_falls_back_through_three_keys() {
-        assert_eq!(credit_from_result(&json!({"creditsGranted": 100})), (100.0, true));
-        assert_eq!(credit_from_result(&json!({"rewardCredits": "50"})), (50.0, true));
+        assert_eq!(
+            credit_from_result(&json!({"creditsGranted": 100})),
+            (100.0, true)
+        );
+        assert_eq!(
+            credit_from_result(&json!({"rewardCredits": "50"})),
+            (50.0, true)
+        );
         assert_eq!(credit_from_result(&json!({"credits": 3.5})), (3.5, true));
         assert_eq!(credit_from_result(&json!({})), (0.0, false));
     }
@@ -380,7 +401,10 @@ mod tests {
     #[test]
     fn neutral_messages_are_distinct() {
         let claimed = already_claimed_result("daily");
-        assert_eq!(claimed.get("msg").and_then(Value::as_str), Some("今天已签到"));
+        assert_eq!(
+            claimed.get("msg").and_then(Value::as_str),
+            Some("今天已签到")
+        );
         assert_eq!(
             claimed.get("alreadyCompleted").and_then(Value::as_bool),
             Some(true)
@@ -399,6 +423,9 @@ mod tests {
     fn idempotency_key_is_uuid4() {
         let key = super::super::ids::uuid_v4();
         assert_eq!(key.len(), 36);
-        assert_eq!(key.split('-').nth(2).and_then(|part| part.chars().next()), Some('4'));
+        assert_eq!(
+            key.split('-').nth(2).and_then(|part| part.chars().next()),
+            Some('4')
+        );
     }
 }

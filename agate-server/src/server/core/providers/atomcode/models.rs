@@ -200,10 +200,16 @@ fn to_manifest_value(entry: &ModelEntry) -> Value {
     let mut object = Map::new();
     object.insert("id".to_string(), Value::String(entry.gateway_id.clone()));
     if !entry.display_name.is_empty() {
-        object.insert("name".to_string(), Value::String(entry.display_name.clone()));
+        object.insert(
+            "name".to_string(),
+            Value::String(entry.display_name.clone()),
+        );
     }
     if entry.context_window > 0 {
-        object.insert("maxInputTokens".to_string(), Value::from(entry.context_window));
+        object.insert(
+            "maxInputTokens".to_string(),
+            Value::from(entry.context_window),
+        );
     }
     // 模态位：上游**没给**时按不支持处理（`list_item` 对缺失键按 false 折叠），
     // 但没有证据就不声称支持 —— 与本仓「广告能力要有实测依据」的口径一致。
@@ -540,21 +546,18 @@ mod tests {
             "reasoning_effort_levels": ["low", "high"]
         }));
         // context_window: 0 视为「没给」，不落成 0 值的 maxInputTokens
-        assert!(entry.as_ref().is_some_and(|entry| entry.context_window == 0));
+        assert!(entry
+            .as_ref()
+            .is_some_and(|entry| entry.context_window == 0));
         assert_eq!(
             entry.as_ref().and_then(|entry| entry.supports_vision),
             Some(true)
         );
         assert_eq!(
-            entry
-                .as_ref()
-                .map(|entry| entry.reasoning_levels.len()),
+            entry.as_ref().map(|entry| entry.reasoning_levels.len()),
             Some(2)
         );
-        let manifest = entry
-            .as_ref()
-            .map(to_manifest_value)
-            .unwrap_or(Value::Null);
+        let manifest = entry.as_ref().map(to_manifest_value).unwrap_or(Value::Null);
         assert!(manifest.get("maxInputTokens").is_none());
         assert_eq!(manifest.get("supportsReasoning"), Some(&Value::Bool(true)));
     }
@@ -565,14 +568,20 @@ mod tests {
     fn plan_tier_matching_order() {
         assert_eq!(plan_tier_from_name("CodingPlan Max"), Some(PLAN_MAX));
         assert_eq!(plan_tier_from_name("CodingPlan Pro"), Some(PLAN_PRO));
-        assert_eq!(plan_tier_from_name("CodingPlan Lite-体验版"), Some(PLAN_LITE));
+        assert_eq!(
+            plan_tier_from_name("CodingPlan Lite-体验版"),
+            Some(PLAN_LITE)
+        );
         assert_eq!(plan_tier_from_name("unknown plan"), None);
         // status-v2：优先 `codingplan_free.plan_name`，退回顶层 `plan_type`
         assert_eq!(
             plan_tier_from_status(&json!({"codingplan_free": {"plan_name": "CodingPlan Pro"}})),
             Some(PLAN_PRO)
         );
-        assert_eq!(plan_tier_from_status(&json!({"plan_type": "Lite"})), Some(PLAN_LITE));
+        assert_eq!(
+            plan_tier_from_status(&json!({"plan_type": "Lite"})),
+            Some(PLAN_LITE)
+        );
         assert_eq!(plan_tier_from_status(&json!({})), None);
     }
 
@@ -605,8 +614,7 @@ mod tests {
             reasoning_levels: vec!["low".to_string(), "high".to_string()],
         };
         let rows = vec![serde_json::to_value(&entry).ok().unwrap_or(Value::Null)];
-        let back: Vec<ModelEntry> =
-            serde_json::from_value(Value::Array(rows)).unwrap_or_default();
+        let back: Vec<ModelEntry> = serde_json::from_value(Value::Array(rows)).unwrap_or_default();
         assert_eq!(back.len(), 1);
         let back = back.first().cloned().unwrap_or(entry.clone());
         assert_eq!(back.gateway_id, entry.gateway_id);

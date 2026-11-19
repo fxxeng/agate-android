@@ -90,8 +90,9 @@ impl ProviderAdapter for LobsterAiAdapter {
         &'a self,
         store: &'a AccountStore,
         account_id: &'a str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, GatewayError>> + Send + 'a>>
-    {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<String, GatewayError>> + Send + 'a>,
+    > {
         Box::pin(async move {
             let record = store.lobsterai_account_record(account_id);
             if !account_id.is_empty() && record.is_none() {
@@ -116,8 +117,9 @@ impl ProviderAdapter for LobsterAiAdapter {
         &'a self,
         store: &'a AccountStore,
         account_id: &'a str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, GatewayError>> + Send + 'a>>
-    {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<String, GatewayError>> + Send + 'a>,
+    > {
         Box::pin(async move { super::refresh::ensure_fresh(store, account_id, true).await })
     }
 
@@ -212,8 +214,9 @@ impl ProviderAdapter for LobsterAiAdapter {
         store: &'a AccountStore,
         code: &'a str,
         state: &'a str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, GatewayError>> + Send + 'a>>
-    {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<String, GatewayError>> + Send + 'a>,
+    > {
         Box::pin(async move {
             if !oauth::take_pending(state) {
                 return Err(GatewayError::with_status(
@@ -233,10 +236,7 @@ impl ProviderAdapter for LobsterAiAdapter {
                 .and_then(Value::as_str)
                 .unwrap_or("")
                 .to_string();
-            crate::server::logging::log(
-                "[Login]",
-                "✅ LobsterAI 网页登录完成，账号已加入列表",
-            );
+            crate::server::logging::log("[Login]", "✅ LobsterAI 网页登录完成，账号已加入列表");
             Ok(account_id)
         })
     }

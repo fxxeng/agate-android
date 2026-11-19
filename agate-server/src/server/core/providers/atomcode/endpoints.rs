@@ -201,9 +201,18 @@ mod tests {
     /// 目录 URL 带档位；状态 / 领取 URL 的形状（路径是上游硬要求）
     #[test]
     fn upstream_urls_match_shape() {
-        assert_eq!(models_url("Lite"), "https://api.gitcode.com/api/v5/coding-plan/models-v2?plan_type=Lite");
-        assert_eq!(status_url(), "https://api.gitcode.com/api/v5/coding-plan/status-v2");
-        assert_eq!(claim_url(), "https://api.gitcode.com/api/v5/coding-plan/claim-v2");
+        assert_eq!(
+            models_url("Lite"),
+            "https://api.gitcode.com/api/v5/coding-plan/models-v2?plan_type=Lite"
+        );
+        assert_eq!(
+            status_url(),
+            "https://api.gitcode.com/api/v5/coding-plan/status-v2"
+        );
+        assert_eq!(
+            claim_url(),
+            "https://api.gitcode.com/api/v5/coding-plan/claim-v2"
+        );
     }
 
     /// state 里的保留字符必须转义（否则会截断 query）

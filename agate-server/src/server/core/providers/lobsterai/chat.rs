@@ -194,10 +194,7 @@ pub fn build_chat_request(
         // reqwest 的 `.body()` **不会**自动补这个头 —— 只有 `.json()` 才会。剥掉它之后
         // 上游回的是**鉴权之后的** `{"code":500,"message":"服务器内部错误"}`（HTTP 500，
         // 约 46ms 即返），跨模型稳定复现，看上去像「网关坏了」而不是「少了个头」。
-        (
-            "content-type".to_string(),
-            "application/json".to_string(),
-        ),
+        ("content-type".to_string(), "application/json".to_string()),
         // 两个客户端头都是功能性的（能力位过滤模型、版本决定被当成哪个客户端）
         (
             "x-lobsterai-client-capabilities".to_string(),

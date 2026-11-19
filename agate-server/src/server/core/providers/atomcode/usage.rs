@@ -67,7 +67,10 @@ fn shown_windows(payload: &Value) -> Vec<QuotaWindow> {
             continue;
         }
         windows.push(QuotaWindow {
-            hours: item.get("window_hours").and_then(Value::as_i64).unwrap_or(0),
+            hours: item
+                .get("window_hours")
+                .and_then(Value::as_i64)
+                .unwrap_or(0),
             call_limit,
             used: item.get("calls_used").and_then(Value::as_i64).unwrap_or(0),
             reset_display: item
@@ -262,7 +265,10 @@ mod tests {
         assert_eq!(wallet.get("limit").and_then(Value::as_i64), Some(200));
         assert_eq!(wallet.get("used").and_then(Value::as_i64), Some(37));
         assert_eq!(wallet.get("resetAt").and_then(Value::as_str), Some("12:13"));
-        assert!(wallet.get("displayName").and_then(Value::as_str).is_some_and(|text| text.contains("5")));
+        assert!(wallet
+            .get("displayName")
+            .and_then(Value::as_str)
+            .is_some_and(|text| text.contains("5")));
         // 上游给的是日期字符串 → 只进 planExpiresAt，不占用毫秒字段 expireAt
         let subscription = shaped.get("subscription").cloned().unwrap_or(Value::Null);
         assert_eq!(
@@ -279,7 +285,10 @@ mod tests {
         let shaped = shape_usage(&json!({"codingplan_free": {"plan_name": ""}}));
         assert!(shaped.get("available").is_none());
         assert_eq!(
-            shaped.get("wallets").and_then(Value::as_array).map(Vec::len),
+            shaped
+                .get("wallets")
+                .and_then(Value::as_array)
+                .map(Vec::len),
             Some(0)
         );
         assert_eq!(

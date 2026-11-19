@@ -53,6 +53,9 @@ mod tests {
     #[test]
     fn id_matches_register() {
         assert_eq!(ID, "lobsterai");
-        assert_eq!(super::super::kind_from_id(ID), Some(super::super::ProviderKind::LobsterAi));
+        assert_eq!(
+            super::super::kind_from_id(ID),
+            Some(super::super::ProviderKind::LobsterAi)
+        );
     }
 }

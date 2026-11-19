@@ -26,9 +26,9 @@
 use serde_json::Value;
 
 use crate::server::core::models::model_id;
-use crate::server::core::upstream::multipart::MultipartBody;
 use crate::server::core::providers::adapter::adapter_for;
 use crate::server::core::providers::{kind_from_id, ProviderKind};
+use crate::server::core::upstream::multipart::MultipartBody;
 
 use super::catalog;
 
@@ -127,11 +127,7 @@ impl ImageRequestPlan {
     /// `Content-Type` 头**由这里写**：它的 boundary 必须与报文字节里的分隔符
     /// 逐字一致，两处各写一遍就迟早会不一致（症状是上游回「拿不到字段」，
     /// 而报文看起来完全正常）。调用方传进来的同名头会被替换掉。
-    pub fn multipart(
-        url: String,
-        mut headers: Vec<(String, String)>,
-        form: MultipartBody,
-    ) -> Self {
+    pub fn multipart(url: String, mut headers: Vec<(String, String)>, form: MultipartBody) -> Self {
         headers.retain(|(name, _)| !name.eq_ignore_ascii_case("content-type"));
         headers.push(("Content-Type".to_string(), form.content_type()));
         Self {
@@ -244,9 +240,7 @@ pub fn provider_model_is_image(provider: &str, requested: &str) -> bool {
 pub fn operation_providers(model: &str, operation: ImageOperation) -> Vec<String> {
     catalog::forwarding_providers(model)
         .into_iter()
-        .filter(|provider| {
-            kind_from_id(provider).is_some_and(|kind| operation.supported_by(kind))
-        })
+        .filter(|provider| kind_from_id(provider).is_some_and(|kind| operation.supported_by(kind)))
         .filter(|provider| {
             let wire = catalog::wire_target_for_provider(model, provider, None);
             catalog::manifest_for_provider(provider)
@@ -255,7 +249,9 @@ pub fn operation_providers(model: &str, operation: ImageOperation) -> Vec<String
                 .is_some_and(|item| match operation {
                     ImageOperation::Generate => {
                         model_is_image(item)
-                            && item.get("supports_image_generation").and_then(Value::as_bool)
+                            && item
+                                .get("supports_image_generation")
+                                .and_then(Value::as_bool)
                                 != Some(false)
                     }
                     // 编辑没写 `supports_image_editing` 时**不算支持**：能生成不等于
@@ -328,10 +324,16 @@ mod tests {
     fn kind_and_modalities_both_count() {
         assert!(model_is_image(&json!({ "id": "a", "kind": "image" })));
         assert!(model_is_image(&json!({ "id": "a", "type": "IMAGE" })));
-        assert!(model_is_image(&json!({ "id": "a", "output_modalities": ["text", "image"] })));
+        assert!(model_is_image(
+            &json!({ "id": "a", "output_modalities": ["text", "image"] })
+        ));
         // 对话模型即使名字里带 image 也不算
-        assert!(!model_is_image(&json!({ "id": "glm-4.6v", "supportsImages": true })));
-        assert!(!model_is_image(&json!({ "id": "qwen-image-understanding" })));
+        assert!(!model_is_image(
+            &json!({ "id": "glm-4.6v", "supportsImages": true })
+        ));
+        assert!(!model_is_image(
+            &json!({ "id": "qwen-image-understanding" })
+        ));
     }
 
     #[test]

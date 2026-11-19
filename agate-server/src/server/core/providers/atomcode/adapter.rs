@@ -91,8 +91,9 @@ impl ProviderAdapter for AtomcodeAdapter {
         &'a self,
         store: &'a AccountStore,
         account_id: &'a str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, GatewayError>> + Send + 'a>>
-    {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<String, GatewayError>> + Send + 'a>,
+    > {
         Box::pin(async move {
             let record = store.atomcode_account_record(account_id);
             if !account_id.is_empty() && record.is_none() {
@@ -117,8 +118,9 @@ impl ProviderAdapter for AtomcodeAdapter {
         &'a self,
         store: &'a AccountStore,
         account_id: &'a str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, GatewayError>> + Send + 'a>>
-    {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<String, GatewayError>> + Send + 'a>,
+    > {
         Box::pin(async move { refresh::ensure_fresh(store, account_id, true).await })
     }
 

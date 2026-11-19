@@ -57,7 +57,9 @@ fn read_number(value: Option<&Value>) -> Option<f64> {
     if let Some(number) = value.as_f64() {
         return Some(number);
     }
-    value.as_str().and_then(|text| text.trim().parse::<f64>().ok())
+    value
+        .as_str()
+        .and_then(|text| text.trim().parse::<f64>().ok())
 }
 
 /// 一份积分明细（`creditItems[]` 的一条）
@@ -188,10 +190,7 @@ pub fn shape_usage(payload: &Value) -> Value {
 }
 
 /// 查余额：读记录 → 取 `profile-summary` → 解信封 → 归一。
-pub async fn query(
-    store: &AccountStore,
-    account_id: &str,
-) -> Result<Value, GatewayError> {
+pub async fn query(store: &AccountStore, account_id: &str) -> Result<Value, GatewayError> {
     let record = store.lobsterai_account_record(account_id);
     if !account_id.is_empty() && record.is_none() {
         return Err(GatewayError::with_status(
@@ -226,7 +225,10 @@ pub async fn query(
     if response.status == 401 || response.status == 403 {
         return Err(GatewayError::with_status(
             401,
-            format!("LobsterAI 积分查询被拒（HTTP {}），请重新登录", response.status),
+            format!(
+                "LobsterAI 积分查询被拒（HTTP {}），请重新登录",
+                response.status
+            ),
         ));
     }
     if !(200..300).contains(&response.status) {
@@ -262,11 +264,17 @@ mod tests {
             Some(5297.72)
         );
         assert_eq!(
-            shaped.get("wallets").and_then(Value::as_array).map(Vec::len),
+            shaped
+                .get("wallets")
+                .and_then(Value::as_array)
+                .map(Vec::len),
             Some(2)
         );
         assert_eq!(
-            shaped.get("credits").and_then(Value::as_array).map(Vec::len),
+            shaped
+                .get("credits")
+                .and_then(Value::as_array)
+                .map(Vec::len),
             Some(2)
         );
         // credits 只写 name + remain（`Total`/`Used` 不补 0，见模块头）
@@ -288,7 +296,10 @@ mod tests {
         let shaped = shape_usage(&json!({}));
         assert!(shaped.get("available").is_none());
         assert_eq!(
-            shaped.get("wallets").and_then(Value::as_array).map(Vec::len),
+            shaped
+                .get("wallets")
+                .and_then(Value::as_array)
+                .map(Vec::len),
             Some(0)
         );
     }

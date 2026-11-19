@@ -37,9 +37,7 @@ use crate::server::errors::GatewayError;
 
 use super::chat;
 use super::credentials::LobsterCredentials;
-use super::endpoints::{
-    models_url, CATALOG_TIMEOUT_MS, CLIENT_CAPABILITIES, USER_AGENT,
-};
+use super::endpoints::{models_url, CATALOG_TIMEOUT_MS, CLIENT_CAPABILITIES, USER_AGENT};
 
 /// 目录缓存时长（与参考实现的 2 小时同档）
 const CATALOG_TTL_MS: i64 = 2 * 60 * 60 * 1000;
@@ -165,7 +163,9 @@ fn read_number(value: &Value) -> Option<f64> {
     if let Some(number) = value.as_f64() {
         return Some(number);
     }
-    value.as_str().and_then(|text| text.trim().parse::<f64>().ok())
+    value
+        .as_str()
+        .and_then(|text| text.trim().parse::<f64>().ok())
 }
 
 /// 读一个正数（`> 0` 才算，否则视为缺失 —— 与参考实现 `contextWindow > 0` 同口径）
@@ -244,10 +244,16 @@ fn to_manifest_value(entry: &ModelEntry) -> Value {
     let mut object = Map::new();
     object.insert("id".to_string(), Value::String(entry.wire_id.clone()));
     if !entry.display_name.is_empty() {
-        object.insert("name".to_string(), Value::String(entry.display_name.clone()));
+        object.insert(
+            "name".to_string(),
+            Value::String(entry.display_name.clone()),
+        );
     }
     if entry.context_window > 0 {
-        object.insert("maxInputTokens".to_string(), Value::from(entry.context_window));
+        object.insert(
+            "maxInputTokens".to_string(),
+            Value::from(entry.context_window),
+        );
     }
     if entry.max_tokens > 0 {
         object.insert("maxOutputTokens".to_string(), Value::from(entry.max_tokens));
@@ -265,7 +271,10 @@ fn to_manifest_value(entry: &ModelEntry) -> Value {
     // 上游就是 OpenAI Chat Completions，tools 原样透传 ⇒ 支持工具调用
     object.insert("supportsToolCall".to_string(), Value::Bool(true));
     if let Some(multiplier) = entry.cost_multiplier {
-        object.insert("credits".to_string(), Value::String(credits_label(multiplier)));
+        object.insert(
+            "credits".to_string(),
+            Value::String(credits_label(multiplier)),
+        );
     }
     Value::Object(object)
 }
@@ -393,23 +402,17 @@ async fn fetch_catalog(
             "x-lobsterai-client-capabilities".to_string(),
             CLIENT_CAPABILITIES.to_string(),
         ),
-        (
-            "x-lobsterai-client-version".to_string(),
-            version.clone(),
-        ),
+        ("x-lobsterai-client-version".to_string(), version.clone()),
         ("user-agent".to_string(), USER_AGENT.to_string()),
     ];
     let response = send_raw("GET", &url, None, &headers, None, Some(CATALOG_TIMEOUT_MS))
         .await
         .map_err(|error| {
-            GatewayError::with_status(
-                502,
-                format!("LobsterAI 目录接口请求失败: {error}"),
-            )
+            GatewayError::with_status(502, format!("LobsterAI 目录接口请求失败: {error}"))
         })?;
-    let payload = response.payload.ok_or_else(|| {
-        GatewayError::with_status(502, "LobsterAI 目录接口响应不是 JSON")
-    })?;
+    let payload = response
+        .payload
+        .ok_or_else(|| GatewayError::with_status(502, "LobsterAI 目录接口响应不是 JSON"))?;
     if response.status == 401 || response.status == 403 {
         return Err(GatewayError::with_status(
             401,
@@ -437,10 +440,7 @@ async fn fetch_catalog(
 ///
 /// 客户端版本由 [`chat::prime_client_version`] 解析（一次调用既拿到本函数需要的
 /// query 参数，也顺手把转发路径的同步版本头快照填上）。
-pub async fn refresh(
-    credentials: &LobsterCredentials,
-    force: bool,
-) -> ModelRefreshOutcome {
+pub async fn refresh(credentials: &LobsterCredentials, force: bool) -> ModelRefreshOutcome {
     if !force && remote_refreshed() && age_ms() < CATALOG_TTL_MS {
         return ModelRefreshOutcome::unchanged();
     }
@@ -495,11 +495,12 @@ mod tests {
     /// 于是测试全绿而代码全错）。
     #[test]
     fn thinking_detected_from_config_levels() {
-        let thinking_of = |value: Value| {
-            entry_from_upstream(&value).is_some_and(|entry| entry.supports_thinking)
-        };
+        let thinking_of =
+            |value: Value| entry_from_upstream(&value).is_some_and(|entry| entry.supports_thinking);
         // 布尔位为真
-        assert!(thinking_of(json!({"modelId": "m", "supportsThinking": true})));
+        assert!(thinking_of(
+            json!({"modelId": "m", "supportsThinking": true})
+        ));
         // 只有配置、没有布尔位：多于一个档位也算支持
         assert!(thinking_of(json!({
             "modelId": "m",
@@ -513,7 +514,9 @@ mod tests {
             "thinkingConfig": {"options": [{"openclawLevel": "low"}]}
         })));
         // 明确为假
-        assert!(!thinking_of(json!({"modelId": "m", "supportsThinking": false})));
+        assert!(!thinking_of(
+            json!({"modelId": "m", "supportsThinking": false})
+        ));
     }
 
     /// 上游条目缺 modelId 的直接丢掉；名称缺失回落 id
@@ -572,8 +575,7 @@ mod tests {
             cost_multiplier: Some(0.0), // 0 = 免费，不是「缺失」
         };
         let rows = vec![serde_json::to_value(&entry).ok().unwrap_or(Value::Null)];
-        let back: Vec<ModelEntry> =
-            serde_json::from_value(Value::Array(rows)).unwrap_or_default();
+        let back: Vec<ModelEntry> = serde_json::from_value(Value::Array(rows)).unwrap_or_default();
         assert_eq!(back.len(), 1);
         let back = back.first().cloned().unwrap_or(entry.clone());
         assert_eq!(back.wire_id, entry.wire_id);
@@ -607,6 +609,9 @@ mod tests {
         assert!(cached.get("credits").is_none());
         assert!(cached.get("wire_id").is_some());
         // manifest 把倍率渲染成标签
-        assert_eq!(manifest.get("credits").and_then(Value::as_str), Some("x1.5"));
+        assert_eq!(
+            manifest.get("credits").and_then(Value::as_str),
+            Some("x1.5")
+        );
     }
 }

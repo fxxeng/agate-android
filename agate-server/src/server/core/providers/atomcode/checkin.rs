@@ -49,9 +49,7 @@ use crate::server::errors::GatewayError;
 
 use super::credentials::from_record;
 use super::endpoints::REQUEST_TIMEOUT_MS;
-use super::models::{
-    claim_plan, fetch_status, refresh, PLAN_LITE, PLAN_MAX, PLAN_PRO,
-};
+use super::models::{claim_plan, fetch_status, refresh, PLAN_LITE, PLAN_MAX, PLAN_PRO};
 
 /// 档位级联顺序（官方 `types.rs:48` 的 `CASCADE_ORDER`）
 pub const CASCADE_ORDER: [&str; 3] = [PLAN_MAX, PLAN_PRO, PLAN_LITE];
@@ -159,8 +157,14 @@ pub fn quota_summary(status: &Value) -> String {
     }) else {
         return String::new();
     };
-    let limit = window.get("call_limit").and_then(Value::as_i64).unwrap_or(0);
-    let used = window.get("calls_used").and_then(Value::as_i64).unwrap_or(0);
+    let limit = window
+        .get("call_limit")
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
+    let used = window
+        .get("calls_used")
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
     let hours = window
         .get("window_hours")
         .and_then(Value::as_i64)
@@ -218,10 +222,7 @@ pub async fn claim_for_account(
         } else if !expires_at.is_empty() {
             msg.push_str(&format!("，到期 {expires_at}"));
         }
-        crate::server::logging::verbose(
-            "[Checkin]",
-            &format!("AtomCode {account_id}: {msg}"),
-        );
+        crate::server::logging::verbose("[Checkin]", &format!("AtomCode {account_id}: {msg}"));
         return Ok(json!({
             "success": false,
             "alreadyCompleted": true,
@@ -246,7 +247,8 @@ pub async fn claim_for_account(
         })?;
         match classify_tier_response(&payload) {
             TierVerdict::AlreadyHeld { message, plan_name } => {
-                attempts.push(json!({ "tier": tier, "outcome": "already-held", "message": message }));
+                attempts
+                    .push(json!({ "tier": tier, "outcome": "already-held", "message": message }));
                 let msg = if message.is_empty() {
                     format!("已持有 {tier} 档套餐，无需重复领取")
                 } else {

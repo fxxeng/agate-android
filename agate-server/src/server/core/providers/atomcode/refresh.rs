@@ -116,10 +116,7 @@ async fn refresh_and_save(
             ))
         }
     }
-    crate::server::logging::log(
-        "[AtomCode]",
-        "令牌已续期并写回账号（refresh token 已轮换）",
-    );
+    crate::server::logging::log("[AtomCode]", "令牌已续期并写回账号（refresh token 已轮换）");
     Ok(credentials::AtomcodeCredentials {
         id: credentials.id.clone(),
         access_token,

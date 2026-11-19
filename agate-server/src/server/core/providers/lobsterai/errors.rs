@@ -279,7 +279,10 @@ mod tests {
         // HTTP 400 + 中文「积分不足」—— 只按状态码会当成可重试错误
         let class = classify(400, &json!({"message": "积分不足，请充值"}));
         assert!(matches!(class, UpstreamErrorClass::QuotaLimited { .. }));
-        assert_eq!(classify(402, &json!({})).variant_tag(), quota(None).variant_tag());
+        assert_eq!(
+            classify(402, &json!({})).variant_tag(),
+            quota(None).variant_tag()
+        );
     }
 
     /// 会话已死（40100 / 40101 / 文案）→ TokenExpired，且**优先于裸 401**
@@ -302,7 +305,10 @@ mod tests {
         // 的判断在第 3 步，所以只命中文案与关键词时以余额耗尽为准
         let both = json!({"code": 40100, "message": "积分不足 token rejected"});
         // 「积分不足」命中（第 2 步）→ QuotaLimited
-        assert!(matches!(classify(402, &both), UpstreamErrorClass::QuotaLimited { .. }));
+        assert!(matches!(
+            classify(402, &both),
+            UpstreamErrorClass::QuotaLimited { .. }
+        ));
         // 单会话已死 → TokenExpired
         assert!(matches!(
             classify(401, &json!({"code": 40101})),
@@ -358,9 +364,13 @@ mod tests {
     /// 信封不变量：`code:0` + `data:null` = 令牌已失效
     #[test]
     fn envelope_dead_session_rule() {
-        assert!(envelope_reports_dead_session(&json!({"code": 0, "data": null})));
+        assert!(envelope_reports_dead_session(
+            &json!({"code": 0, "data": null})
+        ));
         assert!(envelope_reports_dead_session(&json!({"code": 0})));
-        assert!(!envelope_reports_dead_session(&json!({"code": 0, "data": {"a": 1}})));
+        assert!(!envelope_reports_dead_session(
+            &json!({"code": 0, "data": {"a": 1}})
+        ));
         assert!(!envelope_reports_dead_session(&json!({"code": 7})));
     }
 

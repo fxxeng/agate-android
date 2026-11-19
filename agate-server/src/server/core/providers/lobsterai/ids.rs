@@ -25,7 +25,9 @@ pub fn uuid_v4() -> String {
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
         let millis = crate::server::logging::now_ms().max(0) as u128;
-        let mixed = millis.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(counter as u128);
+        let mixed = millis
+            .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+            .wrapping_add(counter as u128);
         bytes.copy_from_slice(&mixed.to_le_bytes());
     }
     // 版本位（第 7 字节高 4 位 = 0100）与变体位（第 9 字节高 2 位 = 10）

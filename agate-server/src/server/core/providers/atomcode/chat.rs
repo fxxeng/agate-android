@@ -144,7 +144,10 @@ mod tests {
     /// 账号前缀只剥一层；没有前缀、或前缀后面是空的都原样返回
     #[test]
     fn account_prefix_is_stripped_once() {
-        assert_eq!(strip_account_prefix("atomcode-user-1/glm5.3-flash"), "glm5.3-flash");
+        assert_eq!(
+            strip_account_prefix("atomcode-user-1/glm5.3-flash"),
+            "glm5.3-flash"
+        );
         assert_eq!(strip_account_prefix("glm5.3-flash"), "glm5.3-flash");
         // 「前缀后面是空的」不是前缀形态，原样保留（否则会把一个空模型名发出去）
         assert_eq!(strip_account_prefix("only-prefix/  "), "only-prefix/");
@@ -218,9 +221,7 @@ mod tests {
         );
         assert_eq!(plan.get("temperature").and_then(Value::as_f64), Some(0.3));
         assert_eq!(
-            plan.get("messages")
-                .and_then(Value::as_array)
-                .map(Vec::len),
+            plan.get("messages").and_then(Value::as_array).map(Vec::len),
             Some(1)
         );
     }

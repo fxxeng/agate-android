@@ -22,7 +22,6 @@ use super::endpoints::{
     VERSION_CACHE_TTL_MS,
 };
 
-
 struct VersionCache {
     value: String,
     fetched_at: i64,
@@ -141,7 +140,10 @@ mod tests {
             Some("20260904".to_string())
         );
         // `data.value` 当标量读不出来（这正是曾经写错的那一处）
-        assert_eq!(version_from_payload(&json!({"data": {"value": "2026.9.4"}})), None);
+        assert_eq!(
+            version_from_payload(&json!({"data": {"value": "2026.9.4"}})),
+            None
+        );
         assert_eq!(version_from_payload(&json!({"data": {}})), None);
     }
 

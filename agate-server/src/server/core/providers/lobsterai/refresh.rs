@@ -23,10 +23,7 @@ pub async fn ensure_fresh(
     force: bool,
 ) -> Result<String, GatewayError> {
     let record = store.lobsterai_account_record(account_id).ok_or_else(|| {
-        GatewayError::with_status(
-            401,
-            "没有可用的 LobsterAI 账号：请在账号页用浏览器登录添加",
-        )
+        GatewayError::with_status(401, "没有可用的 LobsterAI 账号：请在账号页用浏览器登录添加")
     })?;
     let credentials = credentials::from_record(Some(&record))?;
     if !force && !credentials.expiring() {

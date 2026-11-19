@@ -298,7 +298,10 @@ impl BrokerLogin {
         let Some(payload) = response.payload else {
             return Ok(false);
         };
-        Ok(payload.get("valid").and_then(Value::as_bool).unwrap_or(false))
+        Ok(payload
+            .get("valid")
+            .and_then(Value::as_bool)
+            .unwrap_or(false))
     }
 
     /// 取回令牌包（`check` 为 true 之后再调）。
@@ -438,10 +441,7 @@ mod tests {
         assert!(bundle
             .as_ref()
             .is_ok_and(|bundle| bundle.access_token == "at" && bundle.user_id.is_empty()));
-        assert_eq!(
-            bundle.ok().map(|bundle| bundle.expires_in),
-            Some(604_800)
-        );
+        assert_eq!(bundle.ok().map(|bundle| bundle.expires_in), Some(604_800));
         // 缺 access_token 是 502（不是 401：代理的问题，不是用户凭证的问题）
         assert_eq!(
             parse_token_bundle(&json!({"refresh_token": "x"}))
@@ -459,11 +459,13 @@ mod tests {
             "user": {"id": "42", "username": "qq_1", "name": "张三", "email": "a@b.c", "avatar_url": "u"}
         }))
         .ok();
-        assert!(with_user.as_ref().is_some_and(|bundle| bundle.user_id == "42"
-            && bundle.username == "qq_1"
-            && bundle.name == "张三"
-            && bundle.email == "a@b.c"
-            && bundle.avatar_url == "u"));
+        assert!(with_user
+            .as_ref()
+            .is_some_and(|bundle| bundle.user_id == "42"
+                && bundle.username == "qq_1"
+                && bundle.name == "张三"
+                && bundle.email == "a@b.c"
+                && bundle.avatar_url == "u"));
         let flat = parse_token_bundle(&json!({"access_token": "a", "user_id": "7"})).ok();
         assert!(flat.is_some_and(|bundle| bundle.user_id == "7"));
     }
@@ -511,14 +513,20 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(bundle.expires_at(1_700_000_000_000), 1_700_003_600_000);
-        let no_expiry = TokenBundle { expires_in: 0, ..Default::default() };
+        let no_expiry = TokenBundle {
+            expires_in: 0,
+            ..Default::default()
+        };
         assert_eq!(no_expiry.expires_at(1_700_000_000_000), 0);
     }
 
     /// 错误体压成一行：优先 message，其次 detail.message，最后截断原文
     #[test]
     fn summarize_prefers_readable_fields() {
-        assert_eq!(summarize(&json!({"message": " 401 Unauthorized "})), "401 Unauthorized");
+        assert_eq!(
+            summarize(&json!({"message": " 401 Unauthorized "})),
+            "401 Unauthorized"
+        );
         assert_eq!(
             summarize(&json!({"detail": {"message": "bad state"}})),
             "bad state"

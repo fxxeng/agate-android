@@ -157,7 +157,9 @@ pub fn classify_gateway_error(status: u16, error_body: &Value) -> UpstreamErrorC
         if message_mentions(error_body, "codingplan") {
             return UpstreamErrorClass::Fatal {
                 status: 403,
-                message: format!("该 AtomGit 账号还没有领取免费套餐，请先在 AtomCode 页面领取（{raw}）"),
+                message: format!(
+                    "该 AtomGit 账号还没有领取免费套餐，请先在 AtomCode 页面领取（{raw}）"
+                ),
                 upstream_code,
             };
         }
@@ -231,7 +233,9 @@ mod tests {
         );
         // 取出来再断言（`matches!` 会消费掉 `class`）
         let (status, message) = match class {
-            UpstreamErrorClass::Fatal { status, message, .. } => (status, message),
+            UpstreamErrorClass::Fatal {
+                status, message, ..
+            } => (status, message),
             other => (0, format!("非 Fatal：{other:?}")),
         };
         assert_eq!(status, 502);
@@ -261,7 +265,11 @@ mod tests {
         let class = classify_gateway_error(429, &json!({"message": "rate limited"}));
         assert!(matches!(
             class,
-            UpstreamErrorClass::QuotaLimited { reset_at: None, status: 429, .. }
+            UpstreamErrorClass::QuotaLimited {
+                reset_at: None,
+                status: 429,
+                ..
+            }
         ));
     }
 
@@ -293,7 +301,10 @@ mod tests {
             Some(SilentFailure::ThirdPartyBroken)
         );
         // 模型正常解释这个词时**不能**判失败
-        assert_eq!(silent_failure_in_content("参数错误通常指请求体不合法"), None);
+        assert_eq!(
+            silent_failure_in_content("参数错误通常指请求体不合法"),
+            None
+        );
         assert_eq!(silent_failure_in_content(""), None);
     }
 

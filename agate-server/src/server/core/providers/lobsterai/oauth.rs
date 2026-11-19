@@ -290,7 +290,9 @@ async fn post_anonymous(path: &str, body: &Value, what: &str) -> Result<Value, G
         Some(REQUEST_TIMEOUT_MS),
     )
     .await
-    .map_err(|error| GatewayError::with_status(502, format!("LobsterAI {what}请求失败：{error}")))?;
+    .map_err(|error| {
+        GatewayError::with_status(502, format!("LobsterAI {what}请求失败：{error}"))
+    })?;
     let payload = response
         .payload
         .ok_or_else(|| GatewayError::with_status(502, format!("LobsterAI {what}响应不是 JSON")))?;
@@ -298,7 +300,10 @@ async fn post_anonymous(path: &str, body: &Value, what: &str) -> Result<Value, G
     if response.status == 401 || response.status == 403 {
         return Err(GatewayError::with_status(
             401,
-            format!("LobsterAI {what}被拒（HTTP {}），请重新登录", response.status),
+            format!(
+                "LobsterAI {what}被拒（HTTP {}），请重新登录",
+                response.status
+            ),
         ));
     }
     if !(200..300).contains(&response.status) {
