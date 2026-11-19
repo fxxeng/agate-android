@@ -672,7 +672,10 @@ mod tests {
 
     #[test]
     fn token_rejects_whitespace_control_and_non_ascii() {
-        assert_eq!(token("  abc.def  ", "模型凭证").unwrap_or_default(), "abc.def");
+        assert_eq!(
+            token("  abc.def  ", "模型凭证").unwrap_or_default(),
+            "abc.def"
+        );
         assert_eq!(token("Bearer abc.def", "模型凭证").unwrap_or_default(), "abc.def");
         assert!(token("abc def", "模型凭证").is_err());
         assert!(token("abc\n", "模型凭证").is_err());
