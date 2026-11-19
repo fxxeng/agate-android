@@ -98,7 +98,9 @@ pub fn chat_url() -> String {
 /// run 终态上报：⚠️ 用 **session_id**（不是 run_id），两个实现的源码都是
 /// `PUT /api/public/v1/sessions/{session_id}/execution_status`。
 pub fn execution_status_url(session_id: &str) -> String {
-    url(&format!("/api/public/v1/sessions/{session_id}/execution_status"))
+    url(&format!(
+        "/api/public/v1/sessions/{session_id}/execution_status"
+    ))
 }
 
 /// 额度（智点）。两个实现都是这个路径，**没有** `?credit_type=total`。
@@ -238,7 +240,11 @@ pub fn request_id() -> String {
     use std::sync::atomic::{AtomicU64, Ordering};
     static SEQ: AtomicU64 = AtomicU64::new(0);
     let seq = SEQ.fetch_add(1, Ordering::Relaxed);
-    format!("{:016x}{:016x}", crate::server::logging::now_ms() as u64, seq)
+    format!(
+        "{:016x}{:016x}",
+        crate::server::logging::now_ms() as u64,
+        seq
+    )
 }
 
 fn base_headers(
@@ -286,7 +292,14 @@ pub fn account_headers(
     cookie: Option<&str>,
     request_id: &str,
 ) -> Vec<(String, String)> {
-    base_headers(host, wps_sid, device_id, cookie, request_id, "application/json")
+    base_headers(
+        host,
+        wps_sid,
+        device_id,
+        cookie,
+        request_id,
+        "application/json",
+    )
 }
 
 /// 对话请求头：⚠️ `session_id`/`run_id` 只在**头**里（`x-cc-session-id` /
@@ -300,7 +313,14 @@ pub fn chat_headers(
     session_id: &str,
     run_id: &str,
 ) -> Vec<(String, String)> {
-    let mut out = base_headers(host, wps_sid, device_id, cookie, request_id, "text/event-stream");
+    let mut out = base_headers(
+        host,
+        wps_sid,
+        device_id,
+        cookie,
+        request_id,
+        "text/event-stream",
+    );
     out.push(("x-cc-session-id".to_string(), session_id.to_string()));
     out.push(("x-cc-run-id".to_string(), run_id.to_string()));
     out
@@ -326,7 +346,10 @@ mod tests {
     #[test]
     fn execution_status_uses_session_id_not_run_id() {
         let u = execution_status_url("sess-1");
-        assert!(u.contains("/api/public/v1/sessions/sess-1/execution_status"), "{u}");
+        assert!(
+            u.contains("/api/public/v1/sessions/sess-1/execution_status"),
+            "{u}"
+        );
         assert!(!u.contains("credits/runs"));
     }
 
@@ -336,7 +359,10 @@ mod tests {
             claim_path("daily_check_in", "2026-11-13"),
             "/api/public/v1/tasks/daily_check_in/claim?date=2026-11-13"
         );
-        assert_eq!(claim_path("daily_check_in", ""), "/api/public/v1/tasks/daily_check_in/claim");
+        assert_eq!(
+            claim_path("daily_check_in", ""),
+            "/api/public/v1/tasks/daily_check_in/claim"
+        );
     }
 
     #[test]
@@ -362,20 +388,32 @@ mod tests {
         assert!(envelope_ok(&json!({ "result": "ok", "data": {} })));
         assert!(envelope_ok(&json!({ "result": "Success" })));
         assert!(envelope_ok(&json!({ "data": {} })));
-        assert!(!envelope_ok(&json!({ "result": "error", "hint": "今日已领取" })));
+        assert!(!envelope_ok(
+            &json!({ "result": "error", "hint": "今日已领取" })
+        ));
     }
 
     #[test]
     fn cookie_header_prefers_the_full_cookie_when_present() {
-        let h = headers("V02S-abc", "dev-1", Some("uid=1; wps_sid=V02S-abc; wpsua=x"));
-        let cookie = h.iter().find(|(k, _)| k == "Cookie").map(|(_, v)| v.as_str());
+        let h = headers(
+            "V02S-abc",
+            "dev-1",
+            Some("uid=1; wps_sid=V02S-abc; wpsua=x"),
+        );
+        let cookie = h
+            .iter()
+            .find(|(k, _)| k == "Cookie")
+            .map(|(_, v)| v.as_str());
         assert_eq!(cookie, Some("uid=1; wps_sid=V02S-abc; wpsua=x"));
     }
 
     #[test]
     fn cookie_header_builds_a_minimal_cookie_from_bare_sid() {
         let h = headers("V02S-abc", "dev-1", None);
-        let cookie = h.iter().find(|(k, _)| k == "Cookie").map(|(_, v)| v.as_str());
+        let cookie = h
+            .iter()
+            .find(|(k, _)| k == "Cookie")
+            .map(|(_, v)| v.as_str());
         assert_eq!(cookie, Some("wps_sid=V02S-abc"));
     }
 

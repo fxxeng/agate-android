@@ -81,10 +81,12 @@ fn ensure_restored(realm: Realm) {
         Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(),
     };
-    guard.entry(realm.id().to_string()).or_insert(RemoteCatalog {
-        models: cached.models,
-        fetched_at_ms: cached.fetched_at,
-    });
+    guard
+        .entry(realm.id().to_string())
+        .or_insert(RemoteCatalog {
+            models: cached.models,
+            fetched_at_ms: cached.fetched_at,
+        });
 }
 
 /// 兜底清单：一条「让上游选默认模型」的入口（不编模型名，见模块头）
@@ -229,7 +231,10 @@ pub fn parse(payload: &Value) -> Result<Vec<Value>, GatewayError> {
     let mut seen = BTreeMap::new();
     let mut models = Vec::new();
     for entry in &raw {
-        let name = text_of(entry, &["display_name", "displayName", "model_name", "name"]);
+        let name = text_of(
+            entry,
+            &["display_name", "displayName", "model_name", "name"],
+        );
         if name.is_empty() {
             continue;
         }
@@ -258,10 +263,15 @@ pub fn parse(payload: &Value) -> Result<Vec<Value>, GatewayError> {
         if !access.is_empty() {
             record["accessType"] = Value::String(access);
         }
-        if let Some(context) = pick_number(entry, &["context_window", "contextWindow", "max_context_tokens"]) {
+        if let Some(context) = pick_number(
+            entry,
+            &["context_window", "contextWindow", "max_context_tokens"],
+        ) {
             record["contextWindow"] = Value::from(context);
         }
-        if let Some(max_output) = pick_number(entry, &["max_tokens", "maxTokens", "max_output_tokens"]) {
+        if let Some(max_output) =
+            pick_number(entry, &["max_tokens", "maxTokens", "max_output_tokens"])
+        {
             record["maxOutput"] = Value::from(max_output);
         }
         if let Some(multiplier) = multiplier {
@@ -335,7 +345,10 @@ pub fn select(models: &[Value], requested: &str) -> Result<String, GatewayError>
     }
     match find(models, requested) {
         Some(model) => {
-            let upstream = model.get("upstreamModel").and_then(Value::as_str).unwrap_or("");
+            let upstream = model
+                .get("upstreamModel")
+                .and_then(Value::as_str)
+                .unwrap_or("");
             let name = model.get("name").and_then(Value::as_str).unwrap_or("");
             let chosen = if upstream.is_empty() { name } else { upstream };
             if chosen.is_empty() {
@@ -382,8 +395,10 @@ pub async fn refresh(
     };
     let proxy = match crate::server::core::proxies::resolve_account_proxy(record.get("proxy")) {
         Some(crate::server::core::proxies::ProxyResolution::Resolved(proxy)) => Some(proxy),
-        Some(crate::server::core::proxies::ProxyResolution::Failed(reason)
-            | crate::server::core::proxies::ProxyResolution::Failed(reason)) => {
+        Some(
+            crate::server::core::proxies::ProxyResolution::Failed(reason)
+            | crate::server::core::proxies::ProxyResolution::Failed(reason),
+        ) => {
             return ModelRefreshOutcome::failed(reason);
         }
         None => None,
@@ -573,7 +588,10 @@ mod tests {
             // id 按站点分（两家的兜底不能撞 id）
             assert_eq!(models[0]["id"], format!("{}-default", realm.id()));
         }
-        assert_ne!(fallback_for(Realm::Cn)[0]["id"], fallback_for(Realm::Intl)[0]["id"]);
+        assert_ne!(
+            fallback_for(Realm::Cn)[0]["id"],
+            fallback_for(Realm::Intl)[0]["id"]
+        );
     }
 
     /// 两个站点的落盘 scope 必须分开

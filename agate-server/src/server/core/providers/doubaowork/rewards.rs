@@ -115,7 +115,10 @@ fn bool_by_keys(value: &Value, keys: &[&str]) -> Option<bool> {
                     if matches!(lowered.as_str(), "1" | "true" | "yes" | "done" | "finished") {
                         return Some(true);
                     }
-                    if matches!(lowered.as_str(), "0" | "false" | "no" | "pending" | "unclaimed") {
+                    if matches!(
+                        lowered.as_str(),
+                        "0" | "false" | "no" | "pending" | "unclaimed"
+                    ) {
                         return Some(false);
                     }
                 }
@@ -158,8 +161,9 @@ pub fn read_checkin_state(payload: &Value) -> CheckinState {
     let root = payload.get("data").unwrap_or(payload);
     let checked_in_today = bool_by_keys(root, &["checked_in_today", "checkedInToday"])
         .or_else(|| {
-            root.get("daily_checkin")
-                .and_then(|node| bool_by_keys(node, &["checked_in_today", "checked", "done", "status"]))
+            root.get("daily_checkin").and_then(|node| {
+                bool_by_keys(node, &["checked_in_today", "checked", "done", "status"])
+            })
         })
         .or_else(|| bool_by_keys(root, &["task_status", "taskStatus"]));
 
@@ -168,14 +172,28 @@ pub fn read_checkin_state(payload: &Value) -> CheckinState {
     let mut push_item = |item: &Value, forced_unclaimed: bool| {
         let code = text_by_keys(
             item,
-            &["campaign_item_code", "campaignItemCode", "item_code", "itemCode", "code", "id"],
+            &[
+                "campaign_item_code",
+                "campaignItemCode",
+                "item_code",
+                "itemCode",
+                "code",
+                "id",
+            ],
         );
         if code.is_empty() {
             return;
         }
         let name = text_by_keys(
             item,
-            &["name", "title", "item_name", "itemName", "desc", "description"],
+            &[
+                "name",
+                "title",
+                "item_name",
+                "itemName",
+                "desc",
+                "description",
+            ],
         );
         let unclaimed = bool_by_keys(item, &["unclaimed", "claimable", "can_claim"])
             .unwrap_or(forced_unclaimed);
@@ -186,8 +204,16 @@ pub fn read_checkin_state(payload: &Value) -> CheckinState {
             "{} {} {}",
             code.to_ascii_lowercase(),
             name.to_ascii_lowercase(),
-            text_by_keys(item, &["campaign_code", "campaignCode", "campaign_group_code", "type"])
-                .to_ascii_lowercase()
+            text_by_keys(
+                item,
+                &[
+                    "campaign_code",
+                    "campaignCode",
+                    "campaign_group_code",
+                    "type"
+                ]
+            )
+            .to_ascii_lowercase()
         );
         let is_checkin = CHECKIN_KEYWORDS
             .iter()
@@ -269,7 +295,11 @@ pub fn reward_amount_of(payload: &Value) -> Option<f64> {
         })
         .or_else(|| {
             // 领取响应的形态可能不同：把路径放宽到「第一处 reward_amount」
-            for pointer in ["/data/reward_amount", "/reward_amount", "/data/rewardAmount"] {
+            for pointer in [
+                "/data/reward_amount",
+                "/reward_amount",
+                "/data/rewardAmount",
+            ] {
                 if let Some(value) = payload.pointer(pointer) {
                     if let Some(number) = value.as_f64() {
                         return Some(number);
@@ -320,10 +350,20 @@ pub fn classify_claim(payload: &Value) -> ClaimVerdict {
     let message = {
         let text = text_by_keys(
             payload,
-            &["message", "msg", "error_msg", "errorMsg", "desc", "description"],
+            &[
+                "message",
+                "msg",
+                "error_msg",
+                "errorMsg",
+                "desc",
+                "description",
+            ],
         );
         if text.is_empty() {
-            text_by_keys(payload.get("data").unwrap_or(payload), &["message", "msg", "desc"])
+            text_by_keys(
+                payload.get("data").unwrap_or(payload),
+                &["message", "msg", "desc"],
+            )
         } else {
             text
         }
@@ -339,18 +379,22 @@ pub fn classify_claim(payload: &Value) -> ClaimVerdict {
     // ── 1. 已领过（成功语义，先判）──
     let already = bool_by_keys(
         payload,
-        &["already_claimed", "alreadyClaimed", "claimed", "duplicate", "already_completed"],
+        &[
+            "already_claimed",
+            "alreadyClaimed",
+            "claimed",
+            "duplicate",
+            "already_completed",
+        ],
     )
     .unwrap_or(false)
-        || payload
-            .get("data")
-            .is_some_and(|data| {
-                bool_by_keys(
-                    data,
-                    &["already_claimed", "alreadyClaimed", "claimed", "duplicate"],
-                )
-                .unwrap_or(false)
-            });
+        || payload.get("data").is_some_and(|data| {
+            bool_by_keys(
+                data,
+                &["already_claimed", "alreadyClaimed", "claimed", "duplicate"],
+            )
+            .unwrap_or(false)
+        });
     if already {
         return ClaimVerdict::AlreadyHeld { message };
     }
@@ -419,7 +463,9 @@ pub async fn submit_checkin(
     ));
     let response = send_raw("POST", &url, Some(&body), &headers, None, Some(timeout_ms))
         .await
-        .map_err(|error| GatewayError::with_status(502, format!("豆包工作签到请求失败：{error}")))?;
+        .map_err(|error| {
+            GatewayError::with_status(502, format!("豆包工作签到请求失败：{error}"))
+        })?;
     match response.status {
         200..=299 => Ok(response.payload.unwrap_or(Value::Null)),
         401 | 403 => Err(GatewayError::with_status(
@@ -450,7 +496,10 @@ pub async fn claim_item(
     timeout_ms: u64,
 ) -> Result<Value, GatewayError> {
     if campaign_item_code.trim().is_empty() {
-        return Err(GatewayError::with_status(400, "缺少 campaign_item_code，无法领取"));
+        return Err(GatewayError::with_status(
+            400,
+            "缺少 campaign_item_code，无法领取",
+        ));
     }
     let query = endpoints::encode_query(&endpoints::security_params(&credentials.fingerprint));
     let url = format!(
@@ -465,16 +514,11 @@ pub async fn claim_item(
         &credentials.cookie_header(),
         credentials.csrf_token().as_deref(),
     ));
-    let response = send_raw(
-        "POST",
-        &url,
-        Some(&body),
-        &headers,
-        None,
-        Some(timeout_ms),
-    )
-    .await
-    .map_err(|error| GatewayError::with_status(502, format!("豆包工作领取请求失败：{error}")))?;
+    let response = send_raw("POST", &url, Some(&body), &headers, None, Some(timeout_ms))
+        .await
+        .map_err(|error| {
+            GatewayError::with_status(502, format!("豆包工作领取请求失败：{error}"))
+        })?;
     match response.status {
         200..=299 => Ok(response.payload.unwrap_or(Value::Null)),
         401 | 403 => Err(GatewayError::with_status(
@@ -513,7 +557,9 @@ async fn fetch_json(
     ));
     let response = send_raw("GET", &full, None, &headers, None, Some(timeout_ms))
         .await
-        .map_err(|error| GatewayError::with_status(502, format!("豆包工作活动接口请求失败：{error}")))?;
+        .map_err(|error| {
+            GatewayError::with_status(502, format!("豆包工作活动接口请求失败：{error}"))
+        })?;
     match response.status {
         200..=299 => Ok(response.payload.unwrap_or(Value::Null)),
         401 | 403 => Err(GatewayError::with_status(
@@ -618,7 +664,15 @@ pub async fn claim_all_for_account(
 
 /// 从响应里读一条可读的错误文案
 fn readable_error(payload: &Value) -> Option<String> {
-    for key in ["message", "msg", "error_msg", "errorMsg", "desc", "description", "error"] {
+    for key in [
+        "message",
+        "msg",
+        "error_msg",
+        "errorMsg",
+        "desc",
+        "description",
+        "error",
+    ] {
         if let Some(text) = payload.get(key).and_then(Value::as_str) {
             let trimmed = text.trim();
             if !trimmed.is_empty() {
@@ -785,7 +839,10 @@ mod tests {
             Some(20.5)
         );
         // 退路：data.reward_amount 一族
-        assert_eq!(reward_amount_of(&json!({"data": {"reward_amount": 5}})), Some(5.0));
+        assert_eq!(
+            reward_amount_of(&json!({"data": {"reward_amount": 5}})),
+            Some(5.0)
+        );
         assert_eq!(reward_amount_of(&json!({"unexpected": true})), None);
     }
 

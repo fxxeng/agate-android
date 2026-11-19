@@ -56,8 +56,14 @@ pub fn rewrite_frame(frame: &Value, prompt: u64, completion: u64) -> Option<Rewr
     if let Some(model) = frame.get("model").and_then(Value::as_str) {
         out.insert("model".to_string(), Value::String(model.to_string()));
     }
-    out.insert("object".to_string(), Value::String("chat.completion.chunk".to_string()));
-    out.insert("created".to_string(), frame.get("created").cloned().unwrap_or(Value::Null));
+    out.insert(
+        "object".to_string(),
+        Value::String("chat.completion.chunk".to_string()),
+    );
+    out.insert(
+        "created".to_string(),
+        frame.get("created").cloned().unwrap_or(Value::Null),
+    );
 
     let mut finished = false;
     let mut refused = false;
@@ -66,26 +72,39 @@ pub fn rewrite_frame(frame: &Value, prompt: u64, completion: u64) -> Option<Rewr
         for choice in list {
             let mut delta = Map::new();
             // 正文：先认 text，再兼容已经标准化过的 delta.content
-            let body = choice
-                .get("text")
-                .and_then(Value::as_str)
-                .or_else(|| choice.get("delta").and_then(|d| d.get("content")).and_then(Value::as_str));
+            let body = choice.get("text").and_then(Value::as_str).or_else(|| {
+                choice
+                    .get("delta")
+                    .and_then(|d| d.get("content"))
+                    .and_then(Value::as_str)
+            });
             if let Some(text) = body {
                 delta.insert("content".to_string(), Value::String(text.to_string()));
             }
             let reasoning = choice
                 .get("reasoning_content")
                 .and_then(Value::as_str)
-                .or_else(|| choice.get("delta").and_then(|d| d.get("reasoning_content")).and_then(Value::as_str));
+                .or_else(|| {
+                    choice
+                        .get("delta")
+                        .and_then(|d| d.get("reasoning_content"))
+                        .and_then(Value::as_str)
+                });
             if let Some(text) = reasoning {
-                delta.insert("reasoning_content".to_string(), Value::String(text.to_string()));
+                delta.insert(
+                    "reasoning_content".to_string(),
+                    Value::String(text.to_string()),
+                );
             }
             if let Some(finish) = choice.get("finish_reason").and_then(Value::as_str) {
                 finished = true;
                 if is_refusal(finish) {
                     refused = true;
                 }
-                delta.insert("finish_reason".to_string(), Value::String(finish.to_string()));
+                delta.insert(
+                    "finish_reason".to_string(),
+                    Value::String(finish.to_string()),
+                );
             }
             if delta.is_empty() {
                 continue;
@@ -163,7 +182,11 @@ impl LingxiToChatMachine {
                 continue;
             };
             let tokens = Self::tokens_of(&frame);
-            let Some(mut rewritten) = rewrite_frame(&frame, tokens.unwrap_or((0, 0)).0, tokens.unwrap_or((0, 0)).1) else {
+            let Some(mut rewritten) = rewrite_frame(
+                &frame,
+                tokens.unwrap_or((0, 0)).0,
+                tokens.unwrap_or((0, 0)).1,
+            ) else {
                 continue;
             };
             if tokens.is_none() {
@@ -245,7 +268,11 @@ mod tests {
             10,
             2,
         );
-        let r = r.unwrap_or_else(|| Rewritten { chunk: Value::Null, finished: false, refused: false });
+        let r = r.unwrap_or_else(|| Rewritten {
+            chunk: Value::Null,
+            finished: false,
+            refused: false,
+        });
         assert_eq!(r.chunk["choices"][0]["delta"]["content"], json!("你好"));
         assert!(!r.finished);
     }
@@ -257,8 +284,15 @@ mod tests {
             0,
             0,
         );
-        let r = r.unwrap_or_else(|| Rewritten { chunk: Value::Null, finished: false, refused: false });
-        assert_eq!(r.chunk["choices"][0]["delta"]["reasoning_content"], json!("让我想想"));
+        let r = r.unwrap_or_else(|| Rewritten {
+            chunk: Value::Null,
+            finished: false,
+            refused: false,
+        });
+        assert_eq!(
+            r.chunk["choices"][0]["delta"]["reasoning_content"],
+            json!("让我想想")
+        );
         assert_eq!(r.chunk["choices"][0]["delta"]["content"], json!("答案"));
     }
 
@@ -269,7 +303,11 @@ mod tests {
             0,
             0,
         );
-        let r = r.unwrap_or_else(|| Rewritten { chunk: Value::Null, finished: false, refused: false });
+        let r = r.unwrap_or_else(|| Rewritten {
+            chunk: Value::Null,
+            finished: false,
+            refused: false,
+        });
         assert!(r.finished, "上游不发 [DONE]，必须靠 finish_reason 收尾");
     }
 
@@ -280,7 +318,11 @@ mod tests {
             120,
             30,
         );
-        let r = r.unwrap_or_else(|| Rewritten { chunk: Value::Null, finished: false, refused: false });
+        let r = r.unwrap_or_else(|| Rewritten {
+            chunk: Value::Null,
+            finished: false,
+            refused: false,
+        });
         assert_eq!(r.chunk["usage"]["total_tokens"], json!(150));
         assert_eq!(r.chunk["usage"]["prompt_tokens"], json!(120));
     }
@@ -297,7 +339,11 @@ mod tests {
             0,
             0,
         );
-        let r = r.unwrap_or_else(|| Rewritten { chunk: Value::Null, finished: false, refused: false });
+        let r = r.unwrap_or_else(|| Rewritten {
+            chunk: Value::Null,
+            finished: false,
+            refused: false,
+        });
         assert!(r.refused);
     }
 
@@ -317,7 +363,9 @@ mod tests {
     #[test]
     fn an_incomplete_line_stays_in_the_buffer() {
         let mut machine = LingxiToChatMachine::new("m", None);
-        assert!(machine.push(b"data: {\"choices\":[{\"text\":\"A\"").is_empty());
+        assert!(machine
+            .push(b"data: {\"choices\":[{\"text\":\"A\"")
+            .is_empty());
         let out = machine.push(b"}]}\n");
         assert_eq!(out.len(), 1);
     }

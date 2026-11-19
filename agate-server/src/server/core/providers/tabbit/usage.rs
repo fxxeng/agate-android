@@ -54,17 +54,16 @@ pub async fn query(
     realm: Realm,
     account_id: &str,
 ) -> Result<Value, GatewayError> {
-    let record = store.tabbit_account_record(realm, account_id).ok_or_else(|| {
-        GatewayError::with_status(
-            404,
-            format!("还没有 {} 账号", realm.label()),
-        )
-    })?;
+    let record = store
+        .tabbit_account_record(realm, account_id)
+        .ok_or_else(|| GatewayError::with_status(404, format!("还没有 {} 账号", realm.label())))?;
     let credentials = Credentials::from_record(Some(&record))?;
     let proxy = match crate::server::core::proxies::resolve_account_proxy(record.get("proxy")) {
         Some(crate::server::core::proxies::ProxyResolution::Resolved(proxy)) => Some(proxy),
-        Some(crate::server::core::proxies::ProxyResolution::Failed(reason)
-            | crate::server::core::proxies::ProxyResolution::Failed(reason)) => {
+        Some(
+            crate::server::core::proxies::ProxyResolution::Failed(reason)
+            | crate::server::core::proxies::ProxyResolution::Failed(reason),
+        ) => {
             return Err(GatewayError::with_status(400, reason));
         }
         None => None,
@@ -99,9 +98,7 @@ pub async fn query_with(
     let used = ["usage_percentage", "usage"]
         .iter()
         .find_map(|key| data.get(*key).and_then(http::as_f64))
-        .ok_or_else(|| {
-            GatewayError::with_status(502, "Tabbit 额度响应里没有 usage_percentage")
-        })?;
+        .ok_or_else(|| GatewayError::with_status(502, "Tabbit 额度响应里没有 usage_percentage"))?;
     let used = used.clamp(0.0, 100.0);
     let remain = (100.0 - used).max(0.0);
     let member_level = ["member_level", "plan", "plan_name"]

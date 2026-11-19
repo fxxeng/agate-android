@@ -36,7 +36,9 @@ fn table() -> &'static Mutex<Vec<Value>> {
 }
 
 fn lock_table() -> std::sync::MutexGuard<'static, Vec<Value>> {
-    table().lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    table()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// 目录「来源 / 更新日期」列要用的两个读数（消费方是
@@ -87,7 +89,8 @@ fn first_text<'a>(item: &'a Value, keys: &[&str]) -> Option<&'a str> {
 }
 
 fn first_number(item: &Value, keys: &[&str]) -> Option<f64> {
-    keys.iter().find_map(|key| item.get(*key).and_then(Value::as_f64))
+    keys.iter()
+        .find_map(|key| item.get(*key).and_then(Value::as_f64))
 }
 
 /// 倍率直接当 `credits`（与 `lobsterai/models.rs` 同一写法）；0 = 免费，不是缺失。
@@ -134,9 +137,14 @@ pub fn parse_catalog(root: &Value) -> Vec<Value> {
         if id.is_empty() || !claimed.insert(id.to_lowercase()) {
             continue;
         }
-        let name = first_text(item, &["name"]).unwrap_or(id.as_str()).to_string();
+        let name = first_text(item, &["name"])
+            .unwrap_or(id.as_str())
+            .to_string();
         let multiplier = first_number(item, &["multiplier", "cost_multiplier", "costMultiplier"]);
-        let context = first_number(item, &["max_context_tokens", "maxContextTokens", "context_window"]);
+        let context = first_number(
+            item,
+            &["max_context_tokens", "maxContextTokens", "context_window"],
+        );
         out.push(json!({
             "id": id,
             "name": name,
@@ -172,7 +180,10 @@ mod tests {
         let rows = parse_catalog(&json!({ "data": { "models": ["qwen3.8_flash", "kimi-k3"] } }));
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0]["id"], json!("qwen3.8_flash"));
-        assert!(rows[0]["credits"].is_null(), "没给倍率时留 null，不拿 0 冒充");
+        assert!(
+            rows[0]["credits"].is_null(),
+            "没给倍率时留 null，不拿 0 冒充"
+        );
     }
 
     #[test]

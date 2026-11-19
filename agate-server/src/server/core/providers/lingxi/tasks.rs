@@ -172,7 +172,12 @@ pub fn parse_tasks(body: &Value) -> Vec<Task> {
                     .and_then(|credit| credit.get("multiplier"))
                     .and_then(Value::as_f64)
             });
-        out.push(Task { key, title, status, reward });
+        out.push(Task {
+            key,
+            title,
+            status,
+            reward,
+        });
     }
     out.sort_by_key(|task| order_of(&task.key));
     out
@@ -197,7 +202,8 @@ pub async fn list(
     device_id: &str,
     cookie: Option<&str>,
 ) -> Result<Vec<Task>, GatewayError> {
-    let reply = client::request("GET", endpoints::tasks_path(), sid, device_id, cookie, None).await?;
+    let reply =
+        client::request("GET", endpoints::tasks_path(), sid, device_id, cookie, None).await?;
     if !(200..300).contains(&reply.status) {
         return Err(GatewayError::with_status(
             i32::from(reply.status),
@@ -234,11 +240,20 @@ pub async fn claim(
         return Err(GatewayError::with_status(400, "缺少任务 id"));
     }
     if !endpoints::CLAIM_ENDPOINT_VERIFIED {
-        return Ok(ClaimOutcome { status: 0, result_ok: false, explicit_reject: false, sent: false });
+        return Ok(ClaimOutcome {
+            status: 0,
+            result_ok: false,
+            explicit_reject: false,
+            sent: false,
+        });
     }
     // 只有签到认 `date`（签到窗口按北京日期换日），其余任务的领取不带 query。
     let date = if key == endpoints::TASK_DAILY_CHECK_IN {
-        if date.trim().is_empty() { beijing::today_key() } else { date.trim().to_string() }
+        if date.trim().is_empty() {
+            beijing::today_key()
+        } else {
+            date.trim().to_string()
+        }
     } else {
         String::new()
     };
@@ -301,7 +316,10 @@ async fn task_run(
         .trim()
         .to_string();
     if session_id.is_empty() {
-        return Err(GatewayError::with_status(502, "灵犀建任务会话响应里没有 session_id"));
+        return Err(GatewayError::with_status(
+            502,
+            "灵犀建任务会话响应里没有 session_id",
+        ));
     }
     // ② 领 run（`agent_input.text` 用任务文案，`expect_model` = model）
     let run_body = json!({
@@ -336,13 +354,25 @@ async fn task_run(
         ));
     }
     let data = claimed.body.get("data").unwrap_or(&claimed.body);
-    let run_id = data.get("run_id").and_then(Value::as_str).unwrap_or("").trim().to_string();
+    let run_id = data
+        .get("run_id")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
     if run_id.is_empty() {
-        return Err(GatewayError::with_status(502, "灵犀领任务 run 响应里没有 run_id"));
+        return Err(GatewayError::with_status(
+            502,
+            "灵犀领任务 run 响应里没有 run_id",
+        ));
     }
     let group_id = {
         let value = data.get("group_id").and_then(Value::as_str).unwrap_or("");
-        if value.is_empty() { run_id.clone() } else { value.to_string() }
+        if value.is_empty() {
+            run_id.clone()
+        } else {
+            value.to_string()
+        }
     };
     Ok((session_id, run_id, group_id))
 }
@@ -428,8 +458,7 @@ pub async fn complete(
     match key {
         TASK_TRY_EXPERT | TASK_USE_CLIENT => {
             let model = task_model();
-            let (session_id, run_id, group_id) =
-                task_run(sid, device_id, cookie, model).await?;
+            let (session_id, run_id, group_id) = task_run(sid, device_id, cookie, model).await?;
             // 会话是刚建在主域上的，任务对话也打主域。
             let host = endpoints::API_HOST;
             execution_status(sid, device_id, cookie, &session_id, &group_id, "running").await?;
@@ -437,8 +466,9 @@ pub async fn complete(
                 task_chat(sid, device_id, cookie, host, &session_id, &run_id, model).await
             {
                 // 对话失败也要尽量收尾，别把 run 卡在 running（上游按 run 计费）。
-                let _ = execution_status(sid, device_id, cookie, &session_id, &group_id, "completed")
-                    .await;
+                let _ =
+                    execution_status(sid, device_id, cookie, &session_id, &group_id, "completed")
+                        .await;
                 return Err(error);
             }
             execution_status(sid, device_id, cookie, &session_id, &group_id, "completed").await?;
@@ -454,7 +484,10 @@ pub async fn complete(
         TASK_TRY_GROUP => {
             let message = super::ws::complete_group_task(sid, device_id, cookie).await?;
             logging::log("[Models]", &format!("灵犀任务 {key} 已代跑：{message}"));
-            Ok(Ran { key: key.to_string(), message })
+            Ok(Ran {
+                key: key.to_string(),
+                message,
+            })
         }
         other => Err(GatewayError::with_status(
             400,

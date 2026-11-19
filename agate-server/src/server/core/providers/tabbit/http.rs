@@ -60,11 +60,7 @@ fn sign_keys() -> &'static Mutex<BTreeMap<String, (String, i64)>> {
 }
 
 /// 取签名 key：缓存命中 → 拉取 → 兜底顺序（见模块头）
-pub async fn sign_key(
-    creds: &Credentials,
-    realm: Realm,
-    client: &reqwest::Client,
-) -> String {
+pub async fn sign_key(creds: &Credentials, realm: Realm, client: &reqwest::Client) -> String {
     let key = realm.id().to_string();
     let now = crate::server::logging::now_ms();
     {
@@ -116,10 +112,15 @@ async fn fetch_sign_key(
         .timeout(CONTROL_TIMEOUT)
         .header("Accept", "text/plain")
         .header("Cookie", &creds.cookie);
-    for (name, value) in endpoints::base_headers(realm, &creds.uid, creds.version(), creds.unlock_pro, "/") {
+    for (name, value) in
+        endpoints::base_headers(realm, &creds.uid, creds.version(), creds.unlock_pro, "/")
+    {
         request = request.header(name.as_str(), value.as_str());
     }
-    let response = request.send().await.map_err(|_| "Tabbit 签名 key 请求失败")?;
+    let response = request
+        .send()
+        .await
+        .map_err(|_| "Tabbit 签名 key 请求失败")?;
     let status = response.status().as_u16();
     let text = response.text().await.unwrap_or_default();
     let key = text.trim();
@@ -173,7 +174,16 @@ pub async fn session_id(
         }
     }
     // 上游的 body 是**空串**（不是 `null`）—— 签名要签同一份字节，见 `signed_json`
-    let value = signed_json(creds, realm, client, "POST", endpoints::SESSION_PATH, None, "/newtab").await?;
+    let value = signed_json(
+        creds,
+        realm,
+        client,
+        "POST",
+        endpoints::SESSION_PATH,
+        None,
+        "/newtab",
+    )
+    .await?;
     let id = value
         .get("chat_session_id")
         .and_then(Value::as_str)
@@ -250,13 +260,26 @@ fn signed_headers(
     body: &str,
     sign_key: &str,
 ) -> Vec<(String, String)> {
-    let mut headers = endpoints::base_headers(realm, &creds.uid, creds.version(), creds.unlock_pro, referer_path);
+    let mut headers = endpoints::base_headers(
+        realm,
+        &creds.uid,
+        creds.version(),
+        creds.unlock_pro,
+        referer_path,
+    );
     headers.push(("trace-id".to_string(), sign::random_uuid()));
     headers.push(("Cookie".to_string(), creds.cookie.clone()));
     if !creds.token.is_empty() {
-        headers.push(("Authorization".to_string(), format!("Bearer {}", creds.token)));
+        headers.push((
+            "Authorization".to_string(),
+            format!("Bearer {}", creds.token),
+        ));
     }
-    headers.extend(sign::signature_headers(sign_key, body, crate::server::logging::now_ms()));
+    headers.extend(sign::signature_headers(
+        sign_key,
+        body,
+        crate::server::logging::now_ms(),
+    ));
     headers
 }
 
@@ -285,7 +308,10 @@ async fn send(
     let response = request.send().await.map_err(|error| {
         GatewayError::with_status(
             502,
-            format!("Tabbit 请求失败：{}", crate::server::core::egress::describe_error_detail(&error)),
+            format!(
+                "Tabbit 请求失败：{}",
+                crate::server::core::egress::describe_error_detail(&error)
+            ),
         )
     })?;
     let status = response.status().as_u16();
@@ -308,7 +334,14 @@ fn parse_json(bytes: &[u8]) -> Value {
 
 /// 从错误响应里挖一句可读的原文（上游各接口的键名不统一）
 pub fn error_text(value: &Value) -> String {
-    const CANDIDATES: [&str; 6] = ["message", "msg", "detail", "error_message", "displayTips", "error"];
+    const CANDIDATES: [&str; 6] = [
+        "message",
+        "msg",
+        "detail",
+        "error_message",
+        "displayTips",
+        "error",
+    ];
     for key in CANDIDATES {
         if let Some(text) = value.get(key).and_then(Value::as_str) {
             let text = text.trim();
@@ -382,10 +415,20 @@ pub async fn user_info(
     realm: Realm,
     client: &reqwest::Client,
 ) -> Result<(String, String), GatewayError> {
-    let value = signed_json(creds, realm, client, "GET", endpoints::USER_INFO_PATH, None, "/").await?;
+    let value = signed_json(
+        creds,
+        realm,
+        client,
+        "GET",
+        endpoints::USER_INFO_PATH,
+        None,
+        "/",
+    )
+    .await?;
     let info = value.get("user_info").cloned().unwrap_or(Value::Null);
     let uid = super::credentials::pick(&info, &["user_id", "uid", "id"]);
-    let mut nickname = super::credentials::pick(&info, &["display_name", "nickname", "name", "user_name"]);
+    let mut nickname =
+        super::credentials::pick(&info, &["display_name", "nickname", "name", "user_name"]);
     if nickname.is_empty() {
         nickname = super::credentials::nickname_from_jwt(&creds.token);
     }
@@ -442,29 +485,42 @@ pub async fn open_join(
     let target = format!("{}{}", realm.base(), endpoints::join_path(room));
     let referer = format!("/panel/{room}");
     for attempt in 0..2 {
-        let mut headers =
-            endpoints::base_headers(realm, &creds.uid, creds.version(), creds.unlock_pro, &referer);
+        let mut headers = endpoints::base_headers(
+            realm,
+            &creds.uid,
+            creds.version(),
+            creds.unlock_pro,
+            &referer,
+        );
         headers.push(("Accept".to_string(), "text/event-stream".to_string()));
         headers.push(("Content-Type".to_string(), "application/json".to_string()));
         headers.push(("Cache-Control".to_string(), "no-cache".to_string()));
         headers.push(("trace-id".to_string(), sign::random_uuid()));
         headers.push(("Cookie".to_string(), creds.cookie.clone()));
         let key = sign_key(creds, realm, client).await;
-        headers.extend(sign::signature_headers(&key, body, crate::server::logging::now_ms()));
+        headers.extend(sign::signature_headers(
+            &key,
+            body,
+            crate::server::logging::now_ms(),
+        ));
 
         let mut request = client.post(&target);
         for (name, value) in &headers {
             request = request.header(name.as_str(), value.as_str());
         }
-        let response = request.body(body.to_string()).send().await.map_err(|error| {
-            GatewayError::with_status(
-                502,
-                format!(
-                    "无法连接 Tabbit：{}",
-                    crate::server::core::egress::describe_error_detail(&error)
-                ),
-            )
-        })?;
+        let response = request
+            .body(body.to_string())
+            .send()
+            .await
+            .map_err(|error| {
+                GatewayError::with_status(
+                    502,
+                    format!(
+                        "无法连接 Tabbit：{}",
+                        crate::server::core::egress::describe_error_detail(&error)
+                    ),
+                )
+            })?;
         let status = response.status().as_u16();
         if status == 499 && attempt == 0 {
             refresh_sign_key(creds, realm, client).await;
@@ -508,14 +564,22 @@ pub async fn post_run(
 ) -> Result<String, GatewayError> {
     let target = format!("{}{}", realm.base(), endpoints::run_path(room));
     let referer = format!("/panel/{room}");
-    let mut headers =
-        endpoints::base_headers(realm, &creds.uid, creds.version(), creds.unlock_pro, &referer);
+    let mut headers = endpoints::base_headers(
+        realm,
+        &creds.uid,
+        creds.version(),
+        creds.unlock_pro,
+        &referer,
+    );
     headers.push(("Accept".to_string(), "application/json".to_string()));
     headers.push(("Content-Type".to_string(), "application/json".to_string()));
     headers.push(("trace-id".to_string(), sign::random_uuid()));
     headers.push(("Cookie".to_string(), creds.cookie.clone()));
     if !creds.token.is_empty() {
-        headers.push(("Authorization".to_string(), format!("Bearer {}", creds.token)));
+        headers.push((
+            "Authorization".to_string(),
+            format!("Bearer {}", creds.token),
+        ));
     }
     let (status, bytes) = send(client, "POST", &target, &headers, Some(body), RUN_TIMEOUT).await?;
     let value = parse_json(&bytes);
@@ -540,7 +604,9 @@ pub fn as_i64(value: &Value) -> Option<i64> {
     if let Some(number) = value.as_f64() {
         return Some(number as i64);
     }
-    value.as_str().and_then(|text| text.trim().parse::<i64>().ok())
+    value
+        .as_str()
+        .and_then(|text| text.trim().parse::<i64>().ok())
 }
 
 /// 同上，取 f64（额度是百分比，需要小数）
@@ -601,11 +667,13 @@ mod tests {
     /// join 的 payload 里 `last_event_id` 必须是 null（订阅从头开始）
     #[test]
     fn join_payload_subscribes_from_the_beginning() {
-        let value: Value = serde_json::from_str(&build_join_payload("u1|room")).expect("payload 应是合法 JSON");
+        let value: Value =
+            serde_json::from_str(&build_join_payload("u1|room")).expect("payload 应是合法 JSON");
         assert!(value["last_event_id"].is_null());
         assert_eq!(value["surface"], "panel");
         // device_id_hash 是稳定派生：同一 seed 两次一致
-        let again: Value = serde_json::from_str(&build_join_payload("u1|room")).expect("payload 应是合法 JSON");
+        let again: Value =
+            serde_json::from_str(&build_join_payload("u1|room")).expect("payload 应是合法 JSON");
         assert_eq!(value["device_id_hash"], again["device_id_hash"]);
         // page_instance_id 每次都换（它是「这一次页面实例」）
         assert_ne!(value["page_instance_id"], again["page_instance_id"]);
@@ -614,15 +682,18 @@ mod tests {
     /// runs 的 payload：模型走 `selected_model` 数组，内容进 `content`
     #[test]
     fn run_payload_carries_the_content_and_the_model() {
-        let value: Value =
-            serde_json::from_str(&build_run_payload("你好", "GPT-5.5")).expect("payload 应是合法 JSON");
+        let value: Value = serde_json::from_str(&build_run_payload("你好", "GPT-5.5"))
+            .expect("payload 应是合法 JSON");
         assert_eq!(value["input_payload"]["content"], "你好");
         assert_eq!(value["input_payload"]["selected_model"][0], "GPT-5.5");
         assert_eq!(value["input_payload"]["task_name"], "chat");
         // run id 与 message id 同值（上游按它配对）
         assert_eq!(value["client_run_id"], value["client_message_id"]);
         // entity.key 是空内容的 md5
-        assert_eq!(value["input_payload"]["entity"]["key"], sign::md5_empty_hex());
+        assert_eq!(
+            value["input_payload"]["entity"]["key"],
+            sign::md5_empty_hex()
+        );
     }
 
     /// 缓存键必须按站点分开：两站的 uid 空间不同，混了会把 A 站的房间给 B 站用

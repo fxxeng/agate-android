@@ -58,13 +58,15 @@ const TOTAL_TIMEOUT: Duration = Duration::from_secs(1800);
 /// 空闲上限：上游正常每几秒就有帧，长时间无帧即视为断线（避免挂到总超时）。
 const IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 
-type Socket = tokio_tungstenite::WebSocketStream<
-    tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
->;
+type Socket =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 fn header_pair(name: &str, value: &str) -> Result<(String, String), GatewayError> {
     if value.contains('\n') || value.contains('\r') {
-        return Err(GatewayError::with_status(500, format!("灵犀握手头 {name} 含换行")));
+        return Err(GatewayError::with_status(
+            500,
+            format!("灵犀握手头 {name} 含换行"),
+        ));
     }
     Ok((name.to_string(), value.to_string()))
 }
@@ -152,7 +154,10 @@ async fn create_session(
         .trim()
         .to_string();
     if session_id.is_empty() {
-        return Err(GatewayError::with_status(502, "灵犀建会话响应里没有 session_id"));
+        return Err(GatewayError::with_status(
+            502,
+            "灵犀建会话响应里没有 session_id",
+        ));
     }
     Ok(session_id)
 }
@@ -217,13 +222,21 @@ pub fn render_tool(full: &Value) -> Option<String> {
         .and_then(Value::as_str)
         .unwrap_or("")
         .trim();
-    let output = full.get("output").and_then(Value::as_str).unwrap_or("").trim();
+    let output = full
+        .get("output")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
     if brief.is_empty() && code.is_empty() && output.is_empty() {
         return None;
     }
     let mut text = String::new();
     text.push_str("\n\n> 🔧 **");
-    text.push_str(if brief.is_empty() { "工具执行" } else { brief });
+    text.push_str(if brief.is_empty() {
+        "工具执行"
+    } else {
+        brief
+    });
     text.push_str("**\n\n");
     if !code.is_empty() {
         text.push_str("```\n");
@@ -277,7 +290,10 @@ pub fn translate_frame(frame: &Value) -> Frame {
             return Frame::Ignore;
         }
         return match render_tool(full_content(frame)) {
-            Some(text) => Frame::Delta(Delta { content: Some(text), reasoning: None }),
+            Some(text) => Frame::Delta(Delta {
+                content: Some(text),
+                reasoning: None,
+            }),
             None => Frame::Ignore,
         };
     }
@@ -340,17 +356,26 @@ pub fn flatten_prompt(messages: &Value) -> String {
 /// 上游帧 → OpenAI chat chunk（纯函数）。
 pub fn chunk_of(model: &str, delta: &Delta, finish: bool) -> Value {
     let mut body = Map::new();
-    body.insert("object".to_string(), Value::String("chat.completion.chunk".to_string()));
+    body.insert(
+        "object".to_string(),
+        Value::String("chat.completion.chunk".to_string()),
+    );
     body.insert("model".to_string(), Value::String(model.to_string()));
     let mut payload = Map::new();
     if let Some(reasoning) = delta.reasoning.as_ref() {
-        payload.insert("reasoning_content".to_string(), Value::String(reasoning.clone()));
+        payload.insert(
+            "reasoning_content".to_string(),
+            Value::String(reasoning.clone()),
+        );
     }
     if let Some(content) = delta.content.as_ref() {
         payload.insert("content".to_string(), Value::String(content.clone()));
     }
     if finish {
-        payload.insert("finish_reason".to_string(), Value::String("stop".to_string()));
+        payload.insert(
+            "finish_reason".to_string(),
+            Value::String("stop".to_string()),
+        );
     }
     body.insert(
         "choices".to_string(),
@@ -383,7 +408,10 @@ pub async fn forward(
 ) -> Result<ForwardOutcome, GatewayError> {
     let prompt = flatten_prompt(body.get("messages").unwrap_or(&Value::Null));
     if prompt.trim().is_empty() {
-        return Err(GatewayError::with_status(400, "灵犀通道需要至少一条非空的用户消息"));
+        return Err(GatewayError::with_status(
+            400,
+            "灵犀通道需要至少一条非空的用户消息",
+        ));
     }
     let session_id = create_session(sid, device_id, cookie, &json!({})).await?;
     let url = endpoints::cowork_ws_url(&session_id);
@@ -438,7 +466,9 @@ async fn send_user_input(
         },
     });
     socket
-        .send(tokio_tungstenite::tungstenite::Message::text(payload.to_string()))
+        .send(tokio_tungstenite::tungstenite::Message::text(
+            payload.to_string(),
+        ))
         .await
         .map_err(|error| GatewayError::with_status(502, format!("灵犀通道发送失败：{error}")))
 }
@@ -451,7 +481,10 @@ pub struct Translator {
 
 impl Translator {
     pub fn new(model: &str) -> Self {
-        Self { model: model.to_string(), finished: false }
+        Self {
+            model: model.to_string(),
+            finished: false,
+        }
     }
 
     /// 处理一帧，产出要下发的字节（可能为空）。
@@ -540,7 +573,8 @@ async fn drive_stream(
             }
             Err(error) => {
                 // 已经是流式响应头之后：只能把错误写进流里，客户端才看得见
-                let payload = json!({ "error": { "message": error.message, "type": "upstream_error" } });
+                let payload =
+                    json!({ "error": { "message": error.message, "type": "upstream_error" } });
                 let _ = sender.send(Ok(sse_bytes(&payload))).await;
                 break;
             }
@@ -553,7 +587,10 @@ async fn drive_stream(
 }
 
 /// 聚合驱动：非流式出口（拼一份 `chat.completion`）。
-async fn drive_aggregate(mut socket: Socket, mut translator: Translator) -> Result<Value, GatewayError> {
+async fn drive_aggregate(
+    mut socket: Socket,
+    mut translator: Translator,
+) -> Result<Value, GatewayError> {
     let mut content = String::new();
     let mut reasoning = String::new();
     let deadline = tokio::time::Instant::now() + TOTAL_TIMEOUT;
@@ -613,14 +650,22 @@ pub async fn complete_group_task(
     .await?;
     let url = endpoints::group_ws_url(&session_id);
     let mut socket = connect(&url, cookie, sid).await?;
-    send_user_input(&mut socket, super::tasks::GROUP_PLAN_MODEL, super::tasks::TASK_PROMPT, &Value::Null)
-        .await?;
+    send_user_input(
+        &mut socket,
+        super::tasks::GROUP_PLAN_MODEL,
+        super::tasks::TASK_PROMPT,
+        &Value::Null,
+    )
+    .await?;
     // 等到 run 结束（最多 90s，面板同值）
     let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
     loop {
         if tokio::time::Instant::now() >= deadline {
             let _ = socket.close(None).await;
-            return Err(GatewayError::with_status(504, "群聊任务：通道未在 90 秒内结束"));
+            return Err(GatewayError::with_status(
+                504,
+                "群聊任务：通道未在 90 秒内结束",
+            ));
         }
         match next_frame(&mut socket).await {
             Ok(frame) => {
@@ -669,18 +714,26 @@ pub async fn complete_group_task(
     // 解散（失败不影响任务判定，如实记日志）
     let path = endpoints::imchat_channel_path(&channel_id);
     match client::request("DELETE", &path, sid, device_id, cookie, None).await {
-        Ok(reply) if (200..300).contains(&reply.status) => Ok("已建群并解散（判定完成）".to_string()),
+        Ok(reply) if (200..300).contains(&reply.status) => {
+            Ok("已建群并解散（判定完成）".to_string())
+        }
         Ok(reply) => {
             logging::log(
                 "[Models]",
-                &format!("⚠️ 灵犀群聊任务：解散群 {channel_id} 失败（HTTP {}）", reply.status),
+                &format!(
+                    "⚠️ 灵犀群聊任务：解散群 {channel_id} 失败（HTTP {}）",
+                    reply.status
+                ),
             );
             Ok("已建群（解散失败，已记日志）".to_string())
         }
         Err(error) => {
             logging::log(
                 "[Models]",
-                &format!("⚠️ 灵犀群聊任务：解散群 {channel_id} 失败：{}", error.message),
+                &format!(
+                    "⚠️ 灵犀群聊任务：解散群 {channel_id} 失败：{}",
+                    error.message
+                ),
             );
             Ok("已建群（解散失败，已记日志）".to_string())
         }
@@ -699,7 +752,10 @@ mod tests {
         }));
         assert_eq!(
             text,
-            Frame::Delta(Delta { content: Some("你好".to_string()), reasoning: None })
+            Frame::Delta(Delta {
+                content: Some("你好".to_string()),
+                reasoning: None
+            })
         );
         let reasoning = translate_frame(&json!({
             "event": "component.content",
@@ -707,7 +763,10 @@ mod tests {
         }));
         assert_eq!(
             reasoning,
-            Frame::Delta(Delta { content: None, reasoning: Some("想想".to_string()) })
+            Frame::Delta(Delta {
+                content: None,
+                reasoning: Some("想想".to_string())
+            })
         );
     }
 
@@ -737,7 +796,11 @@ mod tests {
             "event": "component.content",
             "data": { "type": "c_execute_code", "id": "3", "delta": "print(" }
         });
-        assert_eq!(translate_frame(&during), Frame::Ignore, "半截代码不能推给下游");
+        assert_eq!(
+            translate_frame(&during),
+            Frame::Ignore,
+            "半截代码不能推给下游"
+        );
 
         let end = json!({
             "event": "component.end",
@@ -772,7 +835,9 @@ mod tests {
         let last = translator.on_frame(&json!({ "event": "run.end", "data": {} }));
         assert_eq!(last.len(), 2, "finish chunk + [DONE]");
         assert!(translator.finished());
-        assert!(translator.on_frame(&json!({ "event": "run.end", "data": {} })).is_empty());
+        assert!(translator
+            .on_frame(&json!({ "event": "run.end", "data": {} }))
+            .is_empty());
     }
 
     #[test]
@@ -795,12 +860,18 @@ mod tests {
     fn chunk_shape_is_openai_compatible() {
         let chunk = chunk_of(
             "glm-5.3",
-            &Delta { content: Some("x".to_string()), reasoning: None },
+            &Delta {
+                content: Some("x".to_string()),
+                reasoning: None,
+            },
             false,
         );
         assert_eq!(chunk["object"], json!("chat.completion.chunk"));
         assert_eq!(chunk["choices"][0]["delta"]["content"], json!("x"));
-        assert!(chunk.get("usage").is_none(), "WS 通道没有 token 用量，不许编");
+        assert!(
+            chunk.get("usage").is_none(),
+            "WS 通道没有 token 用量，不许编"
+        );
     }
 
     #[test]
@@ -814,7 +885,10 @@ mod tests {
     fn ws_urls_use_the_kdocs_host_and_the_two_different_paths() {
         let chat = endpoints::cowork_ws_url("s1");
         assert!(chat.starts_with("wss://lingxi.kdocs.cn/"), "{chat}");
-        assert!(chat.contains("/cowork/sessions/s1/sandbox/completions/ws"), "{chat}");
+        assert!(
+            chat.contains("/cowork/sessions/s1/sandbox/completions/ws"),
+            "{chat}"
+        );
         let group = endpoints::group_ws_url("s1");
         assert!(group.starts_with("wss://lingxi.kdocs.cn/"), "{group}");
         assert!(group.contains("/sessions/s1/completions/ws"), "{group}");

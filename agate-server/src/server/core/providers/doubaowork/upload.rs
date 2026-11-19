@@ -219,11 +219,16 @@ async fn prepare_upload(
         &credentials.cookie_header(),
         credentials.csrf_token().as_deref(),
     ));
-    let response = send_raw("POST", &url, Some(&body), &headers, None, Some(STEP_TIMEOUT_MS))
-        .await
-        .map_err(|error| {
-            GatewayError::with_status(502, format!("申请上传凭证失败：{error}"))
-        })?;
+    let response = send_raw(
+        "POST",
+        &url,
+        Some(&body),
+        &headers,
+        None,
+        Some(STEP_TIMEOUT_MS),
+    )
+    .await
+    .map_err(|error| GatewayError::with_status(502, format!("申请上传凭证失败：{error}")))?;
     if response.status == 401 || response.status == 403 {
         return Err(GatewayError::with_status(
             401,
@@ -335,10 +340,7 @@ async fn commit_image_upload(
         None => {
             return Err(GatewayError::with_status(
                 502,
-                format!(
-                    "CommitImageUpload 未返回 uri：{}",
-                    readable_error(&raw)
-                ),
+                format!("CommitImageUpload 未返回 uri：{}", readable_error(&raw)),
             ))
         }
     };
@@ -420,7 +422,10 @@ async fn perform_top_request_body(
     body: Option<&Value>,
 ) -> Result<Value, GatewayError> {
     if token.access_key.trim().is_empty() {
-        return Err(GatewayError::with_status(502, "缺少上传凭证（access_key 为空）"));
+        return Err(GatewayError::with_status(
+            502,
+            "缺少上传凭证（access_key 为空）",
+        ));
     }
     let body_text = body.map(|value| value.to_string()).unwrap_or_default();
     let body_bytes = body_text.as_bytes();
@@ -447,16 +452,9 @@ async fn perform_top_request_body(
         // `send_raw` 只接受 `Option<&Value>`，因此这里把 body 原样传给它
         // （签名用的是同一份 `Value` 序列化结果，两者必须逐字节一致 ——
         // 这也是为什么 body 在签名与发送两处都从同一个 `Value` 取）
-        send_raw(
-            method,
-            &url,
-            body,
-            &headers,
-            None,
-            Some(STEP_TIMEOUT_MS),
-        )
-        .await
-        .map_err(|error| GatewayError::with_status(502, format!("imageX 请求失败：{error}")))?
+        send_raw(method, &url, body, &headers, None, Some(STEP_TIMEOUT_MS))
+            .await
+            .map_err(|error| GatewayError::with_status(502, format!("imageX 请求失败：{error}")))?
     };
     let payload = response.payload.unwrap_or(Value::Null);
     if !response.ok {
@@ -480,7 +478,10 @@ async fn put_object(
     data: &[u8],
 ) -> Result<(), GatewayError> {
     if host.trim().is_empty() {
-        return Err(GatewayError::with_status(502, "缺少上传主机（UploadHosts 为空）"));
+        return Err(GatewayError::with_status(
+            502,
+            "缺少上传主机（UploadHosts 为空）",
+        ));
     }
     let url = format!("https://{}/upload/v1/{}", host.trim(), store.store_uri);
     let crc32 = crc32_hex(data);
@@ -557,10 +558,8 @@ fn sign_v4(
     let payload_hash = sha256_hex(if body.is_empty() { b"" } else { body });
 
     // ── canonical headers：**只有三个**（host / x-amz-date / x-amz-security-token）──
-    let mut signed_header_names: Vec<(&str, String)> = vec![
-        ("host", host.to_string()),
-        ("x-amz-date", amz_date.clone()),
-    ];
+    let mut signed_header_names: Vec<(&str, String)> =
+        vec![("host", host.to_string()), ("x-amz-date", amz_date.clone())];
     let mut headers: Vec<(String, String)> = vec![
         ("X-Amz-Date".to_string(), amz_date.clone()),
         ("host".to_string(), host.to_string()),
@@ -861,7 +860,9 @@ mod tests {
             .authorization
             .contains("SignedHeaders=host;x-amz-date;x-amz-security-token"));
         // 签名域三件套（日期 / 区域 / 服务）都要在
-        assert!(signed.authorization.contains("/cn-north-1/imagex/aws4_request"));
+        assert!(signed
+            .authorization
+            .contains("/cn-north-1/imagex/aws4_request"));
         assert!(signed.authorization.contains("Credential=AKIDEXAMPLE/"));
         assert!(signed.authorization.starts_with("AWS4-HMAC-SHA256 "));
         // X-Amz-Content-Sha256 **发送**但不在 SignedHeaders 里
@@ -869,9 +870,7 @@ mod tests {
         assert!(names.contains(&"X-Amz-Content-Sha256"));
         assert!(names.contains(&"X-Amz-Date"));
         assert!(names.contains(&"x-amz-security-token"));
-        assert!(!signed
-            .authorization
-            .contains("x-amz-content-sha256"));
+        assert!(!signed.authorization.contains("x-amz-content-sha256"));
     }
 
     /// 没有 session_token 时那条头不参与签名（也不会被发出去）
@@ -890,7 +889,9 @@ mod tests {
             b"",
             &token,
         );
-        assert!(signed.authorization.contains("SignedHeaders=host;x-amz-date,"));
+        assert!(signed
+            .authorization
+            .contains("SignedHeaders=host;x-amz-date,"));
         assert!(!signed
             .headers
             .iter()
@@ -908,8 +909,22 @@ mod tests {
         };
         let params = vec![("Action".to_string(), "CommitImageUpload".to_string())];
         let body = br#"{"SessionKey":"x"}"#;
-        let first = sign_v4("POST", endpoints::IMAGEX_TOP_PATH, &params, "h", body, &token);
-        let second = sign_v4("POST", endpoints::IMAGEX_TOP_PATH, &params, "h", body, &token);
+        let first = sign_v4(
+            "POST",
+            endpoints::IMAGEX_TOP_PATH,
+            &params,
+            "h",
+            body,
+            &token,
+        );
+        let second = sign_v4(
+            "POST",
+            endpoints::IMAGEX_TOP_PATH,
+            &params,
+            "h",
+            body,
+            &token,
+        );
         assert_eq!(first.authorization, second.authorization);
         // 换 body 必须换签名（不然就是没签 body）
         let other = sign_v4(
@@ -927,7 +942,10 @@ mod tests {
     #[test]
     fn host_extraction() {
         assert_eq!(host_of("https://www.doubao.com"), "www.doubao.com");
-        assert_eq!(host_of("https://bucket.example.com/path/x"), "bucket.example.com");
+        assert_eq!(
+            host_of("https://bucket.example.com/path/x"),
+            "bucket.example.com"
+        );
         assert_eq!(host_of("http://127.0.0.1:8080/a"), "127.0.0.1:8080");
     }
 

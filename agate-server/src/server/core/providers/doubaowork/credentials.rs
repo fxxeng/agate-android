@@ -260,7 +260,11 @@ pub fn cookie_pairs_from_rows(rows: &[Value]) -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = Vec::new();
     for row in rows {
         let name = row.get("name").and_then(Value::as_str).unwrap_or("").trim();
-        let value = row.get("value").and_then(Value::as_str).unwrap_or("").trim();
+        let value = row
+            .get("value")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim();
         if name.is_empty() || value.is_empty() {
             continue;
         }
@@ -288,14 +292,22 @@ pub fn normalize_exported_cookies(rows: &[Value], now_seconds: i64) -> Vec<Cooki
     let mut out: Vec<CookieRow> = Vec::new();
     for row in rows {
         let name = row.get("name").and_then(Value::as_str).unwrap_or("").trim();
-        let value = row.get("value").and_then(Value::as_str).unwrap_or("").trim();
+        let value = row
+            .get("value")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim();
         if name.is_empty() || value.is_empty() {
             continue;
         }
         if value.chars().count() > MAX_COOKIE_VALUE_LENGTH {
             continue;
         }
-        let raw_domain = row.get("domain").and_then(Value::as_str).unwrap_or("").trim();
+        let raw_domain = row
+            .get("domain")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim();
         let domain = raw_domain.trim_start_matches('.');
         if domain.is_empty() || !is_doubao_domain(domain) {
             continue;
@@ -483,7 +495,10 @@ pub fn normalize_paste(
         ));
     }
     if trimmed.chars().count() > MAX_COOKIE_INPUT_LENGTH {
-        return Err(GatewayError::with_status(400, "Cookie 过长，请确认粘贴的是 Cookie 而不是别的内容"));
+        return Err(GatewayError::with_status(
+            400,
+            "Cookie 过长，请确认粘贴的是 Cookie 而不是别的内容",
+        ));
     }
     let pairs = parse_cookie_string(trimmed);
     if pairs.is_empty() {
@@ -706,7 +721,9 @@ mod tests {
         assert_eq!(bad.err().map(|error| error.status_code), Some(401));
         // 一条都没有 → 401
         assert_eq!(
-            from_record(Some(&json!({}))).err().map(|error| error.status_code),
+            from_record(Some(&json!({})))
+                .err()
+                .map(|error| error.status_code),
             Some(401)
         );
         // 没有账号 → 401
@@ -718,10 +735,7 @@ mod tests {
     fn session_cookie_names_are_a_union() {
         for name in SESSION_COOKIE_NAMES {
             let record = json!({ "cookie": format!("{name}=value") });
-            assert!(
-                from_record(Some(&record)).is_ok(),
-                "{name} 应被认作登录态"
-            );
+            assert!(from_record(Some(&record)).is_ok(), "{name} 应被认作登录态");
         }
     }
 
@@ -755,9 +769,8 @@ mod tests {
     /// 指纹来源优先级：显式 fingerprint 段 > Cookie 里的 s_v_web_id > 现造
     #[test]
     fn fingerprint_sources_follow_priority() {
-        let pairs = parse_cookie_string(
-            "sessionid=abc; s_v_web_id=webFromCookie; msToken=msFromCookie",
-        );
+        let pairs =
+            parse_cookie_string("sessionid=abc; s_v_web_id=webFromCookie; msToken=msFromCookie");
         let credentials = account_from_cookies(
             "id",
             "n",
@@ -791,8 +804,14 @@ mod tests {
             .cloned()
             .unwrap_or_default();
         assert_eq!(rows.len(), 3);
-        assert_eq!(rows[0].get("name").and_then(Value::as_str), Some("sessionid"));
-        assert_eq!(rows[0].get("domain").and_then(Value::as_str), Some(".doubao.com"));
+        assert_eq!(
+            rows[0].get("name").and_then(Value::as_str),
+            Some("sessionid")
+        );
+        assert_eq!(
+            rows[0].get("domain").and_then(Value::as_str),
+            Some(".doubao.com")
+        );
         assert_eq!(rows[0].get("path").and_then(Value::as_str), Some("/"));
         assert!(rows[0].get("expires").is_some_and(Value::is_null));
         let fingerprint = secret.get("fingerprint").cloned().unwrap_or(Value::Null);
@@ -828,7 +847,8 @@ mod tests {
     /// **脱敏**：任何对外字符串都不含 Cookie 值（只出名字与尾号）
     #[test]
     fn masking_never_leaks_cookie_values() {
-        let pairs = parse_cookie_string("sessionid=SUPERSECRETVALUE; passport_csrf_token=CSRFVALUE");
+        let pairs =
+            parse_cookie_string("sessionid=SUPERSECRETVALUE; passport_csrf_token=CSRFVALUE");
         let credentials = account_from_cookies("id", "n", &pairs, None);
         let masked = credentials.masked_cookies();
         assert!(!masked.contains("SUPERSECRETVALUE"));

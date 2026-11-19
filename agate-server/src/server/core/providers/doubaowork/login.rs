@@ -137,9 +137,11 @@ fn seed_from_json(value: &Value) -> Result<Value, GatewayError> {
     }
 
     // 有 `domain` 的行才做域过滤（登录窗口导出的那种）；没有域的走扁平路径。
-    let has_domain = rows
-        .iter()
-        .any(|row| row.get("domain").and_then(Value::as_str).is_some_and(|text| !text.trim().is_empty()));
+    let has_domain = rows.iter().any(|row| {
+        row.get("domain")
+            .and_then(Value::as_str)
+            .is_some_and(|text| !text.trim().is_empty())
+    });
     let now = logging::now_ms() / 1000;
     let pairs: Vec<(String, String)> = if has_domain {
         credentials::normalize_exported_cookies(&rows, now)
@@ -147,8 +149,14 @@ fn seed_from_json(value: &Value) -> Result<Value, GatewayError> {
             .map(|row| {
                 let cell = row.to_value();
                 (
-                    cell.get("name").and_then(Value::as_str).unwrap_or("").to_string(),
-                    cell.get("value").and_then(Value::as_str).unwrap_or("").to_string(),
+                    cell.get("name")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string(),
+                    cell.get("value")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string(),
                 )
             })
             .filter(|(name, value)| !name.is_empty() && !value.is_empty())
@@ -296,8 +304,14 @@ mod tests {
             {"name":"ttwid","value":"xyz","domain":".doubao.com","path":"/"}
         ]}"#;
         let seed = normalize_import(raw).expect("应能归一");
-        let rows = seed.get("cookies").and_then(Value::as_array).cloned().unwrap_or_default();
-        assert!(rows.iter().any(|row| row.get("name").and_then(Value::as_str) == Some("sessionid")));
+        let rows = seed
+            .get("cookies")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        assert!(rows
+            .iter()
+            .any(|row| row.get("name").and_then(Value::as_str) == Some("sessionid")));
     }
 
     /// 形态 2b：裸数组
@@ -330,7 +344,8 @@ mod tests {
     /// 别家域的 Cookie 不能当凭证（域过滤生效）
     #[test]
     fn rejects_foreign_domain() {
-        let raw = r#"{"cookies":[{"name":"sessionid","value":"x","domain":".example.com","path":"/"}]}"#;
+        let raw =
+            r#"{"cookies":[{"name":"sessionid","value":"x","domain":".example.com","path":"/"}]}"#;
         let error = normalize_import(raw).expect_err("外域应被拒");
         assert_eq!(error.status_code, 400);
     }
@@ -345,11 +360,17 @@ mod tests {
     /// 空输入 / 超长输入 / 坏 JSON 都给人话
     #[test]
     fn error_messages_are_actionable() {
-        assert!(normalize_import("   ").expect_err("空").message.contains("Cookie"));
+        assert!(normalize_import("   ")
+            .expect_err("空")
+            .message
+            .contains("Cookie"));
         let broken = normalize_import("{not json").expect_err("坏 JSON");
         assert!(broken.message.contains("JSON"));
         let long = "x".repeat(MAX_INPUT_LENGTH + 1);
-        assert!(normalize_import(&long).expect_err("超长").message.contains("过长"));
+        assert!(normalize_import(&long)
+            .expect_err("超长")
+            .message
+            .contains("过长"));
     }
 
     /// 没有 cookies 字段又没有扁平值的 JSON 对象

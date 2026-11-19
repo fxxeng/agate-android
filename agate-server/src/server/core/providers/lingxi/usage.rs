@@ -24,9 +24,10 @@ pub struct Balance {
 }
 
 fn number(value: &Value, key: &str) -> Option<f64> {
-    value
-        .get(key)
-        .and_then(|node| node.as_f64().or_else(|| node.as_str().and_then(|s| s.parse::<f64>().ok())))
+    value.get(key).and_then(|node| {
+        node.as_f64()
+            .or_else(|| node.as_str().and_then(|s| s.parse::<f64>().ok()))
+    })
 }
 
 fn batch_sum(root: &Value, key: &str) -> f64 {
@@ -82,8 +83,14 @@ pub fn parse_balance(root: &Value, now_ms: i64) -> Option<Balance> {
         Some(value) => value,
         None => {
             let summed = batch_sum(data, "bonus_credits") + batch_sum(data, "purchased_credits");
-            let has_batches = data.get("bonus_credits").and_then(Value::as_array).is_some()
-                || data.get("purchased_credits").and_then(Value::as_array).is_some();
+            let has_batches = data
+                .get("bonus_credits")
+                .and_then(Value::as_array)
+                .is_some()
+                || data
+                    .get("purchased_credits")
+                    .and_then(Value::as_array)
+                    .is_some();
             if !has_batches {
                 return None;
             }
@@ -104,7 +111,13 @@ mod tests {
     #[test]
     fn total_balance_shape_is_accepted() {
         let b = parse_balance(&json!({ "data": { "total_balance": 812.5 } }), 0);
-        assert_eq!(b, Some(Balance { total: 812.5, earliest_expiry_ms: None }));
+        assert_eq!(
+            b,
+            Some(Balance {
+                total: 812.5,
+                earliest_expiry_ms: None
+            })
+        );
     }
 
     #[test]
@@ -116,7 +129,10 @@ mod tests {
             } }),
             1_000,
         );
-        let b = b.unwrap_or(Balance { total: -1.0, earliest_expiry_ms: None });
+        let b = b.unwrap_or(Balance {
+            total: -1.0,
+            earliest_expiry_ms: None,
+        });
         assert_eq!(b.total, 150.0);
         assert_eq!(b.earliest_expiry_ms, Some(86_400_000));
     }

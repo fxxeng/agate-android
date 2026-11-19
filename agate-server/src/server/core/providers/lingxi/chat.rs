@@ -46,8 +46,18 @@ pub struct StepBodies {
 /// 在本家出站启用，不改公共行为。
 pub fn flatten_tools(value: &Value) -> Value {
     const FORBIDDEN: &[&str] = &[
-        "$ref", "anyOf", "oneOf", "allOf", "not", "definitions", "$defs", "dependencies",
-        "dependentSchemas", "dependentRequired", "$schema", "$comment",
+        "$ref",
+        "anyOf",
+        "oneOf",
+        "allOf",
+        "not",
+        "definitions",
+        "$defs",
+        "dependencies",
+        "dependentSchemas",
+        "dependentRequired",
+        "$schema",
+        "$comment",
     ];
     match value {
         Value::Object(map) => {
@@ -88,7 +98,9 @@ pub fn normalize_messages(messages: &Value) -> Value {
     let mut declared: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut out: Vec<Value> = Vec::new();
     for item in items {
-        let Some(object) = item.as_object() else { continue };
+        let Some(object) = item.as_object() else {
+            continue;
+        };
         let role = object.get("role").and_then(Value::as_str).unwrap_or("");
         if role == "assistant" {
             declared.clear();
@@ -100,7 +112,10 @@ pub fn normalize_messages(messages: &Value) -> Value {
                 }
             }
         } else if role == "tool" {
-            let id = object.get("tool_call_id").and_then(Value::as_str).unwrap_or("");
+            let id = object
+                .get("tool_call_id")
+                .and_then(Value::as_str)
+                .unwrap_or("");
             if id.is_empty() || !declared.remove(id) {
                 continue;
             }
@@ -117,9 +132,10 @@ pub fn last_user_text(messages: &Value) -> String {
     let text = messages
         .as_array()
         .and_then(|items| {
-            items.iter().rev().find(|item| {
-                item.get("role").and_then(Value::as_str) == Some("user")
-            })
+            items
+                .iter()
+                .rev()
+                .find(|item| item.get("role").and_then(Value::as_str) == Some("user"))
         })
         .and_then(|item| item.get("content"))
         .map(|content| match content {
@@ -199,9 +215,15 @@ pub fn chat_body(request: &Value, model: &str) -> Value {
         chat.insert("base_llm_arguments".to_string(), Value::Object(base));
     }
     if let Some(effort) = request.get("reasoning_effort").and_then(Value::as_str) {
-        chat.insert("reasoning_effort".to_string(), Value::String(effort.to_string()));
+        chat.insert(
+            "reasoning_effort".to_string(),
+            Value::String(effort.to_string()),
+        );
         let mut llm = Map::new();
-        llm.insert("reasoning_effort".to_string(), Value::String(effort.to_string()));
+        llm.insert(
+            "reasoning_effort".to_string(),
+            Value::String(effort.to_string()),
+        );
         chat.insert("llm_arguments".to_string(), Value::Object(llm));
     }
     Value::Object(chat)
@@ -218,7 +240,10 @@ pub fn execution_body(group_id: &str, status: &str) -> Value {
         body.insert("lease_seconds".to_string(), json!(90));
     }
     if status == "completed" {
-        body.insert("terminal_reason".to_string(), Value::String("completed".to_string()));
+        body.insert(
+            "terminal_reason".to_string(),
+            Value::String("completed".to_string()),
+        );
     }
     Value::Object(body)
 }
@@ -233,7 +258,12 @@ pub fn build_bodies(
 ) -> StepBodies {
     StepBodies {
         session: session_body(device_id),
-        run: run_body(session_id, model, request.get("messages").unwrap_or(&Value::Null), ""),
+        run: run_body(
+            session_id,
+            model,
+            request.get("messages").unwrap_or(&Value::Null),
+            "",
+        ),
         chat: chat_body(request, model),
         running: execution_body(group_id, "running"),
         completed: execution_body(group_id, "completed"),
@@ -252,7 +282,13 @@ mod tests {
 
     #[test]
     fn five_bodies_match_the_two_public_implementations() {
-        let b = build_bodies(&json!({ "messages": [], "stream": true }), "qwen3.8_flash", "s1", "g1", "dev-1");
+        let b = build_bodies(
+            &json!({ "messages": [], "stream": true }),
+            "qwen3.8_flash",
+            "s1",
+            "g1",
+            "dev-1",
+        );
         assert_eq!(b.session["session_type"], json!("cowork_client"));
         assert_eq!(b.session["agent_version"], json!(2));
         assert_eq!(b.session["env"]["device_id"], json!("dev-1"));
@@ -269,7 +305,13 @@ mod tests {
 
     #[test]
     fn session_and_run_ids_live_in_headers_not_the_chat_body() {
-        let b = build_bodies(&json!({ "messages": [], "stream": true }), "glm-5.3", "s1", "g1", "dev-1");
+        let b = build_bodies(
+            &json!({ "messages": [], "stream": true }),
+            "glm-5.3",
+            "s1",
+            "g1",
+            "dev-1",
+        );
         assert!(b.chat.get("session_id").is_none(), "session_id 不该进 body");
         assert!(b.chat.get("run_id").is_none(), "run_id 不该进 body");
         assert_eq!(b.chat["stream"], json!(true));

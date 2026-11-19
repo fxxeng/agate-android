@@ -177,16 +177,29 @@ pub fn parse_page(body: &Value) -> Page {
         .unwrap_or_default();
     Page {
         items,
-        income_cursor: data.get("income_cursor").and_then(Value::as_i64).unwrap_or(0),
-        expense_cursor: data.get("expense_cursor").and_then(Value::as_i64).unwrap_or(0),
-        has_more: data.get("has_more").and_then(Value::as_bool).unwrap_or(false),
+        income_cursor: data
+            .get("income_cursor")
+            .and_then(Value::as_i64)
+            .unwrap_or(0),
+        expense_cursor: data
+            .get("expense_cursor")
+            .and_then(Value::as_i64)
+            .unwrap_or(0),
+        has_more: data
+            .get("has_more")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
     }
 }
 
 /// 查询串。`type` 决定给哪一边的游标（双向游标是上游的硬要求）。
 pub fn list_query(typ: &str, income_cursor: i64, expense_cursor: i64, limit: u32) -> String {
     let typ = if typ.is_empty() { "all" } else { typ };
-    let limit = if limit == 0 { PAGE_LIMIT_DEFAULT } else { limit.min(PAGE_LIMIT_MAX) };
+    let limit = if limit == 0 {
+        PAGE_LIMIT_DEFAULT
+    } else {
+        limit.min(PAGE_LIMIT_MAX)
+    };
     let mut query = format!("type={typ}");
     if typ != "expense" {
         query.push_str(&format!("&income_cursor={income_cursor}"));

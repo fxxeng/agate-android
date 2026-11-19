@@ -153,9 +153,20 @@ fn window_from_row(row: &Value) -> Option<Window> {
             })
         })
     };
-    let window = row.get("window").filter(|value| value.is_object()).unwrap_or(row);
-    let total = number_by_keys(window, &["total_amount", "totalAmount", "limit", "total", "quota"])
-        .or_else(|| number_by_keys(row, &["total_amount", "totalAmount", "limit", "total", "quota"]));
+    let window = row
+        .get("window")
+        .filter(|value| value.is_object())
+        .unwrap_or(row);
+    let total = number_by_keys(
+        window,
+        &["total_amount", "totalAmount", "limit", "total", "quota"],
+    )
+    .or_else(|| {
+        number_by_keys(
+            row,
+            &["total_amount", "totalAmount", "limit", "total", "quota"],
+        )
+    });
     let used = number_by_keys(window, &["used_amount", "usedAmount", "used", "usage"])
         .or_else(|| number_by_keys(row, &["used_amount", "usedAmount", "used", "usage"]));
     let unlimited = flag(&["unlimited", "exemption", "is_unlimited", "isUnlimited"]);
@@ -164,16 +175,29 @@ fn window_from_row(row: &Value) -> Option<Window> {
     if total.is_none() && used.is_none() && !unlimited {
         // 但若这行本身带了 `remainingPercent` / `availableView`，上游已经算过了，
         // 仍算一个可用读数（分母缺失时由展示串表达）
-        let has_view = !text_by_keys(row, &["availableView", "remainingPercent", "view"]).is_empty();
+        let has_view =
+            !text_by_keys(row, &["availableView", "remainingPercent", "view"]).is_empty();
         if !has_view {
             return None;
         }
     }
     Some(Window {
-        name: text_by_keys(row, &["feature_group_name", "featureGroupName", "planName", "name", "title"]),
+        name: text_by_keys(
+            row,
+            &[
+                "feature_group_name",
+                "featureGroupName",
+                "planName",
+                "name",
+                "title",
+            ],
+        ),
         total: total.unwrap_or(0.0),
         used: used.unwrap_or(0.0),
-        resets_at: text_by_keys(row, &["resetsAt", "resets_at", "resetAt", "end_time", "endTime"]),
+        resets_at: text_by_keys(
+            row,
+            &["resetsAt", "resets_at", "resetAt", "end_time", "endTime"],
+        ),
         exhausted,
         unlimited,
     })
@@ -233,10 +257,9 @@ pub fn windows_of(payload: &Value) -> Vec<Window> {
     // 去重（同一窗口可能同时出现在两处）
     let mut deduped: Vec<Window> = Vec::new();
     for window in out {
-        if deduped
-            .iter()
-            .any(|item| item.name == window.name && item.total == window.total && item.used == window.used)
-        {
+        if deduped.iter().any(|item| {
+            item.name == window.name && item.total == window.total && item.used == window.used
+        }) {
             continue;
         }
         deduped.push(window);
@@ -358,10 +381,7 @@ pub fn shape_usage(overview: &Value, config: &Value) -> Value {
     let mut first_available: Option<f64> = None;
     for window in &windows {
         let mut wallet = Map::new();
-        wallet.insert(
-            "type".to_string(),
-            Value::String("window".to_string()),
-        );
+        wallet.insert("type".to_string(), Value::String("window".to_string()));
         wallet.insert(
             "displayName".to_string(),
             Value::String(if window.name.is_empty() {
@@ -398,10 +418,7 @@ pub fn shape_usage(overview: &Value, config: &Value) -> Value {
     }
     if let Some(bonus) = bonus {
         let mut wallet = Map::new();
-        wallet.insert(
-            "type".to_string(),
-            Value::String("bonus".to_string()),
-        );
+        wallet.insert("type".to_string(), Value::String("bonus".to_string()));
         wallet.insert(
             "displayName".to_string(),
             Value::String("奖励额度".to_string()),
@@ -467,8 +484,10 @@ fn bonus_of(payload: &Value) -> Option<(f64, f64)> {
     for pointer in ["/data/bonus", "/bonus"] {
         if let Some(bonus) = payload.pointer(pointer) {
             if bonus.is_object() {
-                let total = number_by_keys(bonus, &["total_amount", "totalAmount", "total", "limit"])?;
-                let used = number_by_keys(bonus, &["used_amount", "usedAmount", "used"]).unwrap_or(0.0);
+                let total =
+                    number_by_keys(bonus, &["total_amount", "totalAmount", "total", "limit"])?;
+                let used =
+                    number_by_keys(bonus, &["used_amount", "usedAmount", "used"]).unwrap_or(0.0);
                 return Some((total, used));
             }
             if let Some(number) = number_of(Some(bonus)) {
@@ -503,7 +522,9 @@ pub async fn query(store: &AccountStore, account_id: &str) -> Result<Value, Gate
 /// 「刷新后重试一次」处置 —— 而本家没有刷新接口（`supports_refresh = false`），
 /// 因此那条路最终会落到一句「请重新登录」。两条都 401 才报错，一条 401
 /// 一条成功时按成功处理（本家两段读数独立）。
-pub async fn fetch_raw(credentials: &super::credentials::Credentials) -> Result<RawQuota, GatewayError> {
+pub async fn fetch_raw(
+    credentials: &super::credentials::Credentials,
+) -> Result<RawQuota, GatewayError> {
     let overview = fetch_one(credentials, endpoints::subscription_overview_url()).await;
     let config = fetch_one(credentials, endpoints::subscription_entry_config_url()).await;
     match (&overview, &config) {
@@ -605,7 +626,10 @@ mod tests {
             .unwrap_or(Value::Null);
         assert_eq!(wallet.get("limit").and_then(Value::as_f64), Some(100.0));
         assert_eq!(wallet.get("used").and_then(Value::as_f64), Some(30.0));
-        assert_eq!(wallet.get("resetAt").and_then(Value::as_str), Some("2026-11-01"));
+        assert_eq!(
+            wallet.get("resetAt").and_then(Value::as_str),
+            Some("2026-11-01")
+        );
         assert_eq!(
             shaped
                 .get("subscription")
@@ -624,7 +648,10 @@ mod tests {
             "读不到额度时写 available 会让账号被误判成余额不足"
         );
         assert_eq!(
-            shaped.get("wallets").and_then(Value::as_array).map(Vec::len),
+            shaped
+                .get("wallets")
+                .and_then(Value::as_array)
+                .map(Vec::len),
             Some(0)
         );
         assert_eq!(
@@ -679,7 +706,10 @@ mod tests {
             .and_then(|items| items.first())
             .cloned()
             .unwrap_or(Value::Null);
-        assert_eq!(wallet.get("displayName").and_then(Value::as_str), Some("专业版"));
+        assert_eq!(
+            wallet.get("displayName").and_then(Value::as_str),
+            Some("专业版")
+        );
         // 两段都没窗口才是不写 available；有一段有读数就要写
         assert_eq!(
             shaped

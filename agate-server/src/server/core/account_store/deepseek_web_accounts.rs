@@ -176,10 +176,7 @@ impl AccountStore {
             name.is_some_and(|value| !value.trim().is_empty()),
             existing.as_ref(),
         );
-        record.insert(
-            "accessToken".to_string(),
-            Value::String(user_token.clone()),
-        );
+        record.insert("accessToken".to_string(), Value::String(user_token.clone()));
         record.insert(
             "tokenTail".to_string(),
             Value::String(token_tail_of(&user_token)),
@@ -287,7 +284,10 @@ mod tests {
             "userToken": "secondary",
             "token": "tertiary"
         });
-        assert_eq!(pick(&payload, &["accessToken", "userToken", "token"]), "primary");
+        assert_eq!(
+            pick(&payload, &["accessToken", "userToken", "token"]),
+            "primary"
+        );
         let only_secondary = json!({ "userToken": "secondary" });
         assert_eq!(
             pick(&only_secondary, &["accessToken", "userToken", "token"]),

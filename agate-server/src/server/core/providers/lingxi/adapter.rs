@@ -29,7 +29,10 @@ fn account_id(account: &Value) -> String {
 }
 
 fn model_of(body: &Value) -> &str {
-    body.get("model").and_then(Value::as_str).unwrap_or("").trim()
+    body.get("model")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
 }
 
 fn identity(sid: &str, uid: &str) -> String {
@@ -137,7 +140,8 @@ impl ProviderAdapter for LingxiAdapter {
     fn classify_error(&self, status: u16, error_body: &Value) -> UpstreamErrorClass {
         let message = format!("上游返回 {status}: {}", client_message(error_body));
         match classify::classify(status, error_body) {
-            classify::Failure::Quota | classify::Failure::ModelRateLimited
+            classify::Failure::Quota
+            | classify::Failure::ModelRateLimited
             | classify::Failure::ShortCooldown => UpstreamErrorClass::QuotaLimited {
                 reset_at: None,
                 message,
@@ -187,9 +191,7 @@ impl ProviderAdapter for LingxiAdapter {
         store: &'a AccountStore,
         account_id: &'a str,
         _force: bool,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = ModelRefreshOutcome> + Send + 'a>,
-    > {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ModelRefreshOutcome> + Send + 'a>> {
         Box::pin(async move {
             let Some(record) = store.lingxi_account_record(account_id) else {
                 return ModelRefreshOutcome::failed("没有可用的 WPS 灵犀账号");
@@ -213,9 +215,8 @@ impl ProviderAdapter for LingxiAdapter {
         &'a self,
         store: &'a AccountStore,
         account_id: &'a str,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<Value, GatewayError>> + Send + 'a>,
-    > {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value, GatewayError>> + Send + 'a>>
+    {
         Box::pin(async move {
             let record = store.lingxi_account_record(account_id).ok_or_else(|| {
                 GatewayError::with_status(401, "没有可用的 WPS 灵犀账号，请先粘贴 wps_sid")
@@ -293,16 +294,11 @@ impl ProviderAdapter for LingxiAdapter {
         _client_headers: &HeaderMap,
         _proxy: Option<crate::server::core::proxies::ResolvedProxy>,
         stream: bool,
-        _telemetry: &'a std::sync::Arc<
-            crate::server::core::upstream::usage::RequestTelemetry,
-        >,
+        _telemetry: &'a std::sync::Arc<crate::server::core::upstream::usage::RequestTelemetry>,
     ) -> std::pin::Pin<
         Box<
             dyn std::future::Future<
-                    Output = Result<
-                        crate::server::core::upstream::ForwardOutcome,
-                        GatewayError,
-                    >,
+                    Output = Result<crate::server::core::upstream::ForwardOutcome, GatewayError>,
                 > + Send
                 + 'a,
         >,
@@ -373,9 +369,15 @@ impl ProviderAdapter for LingxiAdapter {
     > {
         Box::pin(async move {
             let credential = credentials::normalize_paste(code).map_err(|reason| {
-                GatewayError::with_status(400, format!("登录窗口里没有拿到有效的 wps_sid：{reason}"))
+                GatewayError::with_status(
+                    400,
+                    format!("登录窗口里没有拿到有效的 wps_sid：{reason}"),
+                )
             })?;
-            let identity = credential.uid.clone().unwrap_or_else(|| credential.wps_sid.clone());
+            let identity = credential
+                .uid
+                .clone()
+                .unwrap_or_else(|| credential.wps_sid.clone());
             let device = credentials::device_id(&identity);
             if !client::probe(&credential.wps_sid, &device, credential.cookie.as_deref()).await {
                 return Err(GatewayError::with_status(
@@ -424,7 +426,10 @@ fn balance_view(parsed: Option<usage::Balance>, status: u16) -> Value {
         .unwrap_or_default();
     let mut raw = Map::new();
     raw.insert("upstreamStatus".to_string(), Value::from(status));
-    if let Some(ts) = parsed.as_ref().and_then(|balance| balance.earliest_expiry_ms) {
+    if let Some(ts) = parsed
+        .as_ref()
+        .and_then(|balance| balance.earliest_expiry_ms)
+    {
         raw.insert("earliestExpiryMs".to_string(), Value::from(ts));
     }
     json!({
@@ -512,6 +517,9 @@ mod tests {
         );
         assert_eq!(view["available"].as_f64(), Some(42.5));
         assert_eq!(view["wallets"].as_array().map(Vec::len), Some(1));
-        assert_eq!(view["raw"]["earliestExpiryMs"], json!(1_700_000_000_000_i64));
+        assert_eq!(
+            view["raw"]["earliestExpiryMs"],
+            json!(1_700_000_000_000_i64)
+        );
     }
 }

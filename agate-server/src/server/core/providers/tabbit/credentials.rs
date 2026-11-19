@@ -162,7 +162,9 @@ fn as_i64(value: &Value) -> Option<i64> {
     if let Some(number) = value.as_f64() {
         return Some(number as i64);
     }
-    value.as_str().and_then(|text| text.trim().parse::<i64>().ok())
+    value
+        .as_str()
+        .and_then(|text| text.trim().parse::<i64>().ok())
 }
 
 /// 从「随手复制的一段东西」里挖出 Cookie 串：DevTools 的 Copy as cURL、
@@ -195,7 +197,8 @@ pub fn extract_cookie(raw: &str) -> String {
     if let Some(start) = marker {
         let rest = text[start..].trim_start();
         let rest = rest.strip_prefix("-b ").unwrap_or(rest).trim_start();
-        let value = if let Some(quote) = rest.chars().next().filter(|ch| *ch == '\'' || *ch == '"') {
+        let value = if let Some(quote) = rest.chars().next().filter(|ch| *ch == '\'' || *ch == '"')
+        {
             let body = &rest[quote.len_utf8()..];
             body.split(quote).next().unwrap_or(body)
         } else {
@@ -267,7 +270,10 @@ pub fn cookie_token(cookie: &str) -> String {
 /// 「令牌形态检查」被拒成一句莫名其妙的 400 —— 而它明明是完整的登录态。
 pub fn looks_like_cookie_paste(text: &str) -> bool {
     let lower = text.to_ascii_lowercase();
-    lower.contains("token=") || lower.contains("cookie:") || lower.contains(" -b ") || lower.starts_with("-b ")
+    lower.contains("token=")
+        || lower.contains("cookie:")
+        || lower.contains(" -b ")
+        || lower.starts_with("-b ")
 }
 
 /// 把用户填进**任意字段**的一段文本归一成 `{accessToken, cookie}` 形态。
@@ -355,7 +361,8 @@ pub fn normalize_input_text(text: &str) -> (String, String) {
 
 /// 从 JWT 的声明里读 uid（`user_id` / `uid` / `sub` / `userId`）
 pub fn uid_from_jwt(token: &str) -> String {
-    let Some(claims) = crate::server::core::providers::raccoon::jwt::decode_jwt_claims(token) else {
+    let Some(claims) = crate::server::core::providers::raccoon::jwt::decode_jwt_claims(token)
+    else {
         return String::new();
     };
     ["user_id", "uid", "sub", "userId"]
@@ -368,7 +375,8 @@ pub fn uid_from_jwt(token: &str) -> String {
 
 /// 从 JWT 的声明里读昵称（账号备注名的兜底）
 pub fn nickname_from_jwt(token: &str) -> String {
-    let Some(claims) = crate::server::core::providers::raccoon::jwt::decode_jwt_claims(token) else {
+    let Some(claims) = crate::server::core::providers::raccoon::jwt::decode_jwt_claims(token)
+    else {
         return String::new();
     };
     ["name", "display_name", "nickname", "user_name"]
@@ -554,10 +562,14 @@ mod tests {
             "accessToken": "token=jwt-1; user_id=u1; managed=tab_browser",
         }));
         assert_eq!(out["accessToken"], "jwt-1");
-        assert_eq!(out["cookie"], "token=jwt-1; user_id=u1; managed=tab_browser");
+        assert_eq!(
+            out["cookie"],
+            "token=jwt-1; user_id=u1; managed=tab_browser"
+        );
 
         // ② Copy as cURL 整段扔进 accessToken：Cookie 要拆出来，令牌位被覆盖
-        let curl = "curl 'https://web.tabbit.com/api/v3/x' -b 'token=jwt-2; user_id=u2' -H 'accept: */*'";
+        let curl =
+            "curl 'https://web.tabbit.com/api/v3/x' -b 'token=jwt-2; user_id=u2' -H 'accept: */*'";
         let out = normalize_payload(&serde_json::json!({ "accessToken": curl }));
         assert_eq!(out["accessToken"], "jwt-2");
         assert_eq!(out["cookie"], "token=jwt-2; user_id=u2");

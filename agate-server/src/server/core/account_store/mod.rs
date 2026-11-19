@@ -117,7 +117,6 @@ pub mod priority;
 pub mod qoder_accounts;
 pub mod quwork_accounts;
 pub mod raccoon_accounts;
-pub mod tabbit_accounts;
 pub mod sql;
 pub mod state;
 pub mod store;
@@ -127,6 +126,7 @@ pub mod store_crud;
 pub mod store_order;
 pub mod store_util;
 pub mod store_view;
+pub mod tabbit_accounts;
 pub mod trae_accounts;
 pub mod workbuddy_import;
 pub mod zcode_accounts;
@@ -180,7 +180,6 @@ pub(crate) const DEEPSEEK_WEB_PROVIDER_ID: &str = crate::server::core::providers
 pub(crate) const DOUBAOWORK_PROVIDER_ID: &str = crate::server::core::providers::kind_id(
     crate::server::core::providers::ProviderKind::Doubaowork,
 );
-
 
 /// Qoder provider id（账号存储内部多处要用；**从注册表推导**，同
 /// [`RACCOON_PROVIDER_ID`] 的口径）。Qoder 的账号形态与推理转发见

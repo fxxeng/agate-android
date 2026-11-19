@@ -63,9 +63,7 @@ pub struct PreparedRequest {
 /// 领一道 PoW 题并**本地求解**。
 ///
 /// 返回求解结果；任一步失败返回可读的 `GatewayError`。
-pub async fn obtain_and_solve_pow(
-    user_token: &str,
-) -> Result<pow::Solved, GatewayError> {
+pub async fn obtain_and_solve_pow(user_token: &str) -> Result<pow::Solved, GatewayError> {
     let mut headers = endpoints::base_headers();
     headers.extend(endpoints::auth_headers(user_token));
     let body = json!({ "target_path": endpoints::COMPLETION_PATH });
@@ -96,7 +94,11 @@ pub async fn obtain_and_solve_pow(
         // 题面可能带业务码（如 40002 缺 token）
         let detail = readable_error(&payload);
         return Err(GatewayError::with_status(
-            if response.status == 0 { 502 } else { i32::from(response.status) },
+            if response.status == 0 {
+                502
+            } else {
+                i32::from(response.status)
+            },
             format!("DeepSeek 领取 PoW 题失败：{detail}"),
         ));
     }
@@ -123,13 +125,15 @@ pub async fn create_session(user_token: &str) -> Result<String, GatewayError> {
         Some(CONTROL_TIMEOUT_MS),
     )
     .await
-    .map_err(|error| {
-        GatewayError::with_status(502, format!("DeepSeek 建会话失败：{error}"))
-    })?;
+    .map_err(|error| GatewayError::with_status(502, format!("DeepSeek 建会话失败：{error}")))?;
     let payload = response.payload.unwrap_or(Value::Null);
     if !response.ok {
         return Err(GatewayError::with_status(
-            if response.status == 0 { 502 } else { i32::from(response.status) },
+            if response.status == 0 {
+                502
+            } else {
+                i32::from(response.status)
+            },
             format!("DeepSeek 建会话失败：{}", readable_error(&payload)),
         ));
     }
@@ -140,9 +144,7 @@ pub async fn create_session(user_token: &str) -> Result<String, GatewayError> {
         .and_then(Value::as_str)
         .map(str::to_string)
         .filter(|value| !value.is_empty())
-        .ok_or_else(|| {
-            GatewayError::with_status(502, "DeepSeek 建会话响应里没有 data.biz_data.id")
-        })
+        .ok_or_else(|| GatewayError::with_status(502, "DeepSeek 建会话响应里没有 data.biz_data.id"))
 }
 
 /// 组装 `chat/completion` 的完整请求（含新鲜 PoW）。
@@ -181,7 +183,10 @@ pub async fn prepare_completion(
         },
     );
     body.insert("prompt".to_string(), Value::String(prompt.to_string()));
-    body.insert("model_type".to_string(), Value::String(model_type_of(model)));
+    body.insert(
+        "model_type".to_string(),
+        Value::String(model_type_of(model)),
+    );
     body.insert("thinking_enabled".to_string(), Value::Bool(thinking));
     body.insert("search_enabled".to_string(), Value::Bool(search));
     body.insert("preempt".to_string(), Value::Bool(false));

@@ -378,7 +378,11 @@ pub async fn send_code(
             login_error_text(status, &value, &raw),
         ));
     }
-    if let Some(code) = value.get("code").and_then(http::as_i64).filter(|code| *code != 0) {
+    if let Some(code) = value
+        .get("code")
+        .and_then(http::as_i64)
+        .filter(|code| *code != 0)
+    {
         let message = login_error_text(status, &value, &raw);
         return Err(GatewayError::with_status(
             400,
@@ -531,7 +535,10 @@ pub async fn login_with_code(
             object.insert("nickname".to_string(), Value::String(nickname));
         }
         if let Some(name) = name.map(str::trim).filter(|name| !name.is_empty()) {
-            object.insert("name".to_string(), Value::String(name.chars().take(100).collect()));
+            object.insert(
+                "name".to_string(),
+                Value::String(name.chars().take(100).collect()),
+            );
         }
     }
     logging::log(
@@ -597,7 +604,10 @@ mod tests {
         let login = login_with_code(Realm::Intl, "", "", None, None).await;
         assert_eq!(login.as_ref().err().map(|e| e.status_code), Some(400));
         let message = login.err().map(|e| e.message).unwrap_or_default();
-        assert!(message.contains("粘贴 Cookie"), "文案要给可行替代：{message}");
+        assert!(
+            message.contains("粘贴 Cookie"),
+            "文案要给可行替代：{message}"
+        );
     }
 
     /// 缺 uuid 时如实让用户重发验证码，而不是打一次注定失败的请求
@@ -605,7 +615,10 @@ mod tests {
     async fn a_missing_uuid_asks_for_a_new_code() {
         let result = login_with_code(Realm::Cn, "13800138000", "123456", Some("  "), None).await;
         let message = result.err().map(|e| e.message).unwrap_or_default();
-        assert!(message.contains("发送验证码"), "文案要指回发码那一步：{message}");
+        assert!(
+            message.contains("发送验证码"),
+            "文案要指回发码那一步：{message}"
+        );
     }
 
     /// 上游的 pydantic 前缀要剥掉，否则用户看到「Value error, 验证码错误」
@@ -632,7 +645,10 @@ mod tests {
             "太频繁"
         );
         // 一个都认不出时回落原文（不足 300 字）
-        assert_eq!(login_error_text(400, &json!({}), "  plain text  "), "plain text");
+        assert_eq!(
+            login_error_text(400, &json!({}), "  plain text  "),
+            "plain text"
+        );
         // 风控的 error 是对象，不能把整段 JSON 原样端给用户
         assert_eq!(
             login_error_text(
@@ -675,7 +691,7 @@ mod tests {
     #[test]
     fn a_repeated_send_reuses_the_same_uuid() {
         assert_eq!(code_uuid(Some(" fixed-uuid ")), "fixed-uuid");
-        assert_eq!(code_uuid(Some("  " )).len(), 64);
+        assert_eq!(code_uuid(Some("  ")).len(), 64);
         assert_eq!(code_uuid(None).len(), 64);
         assert_ne!(code_uuid(None), code_uuid(None));
     }

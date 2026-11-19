@@ -148,9 +148,7 @@ impl Attempt {
         } else {
             ClaimEndpoint::ItemReward
         };
-        let upstream_failure = value
-            .get("upstreamFailure")
-            .and_then(Value::as_i64);
+        let upstream_failure = value.get("upstreamFailure").and_then(Value::as_i64);
         // 三项任一不成立都说明这条台账是手工改坏的：宁可停下来问用户，
         // 也不能拿一条残记录去决定「要不要再提交一次领取」。
         if item.is_empty() || submitted_at <= 0 || rounds == 0 || rounds > u64::from(MAX_ROUNDS) {
@@ -632,7 +630,10 @@ mod tests {
         let ok = Ledger::parse(&ledger_value(1, "2026-11-07", attempt_value("a", 1, 1)))
             .expect("合法台账应能读出");
         assert_eq!(ok.day, "2026-11-07");
-        assert_eq!(ok.pending.map(|attempt| attempt.item), Some("a".to_string()));
+        assert_eq!(
+            ok.pending.map(|attempt| attempt.item),
+            Some("a".to_string())
+        );
     }
 
     /// 重试节拍：轮次用尽 / 过了 30 分钟窗口 / 跨日都不再排自动重试。
@@ -798,5 +799,4 @@ mod tests {
         assert_eq!(round_trip.endpoint, ClaimEndpoint::LandingCheckin);
         assert_eq!(round_trip.upstream_failure, Some(710010702));
     }
-
 }

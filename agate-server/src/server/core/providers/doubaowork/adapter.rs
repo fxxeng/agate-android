@@ -244,8 +244,9 @@ impl ProviderAdapter for DoubaoWorkAdapter {
         &'a self,
         store: &'a AccountStore,
         account_id: &'a str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, GatewayError>> + Send + 'a>>
-    {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<String, GatewayError>> + Send + 'a>,
+    > {
         Box::pin(async move {
             let record = store.doubaowork_account_record(account_id);
             if !account_id.is_empty() && record.is_none() {
@@ -395,10 +396,7 @@ impl ProviderAdapter for DoubaoWorkAdapter {
             let record = store.doubaowork_account_record(account_id);
             let Some(record) = record else {
                 if account_id.is_empty() {
-                    logging::verbose(
-                        "[Models]",
-                        "豆包工作模型目录刷新跳过：尚未添加账号",
-                    );
+                    logging::verbose("[Models]", "豆包工作模型目录刷新跳过：尚未添加账号");
                     return ModelRefreshOutcome::unchanged();
                 }
                 return ModelRefreshOutcome::failed("指定的账号不存在或不可用，请重新选择");
@@ -521,10 +519,8 @@ mod tests {
             ),
             "429 应当带着上游业务码按限流处理，实得 {rate:?}"
         );
-        let blocked = DOUBAOWORK_ADAPTER.classify_error(
-            400,
-            &json!({"message": "blocked by security policy"}),
-        );
+        let blocked = DOUBAOWORK_ADAPTER
+            .classify_error(400, &json!({"message": "blocked by security policy"}));
         assert!(matches!(blocked, UpstreamErrorClass::ContentBlocked { .. }));
         // 普通 400 不命中审核文案 → Fatal
         let plain = DOUBAOWORK_ADAPTER.classify_error(400, &json!({"message": "bad param"}));
@@ -608,11 +604,17 @@ mod tests {
         };
         // 两处口径一致：option 收整数、ext 收字符串
         assert_eq!(
-            built.body.pointer("/option/need_deep_think").and_then(Value::as_i64),
+            built
+                .body
+                .pointer("/option/need_deep_think")
+                .and_then(Value::as_i64),
             Some(3)
         );
         assert_eq!(
-            built.body.pointer("/ext/use_deep_think").and_then(Value::as_str),
+            built
+                .body
+                .pointer("/ext/use_deep_think")
+                .and_then(Value::as_str),
             Some("3")
         );
         // **内部通道绝不能漏给上游**（信封只有四个顶层键）
@@ -624,7 +626,10 @@ mod tests {
         assert!(!tops.contains(&plan::BODY_THINK_LEVEL_KEY));
         assert_eq!(tops.len(), 4);
         // 「上游等级」采集口读到的是**落进信封的那个值**
-        assert_eq!(DOUBAOWORK_ADAPTER.outbound_reasoning(&built.body), Some("expert".to_string()));
+        assert_eq!(
+            DOUBAOWORK_ADAPTER.outbound_reasoning(&built.body),
+            Some("expert".to_string())
+        );
     }
 
     /// 「上游等级」采集口：读 `option.need_deep_think`，关闭档返回 None
@@ -650,6 +655,8 @@ mod tests {
             .filter_map(|item| item.get("id").and_then(Value::as_str).map(str::to_string))
             .collect();
         assert!(ids.iter().all(|id| id.starts_with("doubao-")));
-        assert!(!ids.iter().any(|id| id.contains("MiniMax") || id.contains("qwen")));
+        assert!(!ids
+            .iter()
+            .any(|id| id.contains("MiniMax") || id.contains("qwen")));
     }
 }

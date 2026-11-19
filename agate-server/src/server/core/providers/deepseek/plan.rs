@@ -39,7 +39,7 @@
 
 use serde_json::{json, Value};
 
-use crate::server::core::protocol::{string_field, json_text};
+use crate::server::core::protocol::{json_text, string_field};
 
 /// 拍平后的文本上限（超出即截断后续消息）。
 ///

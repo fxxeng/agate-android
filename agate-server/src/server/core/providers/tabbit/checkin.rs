@@ -67,14 +67,16 @@ pub async fn claim_daily_checkin(
     realm: Realm,
     account_id: &str,
 ) -> Result<Value, GatewayError> {
-    let record = store.tabbit_account_record(realm, account_id).ok_or_else(|| {
-        GatewayError::with_status(404, format!("还没有 {} 账号", realm.label()))
-    })?;
+    let record = store
+        .tabbit_account_record(realm, account_id)
+        .ok_or_else(|| GatewayError::with_status(404, format!("还没有 {} 账号", realm.label())))?;
     let credentials = Credentials::from_record(Some(&record))?;
     let proxy = match crate::server::core::proxies::resolve_account_proxy(record.get("proxy")) {
         Some(crate::server::core::proxies::ProxyResolution::Resolved(proxy)) => Some(proxy),
-        Some(crate::server::core::proxies::ProxyResolution::Failed(reason)
-            | crate::server::core::proxies::ProxyResolution::Failed(reason)) => {
+        Some(
+            crate::server::core::proxies::ProxyResolution::Failed(reason)
+            | crate::server::core::proxies::ProxyResolution::Failed(reason),
+        ) => {
             return Err(GatewayError::with_status(400, reason));
         }
         None => None,

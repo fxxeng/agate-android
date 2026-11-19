@@ -56,7 +56,9 @@ fn pending_table() -> &'static Mutex<HashMap<String, PendingRun>> {
 }
 
 fn lock_table() -> std::sync::MutexGuard<'static, HashMap<String, PendingRun>> {
-    pending_table().lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    pending_table()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// 按「上游真名」记一条待结算 run。缓存 + 单飞保证同键不重复建会话；
@@ -206,7 +208,10 @@ pub async fn prepare_conversation(
     require_ok(&first, "建会话")?;
     let session_id = text_of(data_of(&first), &["session_id"]);
     if session_id.is_empty() {
-        return Err(GatewayError::with_status(502, "灵犀建会话响应里没有 session_id"));
+        return Err(GatewayError::with_status(
+            502,
+            "灵犀建会话响应里没有 session_id",
+        ));
     }
 
     // ② 领 run
@@ -216,18 +221,30 @@ pub async fn prepare_conversation(
         sid,
         device_id,
         cookie,
-        Some(&chat::run_body(&session_id, model, messages, &endpoints::request_id())),
+        Some(&chat::run_body(
+            &session_id,
+            model,
+            messages,
+            &endpoints::request_id(),
+        )),
     )
     .await?;
     require_ok(&second, "领 run")?;
     let data = data_of(&second);
     let run_id = text_of(data, &["run_id"]);
     if run_id.is_empty() {
-        return Err(GatewayError::with_status(502, "灵犀领 run 响应里没有 run_id"));
+        return Err(GatewayError::with_status(
+            502,
+            "灵犀领 run 响应里没有 run_id",
+        ));
     }
     let group_id = {
         let value = text_of(data, &["group_id"]);
-        if value.is_empty() { run_id.clone() } else { value }
+        if value.is_empty() {
+            run_id.clone()
+        } else {
+            value
+        }
     };
 
     let created = session::Session {
@@ -246,7 +263,10 @@ pub async fn prepare_conversation(
             Ok(reply) if (200..300).contains(&reply.status) && reply.result_ok => {}
             Ok(reply) => logging::log(
                 "[Models]",
-                &format!("⚠️ 灵犀 run {group_id} running 上报失败（HTTP {}）", reply.status),
+                &format!(
+                    "⚠️ 灵犀 run {group_id} running 上报失败（HTTP {}）",
+                    reply.status
+                ),
             ),
             Err(error) => logging::log(
                 "[Models]",
@@ -275,15 +295,24 @@ pub fn report_completed(run: PendingRun) {
         .await;
         match result {
             Ok(reply) if (200..300).contains(&reply.status) && reply.result_ok => {
-                logging::log("[Models]", &format!("灵犀 run {} 已上报 completed", run.group_id));
+                logging::log(
+                    "[Models]",
+                    &format!("灵犀 run {} 已上报 completed", run.group_id),
+                );
             }
             Ok(reply) => logging::log(
                 "[Models]",
-                &format!("⚠️ 灵犀 run {} completed 上报失败（HTTP {}）", run.group_id, reply.status),
+                &format!(
+                    "⚠️ 灵犀 run {} completed 上报失败（HTTP {}）",
+                    run.group_id, reply.status
+                ),
             ),
             Err(error) => logging::log(
                 "[Models]",
-                &format!("⚠️ 灵犀 run {} completed 上报失败：{}", run.group_id, error.message),
+                &format!(
+                    "⚠️ 灵犀 run {} completed 上报失败：{}",
+                    run.group_id, error.message
+                ),
             ),
         }
     });
@@ -301,9 +330,10 @@ pub struct TaskState {
 
 fn number_at(value: &Value, keys: &[&str]) -> Option<f64> {
     keys.iter().find_map(|key| {
-        value
-            .get(*key)
-            .and_then(|node| node.as_f64().or_else(|| node.as_str().and_then(|s| s.parse::<f64>().ok())))
+        value.get(*key).and_then(|node| {
+            node.as_f64()
+                .or_else(|| node.as_str().and_then(|s| s.parse::<f64>().ok()))
+        })
     })
 }
 
@@ -319,7 +349,11 @@ pub fn parse_task_state(body: &Value) -> Option<TaskState> {
     })?;
     let extra = daily.get("extra").cloned().unwrap_or(Value::Null);
     let date = text_of(&extra, &["claim_date", "date", "today"]);
-    let date = if date.is_empty() { beijing::today_key() } else { date };
+    let date = if date.is_empty() {
+        beijing::today_key()
+    } else {
+        date
+    };
     Some(TaskState {
         claimed: daily.get("status").and_then(Value::as_str) == Some("claimed"),
         date,
@@ -363,7 +397,10 @@ pub async fn task_claim(
     date: &str,
 ) -> Result<TaskReply, GatewayError> {
     if !endpoints::CLAIM_ENDPOINT_VERIFIED {
-        return Ok(TaskReply { status: 0, explicit_reject: false });
+        return Ok(TaskReply {
+            status: 0,
+            explicit_reject: false,
+        });
     }
     let path = endpoints::claim_path(endpoints::TASK_DAILY_CHECK_IN, date);
     let reply = request("POST", &path, sid, device_id, cookie, Some(&json!({}))).await?;
@@ -371,12 +408,24 @@ pub async fn task_claim(
     // 404/5xx 是端点或上游问题，清台账会导致反复重打。
     let explicit_reject = !reply.result_ok
         || ((400..500).contains(&reply.status) && !endpoints::should_fallback(reply.status));
-    Ok(TaskReply { status: reply.status, explicit_reject })
+    Ok(TaskReply {
+        status: reply.status,
+        explicit_reject,
+    })
 }
 
 /// 探活：只认「两个域都 401/403」判死号（方案 L1，不按时间猜过期）。
 pub async fn probe(sid: &str, device_id: &str, cookie: Option<&str>) -> bool {
-    match request("GET", endpoints::balance_path(), sid, device_id, cookie, None).await {
+    match request(
+        "GET",
+        endpoints::balance_path(),
+        sid,
+        device_id,
+        cookie,
+        None,
+    )
+    .await
+    {
         Ok(reply) => reply.status != 401 && reply.status != 403,
         Err(_) => true, // 传输失败不是「凭证死了」，保留
     }
@@ -384,9 +433,16 @@ pub async fn probe(sid: &str, device_id: &str, cookie: Option<&str>) -> bool {
 
 /// 额度。读不出返回 None（界面写「暂不可用」，不拿 0 冒充）。
 pub async fn balance(sid: &str, device_id: &str, cookie: Option<&str>) -> Option<usage::Balance> {
-    let reply = request("GET", endpoints::balance_path(), sid, device_id, cookie, None)
-        .await
-        .ok()?;
+    let reply = request(
+        "GET",
+        endpoints::balance_path(),
+        sid,
+        device_id,
+        cookie,
+        None,
+    )
+    .await
+    .ok()?;
     if !(200..300).contains(&reply.status) || !reply.result_ok {
         return None;
     }
@@ -407,7 +463,10 @@ pub async fn catalog(
 /// 出站前的本地判据：320KB 预检。
 pub fn precheck(body: &Value) -> Option<GatewayError> {
     if classify::oversized(body) {
-        return Some(GatewayError::with_status(400, classify::oversized_message()));
+        return Some(GatewayError::with_status(
+            400,
+            classify::oversized_message(),
+        ));
     }
     None
 }
@@ -423,7 +482,11 @@ pub fn credentials_of(account: &Value) -> (String, Option<String>, String) {
         .trim()
         .to_string();
     let sid = credentials::cookie_sid(&cookie).unwrap_or_default();
-    let uid = account.get("uid").and_then(Value::as_str).unwrap_or("").to_string();
+    let uid = account
+        .get("uid")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
     (sid, (!cookie.is_empty()).then_some(cookie), uid)
 }
 
@@ -455,7 +518,10 @@ mod tests {
             endpoints::execution_status_path(&r.session_id),
             "/api/public/v1/sessions/s1/execution_status"
         );
-        assert_eq!(chat::execution_body(&r.group_id, "completed")["run_token"], json!("g1"));
+        assert_eq!(
+            chat::execution_body(&r.group_id, "completed")["run_token"],
+            json!("g1")
+        );
     }
 
     #[test]
@@ -477,7 +543,11 @@ mod tests {
             { "task_key": "daily_check_in", "status": "claimed",
               "reward_amount": 3, "extra": { "claim_date": "2026-11-13", "today_reward": 2.5 } }
         ] } });
-        let fallback = TaskState { claimed: false, date: String::new(), reward: None };
+        let fallback = TaskState {
+            claimed: false,
+            date: String::new(),
+            reward: None,
+        };
         let state = parse_task_state(&body).unwrap_or(fallback);
         assert!(state.claimed);
         assert_eq!(state.date, "2026-11-13");
@@ -487,10 +557,15 @@ mod tests {
     #[test]
     fn missing_or_unclaimed_task_is_not_read_as_failure() {
         assert!(parse_task_state(&json!({ "data": { "tasks": [] } })).is_none());
-        let fallback = TaskState { claimed: true, date: String::new(), reward: None };
+        let fallback = TaskState {
+            claimed: true,
+            date: String::new(),
+            reward: None,
+        };
         let unclaimed = parse_task_state(&json!({ "data": { "tasks": [
             { "task_key": "daily_check_in", "status": "pending" }
-        ] } })).unwrap_or(fallback);
+        ] } }))
+        .unwrap_or(fallback);
         assert!(!unclaimed.claimed);
         assert_eq!(unclaimed.date.len(), 10); // 回落到北京日期键
     }

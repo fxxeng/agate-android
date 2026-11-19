@@ -41,11 +41,11 @@ use axum::http::HeaderMap;
 use serde_json::Value;
 
 use crate::server::core::account_store::AccountStore;
-use crate::server::core::proxies::ResolvedProxy;
 use crate::server::core::providers::adapter::{
     ChatRequestPlan, ModelRefreshOutcome, ProviderAdapter, UpstreamErrorClass,
 };
 use crate::server::core::providers::{kind_id, ProviderKind};
+use crate::server::core::proxies::ResolvedProxy;
 use crate::server::core::upstream::usage::RequestTelemetry;
 use crate::server::core::upstream::ForwardOutcome;
 use crate::server::errors::GatewayError;
@@ -156,13 +156,7 @@ impl ProviderAdapter for TabbitAdapter {
     > {
         Box::pin(async move {
             chat::run_chat(
-                store,
-                self.realm,
-                account_id,
-                body,
-                proxy,
-                stream,
-                telemetry,
+                store, self.realm, account_id, body, proxy, stream, telemetry,
             )
             .await
         })
@@ -177,12 +171,11 @@ impl ProviderAdapter for TabbitAdapter {
         Box<dyn std::future::Future<Output = Result<String, GatewayError>> + Send + 'a>,
     > {
         Box::pin(async move {
-            let record = store.tabbit_account_record(self.realm, account_id).ok_or_else(|| {
-                GatewayError::with_status(
-                    404,
-                    format!("还没有 {} 账号", self.realm.label()),
-                )
-            })?;
+            let record = store
+                .tabbit_account_record(self.realm, account_id)
+                .ok_or_else(|| {
+                    GatewayError::with_status(404, format!("还没有 {} 账号", self.realm.label()))
+                })?;
             let credentials = Credentials::from_record(Some(&record))?;
             Ok(credentials.token)
         })
@@ -205,8 +198,7 @@ impl ProviderAdapter for TabbitAdapter {
         store: &'a AccountStore,
         account_id: &'a str,
         force: bool,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ModelRefreshOutcome> + Send + 'a>>
-    {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ModelRefreshOutcome> + Send + 'a>> {
         Box::pin(async move { models::refresh(store, self.realm, account_id, force).await })
     }
 

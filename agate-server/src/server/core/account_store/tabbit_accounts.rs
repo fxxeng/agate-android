@@ -197,7 +197,10 @@ impl AccountStore {
             "uid".to_string(),
             Value::String(pick(payload, &["uid", "user_id", "userId"])),
         );
-        record.insert("tokenTail".to_string(), Value::String(token_tail_of(&token)));
+        record.insert(
+            "tokenTail".to_string(),
+            Value::String(token_tail_of(&token)),
+        );
         // 过期时刻只用于展示：上游没有续期接口（见模块头）
         if let Some(expires_at) = credentials::expires_at_ms(&token) {
             record.insert("expiresAt".to_string(), Value::from(expires_at));

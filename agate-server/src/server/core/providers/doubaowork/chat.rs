@@ -300,10 +300,7 @@ fn push_text(text: &str, in_thinking: &mut bool) -> Delta {
 /// 只有一个思考块算思考，后续的算正文。）
 fn parse_block(block: &Value, in_thinking: &mut bool) -> Vec<Delta> {
     let mut out: Vec<Delta> = Vec::new();
-    let block_type = block
-        .get("block_type")
-        .and_then(Value::as_i64)
-        .unwrap_or(0);
+    let block_type = block.get("block_type").and_then(Value::as_i64).unwrap_or(0);
     let content = block.get("content").unwrap_or(&Value::Null);
     match block_type {
         BLOCK_THINKING => {
@@ -373,7 +370,11 @@ fn readable_error(payload: &Value) -> Option<String> {
         }
     }
     // 顶层的裸字符串（`data:` 后面就是一个 JSON 字符串）
-    payload.as_str().map(str::trim).filter(|text| !text.is_empty()).map(str::to_string)
+    payload
+        .as_str()
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(str::to_string)
 }
 
 /// 一次性把整段 SSE 文本解析成增量序列（**离线 / 测试用**）。
@@ -480,7 +481,12 @@ pub async fn prepare_attachments(
         {
             Ok(uri) => ready.images.push((uri, image.mime.clone())),
             Err(error) => {
-                failures.push(format!("图片 {}（{}）：{}", index + 1, image.name, error.message));
+                failures.push(format!(
+                    "图片 {}（{}）：{}",
+                    index + 1,
+                    image.name,
+                    error.message
+                ));
             }
         }
     }
@@ -498,7 +504,12 @@ pub async fn prepare_attachments(
                 .files
                 .push((uri, file.name.clone(), file.data.len() as u64)),
             Err(error) => {
-                failures.push(format!("文件 {}（{}）：{}", index + 1, file.name, error.message));
+                failures.push(format!(
+                    "文件 {}（{}）：{}",
+                    index + 1,
+                    file.name,
+                    error.message
+                ));
             }
         }
     }
@@ -925,7 +936,10 @@ mod tests {
         );
         assert_eq!(
             json_deltas,
-            vec![Delta::Error { code: 500, message: "boom".to_string() }]
+            vec![Delta::Error {
+                code: 500,
+                message: "boom".to_string()
+            }]
         );
     }
 
@@ -1055,16 +1069,23 @@ mod tests {
             .and_then(Value::as_str)
             .unwrap_or("");
         assert!(text.contains("看这张图"), "原文应保留：{text}");
-        assert!(text.contains("[Attached image 1: image.png]"), "标记应在：{text}");
+        assert!(
+            text.contains("[Attached image 1: image.png]"),
+            "标记应在：{text}"
+        );
     }
 
     /// 缺 Cookie → 401（文案可执行）；有 Cookie → 通过
     #[test]
     fn missing_cookie_is_reported_actionably() {
         assert_eq!(
-            build_chat_request(&json!({"id": "x"}), &json!({"messages": []}), &HeaderMap::new())
-                .err()
-                .map(|error| error.status_code),
+            build_chat_request(
+                &json!({"id": "x"}),
+                &json!({"messages": []}),
+                &HeaderMap::new()
+            )
+            .err()
+            .map(|error| error.status_code),
             Some(401)
         );
         let account = json!({
@@ -1087,7 +1108,10 @@ mod tests {
         assert!(
             credentials.is_ok(),
             "应当能从 auth.accessToken 读出凭证：{:?}",
-            credentials.as_ref().err().map(|error| error.message.clone())
+            credentials
+                .as_ref()
+                .err()
+                .map(|error| error.message.clone())
         );
         let credentials = match credentials {
             Ok(credentials) => credentials,
@@ -1120,7 +1144,10 @@ mod tests {
             };
             guard.insert(
                 key.to_string(),
-                (ReadyAttachments::default(), crate::server::logging::now_ms()),
+                (
+                    ReadyAttachments::default(),
+                    crate::server::logging::now_ms(),
+                ),
             );
         }
         assert!(take_prepared_attachments(key).is_some(), "第一次应取得到");
@@ -1165,5 +1192,4 @@ mod tests {
         // 前后空白被裁掉
         assert_eq!(account_id_of_session(&json!({ "id": "  x  " })), "x");
     }
-
 }

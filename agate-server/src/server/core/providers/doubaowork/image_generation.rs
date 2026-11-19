@@ -68,9 +68,7 @@ fn ratio(size: &str) -> Option<&'static str> {
     if size.is_empty() || size.eq_ignore_ascii_case("auto") {
         return None;
     }
-    let (width, height) = size
-        .trim()
-        .split_once(['x', 'X'])?;
+    let (width, height) = size.trim().split_once(['x', 'X'])?;
     let width: f64 = width.trim().parse().ok()?;
     let height: f64 = height.trim().parse().ok()?;
     if !(width.is_finite() && height.is_finite()) || width <= 0.0 || height <= 0.0 {
@@ -167,11 +165,11 @@ pub fn build(
         .with_code("image_generation_not_supported")
     })?;
     let agent = super::plan::AgentChoice {
-        agent_mode: chosen.get("agent_mode").and_then(Value::as_u64).unwrap_or(0),
-        mode_id: chosen
-            .get("id")
-            .and_then(Value::as_str)
-            .map(str::to_string),
+        agent_mode: chosen
+            .get("agent_mode")
+            .and_then(Value::as_u64)
+            .unwrap_or(0),
+        mode_id: chosen.get("id").and_then(Value::as_str).map(str::to_string),
         model_key: chosen
             .get("model_item_key")
             .and_then(Value::as_str)
@@ -279,13 +277,23 @@ mod tests {
             "prompt": "画一只猫",
             "images": [{ "image_url": "data:image/png;base64,AA" }],
         });
-        let error = build(&account, &with_images, &HeaderMap::new(), ImageOperation::Generate)
-            .expect_err("不吃参考图");
+        let error = build(
+            &account,
+            &with_images,
+            &HeaderMap::new(),
+            ImageOperation::Generate,
+        )
+        .expect_err("不吃参考图");
         assert!(error.message.contains("参考图"), "{}", error.message);
 
         let with_style = json!({ "model": MODEL_ID, "prompt": "画一只猫", "style": "vivid" });
-        let error = build(&account, &with_style, &HeaderMap::new(), ImageOperation::Generate)
-            .expect_err("没有 style 这个概念");
+        let error = build(
+            &account,
+            &with_style,
+            &HeaderMap::new(),
+            ImageOperation::Generate,
+        )
+        .expect_err("没有 style 这个概念");
         assert!(error.message.contains("prompt"), "{}", error.message);
 
         let two = json!({ "model": MODEL_ID, "prompt": "画一只猫", "n": 2 });

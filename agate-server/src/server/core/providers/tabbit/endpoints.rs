@@ -141,8 +141,14 @@ mod tests {
             map.get("x-req-ctx").map(String::as_str),
             Some(sign::base64_text(DEFAULT_CLIENT_VERSION).as_str())
         );
-        assert_eq!(map.get("Origin").map(String::as_str), Some("https://web.tabbit.com"));
-        assert_eq!(map.get("referer").map(String::as_str), Some("https://web.tabbit.com/"));
+        assert_eq!(
+            map.get("Origin").map(String::as_str),
+            Some("https://web.tabbit.com")
+        );
+        assert_eq!(
+            map.get("referer").map(String::as_str),
+            Some("https://web.tabbit.com/")
+        );
         assert!(map.contains_key("unique-uuid"));
         assert!(map.contains_key("x-chrome-id-consistency-request"));
         assert_eq!(map.get("sec-ch-ua-mobile").map(String::as_str), Some("?0"));

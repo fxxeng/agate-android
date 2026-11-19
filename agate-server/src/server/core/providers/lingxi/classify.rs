@@ -84,7 +84,10 @@ mod tests {
 
     #[test]
     fn credential_death_is_not_treated_as_transient() {
-        assert_eq!(classify(401, &json!({ "message": "用户无权限" })), Failure::DeadCredential);
+        assert_eq!(
+            classify(401, &json!({ "message": "用户无权限" })),
+            Failure::DeadCredential
+        );
     }
 
     #[test]
@@ -114,6 +117,8 @@ mod tests {
 
     #[test]
     fn normal_body_passes_the_precheck() {
-        assert!(!oversized(&json!({ "model": "qwen3.8_flash", "messages": [] })));
+        assert!(!oversized(
+            &json!({ "model": "qwen3.8_flash", "messages": [] })
+        ));
     }
 }

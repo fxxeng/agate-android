@@ -239,7 +239,10 @@ mod tests {
         for realm in Realm::ALL {
             assert_eq!(Realm::from_provider_id(realm.id()), Some(realm));
             assert_eq!(Realm::from_kind(realm.kind()), Some(realm));
-            assert_eq!(Realm::from_provider_id(realm.id()).map(Realm::kind), Some(realm.kind()));
+            assert_eq!(
+                Realm::from_provider_id(realm.id()).map(Realm::kind),
+                Some(realm.kind())
+            );
         }
     }
 

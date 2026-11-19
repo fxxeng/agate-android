@@ -55,7 +55,10 @@ pub async fn verify_token(raw: &str) -> Result<Value, GatewayError> {
     }
     let token = credentials::normalize_token(raw);
     if token.is_empty() {
-        return Err(GatewayError::with_status(400, "粘贴的内容里没有可识别的 userToken"));
+        return Err(GatewayError::with_status(
+            400,
+            "粘贴的内容里没有可识别的 userToken",
+        ));
     }
     if !credentials::shape_ok(&token) {
         return Err(GatewayError::with_status(

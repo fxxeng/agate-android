@@ -62,9 +62,16 @@ impl AccountStore {
         name: Option<&str>,
         source: &str,
     ) -> Result<Value, AccountStoreError> {
-        let sid = credential.get("wps_sid").and_then(Value::as_str).unwrap_or("").trim();
+        let sid = credential
+            .get("wps_sid")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim();
         if sid.is_empty() {
-            return Err(AccountStoreError::new("缺少有效的 wps_sid（V02S 前缀）", 400));
+            return Err(AccountStoreError::new(
+                "缺少有效的 wps_sid（V02S 前缀）",
+                400,
+            ));
         }
         let cookie = credential
             .get("cookie")
@@ -72,9 +79,18 @@ impl AccountStore {
             .filter(|value| !value.trim().is_empty())
             .map(|value| value.trim().to_string())
             .unwrap_or_else(|| format!("wps_sid={sid}"));
-        let uid = credential.get("uid").and_then(Value::as_str).unwrap_or("").trim().to_string();
+        let uid = credential
+            .get("uid")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string();
         // uid 优先（同一账号重复粘贴能覆盖而不是堆两条）；没有 uid 时用 sid 摘要
-        let identity = if uid.is_empty() { format!("sid:{sid}") } else { format!("uid:{uid}") };
+        let identity = if uid.is_empty() {
+            format!("sid:{sid}")
+        } else {
+            format!("uid:{uid}")
+        };
         let id = account_id_for(&identity);
 
         let guard = self.guard();
@@ -117,7 +133,10 @@ impl AccountStore {
         let now = logging::now_ms();
         let mut record = Map::new();
         record.insert("id".to_string(), Value::String(id.clone()));
-        record.insert("provider".to_string(), Value::String(LINGXI_PROVIDER_ID.to_string()));
+        record.insert(
+            "provider".to_string(),
+            Value::String(LINGXI_PROVIDER_ID.to_string()),
+        );
         record.insert("name".to_string(), Value::String(record_name.clone()));
         mark_name_custom(&mut record, explicit, existing.as_ref());
         record.insert("accessToken".to_string(), Value::String(cookie.clone()));
@@ -128,11 +147,21 @@ impl AccountStore {
         record.insert("priority".to_string(), Value::from(priority));
         record.insert(
             "enabled".to_string(),
-            Value::Bool(existing.as_ref().map(StoredAccount::enabled).unwrap_or(true)),
+            Value::Bool(
+                existing
+                    .as_ref()
+                    .map(StoredAccount::enabled)
+                    .unwrap_or(true),
+            ),
         );
         record.insert(
             "addedAt".to_string(),
-            Value::from(existing.as_ref().map(StoredAccount::added_at).unwrap_or(now)),
+            Value::from(
+                existing
+                    .as_ref()
+                    .map(StoredAccount::added_at)
+                    .unwrap_or(now),
+            ),
         );
         record.insert("updatedAt".to_string(), Value::from(now));
         let mut merged = record;
@@ -191,11 +220,23 @@ impl AccountStore {
         public.insert("name".to_string(), Value::String(record.name()));
         public.insert(
             "uid".to_string(),
-            Value::String(record.get("uid").and_then(Value::as_str).unwrap_or("").to_string()),
+            Value::String(
+                record
+                    .get("uid")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
+            ),
         );
         public.insert(
             "tokenTail".to_string(),
-            Value::String(record.get("tokenTail").and_then(Value::as_str).unwrap_or("").to_string()),
+            Value::String(
+                record
+                    .get("tokenTail")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
+            ),
         );
         public.insert("source".to_string(), Value::String(record.source()));
         public.insert("priority".to_string(), Value::from(record.priority()));
@@ -205,7 +246,10 @@ impl AccountStore {
         public.insert("proxy".to_string(), proxy);
         public.insert(
             "rateLimits".to_string(),
-            record.get("rateLimits").cloned().unwrap_or_else(|| Value::Object(Map::new())),
+            record
+                .get("rateLimits")
+                .cloned()
+                .unwrap_or_else(|| Value::Object(Map::new())),
         );
         public.insert("available".to_string(), Value::Bool(true));
         Value::Object(public)

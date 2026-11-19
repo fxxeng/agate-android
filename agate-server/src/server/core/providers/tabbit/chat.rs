@@ -62,15 +62,17 @@ pub async fn run_chat(
     stream: bool,
     telemetry: &Arc<RequestTelemetry>,
 ) -> Result<ForwardOutcome, GatewayError> {
-    let record = store.tabbit_account_record(realm, account_id).ok_or_else(|| {
-        GatewayError::with_status(
-            404,
-            format!(
-                "还没有 {} 账号：请先在「添加账号」里粘贴网页 Cookie",
-                realm.label()
-            ),
-        )
-    })?;
+    let record = store
+        .tabbit_account_record(realm, account_id)
+        .ok_or_else(|| {
+            GatewayError::with_status(
+                404,
+                format!(
+                    "还没有 {} 账号：请先在「添加账号」里粘贴网页 Cookie",
+                    realm.label()
+                ),
+            )
+        })?;
     let credentials = Credentials::from_record(Some(&record))?;
     let client = http::client(proxy.as_ref());
 
@@ -177,9 +179,8 @@ async fn connect(
             }
         }
     }
-    Err(last_error.unwrap_or_else(|| {
-        GatewayError::with_status(502, "Tabbit 会话反复冲突，请稍后重试")
-    }))
+    Err(last_error
+        .unwrap_or_else(|| GatewayError::with_status(502, "Tabbit 会话反复冲突，请稍后重试")))
 }
 
 // ─── 事件 → 动作 ────────────────────────────────────────────
@@ -480,9 +481,15 @@ pub(super) fn translate(event: &Event, run_id: &str, state: &mut State) -> Actio
                 }
                 return Action::Ignore;
             }
-            "snapshot_begin" | "snapshot_end" | "message_history" | "active_runs_snapshot"
-            | "run_started" | "user_message_created" | "assistant_message_started"
-            | "session_title_updated" | "room_reset_required" => {
+            "snapshot_begin"
+            | "snapshot_end"
+            | "message_history"
+            | "active_runs_snapshot"
+            | "run_started"
+            | "user_message_created"
+            | "assistant_message_started"
+            | "session_title_updated"
+            | "room_reset_required" => {
                 return Action::Ignore;
             }
             _ => {}
@@ -517,7 +524,10 @@ pub(super) fn translate(event: &Event, run_id: &str, state: &mut State) -> Actio
         }
         "error" => {
             let message = {
-                let text = text_of(&payload, &["message", "msg", "error_message", "displayTips"]);
+                let text = text_of(
+                    &payload,
+                    &["message", "msg", "error_message", "displayTips"],
+                );
                 if text.is_empty() {
                     text_of(payload.get("error").unwrap_or(&Value::Null), &["message"])
                 } else {
@@ -982,7 +992,10 @@ mod tests {
 
         let mut state = fresh();
         let action = translate(
-            &event("run_failed", json!({ "payload": { "message": "unauthorized" } })),
+            &event(
+                "run_failed",
+                json!({ "payload": { "message": "unauthorized" } }),
+            ),
             "run-1",
             &mut state,
         );
@@ -994,7 +1007,10 @@ mod tests {
     fn queue_rejection_is_reported() {
         let mut state = fresh();
         let action = translate(
-            &event("run_queued", json!({ "payload": { "serviceAvailable": false } })),
+            &event(
+                "run_queued",
+                json!({ "payload": { "serviceAvailable": false } }),
+            ),
             "run-1",
             &mut state,
         );
@@ -1002,7 +1018,10 @@ mod tests {
 
         let mut state = fresh();
         let action = translate(
-            &event("run_queued", json!({ "payload": { "serviceAvailable": true } })),
+            &event(
+                "run_queued",
+                json!({ "payload": { "serviceAvailable": true } }),
+            ),
             "run-1",
             &mut state,
         );

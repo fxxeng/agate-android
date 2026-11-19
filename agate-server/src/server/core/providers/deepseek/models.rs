@@ -152,7 +152,10 @@ mod tests {
     #[test]
     fn every_entry_has_label_and_description() {
         for model in list() {
-            assert!(model.get("label").and_then(Value::as_str).is_some_and(|text| !text.is_empty()));
+            assert!(model
+                .get("label")
+                .and_then(Value::as_str)
+                .is_some_and(|text| !text.is_empty()));
             assert!(model
                 .get("description")
                 .and_then(Value::as_str)

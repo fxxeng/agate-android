@@ -160,7 +160,12 @@ pub(crate) fn public_shape(record: &StoredAccount) -> Value {
         // Cookie 名清单（**只有名字**）：排障时最需要的信息，且名字不是秘密
         object.insert(
             "cookieNames".to_string(),
-            Value::Array(cookie_names.iter().map(|name| Value::String(name.clone())).collect()),
+            Value::Array(
+                cookie_names
+                    .iter()
+                    .map(|name| Value::String(name.clone()))
+                    .collect(),
+            ),
         );
         object.insert("cookieCount".to_string(), Value::from(cookie_names.len()));
         // 本家没有续期（`supports_refresh = false`）—— 恒为 false 而不是缺键：
@@ -268,7 +273,10 @@ impl AccountStore {
         // 输入长度上限（只有整串粘贴形态才有这个键；行数组已在归一那一步拦过）
         let raw = pick(secret, &["cookie", "cookieString", "cookie_string"]);
         if raw.chars().count() > MAX_COOKIE_INPUT_LENGTH {
-            return Err(AccountStoreError::new("Cookie 过长，请确认粘贴的是 Cookie", 400));
+            return Err(AccountStoreError::new(
+                "Cookie 过长，请确认粘贴的是 Cookie",
+                400,
+            ));
         }
         if !has_session_cookie(&pairs) {
             return Err(AccountStoreError::new(
@@ -523,7 +531,10 @@ mod tests {
         let rows = cookie_pairs_of(&json!({
             "cookies": [{"name": "sessionid", "value": "fromRows"}]
         }));
-        assert_eq!(rows, vec![("sessionid".to_string(), "fromRows".to_string())]);
+        assert_eq!(
+            rows,
+            vec![("sessionid".to_string(), "fromRows".to_string())]
+        );
         let flat = cookie_pairs_of(&json!({"cookie": "sessionid=fromString; a=b"}));
         assert_eq!(flat.len(), 2);
         assert_eq!(flat[0].1, "fromString");
@@ -541,7 +552,10 @@ mod tests {
             .cloned()
             .unwrap_or(Value::Null);
         assert_eq!(row.get("name").and_then(Value::as_str), Some("sessionid"));
-        assert_eq!(row.get("domain").and_then(Value::as_str), Some(".doubao.com"));
+        assert_eq!(
+            row.get("domain").and_then(Value::as_str),
+            Some(".doubao.com")
+        );
         assert_eq!(row.get("path").and_then(Value::as_str), Some("/"));
         assert!(row.get("expires").is_some_and(Value::is_null));
     }
@@ -554,6 +568,9 @@ mod tests {
         }
         assert!(!has_session_cookie(&[("foo".to_string(), "v".to_string())]));
         // 空值的登录态 Cookie 不算
-        assert!(!has_session_cookie(&[("sessionid".to_string(), "  ".to_string())]));
+        assert!(!has_session_cookie(&[(
+            "sessionid".to_string(),
+            "  ".to_string()
+        )]));
     }
 }

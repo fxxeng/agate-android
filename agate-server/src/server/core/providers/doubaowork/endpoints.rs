@@ -465,8 +465,14 @@ pub fn security_params(fingerprint: &Fingerprint) -> Vec<(String, String)> {
         ("web_id".to_string(), web_id.to_string()),
         ("webId".to_string(), web_id.to_string()),
         // ── 平台 / 语言 / 地区 ──
-        ("device_platform".to_string(), DOUBAO_DEVICE_PLATFORM.to_string()),
-        ("doubao_device_platform".to_string(), DOUBAO_DEVICE_PLATFORM.to_string()),
+        (
+            "device_platform".to_string(),
+            DOUBAO_DEVICE_PLATFORM.to_string(),
+        ),
+        (
+            "doubao_device_platform".to_string(),
+            DOUBAO_DEVICE_PLATFORM.to_string(),
+        ),
         ("client_platform".to_string(), CLIENT_PLATFORM.to_string()),
         ("web_platform".to_string(), WEB_PLATFORM.to_string()),
         ("language".to_string(), LANGUAGE.to_string()),
@@ -689,10 +695,7 @@ mod tests {
         assert!(account_info_url().ends_with("/info/v2/"));
         assert!(campaign_list_url().ends_with("/list/"));
         // 不带斜杠的那几个也要原样
-        assert_eq!(
-            chat_url(),
-            "https://www.doubao.com/chat/completion"
-        );
+        assert_eq!(chat_url(), "https://www.doubao.com/chat/completion");
         assert!(prepare_upload_url().ends_with("/alice/resource/prepare_upload"));
     }
 
@@ -716,22 +719,55 @@ mod tests {
         let params = security_params(&fingerprint);
         let keys: Vec<&str> = params.iter().map(|(key, _)| key.as_str()).collect();
         for required in [
-            "aid", "real_aid", "device_id", "tea_uuid", "web_id", "webId",
-            "device_platform", "language", "region", "sys_region", "pkg_type",
-            "version_code", "clientVersion", "pc_version", "doubao_pc_version",
-            "chromium_version", "chromiumVersion", "client_platform", "runtime",
-            "runtime_version", "samantha_web", "use-olympus-account", "fp",
-            "web_tab_id", "msToken", "doubao_device_platform", "web_platform",
+            "aid",
+            "real_aid",
+            "device_id",
+            "tea_uuid",
+            "web_id",
+            "webId",
+            "device_platform",
+            "language",
+            "region",
+            "sys_region",
+            "pkg_type",
+            "version_code",
+            "clientVersion",
+            "pc_version",
+            "doubao_pc_version",
+            "chromium_version",
+            "chromiumVersion",
+            "client_platform",
+            "runtime",
+            "runtime_version",
+            "samantha_web",
+            "use-olympus-account",
+            "fp",
+            "web_tab_id",
+            "msToken",
+            "doubao_device_platform",
+            "web_platform",
         ] {
             assert!(keys.contains(&required), "缺少风控参数：{required}");
         }
         // device_id 与 tea_uuid 同值（参考实现的约定）
-        let device = params.iter().find(|(k, _)| k.as_str() == "device_id").map(|(_, v)| v.clone());
-        let tea = params.iter().find(|(k, _)| k.as_str() == "tea_uuid").map(|(_, v)| v.clone());
+        let device = params
+            .iter()
+            .find(|(k, _)| k.as_str() == "device_id")
+            .map(|(_, v)| v.clone());
+        let tea = params
+            .iter()
+            .find(|(k, _)| k.as_str() == "tea_uuid")
+            .map(|(_, v)| v.clone());
         assert_eq!(device, tea);
         // web_id 与 webId 同值
-        let web = params.iter().find(|(k, _)| k.as_str() == "web_id").map(|(_, v)| v.clone());
-        let web_camel = params.iter().find(|(k, _)| k.as_str() == "webId").map(|(_, v)| v.clone());
+        let web = params
+            .iter()
+            .find(|(k, _)| k.as_str() == "web_id")
+            .map(|(_, v)| v.clone());
+        let web_camel = params
+            .iter()
+            .find(|(k, _)| k.as_str() == "webId")
+            .map(|(_, v)| v.clone());
         assert_eq!(web, web_camel);
         // web_tab_id 是 UUID 形态（每次不同）
         let tab = params
@@ -788,7 +824,10 @@ mod tests {
         assert_eq!(parts[3].len(), 4);
         assert_eq!(parts[4].len(), 12);
         assert_eq!(parts[2].chars().next(), Some('4'));
-        assert!(matches!(parts[3].chars().next(), Some('8' | '9' | 'a' | 'b')));
+        assert!(matches!(
+            parts[3].chars().next(),
+            Some('8' | '9' | 'a' | 'b')
+        ));
         assert!(id.chars().all(|ch| ch.is_ascii_hexdigit() || ch == '-'));
     }
 

@@ -39,7 +39,11 @@ pub fn is_fresh(created_ms: i64, now_ms: i64) -> bool {
 
 /// 缓存键的唯一构造处（账号 id + 上游真名，全部小写）。
 pub fn cache_key(account_id: &str, model: &str) -> String {
-    format!("{}|{}", account_id.trim().to_lowercase(), model.trim().to_lowercase())
+    format!(
+        "{}|{}",
+        account_id.trim().to_lowercase(),
+        model.trim().to_lowercase()
+    )
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -54,7 +58,11 @@ pub enum NextAction {
 /// 缓存失效后的重建预算：只允许一次。
 pub fn next_action(cached: Option<Session>, invalidated: bool, rebuilt_once: bool) -> NextAction {
     if invalidated {
-        return if rebuilt_once { NextAction::GiveUp } else { NextAction::Build };
+        return if rebuilt_once {
+            NextAction::GiveUp
+        } else {
+            NextAction::Build
+        };
     }
     match cached {
         Some(session) => NextAction::UseCached(session),
@@ -74,7 +82,9 @@ impl SessionCache {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, Session>> {
-        self.entries.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        self.entries
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// 读缓存。**只读不续期**：过期条目顺手删掉，不留一条永远「差一点新鲜」的记录。

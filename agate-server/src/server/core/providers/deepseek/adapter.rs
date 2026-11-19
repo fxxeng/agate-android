@@ -168,11 +168,9 @@ impl ProviderAdapter for DeepSeekWebAdapter {
             };
         }
         match status {
-            400 | 422 => {
-                crate::server::core::providers::content_block::classify_or_fatal(
-                    400, error_body, message, code,
-                )
-            }
+            400 | 422 => crate::server::core::providers::content_block::classify_or_fatal(
+                400, error_body, message, code,
+            ),
             401 | 403 => UpstreamErrorClass::TokenExpired { message },
             429 => UpstreamErrorClass::QuotaLimited {
                 reset_at: None,
@@ -280,7 +278,9 @@ mod tests {
     #[test]
     fn challenge_wins_over_credential_failure() {
         match class(403, json!({"code": 40303, "message": "challenge"})) {
-            UpstreamErrorClass::Fatal { status, message, .. } => {
+            UpstreamErrorClass::Fatal {
+                status, message, ..
+            } => {
                 assert_eq!(status, 403);
                 assert!(message.contains("人机验证"), "{message}");
                 assert!(message.contains("不是登录态失效"), "{message}");
@@ -292,7 +292,10 @@ mod tests {
             UpstreamErrorClass::Fatal { status: 403, .. }
         ));
         // 验证页正文是 HTML：别把整段标记回给用户
-        match class(403, json!({"message": "<!DOCTYPE html><html><body>verify</body></html>"})) {
+        match class(
+            403,
+            json!({"message": "<!DOCTYPE html><html><body>verify</body></html>"}),
+        ) {
             UpstreamErrorClass::Fatal { message, .. } => {
                 assert!(message.contains("验证/拦截页面"), "{message}");
                 assert!(!message.contains("<html"), "{message}");

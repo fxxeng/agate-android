@@ -67,7 +67,10 @@ fn message_text(content: Option<&Value>) -> Result<String, GatewayError> {
 
 /// 一条消息 → 一段带角色标记的文本（空消息返回 None，直接跳过）
 fn render_message(message: &Value) -> Result<Option<String>, GatewayError> {
-    let role = message.get("role").and_then(Value::as_str).unwrap_or("user");
+    let role = message
+        .get("role")
+        .and_then(Value::as_str)
+        .unwrap_or("user");
     if role == "tool" || role == "function" {
         return Err(bad(
             "Tabbit 网页没有原生工具调用，不接受工具结果历史（请移除 tools / tool 消息）",
@@ -154,7 +157,9 @@ pub fn build(body: &Value) -> Result<String, GatewayError> {
         .get("functions")
         .and_then(Value::as_array)
         .is_some_and(|tools| !tools.is_empty());
-    let choice = body.get("tool_choice").or_else(|| body.get("function_call"));
+    let choice = body
+        .get("tool_choice")
+        .or_else(|| body.get("function_call"));
     let choice_none = choice
         .and_then(Value::as_str)
         .is_some_and(|value| value.eq_ignore_ascii_case("none"));
@@ -183,7 +188,10 @@ pub fn build(body: &Value) -> Result<String, GatewayError> {
         let Some(rendered) = render_message(message)? else {
             continue;
         };
-        let role = message.get("role").and_then(Value::as_str).unwrap_or("user");
+        let role = message
+            .get("role")
+            .and_then(Value::as_str)
+            .unwrap_or("user");
         if matches!(role, "system" | "developer") {
             systems.push(rendered);
         } else {
@@ -302,7 +310,10 @@ mod tests {
     /// 超长单条消息：头尾保留、中间省略，且带裁剪标记
     #[test]
     fn oversized_single_message_keeps_head_and_tail() {
-        let text = clip_text(&format!("HEAD{}TAIL", "x".repeat(PROMPT_SINGLE)), PROMPT_SINGLE);
+        let text = clip_text(
+            &format!("HEAD{}TAIL", "x".repeat(PROMPT_SINGLE)),
+            PROMPT_SINGLE,
+        );
         assert!(text.starts_with("HEAD"));
         assert!(text.ends_with("TAIL"));
         assert!(text.contains(TRUNC_NOTE.trim()));

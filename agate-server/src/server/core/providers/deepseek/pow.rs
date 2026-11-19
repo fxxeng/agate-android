@@ -129,7 +129,8 @@ fn permute(state: &mut [u64; 25]) {
         let mut rotated = [0u64; 25];
         for y in 0..5 {
             for x in 0..5 {
-                rotated[y + 5 * ((2 * x + 3 * y) % 5)] = state[x + 5 * y].rotate_left(ROTATION[x + 5 * y]);
+                rotated[y + 5 * ((2 * x + 3 * y) % 5)] =
+                    state[x + 5 * y].rotate_left(ROTATION[x + 5 * y]);
             }
         }
 
@@ -247,7 +248,8 @@ pub fn parse_challenge(payload: &Value) -> Result<Challenge, String> {
                 .and_then(|item| item.get("biz_data"))
                 .filter(|item| item.get("challenge").is_some())
         });
-    let challenge = challenge.ok_or_else(|| "PoW 题面缺失（data.biz_data.challenge）".to_string())?;
+    let challenge =
+        challenge.ok_or_else(|| "PoW 题面缺失（data.biz_data.challenge）".to_string())?;
 
     let text = |key: &str| -> Result<String, String> {
         challenge

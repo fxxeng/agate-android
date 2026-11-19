@@ -184,7 +184,10 @@ mod tests {
         }
         let first = take(token);
         assert!(first.is_some(), "第一次应取得到");
-        assert_eq!(first.as_ref().map(|item| item.session_id.as_str()), Some("s1"));
+        assert_eq!(
+            first.as_ref().map(|item| item.session_id.as_str()),
+            Some("s1")
+        );
         assert!(take(token).is_none(), "第二次必须取不到（一次性）");
     }
 

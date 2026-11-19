@@ -333,9 +333,10 @@ pub fn collect_images(messages: &[Value]) -> (Vec<PendingImage>, usize) {
             }
             let url = match part.get("image_url") {
                 Some(Value::String(text)) => Some(text.clone()),
-                Some(Value::Object(object)) => {
-                    object.get("url").and_then(Value::as_str).map(str::to_string)
-                }
+                Some(Value::Object(object)) => object
+                    .get("url")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
                 _ => part
                     .get("url")
                     .and_then(Value::as_str)
@@ -381,7 +382,10 @@ pub fn collect_files(messages: &[Value]) -> Vec<PendingImage> {
                 continue;
             }
             // 两种写法：`{"type":"file","file":{…}}` 与 `{"type":"input_file",…}` 平铺
-            let holder = part.get("file").filter(|value| value.is_object()).unwrap_or(part);
+            let holder = part
+                .get("file")
+                .filter(|value| value.is_object())
+                .unwrap_or(part);
             let name = holder
                 .get("filename")
                 .or_else(|| holder.get("name"))
@@ -410,7 +414,9 @@ pub fn collect_files(messages: &[Value]) -> Vec<PendingImage> {
                     .filter(|bytes| !bytes.is_empty())
                     .map(|bytes| (mime_of_file_name(&name), bytes))
             });
-            let Some((mime, data)) = decoded else { continue };
+            let Some((mime, data)) = decoded else {
+                continue;
+            };
             out.push(PendingImage { name, data, mime });
         }
     }
@@ -933,7 +939,10 @@ mod tests {
     /// 思考档位：客户端显式指定优先于模型名推断；未知名回落默认关闭
     #[test]
     fn think_level_priority() {
-        assert_eq!(resolve_think_level(&json!({"reasoning_effort": "high"}), "x"), THINK_ON);
+        assert_eq!(
+            resolve_think_level(&json!({"reasoning_effort": "high"}), "x"),
+            THINK_ON
+        );
         assert_eq!(
             resolve_think_level(&json!({"reasoning_effort": "max"}), "x"),
             THINK_EXPERT
@@ -944,11 +953,17 @@ mod tests {
             THINK_OFF
         );
         // 没有显式指定 → 模型名推断
-        assert_eq!(resolve_think_level(&json!({}), "doubao-expert"), THINK_EXPERT);
+        assert_eq!(
+            resolve_think_level(&json!({}), "doubao-expert"),
+            THINK_EXPERT
+        );
         assert_eq!(resolve_think_level(&json!({}), "doubao-think"), THINK_ON);
         assert_eq!(resolve_think_level(&json!({}), "doubao-fast"), THINK_OFF);
         // 认不出的等级不猜（回落模型名 → 再回落默认）
-        assert_eq!(resolve_think_level(&json!({"reasoning_effort": "???"}), "zzz"), THINK_OFF);
+        assert_eq!(
+            resolve_think_level(&json!({"reasoning_effort": "???"}), "zzz"),
+            THINK_OFF
+        );
     }
 
     /// 布尔形态的 `thinking` **不构成档位**（与 `model_rules::read_client_level`
@@ -959,7 +974,10 @@ mod tests {
         assert_eq!(think_level_from_body(&json!({"thinking": true})), None);
         assert_eq!(think_level_from_body(&json!({"thinking": false})), None);
         // 字符串形态才算
-        assert_eq!(think_level_from_body(&json!({"thinking": "high"})), Some(THINK_ON));
+        assert_eq!(
+            think_level_from_body(&json!({"thinking": "high"})),
+            Some(THINK_ON)
+        );
     }
 
     /// ⚠️ 内部通道（映射绑定注入的档位）**优先于**客户端那一层
@@ -1003,7 +1021,10 @@ mod tests {
             Some("on".to_string())
         );
         // 关闭档 → None（不预支一个没发出去的值）
-        assert_eq!(outbound_reasoning_of(&json!({ (BODY_THINK_LEVEL_KEY): 0 })), None);
+        assert_eq!(
+            outbound_reasoning_of(&json!({ (BODY_THINK_LEVEL_KEY): 0 })),
+            None
+        );
         // 两条载体都没有 → None
         assert_eq!(outbound_reasoning_of(&json!({"messages": []})), None);
     }
@@ -1053,7 +1074,8 @@ mod tests {
         assert!(body.get("ext").is_some());
         // 会话 id 缺省是 "0"（新会话）
         assert_eq!(
-            body.pointer("/client_meta/conversation_id").and_then(Value::as_str),
+            body.pointer("/client_meta/conversation_id")
+                .and_then(Value::as_str),
             Some("0")
         );
         // bot_id 缺省是本家默认 bot
@@ -1063,7 +1085,8 @@ mod tests {
         );
         // 档位：option 里是整数、ext 里是字符串（上游的形态，别统一）
         assert_eq!(
-            body.pointer("/option/need_deep_think").and_then(Value::as_i64),
+            body.pointer("/option/need_deep_think")
+                .and_then(Value::as_i64),
             Some(THINK_ON)
         );
         assert_eq!(
@@ -1109,7 +1132,9 @@ mod tests {
             .unwrap_or_default();
         assert_eq!(blocks.len(), 3);
         assert_eq!(
-            blocks[0].pointer("/content/attachment_block/attachments/0/type").and_then(Value::as_i64),
+            blocks[0]
+                .pointer("/content/attachment_block/attachments/0/type")
+                .and_then(Value::as_i64),
             Some(ATTACHMENT_FILE)
         );
         assert_eq!(
@@ -1119,7 +1144,9 @@ mod tests {
             Some(READY_STATE)
         );
         assert_eq!(
-            blocks[1].pointer("/content/attachment_block/attachments/0/type").and_then(Value::as_i64),
+            blocks[1]
+                .pointer("/content/attachment_block/attachments/0/type")
+                .and_then(Value::as_i64),
             Some(ATTACHMENT_IMAGE)
         );
         assert_eq!(
@@ -1132,9 +1159,13 @@ mod tests {
     #[test]
     fn empty_messages_rejected_but_attachment_only_is_fine() {
         assert_eq!(
-            build(&credentials_fixture(), &json!({"messages": []}), &ReadyAttachments::default())
-                .err()
-                .map(|error| error.status_code),
+            build(
+                &credentials_fixture(),
+                &json!({"messages": []}),
+                &ReadyAttachments::default()
+            )
+            .err()
+            .map(|error| error.status_code),
             Some(400)
         );
         assert_eq!(
@@ -1208,7 +1239,10 @@ mod tests {
     #[test]
     fn mime_table_covers_common_types() {
         assert_eq!(mime_of_file_name("a.PDF"), "application/pdf");
-        assert_eq!(mime_of_file_name("a.docx"), "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+        assert_eq!(
+            mime_of_file_name("a.docx"),
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        );
         assert_eq!(mime_of_file_name("a.png"), "image/png");
         assert_eq!(mime_of_file_name("a.unknown"), "application/octet-stream");
         assert_eq!(mime_of_file_name("noext"), "application/octet-stream");
@@ -1217,7 +1251,10 @@ mod tests {
     /// 「上游等级」采集口：关闭档返回 None（不预支一个没发出去的值）
     #[test]
     fn outbound_reasoning_skips_off_level() {
-        assert_eq!(outbound_reasoning_of(&json!({"option": {"need_deep_think": 0}})), None);
+        assert_eq!(
+            outbound_reasoning_of(&json!({"option": {"need_deep_think": 0}})),
+            None
+        );
         assert_eq!(
             outbound_reasoning_of(&json!({"option": {"need_deep_think": 1}})),
             Some("on".to_string())

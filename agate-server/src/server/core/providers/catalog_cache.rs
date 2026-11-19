@@ -139,7 +139,8 @@ pub const ALL_SCOPES: &[&str] = &[
     SCOPE_CHATGLM,
     SCOPE_DOUBAOWORK,
     SCOPE_TABBIT,
-    SCOPE_TABBIT_INTL,];
+    SCOPE_TABBIT_INTL,
+];
 
 /// 一份清单缓存
 pub struct CachedCatalog {

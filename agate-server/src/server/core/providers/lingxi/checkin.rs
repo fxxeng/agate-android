@@ -106,7 +106,12 @@ fn ledger_state(ledger: &Value, today: &str) -> Ledger {
     }
 }
 
-fn write_ledger(store: &AccountStore, account_id: &str, day: &str, state: &str) -> Result<(), GatewayError> {
+fn write_ledger(
+    store: &AccountStore,
+    account_id: &str,
+    day: &str,
+    state: &str,
+) -> Result<(), GatewayError> {
     let mut ledger = Map::new();
     ledger.insert("version".to_string(), json!(1));
     ledger.insert("day".to_string(), json!(day));
@@ -149,9 +154,16 @@ pub async fn claim_for_account(
     };
     let (sid, cookie, uid) = client::credentials_of(&record);
     if sid.is_empty() {
-        return Err(GatewayError::with_status(400, "灵犀账号缺少 wps_sid，请重新粘贴 Cookie"));
+        return Err(GatewayError::with_status(
+            400,
+            "灵犀账号缺少 wps_sid，请重新粘贴 Cookie",
+        ));
     }
-    let identity = if uid.is_empty() { sid.as_str() } else { uid.as_str() };
+    let identity = if uid.is_empty() {
+        sid.as_str()
+    } else {
+        uid.as_str()
+    };
     let device = credentials::device_id(identity);
 
     // ① 领前余额：读不出是 None，不拿 0 冒充。
@@ -206,7 +218,14 @@ pub async fn claim_for_account(
         .as_ref()
         .map(|state| state.claimed)
         .or(claimed_before);
-    let outcome = reconcile(state, transport_ok, explicit_reject, before, after, task_claimed);
+    let outcome = reconcile(
+        state,
+        transport_ok,
+        explicit_reject,
+        before,
+        after,
+        task_claimed,
+    );
     match outcome {
         Outcome::MarkDone | Outcome::AlreadyDone => {
             write_ledger(store, account_id, &day, "done")?;
@@ -257,7 +276,14 @@ mod tests {
     #[test]
     fn official_task_state_can_confirm_without_a_balance_delta() {
         assert_eq!(
-            reconcile(Ledger::Pending, true, false, Some(100.0), Some(100.0), Some(true)),
+            reconcile(
+                Ledger::Pending,
+                true,
+                false,
+                Some(100.0),
+                Some(100.0),
+                Some(true)
+            ),
             Outcome::AlreadyDone
         );
     }

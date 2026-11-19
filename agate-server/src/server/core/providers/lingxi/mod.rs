@@ -38,8 +38,8 @@ pub mod adapter;
 pub mod channel;
 pub mod chat;
 pub mod checkin;
-pub mod client;
 pub mod classify;
+pub mod client;
 pub mod credentials;
 pub mod endpoints;
 pub mod ledger;
@@ -61,8 +61,8 @@ mod tests {
     /// 一串请求从上到下走一遍判据，钉住「各层用的是同一组事实」。
     #[test]
     fn one_request_walks_the_whole_judgement_chain() {
-        let credential = credentials::normalize_paste("wps_sid=V02Sabcdefghij; uid=42")
-            .unwrap_or_default();
+        let credential =
+            credentials::normalize_paste("wps_sid=V02Sabcdefghij; uid=42").unwrap_or_default();
         assert_eq!(credential.uid.as_deref(), Some("42"));
 
         let body = json!({ "model": "qwen3.8_flash", "messages": [], "stream": true });
@@ -99,7 +99,10 @@ mod tests {
             refused: false,
         });
         assert_eq!(rewritten.chunk["usage"]["total_tokens"], json!(12));
-        assert_eq!(rewritten.chunk["choices"][0]["delta"]["content"], json!("你好"));
+        assert_eq!(
+            rewritten.chunk["choices"][0]["delta"]["content"],
+            json!("你好")
+        );
     }
 
     #[test]

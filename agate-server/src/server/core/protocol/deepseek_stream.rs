@@ -546,7 +546,8 @@ mod tests {
     #[test]
     fn event_lines_are_skipped() {
         let mut machine = ChatFromDeepSeekStream::new("m");
-        let frames = machine.push("event: ready\ndata: {\"v\":\"正文\"}\n\nevent: close\n\n".as_bytes());
+        let frames =
+            machine.push("event: ready\ndata: {\"v\":\"正文\"}\n\nevent: close\n\n".as_bytes());
         let (text, _, _) = collect(&frames);
         assert_eq!(text, "正文");
     }

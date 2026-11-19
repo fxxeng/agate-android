@@ -202,12 +202,19 @@ fn map_entry(row: &Value) -> Option<Value> {
         .find_map(|key| row.get(*key).and_then(Value::as_str))
         .map(str::trim)
         .filter(|text| !text.is_empty())?;
-    let name = ["mode_name", "modeName", "model_name", "display_name", "displayName", "name"]
-        .iter()
-        .find_map(|key| row.get(*key).and_then(Value::as_str))
-        .map(str::trim)
-        .filter(|text| !text.is_empty())
-        .unwrap_or(id);
+    let name = [
+        "mode_name",
+        "modeName",
+        "model_name",
+        "display_name",
+        "displayName",
+        "name",
+    ]
+    .iter()
+    .find_map(|key| row.get(*key).and_then(Value::as_str))
+    .map(str::trim)
+    .filter(|text| !text.is_empty())
+    .unwrap_or(id);
     // 思考档位：上游用 `deep_think` 表达（整数或布尔都见过）
     let deep_think = row
         .get("deep_think")
@@ -230,8 +237,17 @@ fn map_entry(row: &Value) -> Option<Value> {
         }
     }
     // 上下文窗口（上游给了才写 —— 「没给」与「给了一个 0」是两件事）
-    for key in ["context_window", "contextWindow", "maxInputTokens", "max_input_tokens"] {
-        if let Some(value) = row.get(key).and_then(Value::as_i64).filter(|value| *value > 0) {
+    for key in [
+        "context_window",
+        "contextWindow",
+        "maxInputTokens",
+        "max_input_tokens",
+    ] {
+        if let Some(value) = row
+            .get(key)
+            .and_then(Value::as_i64)
+            .filter(|value| *value > 0)
+        {
             if let Some(object) = entry.as_object_mut() {
                 object.insert("maxInputTokens".to_string(), Value::from(value));
             }
@@ -349,7 +365,9 @@ pub fn parse_catalog(payload: &Value) -> Vec<Value> {
                 .iter()
                 .find_map(|key| row.get(*key).filter(|value| value.is_object()))
                 .unwrap_or(&row);
-            let Some(entry) = map_entry(inner) else { continue };
+            let Some(entry) = map_entry(inner) else {
+                continue;
+            };
             let Some(id) = entry.get("id").and_then(Value::as_str).map(str::to_string) else {
                 continue;
             };
@@ -469,18 +487,16 @@ pub fn agent_choice() -> Option<Value> {
             .find(|item| item.get("agent_mode").and_then(Value::as_u64) == Some(wanted))
             .cloned()
     };
-    pick(1)
-        .or_else(|| pick(2))
-        .or_else(|| {
-            modes
-                .iter()
-                .find(|item| {
-                    item.get("agent_mode")
-                        .and_then(Value::as_u64)
-                        .is_some_and(|mode| mode != 0)
-                })
-                .cloned()
-        })
+    pick(1).or_else(|| pick(2)).or_else(|| {
+        modes
+            .iter()
+            .find(|item| {
+                item.get("agent_mode")
+                    .and_then(Value::as_u64)
+                    .is_some_and(|mode| mode != 0)
+            })
+            .cloned()
+    })
 }
 
 /// 客户端给的名字 → 本家内部的模型名。
@@ -573,10 +589,7 @@ pub async fn refresh(credentials: &Credentials, force: bool) -> ModelRefreshOutc
         });
     });
     catalog_cache::save(SCOPE, &models, now);
-    crate::server::logging::log(
-        "[DoubaoWork]",
-        &format!("模型目录刷新完成：{count} 个模式"),
-    );
+    crate::server::logging::log("[DoubaoWork]", &format!("模型目录刷新完成：{count} 个模式"));
     ModelRefreshOutcome::refreshed(count)
 }
 
@@ -590,8 +603,14 @@ mod tests {
         let items = fallback_models();
         assert_eq!(items.len(), FALLBACK_MODELS.len());
         for item in &items {
-            assert!(item.get("id").and_then(Value::as_str).is_some_and(|id| !id.is_empty()));
-            assert!(item.get("name").and_then(Value::as_str).is_some_and(|name| !name.is_empty()));
+            assert!(item
+                .get("id")
+                .and_then(Value::as_str)
+                .is_some_and(|id| !id.is_empty()));
+            assert!(item
+                .get("name")
+                .and_then(Value::as_str)
+                .is_some_and(|name| !name.is_empty()));
         }
         // 默认模型必须在兜底清单里（否则「客户端不指定 model」会路由到一个不存在的名字）
         assert!(items
@@ -647,7 +666,10 @@ mod tests {
         ]}});
         let parsed = parse_catalog(&payload);
         assert_eq!(parsed.len(), 2);
-        assert_eq!(parsed[0].get("id").and_then(Value::as_str), Some("doubao-fast"));
+        assert_eq!(
+            parsed[0].get("id").and_then(Value::as_str),
+            Some("doubao-fast")
+        );
         assert_eq!(
             parsed[0].get("supportsReasoning"),
             Some(&Value::Bool(false)),
@@ -679,7 +701,10 @@ mod tests {
         });
         let parsed = parse_catalog(&payload);
         assert_eq!(parsed.len(), 1);
-        assert_eq!(parsed[0].get("id").and_then(Value::as_str), Some("doubao-fast"));
+        assert_eq!(
+            parsed[0].get("id").and_then(Value::as_str),
+            Some("doubao-fast")
+        );
     }
 
     /// 去重：同一个 id 只出一条（上游可能同时出现在两级里）
@@ -713,7 +738,9 @@ mod tests {
             {"mode_id": "a", "context_window": 200000}
         ]}}));
         assert_eq!(
-            with.first().and_then(|item| item.get("maxInputTokens")).and_then(Value::as_i64),
+            with.first()
+                .and_then(|item| item.get("maxInputTokens"))
+                .and_then(Value::as_i64),
             Some(200_000)
         );
         let without = parse_catalog(&json!({"data": {"mode_list": [
@@ -729,8 +756,14 @@ mod tests {
     #[test]
     fn upstream_id_resolution_is_exact_only() {
         // 兜底清单生效时（本单测进程里没有远程清单）
-        assert_eq!(upstream_id_for("doubao-fast"), Some("doubao-fast".to_string()));
-        assert_eq!(upstream_id_for("豆包·快速"), Some("doubao-fast".to_string()));
+        assert_eq!(
+            upstream_id_for("doubao-fast"),
+            Some("doubao-fast".to_string())
+        );
+        assert_eq!(
+            upstream_id_for("豆包·快速"),
+            Some("doubao-fast".to_string())
+        );
         assert_eq!(upstream_id_for("no-such-mode"), None);
         assert_eq!(upstream_id_for("   "), None);
         // 模糊匹配必须**不**命中（否则「名字没映射」会变成一次静默的错误请求）
@@ -752,9 +785,9 @@ mod tests {
     #[test]
     fn image_entry_is_appended_to_the_catalog() {
         let items = list();
-        let image = items
-            .iter()
-            .find(|item| item.get("id").and_then(Value::as_str) == Some(super::super::image_generation::MODEL_ID));
+        let image = items.iter().find(|item| {
+            item.get("id").and_then(Value::as_str) == Some(super::super::image_generation::MODEL_ID)
+        });
         let image = image.expect("清单里应当有合成生图条目");
         assert_eq!(image["kind"], json!("image"));
         assert_eq!(image["supports_image_generation"], json!(true));
@@ -788,7 +821,10 @@ mod tests {
         assert_eq!(as_number.len(), 1);
         assert_eq!(as_number[0]["agent_mode"], json!(1));
         assert_eq!(as_number[0]["model_item_key"], json!("k1"));
-        assert_eq!(as_number[0]["model_extra_params"]["provider_id"], json!("p"));
+        assert_eq!(
+            as_number[0]["model_extra_params"]["provider_id"],
+            json!("p")
+        );
 
         let as_text = parse_catalog(&json!({
             "data": { "entry_list": [{ "mode_id": "m2", "agent_mode": "2" }] },
