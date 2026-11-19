@@ -987,6 +987,27 @@ pub trait ProviderAdapter: Send + Sync {
         false
     }
 
+    /// 流内错误的分类器：从上游报错文本识别出可退避/可重试的错误类别。
+    /// 默认 None（不识别，上层按裸错误处理）。
+    fn stream_error_classifier(&self, _message: &str) -> Option<UpstreamErrorClass> {
+        None
+    }
+
+    /// 本家是否接入了流内错误分类器（默认 false）。
+    fn has_stream_error_classifier(&self) -> bool {
+        false
+    }
+
+    /// 本家是否支持图片生成（默认 false；与 `operation_providers` 取交集）。
+    fn supports_image_generation(&self) -> bool {
+        false
+    }
+
+    /// 本家是否支持图片编辑（默认 false）。
+    fn supports_image_editing(&self) -> bool {
+        false
+    }
+
     /// 查询某账号的余额 / 积分，返回**归一化后的 JSON**（模块头扩展 8）。
     ///
     /// ── 形状契约（`api::accounts` 的 `{results:[{id,name,usage,error}]}` 里

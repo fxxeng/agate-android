@@ -66,6 +66,19 @@ fn advertised_manifest_for(store: &AccountStore, kind: ProviderKind) -> Vec<Valu
     adapter_for(kind).advertise_models(store, manifest_for(kind))
 }
 
+pub fn manifest_for_provider(provider_id: &str) -> Vec<Value> {
+    if let Some(kind) = kind_from_id(provider_id) {
+        return manifest_for(kind);
+    }
+    crate::server::core::custom_providers::list()
+        .into_iter()
+        .find(|provider| {
+            provider.get("id").and_then(Value::as_str) == Some(provider_id)
+        })
+        .and_then(|provider| provider.get("models").and_then(Value::as_array).cloned())
+        .unwrap_or_default()
+}
+
 fn workbuddy_catalog(region: WorkBuddyRegion) -> ModelCatalog {
     crate::server::core::models::global_catalog(region)
 }
@@ -199,6 +212,22 @@ pub(crate) fn refresh_meta(kind: ProviderKind) -> (bool, i64) {
         ProviderKind::Chatglm => (
             super::chatglm::models::remote_refreshed(),
             super::chatglm::models::last_refreshed_at(),
+        ),
+        ProviderKind::Modelscope | ProviderKind::ModelscopeIntl => {
+            let region = super::modelscope::region::region_of_kind(kind)
+                .unwrap_or(super::modelscope::Region::Cn);
+            (
+                super::modelscope::models::remote_refreshed(region),
+                super::modelscope::models::last_refreshed_at(region),
+            )
+        }
+        ProviderKind::LobsterAi => (
+            super::lobsterai::models::remote_refreshed(),
+            super::lobsterai::models::last_refreshed_at(),
+        ),
+        ProviderKind::Atomcode => (
+            super::atomcode::models::remote_refreshed(),
+            super::atomcode::models::last_refreshed_at(),
         ),
     }
 }

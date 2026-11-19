@@ -1341,6 +1341,10 @@ pub async fn add_account(state: &ServerState, body: &Bytes) -> Response {
         // provider 字段时无从选文件组，直接 400 而不是静默按国内版。
         Some(crate::server::core::providers::ProviderKind::WorkBuddy)
         | Some(crate::server::core::providers::ProviderKind::WorkBuddyIntl)
+        | Some(crate::server::core::providers::ProviderKind::Modelscope)
+        | Some(crate::server::core::providers::ProviderKind::ModelscopeIntl)
+        | Some(crate::server::core::providers::ProviderKind::Atomcode)
+        | Some(crate::server::core::providers::ProviderKind::LobsterAi)
         | None => {
             let provider = crate::server::core::providers::kind_from_id(provider)
                 .map(crate::server::core::providers::kind_id);

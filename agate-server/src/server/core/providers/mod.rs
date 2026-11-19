@@ -134,6 +134,7 @@ pub mod images;
 pub mod kuku;
 pub mod lobsterai;
 pub mod loomy;
+pub mod modelscope;
 /// MonkeyCode（长亭科技的开源 AI 开发平台）。适配实现在 `monkeycode/`：
 /// 账号管理（粘贴 session）+ 模型目录（`GET /api/v1/users/models`）+
 /// **会话转发**（上游是「建任务 → WebSocket 任务流」，ACP 事件翻译为 chat 帧，

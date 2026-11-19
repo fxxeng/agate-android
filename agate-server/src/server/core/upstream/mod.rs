@@ -49,6 +49,7 @@ pub mod aggregate;
 pub mod cancellation;
 pub mod connections;
 pub mod continuation;
+pub mod multipart;
 mod payload;
 mod provider_loop;
 pub mod refusal;
