@@ -58,7 +58,8 @@ pub fn fallback() -> Catalog {
 /// 失败时调用方保留原目录、绝不向未确认的地址发凭证。
 pub fn validate(config: &Value) -> Result<(), String> {
     if config.get("key").and_then(Value::as_str) != Some(endpoints::MODEL_CONFIG_KEY)
-        || config.get("schemaVersion").and_then(Value::as_u64) != Some(endpoints::MODEL_SCHEMA_VERSION)
+        || config.get("schemaVersion").and_then(Value::as_u64)
+            != Some(endpoints::MODEL_SCHEMA_VERSION)
         || config.get("enabled").and_then(Value::as_bool).is_none()
     {
         return Err("QuWork 模型配置格式不兼容".into());
@@ -107,10 +108,9 @@ pub fn validate(config: &Value) -> Result<(), String> {
             }
         }
     }
-    if !providers
-        .iter()
-        .any(|provider| provider.get("id").and_then(Value::as_str) == Some(endpoints::MODEL_PROVIDER_ID))
-    {
+    if !providers.iter().any(|provider| {
+        provider.get("id").and_then(Value::as_str) == Some(endpoints::MODEL_PROVIDER_ID)
+    }) {
         return Err("QuWork 模型配置未包含模型提供商".into());
     }
     Ok(())
@@ -145,7 +145,9 @@ pub fn model_origin() -> String {
 
 /// 是否真的从远程拉到过（供 `catalog::refresh_meta` 的「来源」列）
 pub fn remote_refreshed() -> bool {
-    cached().map(|catalog| catalog.fetched_at > 0).unwrap_or(false)
+    cached()
+        .map(|catalog| catalog.fetched_at > 0)
+        .unwrap_or(false)
 }
 
 /// 上次远程拉取时刻（没拉过给 0）
@@ -269,9 +271,7 @@ pub async fn refresh(force: bool) -> ModelRefreshOutcome {
     };
     let count = next.list().len();
     if count == 0 {
-        return ModelRefreshOutcome::failed(
-            "QuWork 当前未开放可用模型，未替换原目录".to_string(),
-        );
+        return ModelRefreshOutcome::failed("QuWork 当前未开放可用模型，未替换原目录".to_string());
     }
     save(next);
     ModelRefreshOutcome::refreshed(count)

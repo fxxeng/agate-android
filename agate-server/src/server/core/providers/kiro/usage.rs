@@ -212,9 +212,9 @@ pub fn report(payload: &Value) -> Value {
                 .or_else(|| seconds_to_ms(payload.get("nextDateReset")));
             // 主额度用完但 bonus 还有余量：主窗口标 `aside`（不让它冒充「还能用」）
             let carried = used >= limit
-                && bonuses.iter().any(|bonus| {
-                    number(bonus.get("amount")) < number(bonus.get("limit"))
-                });
+                && bonuses
+                    .iter()
+                    .any(|bonus| number(bonus.get("amount")) < number(bonus.get("limit")));
             let name = breakdown
                 .get("displayNamePlural")
                 .and_then(Value::as_str)

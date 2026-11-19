@@ -200,7 +200,13 @@ mod tests {
     fn start_urls_are_plain_https() {
         assert!(is_https_url("https://view.awsapps.com/start"));
         assert!(is_https_url("https://example.com/d-9067/start/"));
-        for bad in ["http://x.com", "https://", "https:///start", "https://user@x.com/start", "view.awsapps.com"] {
+        for bad in [
+            "http://x.com",
+            "https://",
+            "https:///start",
+            "https://user@x.com/start",
+            "view.awsapps.com",
+        ] {
             assert!(!is_https_url(bad), "{bad} 不该被当成 Start URL");
         }
     }
@@ -222,8 +228,14 @@ mod tests {
     /// 三组主机名各自成形态
     #[test]
     fn the_three_host_families_are_built_correctly() {
-        assert_eq!(management("us-east-1"), "https://management.us-east-1.kiro.dev");
-        assert_eq!(runtime("eu-central-1"), "https://runtime.eu-central-1.kiro.dev");
+        assert_eq!(
+            management("us-east-1"),
+            "https://management.us-east-1.kiro.dev"
+        );
+        assert_eq!(
+            runtime("eu-central-1"),
+            "https://runtime.eu-central-1.kiro.dev"
+        );
         assert_eq!(oidc("us-east-1"), "https://oidc.us-east-1.amazonaws.com");
         assert_eq!(CHAT_PATH, "/generateAssistantResponse");
     }
@@ -235,7 +247,10 @@ mod tests {
             account_of("arn:aws:codewhisperer:us-east-1:638616132270:profile/AAA"),
             "638616132270"
         );
-        assert_eq!(account_of("arn:aws:codewhisperer:us-east-1:abc:profile/AAA"), "");
+        assert_eq!(
+            account_of("arn:aws:codewhisperer:us-east-1:abc:profile/AAA"),
+            ""
+        );
         assert_eq!(account_of(""), "");
         assert_eq!(account_of("arn:aws"), "");
     }

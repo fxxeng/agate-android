@@ -54,7 +54,11 @@ pub enum Step {
     /// 思考增量（chat 的 `reasoning_content`）
     Think(String),
     /// 一次工具调用的开始（`index` 是本条流内的序号，从 0 起）
-    ToolStart { index: i64, id: String, name: String },
+    ToolStart {
+        index: i64,
+        id: String,
+        name: String,
+    },
     /// 工具参数增量
     ToolArgs { index: i64, delta: String },
     /// 收尾：`reason` 是 chat 的 `finish_reason`
@@ -480,7 +484,10 @@ pub fn build_request(body: &Value, model: &str, stream: bool) -> Value {
         if let Some(choice) = body.get("tool_choice").filter(|value| !value.is_null()) {
             request["tool_choice"] = convert_tool_choice(choice);
         }
-        if let Some(parallel) = body.get("parallel_tool_calls").filter(|value| !value.is_null()) {
+        if let Some(parallel) = body
+            .get("parallel_tool_calls")
+            .filter(|value| !value.is_null())
+        {
             request["parallel_tool_calls"] = parallel.clone();
         }
     }
@@ -705,7 +712,9 @@ mod tests {
             ]}],
         });
         let request = build_request(&body, "m", true);
-        let content = request["input"][0]["content"].as_array().expect("content 数组");
+        let content = request["input"][0]["content"]
+            .as_array()
+            .expect("content 数组");
         assert_eq!(content[0]["type"], "input_text");
         assert_eq!(content[1]["type"], "input_image");
         assert_eq!(content[1]["image_url"], "data:image/png;base64,AAA");
@@ -775,10 +784,12 @@ mod tests {
             }
         );
         assert_eq!(
-            state.step(&json!({
-                "type": "response.function_call_arguments.delta",
-                "delta": "{\"ci",
-            })).clone(),
+            state
+                .step(&json!({
+                    "type": "response.function_call_arguments.delta",
+                    "delta": "{\"ci",
+                }))
+                .clone(),
             Step::ToolArgs {
                 index: 0,
                 delta: "{\"ci".to_string(),

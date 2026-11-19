@@ -141,7 +141,11 @@ fn authorized(state: &Ctx, query: &HashMap<String, String>, headers: &HeaderMap)
     let provided = query
         .get("t")
         .map(String::as_str)
-        .or_else(|| headers.get("x-login-token").and_then(|value| value.to_str().ok()))
+        .or_else(|| {
+            headers
+                .get("x-login-token")
+                .and_then(|value| value.to_str().ok())
+        })
         .unwrap_or("");
     provided == state.token
 }
@@ -238,7 +242,11 @@ async fn finish(
         "[Login]",
         &format!(
             "✅ AStudio {}登录成功（{}）",
-            if method == "sms" { "验证码" } else { "密码" },
+            if method == "sms" {
+                "验证码"
+            } else {
+                "密码"
+            },
             session.display_name()
         ),
     );
@@ -335,7 +343,10 @@ mod tests {
 
         // 页面里 `fetch('/api/x?t=…')` 走查询串；请求头这条是给脚本调试留的
         let mut headers = HeaderMap::new();
-        headers.insert("x-login-token", axum::http::HeaderValue::from_static("abc123"));
+        headers.insert(
+            "x-login-token",
+            axum::http::HeaderValue::from_static("abc123"),
+        );
         assert!(authorized(&state, &HashMap::new(), &headers));
     }
 

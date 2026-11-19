@@ -88,7 +88,13 @@ mod tests {
     #[test]
     fn the_account_paths_hang_off_one_base() {
         assert!(STUDIO_API_BASE.ends_with('/'), "账号面根必须以斜杠结尾");
-        for path in [INIT_APP, POINTS_BALANCE, MEMBERSHIP_ME, PLAN_CONFIG, POINTS_SUMMARY] {
+        for path in [
+            INIT_APP,
+            POINTS_BALANCE,
+            MEMBERSHIP_ME,
+            PLAN_CONFIG,
+            POINTS_SUMMARY,
+        ] {
             assert!(!path.starts_with('/'), "相对路径不要带前导斜杠：{path}");
             assert!(!path.contains("://"), "这是相对路径：{path}");
         }

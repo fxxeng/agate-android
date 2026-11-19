@@ -122,9 +122,11 @@ pub fn success(value: Option<&Value>) -> bool {
 pub fn number(value: Option<&Value>) -> Option<f64> {
     value
         .and_then(|value| {
-            value
-                .as_f64()
-                .or_else(|| value.as_str().and_then(|text| text.trim().parse::<f64>().ok()))
+            value.as_f64().or_else(|| {
+                value
+                    .as_str()
+                    .and_then(|text| text.trim().parse::<f64>().ok())
+            })
         })
         .filter(|value| value.is_finite() && *value >= 0.0)
 }
@@ -216,8 +218,14 @@ mod tests {
 
     #[test]
     fn timestamp_scales_seconds_and_parses_rfc3339() {
-        assert_eq!(timestamp(Some(&json!(1_700_000_000))), Some(1_700_000_000_000));
-        assert_eq!(timestamp(Some(&json!(1_700_000_000_000_i64))), Some(1_700_000_000_000));
+        assert_eq!(
+            timestamp(Some(&json!(1_700_000_000))),
+            Some(1_700_000_000_000)
+        );
+        assert_eq!(
+            timestamp(Some(&json!(1_700_000_000_000_i64))),
+            Some(1_700_000_000_000)
+        );
         assert!(timestamp(Some(&json!("2026-11-04T00:00:00Z"))).is_some());
         assert_eq!(timestamp(Some(&json!(0))), None);
     }

@@ -34,11 +34,11 @@ use axum::http::HeaderMap;
 use serde_json::Value;
 
 use crate::server::core::account_store::AccountStore;
-use crate::server::core::proxies::{self, ProxyResolution, ResolvedProxy};
 use crate::server::core::providers::adapter::{
     ChatRequestPlan, ModelRefreshOutcome, ProviderAdapter, UpstreamErrorClass,
 };
 use crate::server::core::providers::{kind_id, ProviderKind};
+use crate::server::core::proxies::{self, ProxyResolution, ResolvedProxy};
 use crate::server::core::upstream::usage::RequestTelemetry;
 use crate::server::core::upstream::ForwardOutcome;
 use crate::server::errors::GatewayError;
@@ -77,7 +77,7 @@ pub(super) async fn prepare(
     let credentials = Credentials::from_fields(&record)?;
     let proxy = match proxies::resolve_account_proxy(record.get("proxy")) {
         Some(ProxyResolution::Resolved(proxy)) => Some(proxy),
-        Some(ProxyResolution::Failed(reason) | ProxyResolution::Broken(reason)) => {
+        Some(ProxyResolution::Failed(reason)) => {
             return Err(GatewayError::with_status(502, reason))
         }
         None => None,
@@ -178,8 +178,7 @@ impl ProviderAdapter for AStudioAdapter {
         store: &'a AccountStore,
         account_id: &'a str,
         force: bool,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ModelRefreshOutcome> + Send + 'a>>
-    {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ModelRefreshOutcome> + Send + 'a>> {
         Box::pin(async move {
             let (id, credentials, proxy, _) = match prepare(store, account_id).await {
                 Ok(parts) => parts,

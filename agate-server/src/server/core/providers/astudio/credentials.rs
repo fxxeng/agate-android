@@ -488,10 +488,7 @@ mod tests {
             "credentials": file,
         }))
         .expect("应能归一");
-        assert_eq!(
-            normalized.get("key").and_then(Value::as_str),
-            Some("mb-1")
-        );
+        assert_eq!(normalized.get("key").and_then(Value::as_str), Some("mb-1"));
         assert_eq!(
             normalized.get("accountId").and_then(Value::as_str),
             Some("a1")
@@ -518,10 +515,7 @@ mod tests {
         }))
         .expect("应能归一");
         assert!(normalized.get("inputs").is_none());
-        assert_eq!(
-            normalized.get("key").and_then(Value::as_str),
-            Some("mb-1")
-        );
+        assert_eq!(normalized.get("key").and_then(Value::as_str), Some("mb-1"));
         // 登录弹窗把网页会话叫 `sessionToken`，落盘叫 `token`
         let parsed = Credentials::from_fields(&normalized).expect("应能读出来");
         assert_eq!(parsed.token, "t1");
@@ -569,8 +563,8 @@ mod tests {
     /// 脱敏只露尾 4 位，空值不 panic
     #[test]
     fn masking_never_prints_the_whole_token() {
-        let credentials = Credentials::from_fields(&json!({ "key": "mb-abcdefgh1234" }))
-            .expect("应能读出来");
+        let credentials =
+            Credentials::from_fields(&json!({ "key": "mb-abcdefgh1234" })).expect("应能读出来");
         assert_eq!(credentials.masked(), "…1234");
         assert_eq!(Credentials::default().masked(), "（空）");
         // 多字节短令牌也不 panic

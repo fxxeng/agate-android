@@ -42,7 +42,14 @@ const LOGIN_KEYS: [&str; 4] = ["loginToken", "accessToken", "access_token", "tok
 /// 模型凭证别名
 const LLM_KEYS: [&str; 4] = ["llmToken", "llm_token", "apiKey", "key"];
 /// 粘贴文本可能落在的通用键
-const TEXT_KEYS: [&str; 6] = ["text", "credentials", "value", "content", "paste", "llmToken"];
+const TEXT_KEYS: [&str; 6] = [
+    "text",
+    "credentials",
+    "value",
+    "content",
+    "paste",
+    "llmToken",
+];
 
 /// 取第一个非空的字符串字段
 pub fn text(value: &Value, keys: &[&str]) -> String {
@@ -87,7 +94,10 @@ fn user_view(user: &Value) -> Value {
 /// 静默 trim 掉就等于把一个「不知道从哪粘来的东西」当令牌收下 —— 报错让用户重贴。
 pub fn token(value: &str, label: &str) -> Result<String, GatewayError> {
     let value = value.trim_matches(' ');
-    let value = value.strip_prefix("Bearer ").unwrap_or(value).trim_matches(' ');
+    let value = value
+        .strip_prefix("Bearer ")
+        .unwrap_or(value)
+        .trim_matches(' ');
     if value.len() > MAX_TOKEN_BYTES
         || !value.is_ascii()
         || value
@@ -507,8 +517,9 @@ pub fn normalize_paste(payload: &Value) -> Result<Value, GatewayError> {
 /// 窗口才算临期；没有 accessToken 的「仅模型凭证」账号永不触发续期。
 pub fn expiring(secret: &Value) -> bool {
     !login_token_of(secret).is_empty()
-        && client::timestamp(secret.get("expiresAt"))
-            .is_some_and(|expiry| expiry <= crate::server::logging::now_ms() + endpoints::REFRESH_WINDOW_MS)
+        && client::timestamp(secret.get("expiresAt")).is_some_and(|expiry| {
+            expiry <= crate::server::logging::now_ms() + endpoints::REFRESH_WINDOW_MS
+        })
 }
 
 #[cfg(test)]
@@ -647,8 +658,14 @@ mod tests {
             "accessToken": "login-1",
         });
         let parsed = normalize_paste(&payload).unwrap_or(Value::Null);
-        assert_eq!(parsed.get("llmToken").and_then(Value::as_str), Some("llm-1"));
-        assert_eq!(parsed.get("loginToken").and_then(Value::as_str), Some("login-1"));
+        assert_eq!(
+            parsed.get("llmToken").and_then(Value::as_str),
+            Some("llm-1")
+        );
+        assert_eq!(
+            parsed.get("loginToken").and_then(Value::as_str),
+            Some("login-1")
+        );
         assert!(parsed.get("provider").is_none());
         assert!(parsed.get("name").is_none());
     }
@@ -674,7 +691,10 @@ mod tests {
         assert!(view.get("llmToken").is_none());
         assert!(view.get("loginToken").is_none());
         assert_eq!(view.get("hasToken"), Some(&Value::Bool(true)));
-        assert_eq!(view.get("tokenTail").and_then(Value::as_str), Some("567890"));
+        assert_eq!(
+            view.get("tokenTail").and_then(Value::as_str),
+            Some("567890")
+        );
         assert_eq!(view.get("uid").and_then(Value::as_str), Some("u-1"));
         assert_eq!(view.get("phone").and_then(Value::as_str), Some("139"));
     }

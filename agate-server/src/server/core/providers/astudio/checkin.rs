@@ -63,9 +63,11 @@ struct Balance {
 fn balance_number(value: Option<&Value>) -> Option<f64> {
     value
         .and_then(|value| {
-            value
-                .as_f64()
-                .or_else(|| value.as_str().and_then(|text| text.trim().parse::<f64>().ok()))
+            value.as_f64().or_else(|| {
+                value
+                    .as_str()
+                    .and_then(|text| text.trim().parse::<f64>().ok())
+            })
         })
         .filter(|number| number.is_finite() && *number >= 0.0)
 }
@@ -116,8 +118,7 @@ pub fn outcome(before: &Balance, after: &Balance) -> Value {
     }
     result(
         false,
-        "未观测到新发放：每日登录已执行，但积分无变化（可能今日已领取或暂未到账）"
-            .to_string(),
+        "未观测到新发放：每日登录已执行，但积分无变化（可能今日已领取或暂未到账）".to_string(),
     )
 }
 
@@ -126,7 +127,8 @@ async fn read_balance(
     credentials: &Credentials,
     proxy: Option<&ResolvedProxy>,
 ) -> Result<Balance, StudioError> {
-    let payload = client::studio_json(credentials, endpoints::POINTS_BALANCE, "积分余额", proxy).await?;
+    let payload =
+        client::studio_json(credentials, endpoints::POINTS_BALANCE, "积分余额", proxy).await?;
     Ok(Balance {
         points: balance_number(payload.get("totalBalance")),
         spark: balance_number(payload.get("sparkTotalBalance")),
@@ -160,12 +162,11 @@ pub async fn claim_daily(
         return Ok(row);
     }
     // ① 先问活动还在不在：关掉之后每天发一串请求只会白跑（且可能被风控）
-    let config = match client::studio_json(credentials, endpoints::PLAN_CONFIG, "签到配置", proxy).await
+    let config = match client::studio_json(credentials, endpoints::PLAN_CONFIG, "签到配置", proxy)
+        .await
     {
         Ok(config) => config,
-        Err(StudioError::Expired(message)) => {
-            return Err(GatewayError::with_status(401, message))
-        }
+        Err(StudioError::Expired(message)) => return Err(GatewayError::with_status(401, message)),
         Err(error) => {
             // 读不到配置 → 这次不签（不猜活动有没有），如实报原因
             return Ok(result(false, error.message().to_string()));
@@ -179,9 +180,7 @@ pub async fn claim_daily(
     // ② 签前读数
     let before = match read_balance(credentials, proxy).await {
         Ok(value) => value,
-        Err(StudioError::Expired(message)) => {
-            return Err(GatewayError::with_status(401, message))
-        }
+        Err(StudioError::Expired(message)) => return Err(GatewayError::with_status(401, message)),
         Err(error) => return Ok(result(false, error.message().to_string())),
     };
     // ③ 发奖动作：POST init-app（只读请求实测不发奖）。失败必须透出 ——
@@ -196,9 +195,7 @@ pub async fn claim_daily(
     // ④ 签后读数
     let after = match read_balance(credentials, proxy).await {
         Ok(value) => value,
-        Err(StudioError::Expired(message)) => {
-            return Err(GatewayError::with_status(401, message))
-        }
+        Err(StudioError::Expired(message)) => return Err(GatewayError::with_status(401, message)),
         Err(error) => return Ok(result(false, error.message().to_string())),
     };
     Ok(outcome(&before, &after))
@@ -218,7 +215,11 @@ mod tests {
         let row = outcome(&balance(Some(10.0), None), &balance(Some(22.5), None));
         assert_eq!(row["success"], true);
         assert_eq!(row["credit"], "通用积分 +12.5");
-        assert!(row["msg"].as_str().unwrap_or("").contains("+12.5"), "{}", row["msg"]);
+        assert!(
+            row["msg"].as_str().unwrap_or("").contains("+12.5"),
+            "{}",
+            row["msg"]
+        );
     }
 
     /// 两个余额池独立核对：只到账星火积分也算成功
@@ -250,7 +251,11 @@ mod tests {
     fn a_drop_is_explained() {
         let row = outcome(&balance(Some(30.0), None), &balance(Some(18.0), None));
         assert_eq!(row["success"], false);
-        assert!(row["msg"].as_str().unwrap_or("").contains("12"), "{}", row["msg"]);
+        assert!(
+            row["msg"].as_str().unwrap_or("").contains("12"),
+            "{}",
+            row["msg"]
+        );
     }
 
     /// 读数缺失 → 明确说读数不完整（不猜成 0，也不当成已签）
@@ -259,7 +264,10 @@ mod tests {
         let row = outcome(&balance(None, None), &balance(Some(10.0), None));
         assert_eq!(row["success"], false);
         assert!(row["msg"].as_str().unwrap_or("").contains("读数不完整"));
-        assert_eq!(outcome(&balance(None, None), &balance(None, None))["success"], false);
+        assert_eq!(
+            outcome(&balance(None, None), &balance(None, None))["success"],
+            false
+        );
     }
 
     /// 余额字段是字符串数字也要认（上游两种形态都出现过）

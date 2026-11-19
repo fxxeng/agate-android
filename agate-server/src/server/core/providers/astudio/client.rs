@@ -156,9 +156,7 @@ async fn studio_request(
     let response = decorate(builder)
         .send()
         .await
-        .map_err(|error| {
-            StudioError::Failed(format!("{what}网络失败：{}", describe(&error)))
-        })?;
+        .map_err(|error| StudioError::Failed(format!("{what}网络失败：{}", describe(&error))))?;
     let status = response.status().as_u16();
     let text = response.text().await.unwrap_or_default();
     judge(status, &text, what)
@@ -199,10 +197,7 @@ pub async fn init_app(
 }
 
 /// 拉一次模型目录（模型凭据 Bearer）。
-pub async fn catalog(
-    key: &str,
-    proxy: Option<&ResolvedProxy>,
-) -> Result<Value, StudioError> {
+pub async fn catalog(key: &str, proxy: Option<&ResolvedProxy>) -> Result<Value, StudioError> {
     let what = "拉取 AStudio 模型目录";
     let response = client(proxy)
         .get(endpoints::MODEL_MANAGER_URL)
@@ -260,9 +255,7 @@ pub async fn responses(
 pub fn byte_stream(
     response: reqwest::Response,
     idle: Duration,
-) -> std::pin::Pin<
-    Box<dyn futures::Stream<Item = Result<bytes::Bytes, std::io::Error>> + Send>,
-> {
+) -> std::pin::Pin<Box<dyn futures::Stream<Item = Result<bytes::Bytes, std::io::Error>> + Send>> {
     use futures::StreamExt;
     let source = response
         .bytes_stream()
@@ -294,7 +287,10 @@ mod tests {
     fn a_good_envelope_yields_its_data() {
         let text = r#"{"flag":true,"code":0,"data":{"totalBalance":12.5}}"#;
         let data = judge(200, text, "积分余额").expect("应成功");
-        assert_eq!(data.pointer("/totalBalance").and_then(Value::as_f64), Some(12.5));
+        assert_eq!(
+            data.pointer("/totalBalance").and_then(Value::as_f64),
+            Some(12.5)
+        );
         // 只有 null 数据不算失败
         let empty = judge(200, r#"{"flag":true,"code":0}"#, "会员信息").expect("应成功");
         assert!(empty.is_null());
@@ -304,8 +300,12 @@ mod tests {
     #[test]
     fn a_string_zero_code_is_success() {
         assert!(judge(200, r#"{"flag":true,"code":"0","data":{}}"#, "积分汇总").is_ok());
-        let error = judge(200, r#"{"flag":true,"code":"80000","desc":"请重新登录"}"#, "会员信息")
-            .expect_err("应失败");
+        let error = judge(
+            200,
+            r#"{"flag":true,"code":"80000","desc":"请重新登录"}"#,
+            "会员信息",
+        )
+        .expect_err("应失败");
         assert!(error.is_expired());
     }
 
@@ -328,23 +328,40 @@ mod tests {
     /// 业务失败但不是会话问题 → `Failed`，并把上游文案带出来
     #[test]
     fn a_business_failure_keeps_the_upstream_wording() {
-        let error = judge(200, r#"{"flag":false,"code":500,"desc":"服务繁忙"}"#, "积分余额")
-            .expect_err("应失败");
+        let error = judge(
+            200,
+            r#"{"flag":false,"code":500,"desc":"服务繁忙"}"#,
+            "积分余额",
+        )
+        .expect_err("应失败");
         assert!(!error.is_expired());
         assert!(error.message().contains("服务繁忙"), "{}", error.message());
         // 非 JSON（网关前置层的 HTML 错误页）不能报成「格式异常」之外的东西
         let broken = judge(502, "<html>bad gateway</html>", "会员信息").expect_err("应失败");
-        assert!(broken.message().contains("不是 JSON"), "{}", broken.message());
+        assert!(
+            broken.message().contains("不是 JSON"),
+            "{}",
+            broken.message()
+        );
     }
 
     /// 错误体是 OpenAI chat 的形状（前端 / 客户端按它识别失败）
     #[test]
     fn the_error_body_looks_like_openai() {
         let body = error_body(429, "额度用完");
-        assert_eq!(body.pointer("/error/type").and_then(Value::as_str), Some("rate_limit_error"));
+        assert_eq!(
+            body.pointer("/error/type").and_then(Value::as_str),
+            Some("rate_limit_error")
+        );
         let body = error_body(502, "上游断了");
-        assert_eq!(body.pointer("/error/type").and_then(Value::as_str), Some("api_error"));
-        assert_eq!(body.pointer("/error/message").and_then(Value::as_str), Some("上游断了"));
+        assert_eq!(
+            body.pointer("/error/type").and_then(Value::as_str),
+            Some("api_error")
+        );
+        assert_eq!(
+            body.pointer("/error/message").and_then(Value::as_str),
+            Some("上游断了")
+        );
     }
 
     /// 一次性 id 是 32 位 hex（chatcmpl 的后缀形态）

@@ -106,7 +106,8 @@ pub async fn run_chat(
             return Err(GatewayError::with_status(i32::from(status), message))
         }
         Some(step) => {
-            let (sender, receiver) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(64);
+            let (sender, receiver) =
+                tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(64);
             crate::spawn_task(async move {
                 if let Err(error) = forwarder.drive(step, sender).await {
                     crate::server::logging::verbose(
@@ -126,9 +127,7 @@ pub async fn run_chat(
 // ─── 线协议 ─────────────────────────────────────────────────
 
 /// 上游字节流（与 `UpstreamResponse` 的流同型）
-type Source = std::pin::Pin<
-    Box<dyn futures::Stream<Item = Result<Bytes, std::io::Error>> + Send>,
->;
+type Source = std::pin::Pin<Box<dyn futures::Stream<Item = Result<Bytes, std::io::Error>> + Send>>;
 
 /// 按**字节**缓冲的行拆分器。
 ///
@@ -427,8 +426,7 @@ impl Forwarder {
                         // 读流失败：补一个错误帧 + 收尾，别让客户端一直等
                         let mut chunks: Vec<Value> = vec![client::error_body(502, &message)];
                         chunks.push(self.state.chunk(json!({}), Some("stop")));
-                        let mut out: Vec<Frame> =
-                            chunks.into_iter().map(Frame::Chunk).collect();
+                        let mut out: Vec<Frame> = chunks.into_iter().map(Frame::Chunk).collect();
                         out.push(Frame::Done);
                         return send_frames(out, &sender).await;
                     }
@@ -518,8 +516,7 @@ impl Acc {
                 // 两者在单流内一致（上游偶尔从 1 开始数，所以夹到范围内而不是
                 // 直接取下标）。没有工具时这段参数是孤儿，丢掉。
                 if !self.tool_calls.is_empty() {
-                    let slot =
-                        (index.max(0) as usize).min(self.tool_calls.len().saturating_sub(1));
+                    let slot = (index.max(0) as usize).min(self.tool_calls.len().saturating_sub(1));
                     if let Some(call) = self.tool_calls.get_mut(slot) {
                         let merged = format!(
                             "{}{}",
@@ -640,9 +637,13 @@ mod tests {
             .into_iter()
             .find(|delta| delta.get("tool_calls").is_some())
             .expect("有 tool_calls");
-        assert_eq!(open.pointer("/tool_calls/0/id").and_then(Value::as_str), Some("call_1"));
         assert_eq!(
-            open.pointer("/tool_calls/0/function/name").and_then(Value::as_str),
+            open.pointer("/tool_calls/0/id").and_then(Value::as_str),
+            Some("call_1")
+        );
+        assert_eq!(
+            open.pointer("/tool_calls/0/function/name")
+                .and_then(Value::as_str),
             Some("get_weather")
         );
         let args = forwarder.state_step(&json!({
@@ -651,7 +652,9 @@ mod tests {
         }));
         let frames = forwarder.frames(args);
         assert_eq!(
-            delta_of(&frames)[0].pointer("/tool_calls/0/function/arguments").and_then(Value::as_str),
+            delta_of(&frames)[0]
+                .pointer("/tool_calls/0/function/arguments")
+                .and_then(Value::as_str),
             Some("{\"a\":1}")
         );
         // 收尾：上游说 stop，但我们发过工具 → 报 tool_calls
@@ -661,8 +664,15 @@ mod tests {
                                      "input_tokens_details": { "cached_tokens": 50 } } }
         }));
         let frames = forwarder.frames(done);
-        let last = chunks(&frames).into_iter().last().cloned().expect("有收尾帧");
-        assert_eq!(last.pointer("/choices/0/finish_reason"), Some(&json!("tool_calls")));
+        let last = chunks(&frames)
+            .into_iter()
+            .last()
+            .cloned()
+            .expect("有收尾帧");
+        assert_eq!(
+            last.pointer("/choices/0/finish_reason"),
+            Some(&json!("tool_calls"))
+        );
         assert_eq!(last.pointer("/usage/prompt_tokens"), Some(&json!(100)));
         assert_eq!(
             last.pointer("/usage/prompt_tokens_details/cached_tokens"),
@@ -684,8 +694,15 @@ mod tests {
             reason: "length",
             usage: Usage::default(),
         });
-        let last = chunks(&frames).into_iter().last().cloned().expect("有收尾帧");
-        assert_eq!(last.pointer("/choices/0/finish_reason"), Some(&json!("length")));
+        let last = chunks(&frames)
+            .into_iter()
+            .last()
+            .cloned()
+            .expect("有收尾帧");
+        assert_eq!(
+            last.pointer("/choices/0/finish_reason"),
+            Some(&json!("length"))
+        );
     }
 
     /// 流内错误 → 错误帧 + [DONE]（客户端据此识别失败）
@@ -739,7 +756,10 @@ mod tests {
         assert_eq!(rest[1], "{\"b\":1}");
         // CRLF 与结尾没有换行的最后一条
         let mut buffer = LineBuffer::default();
-        assert_eq!(buffer.push(b"data: {\"c\":2}\r\n"), vec!["{\"c\":2}".to_string()]);
+        assert_eq!(
+            buffer.push(b"data: {\"c\":2}\r\n"),
+            vec!["{\"c\":2}".to_string()]
+        );
         assert_eq!(buffer.push(b"data: {\"d\":3}"), Vec::<String>::new());
         assert_eq!(buffer.finish(), vec!["{\"d\":3}".to_string()]);
     }
@@ -797,7 +817,9 @@ mod tests {
         let completion = acc.completion(&State::new("spark-x2.6"));
         assert_eq!(completion["object"], "chat.completion");
         assert_eq!(
-            completion.pointer("/choices/0/message/content").and_then(Value::as_str),
+            completion
+                .pointer("/choices/0/message/content")
+                .and_then(Value::as_str),
             Some("答案是")
         );
         assert_eq!(
@@ -813,10 +835,17 @@ mod tests {
             Some("{\"x\":1}}")
         );
         assert_eq!(
-            completion.pointer("/choices/0/finish_reason").and_then(Value::as_str),
+            completion
+                .pointer("/choices/0/finish_reason")
+                .and_then(Value::as_str),
             Some("tool_calls")
         );
-        assert_eq!(completion.pointer("/usage/total_tokens").and_then(Value::as_i64), Some(15));
+        assert_eq!(
+            completion
+                .pointer("/usage/total_tokens")
+                .and_then(Value::as_i64),
+            Some(15)
+        );
     }
 
     /// 没有任何收尾事件时也要给出 `stop`（不能留空）

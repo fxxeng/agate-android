@@ -31,8 +31,8 @@ use std::sync::{Mutex, OnceLock};
 
 use serde_json::{json, Value};
 
-use crate::server::core::proxies::ResolvedProxy;
 use crate::server::core::providers::adapter::ModelRefreshOutcome;
+use crate::server::core::proxies::ResolvedProxy;
 use crate::server::errors::GatewayError;
 
 use super::credentials::KiroCredentials;
@@ -343,7 +343,11 @@ pub async fn refresh(
         Err(error) => {
             crate::server::logging::verbose(
                 "[Models]",
-                &format!("Kiro 模型目录刷新失败（{}）：{}", credentials.masked(), error.message),
+                &format!(
+                    "Kiro 模型目录刷新失败（{}）：{}",
+                    credentials.masked(),
+                    error.message
+                ),
             );
             return ModelRefreshOutcome::failed(error.message);
         }
@@ -351,10 +355,7 @@ pub async fn refresh(
     let parsed = match parse(&payload) {
         Ok(parsed) => parsed,
         Err(message) => {
-            crate::server::logging::verbose(
-                "[Models]",
-                &format!("Kiro 模型目录为空：{message}"),
-            );
+            crate::server::logging::verbose("[Models]", &format!("Kiro 模型目录为空：{message}"));
             return ModelRefreshOutcome::failed(message);
         }
     };
@@ -472,8 +473,14 @@ mod tests {
         assert_eq!(parsed.models[1]["name"], "Claude Sonnet 4.5");
         assert_eq!(parsed.models[1]["isDefault"], false);
         assert_eq!(parsed.models[1]["supportsImages"], true);
-        assert!(parsed.models[0].get("supportsImages").is_none(), "不支持就不写这个键");
-        assert_eq!(parsed.windows.get("claude-sonnet-4.5").copied(), Some(200_000));
+        assert!(
+            parsed.models[0].get("supportsImages").is_none(),
+            "不支持就不写这个键"
+        );
+        assert_eq!(
+            parsed.windows.get("claude-sonnet-4.5").copied(),
+            Some(200_000)
+        );
     }
 
     /// 思考能力位按模型名判（Claude / Auto 才有）
@@ -547,7 +554,9 @@ mod tests {
         assert_eq!(parsed.models[1]["isDefault"], false);
 
         let mut no_default = payload();
-        no_default.as_object_mut().map(|map| map.remove("defaultModel"));
+        no_default
+            .as_object_mut()
+            .map(|map| map.remove("defaultModel"));
         let parsed = parse(&no_default).expect("payload 合法");
         assert_eq!(parsed.models[0]["id"], "auto");
         assert_eq!(parsed.models[0]["isDefault"], true);

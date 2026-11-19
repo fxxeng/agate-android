@@ -149,7 +149,8 @@ fn unwrap_envelope(value: &Value, operation: &str) -> Result<Value, String> {
         return Ok(value.clone());
     }
     if let Some(code) = value.get("code") {
-        let zero = code.as_i64() == Some(0) || code.as_u64() == Some(0) || code.as_str() == Some("0");
+        let zero =
+            code.as_i64() == Some(0) || code.as_u64() == Some(0) || code.as_str() == Some("0");
         let missing = code.is_null();
         if !zero && !missing {
             let message = message_of(value);
@@ -167,9 +168,8 @@ fn unwrap_envelope(value: &Value, operation: &str) -> Result<Value, String> {
 async fn read_response(response: reqwest::Response) -> (u16, Value) {
     let status = response.status().as_u16();
     let text = response.text().await.unwrap_or_default();
-    let value: Value = serde_json::from_str(&text).unwrap_or_else(|_| {
-        json!({ "raw": text.chars().take(500).collect::<String>() })
-    });
+    let value: Value = serde_json::from_str(&text)
+        .unwrap_or_else(|_| json!({ "raw": text.chars().take(500).collect::<String>() }));
     (status, value)
 }
 
@@ -266,7 +266,10 @@ fn captcha_form(captcha: &Captcha) -> Form {
     Form::new()
         .text("geetest_challenge", captcha.challenge.clone())
         .text("geetest_validate", captcha.validate.clone())
-        .text("geetest_seccode", STANDARD.encode(captcha.seccode.as_bytes()))
+        .text(
+            "geetest_seccode",
+            STANDARD.encode(captcha.seccode.as_bytes()),
+        )
 }
 
 /// 极验配置（页面初始化用）。
@@ -374,7 +377,8 @@ async fn complete(proxy: Option<&ResolvedProxy>, login: &Value) -> Result<Sessio
     };
     let cookie = session.to_credentials().cookie_header();
     // 租户 App：顺便拿封禁标记（桌面端是一次不带 body 的 POST）
-    if let Ok(value) = post_empty(proxy, "tenant-app/v2/init-app", &cookie, "初始化账号").await {
+    if let Ok(value) = post_empty(proxy, "tenant-app/v2/init-app", &cookie, "初始化账号").await
+    {
         session.banned = value.get("banned").and_then(Value::as_bool) == Some(true);
     }
     if session.banned {

@@ -128,9 +128,7 @@ async fn refresh_and_save(
     }
     let expiry = client::timestamp(data.get("expire"))
         .or_else(|| credentials::jwt_expiry(&next))
-        .unwrap_or_else(|| {
-            crate::server::logging::now_ms().saturating_add(2 * 60 * 60_000)
-        });
+        .unwrap_or_else(|| crate::server::logging::now_ms().saturating_add(2 * 60 * 60_000));
     let previous_expiry = client::timestamp(before.get("expiresAt")).unwrap_or(0);
     if should_reject_refresh(&next, &access, expiry, previous_expiry) {
         return Err(GatewayError::with_status(
@@ -187,13 +185,7 @@ pub async fn protected(
         return Ok(reply);
     }
     let refreshed = refresh(store, account_id, true).await?;
-    client::request(
-        method,
-        path,
-        &credentials::login_token_of(&refreshed),
-        body,
-    )
-    .await
+    client::request(method, path, &credentials::login_token_of(&refreshed), body).await
 }
 
 #[cfg(test)]

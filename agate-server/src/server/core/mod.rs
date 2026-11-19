@@ -101,6 +101,7 @@ pub mod plugin_host;
 pub mod prompt;
 pub mod protocol;
 pub mod providers;
+pub mod scratch;
 pub mod proxies;
 pub mod proxy_pool;
 pub mod proxy_rotate;

@@ -32,8 +32,8 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
-use crate::server::core::proxies::ResolvedProxy;
 use crate::server::core::providers::refresh_flight;
+use crate::server::core::proxies::ResolvedProxy;
 use crate::server::errors::GatewayError;
 
 use super::credentials::{now_ms, KiroCredentials};
@@ -203,9 +203,8 @@ async fn refresh_once(
             if !(200..300).contains(&status) {
                 return Err(expired());
             }
-            let value: Value = serde_json::from_str(&body).map_err(|_| {
-                GatewayError::with_status(502, "续期 Kiro 登录态的返回不是 JSON")
-            })?;
+            let value: Value = serde_json::from_str(&body)
+                .map_err(|_| GatewayError::with_status(502, "续期 Kiro 登录态的返回不是 JSON"))?;
             Refreshed {
                 access: text(&value, "access_token"),
                 refresh: text(&value, "refresh_token"),
@@ -218,7 +217,10 @@ async fn refresh_once(
 }
 
 /// 把一次刷新结果落到凭证上
-fn apply(credentials: &KiroCredentials, refreshed: Refreshed) -> Result<KiroCredentials, GatewayError> {
+fn apply(
+    credentials: &KiroCredentials,
+    refreshed: Refreshed,
+) -> Result<KiroCredentials, GatewayError> {
     if refreshed.access.is_empty() {
         return Err(expired());
     }

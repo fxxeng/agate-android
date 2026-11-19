@@ -351,8 +351,7 @@ impl ThinkParser {
                 // 思考体内：找闭合标签；找不到就把「可能是闭合标签前缀」的尾巴留住
                 1 => {
                     if !self.said {
-                        self.buffer =
-                            self.buffer.trim_start_matches(['\r', '\n']).to_string();
+                        self.buffer = self.buffer.trim_start_matches(['\r', '\n']).to_string();
                         if self.buffer.is_empty() {
                             return out;
                         }

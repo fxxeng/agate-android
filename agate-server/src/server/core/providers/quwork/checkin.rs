@@ -99,37 +99,26 @@ pub fn parse_status(data: &Value) -> Option<Status> {
 
 /// 查一次每日奖励状态（走 `protected`：临期自动续期、401 强制刷新重放）。
 pub async fn status(store: &AccountStore, account_id: &str) -> Result<Status, GatewayError> {
-    let data = refresh::protected(
-        store,
-        account_id,
-        "GET",
-        endpoints::DAILY_STATUS_PATH,
-        None,
-    )
-    .await?
-    .data("每日奖励查询")?;
-    parse_status(&data).ok_or_else(|| {
-        GatewayError::with_status(502, "QuWork 每日奖励状态格式异常，未提交领取")
-    })
+    let data = refresh::protected(store, account_id, "GET", endpoints::DAILY_STATUS_PATH, None)
+        .await?
+        .data("每日奖励查询")?;
+    parse_status(&data)
+        .ok_or_else(|| GatewayError::with_status(502, "QuWork 每日奖励状态格式异常，未提交领取"))
 }
 
 /// 只回查、不重复提交（状态为 `confirming` 的那条路径）。
-async fn verify_only(
-    store: &AccountStore,
-    account_id: &str,
-    before: &Status,
-) -> Value {
+async fn verify_only(store: &AccountStore, account_id: &str, before: &Status) -> Value {
     if let Ok(after) = status(store, account_id).await {
         if after.claimed && after.reset_at == before.reset_at {
             put_state(account_id, before.reset_at, "claimed");
-            return mark(
-                row(true, "QuWork 已确认今日奖励到账"),
-                "alreadyCompleted",
-            );
+            return mark(row(true, "QuWork 已确认今日奖励到账"), "alreadyCompleted");
         }
     }
     mark(
-        row(false, "QuWork 上次领取结果待确认，请稍后查询；不会重复提交领取"),
+        row(
+            false,
+            "QuWork 上次领取结果待确认，请稍后查询；不会重复提交领取",
+        ),
         "inactive",
     )
 }
@@ -150,10 +139,7 @@ pub async fn claim_for_account(
     let before = status(store, account_id).await?;
     let saved = saved_state(account_id, before.reset_at);
     if before.claimed || saved == "claimed" {
-        return Ok(mark(
-            row(true, "QuWork 今日奖励已领取"),
-            "alreadyCompleted",
-        ));
+        return Ok(mark(row(true, "QuWork 今日奖励已领取"), "alreadyCompleted"));
     }
     if !before.can_claim || before.reset_at <= crate::server::logging::now_ms() {
         return Ok(mark(
@@ -166,14 +152,8 @@ pub async fn claim_for_account(
     }
     // 提交前先落 "confirming"：进程内即使崩溃/超时，下次也只回查不重发
     put_state(account_id, before.reset_at, "confirming");
-    let response = refresh::protected(
-        store,
-        account_id,
-        "POST",
-        endpoints::DAILY_CLAIM_PATH,
-        None,
-    )
-    .await;
+    let response =
+        refresh::protected(store, account_id, "POST", endpoints::DAILY_CLAIM_PATH, None).await;
     // ① 明确领取成功：granted=true
     if let Ok(reply) = &response {
         if let Ok(data) = reply.data("每日奖励领取") {
@@ -209,11 +189,14 @@ pub async fn claim_for_account(
             let detail = client::message(&reply.body);
             return Ok(row(
                 false,
-                &format!("QuWork 每日奖励领取未成功{}", if detail.is_empty() {
-                    String::new()
-                } else {
-                    format!("：{detail}")
-                }),
+                &format!(
+                    "QuWork 每日奖励领取未成功{}",
+                    if detail.is_empty() {
+                        String::new()
+                    } else {
+                        format!("：{detail}")
+                    }
+                ),
             ));
         }
     }

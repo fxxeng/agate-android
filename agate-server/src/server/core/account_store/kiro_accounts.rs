@@ -296,7 +296,10 @@ impl AccountStore {
             }
         }
         credentials.write_into(record.fields_mut());
-        record.set("tokenTail", Value::String(token_tail_of(&credentials.access)));
+        record.set(
+            "tokenTail",
+            Value::String(token_tail_of(&credentials.access)),
+        );
         record.set_updated_at(logging::now_ms());
         self.with_conn(&guard, |conn| sql::update_in_place(conn, &record))?;
         Ok(CredentialWrite::Written)

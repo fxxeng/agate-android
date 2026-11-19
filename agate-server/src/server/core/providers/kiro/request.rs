@@ -484,7 +484,11 @@ pub fn build(
         first.tool_results.clear();
     }
     // 规则 1 后半：末条必须是要被回答的那条 user
-    if entries.last().map(|entry| entry.user.is_none()).unwrap_or(true) {
+    if entries
+        .last()
+        .map(|entry| entry.user.is_none())
+        .unwrap_or(true)
+    {
         entries.push(Entry {
             user: Some(UserMessage {
                 model_id: model.to_string(),
@@ -790,7 +794,10 @@ fn user_json(user: &UserMessage) -> Value {
         context.insert("toolResults".to_string(), json!(user.tool_results));
     }
     if !context.is_empty() {
-        object.insert("userInputMessageContext".to_string(), Value::Object(context));
+        object.insert(
+            "userInputMessageContext".to_string(),
+            Value::Object(context),
+        );
     }
     Value::Object(object)
 }
@@ -839,7 +846,10 @@ mod tests {
             ]
         });
         let out = build(&body, "auto", "", None, None);
-        assert!(history(&out).is_empty(), "只有一条消息时全是 currentMessage");
+        assert!(
+            history(&out).is_empty(),
+            "只有一条消息时全是 currentMessage"
+        );
         assert_eq!(content_of(&current(&out)), "你是助手\n\n你好");
     }
 
@@ -871,7 +881,9 @@ mod tests {
         // 补出来的空 user 是 currentMessage，历史里留下 user + assistant 两条
         assert_eq!(history.len(), 2);
         assert_eq!(
-            history[0].pointer("/userInputMessage/content").and_then(Value::as_str),
+            history[0]
+                .pointer("/userInputMessage/content")
+                .and_then(Value::as_str),
             Some("第一句")
         );
         assert_eq!(
@@ -880,7 +892,11 @@ mod tests {
                 .and_then(Value::as_str),
             Some("回答")
         );
-        assert_eq!(content_of(&current(&out)), PROCEED, "补的空 user 要有一句正文");
+        assert_eq!(
+            content_of(&current(&out)),
+            PROCEED,
+            "补的空 user 要有一句正文"
+        );
     }
 
     /// 工具的往返：assistant.tool_calls → toolUses，tool 消息 → toolResults
@@ -1023,8 +1039,9 @@ mod tests {
             json!({ "type": "object", "properties": {} })
         );
         assert_eq!(
-            input_schema(Some(&json!({ "properties": { "a": { "type": "string" } } })))
-                ["type"],
+            input_schema(Some(
+                &json!({ "properties": { "a": { "type": "string" } } })
+            ))["type"],
             json!("object")
         );
         assert_eq!(
@@ -1063,7 +1080,10 @@ mod tests {
             .cloned()
             .expect("最新一组图要留着");
         assert_eq!(images.len(), 1);
-        assert_eq!(images[0]["source"]["bytes"], second.trim_start_matches("data:image/png;base64,"));
+        assert_eq!(
+            images[0]["source"]["bytes"],
+            second.trim_start_matches("data:image/png;base64,")
+        );
     }
 
     /// 空消息补一句（Kiro 不收空 content）
@@ -1078,8 +1098,16 @@ mod tests {
     #[test]
     fn profile_arn_is_only_written_when_known() {
         let body = json!({ "messages": [{ "role": "user", "content": "hi" }] });
-        assert!(build(&body, "auto", "", None, None).get("profileArn").is_none());
-        let with = build(&body, "auto", "arn:aws:codewhisperer:us-east-1:1:profile/A", None, None);
+        assert!(build(&body, "auto", "", None, None)
+            .get("profileArn")
+            .is_none());
+        let with = build(
+            &body,
+            "auto",
+            "arn:aws:codewhisperer:us-east-1:1:profile/A",
+            None,
+            None,
+        );
         assert_eq!(
             with.get("profileArn").and_then(Value::as_str),
             Some("arn:aws:codewhisperer:us-east-1:1:profile/A")
@@ -1093,9 +1121,18 @@ mod tests {
             "messages": [{ "role": "user", "content": "难题" }],
             "reasoning_effort": "high"
         });
-        let plain = build(&body, "claude-sonnet-4.5", "", thinking_budget(&body, "claude-sonnet-4.5"), None);
+        let plain = build(
+            &body,
+            "claude-sonnet-4.5",
+            "",
+            thinking_budget(&body, "claude-sonnet-4.5"),
+            None,
+        );
         let text = content_of(&current(&plain));
-        assert!(text.starts_with("<thinking_mode>enabled</thinking_mode>"), "{text}");
+        assert!(
+            text.starts_with("<thinking_mode>enabled</thinking_mode>"),
+            "{text}"
+        );
         assert!(text.contains("<max_thinking_length>30000</max_thinking_length>"));
         assert!(plain.get("additionalModelRequestFields").is_none());
 
@@ -1135,7 +1172,13 @@ mod tests {
             path: "output_config".to_string(),
             levels: vec!["low".to_string(), "high".to_string()],
         };
-        let out = build(&body, "claude-sonnet-4.5", "", thinking_budget(&body, "claude-sonnet-4.5"), Some(&native));
+        let out = build(
+            &body,
+            "claude-sonnet-4.5",
+            "",
+            thinking_budget(&body, "claude-sonnet-4.5"),
+            Some(&native),
+        );
         assert!(content_of(&current(&out)).contains("<thinking_mode>"));
         assert!(out.get("additionalModelRequestFields").is_none());
     }

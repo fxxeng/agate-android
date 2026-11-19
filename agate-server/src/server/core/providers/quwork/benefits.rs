@@ -135,7 +135,12 @@ pub async fn monthly(store: &AccountStore, account_id: &str) -> Result<Value, Ga
         .or_else(|| data.get("campaigns"))
         .and_then(Value::as_array);
     let items: Vec<Value> = list
-        .map(|list| list.iter().map(parse_gift).map(|gift| gift_row(&gift)).collect())
+        .map(|list| {
+            list.iter()
+                .map(parse_gift)
+                .map(|gift| gift_row(&gift))
+                .collect()
+        })
         .unwrap_or_default();
     Ok(json!({
         "available": true,
@@ -215,9 +220,9 @@ fn parse_order(value: &Value) -> Result<Option<i64>, GatewayError> {
             format!("QuWork 订单号应为不超过 {ORDER_MAX_DIGITS} 位的数字"),
         ));
     }
-    raw.parse::<i64>().map(Some).map_err(|_| {
-        GatewayError::with_status(400, "QuWork 订单号超出可表示范围，请核对后重试")
-    })
+    raw.parse::<i64>()
+        .map(Some)
+        .map_err(|_| GatewayError::with_status(400, "QuWork 订单号超出可表示范围，请核对后重试"))
 }
 
 /// 解析邀请码：非空 ASCII，无空白 / 控制字符。
@@ -225,19 +230,16 @@ fn parse_invite(value: &Value) -> Result<Option<String>, GatewayError> {
     let raw = match value {
         Value::String(text) => text.trim().to_string(),
         Value::Null => return Ok(None),
-        _ => {
-            return Err(GatewayError::with_status(
-                400,
-                "QuWork 邀请码应为字符串",
-            ))
-        }
+        _ => return Err(GatewayError::with_status(400, "QuWork 邀请码应为字符串")),
     };
     if raw.is_empty() {
         return Ok(None);
     }
     if raw.chars().count() > INVITE_MAX_CHARS
         || !raw.is_ascii()
-        || raw.bytes().any(|byte| byte.is_ascii_whitespace() || byte.is_ascii_control())
+        || raw
+            .bytes()
+            .any(|byte| byte.is_ascii_whitespace() || byte.is_ascii_control())
     {
         return Err(GatewayError::with_status(
             400,
@@ -291,14 +293,7 @@ pub async fn redeem(
             object.insert("device_identifier".to_string(), json!(device));
         }
     }
-    let reply = refresh::protected(
-        store,
-        account_id,
-        "POST",
-        input.path(),
-        Some(&body),
-    )
-    .await?;
+    let reply = refresh::protected(store, account_id, "POST", input.path(), Some(&body)).await?;
     if !reply.ok() {
         let detail = client::message(&reply.body);
         let status = if reply.unauthorized() {

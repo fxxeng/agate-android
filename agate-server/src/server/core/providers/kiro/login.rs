@@ -239,9 +239,7 @@ fn submitted(outcome: Outcome) -> Result<Submitted, String> {
 fn render(outcome: Outcome) -> Response {
     match outcome {
         Outcome::Next(url) => axum::response::Redirect::to(&url).into_response(),
-        Outcome::Page { ok, title, detail } => {
-            loopback::page(ok, title, &detail).into_response()
-        }
+        Outcome::Page { ok, title, detail } => loopback::page(ok, title, &detail).into_response(),
     }
 }
 
@@ -252,29 +250,28 @@ fn router(ctx: Arc<Ctx>) -> Router {
         .with_state(ctx)
 }
 
-async fn portal_step(State(ctx): State<Arc<Ctx>>, Query(query): Query<HashMap<String, String>>) -> Response {
+async fn portal_step(
+    State(ctx): State<Arc<Ctx>>,
+    Query(query): Query<HashMap<String, String>>,
+) -> Response {
     render(handle(&ctx, &query, false).await)
 }
 
-async fn aws_step(State(ctx): State<Arc<Ctx>>, Query(query): Query<HashMap<String, String>>) -> Response {
+async fn aws_step(
+    State(ctx): State<Arc<Ctx>>,
+    Query(query): Query<HashMap<String, String>>,
+) -> Response {
     render(handle(&ctx, &query, true).await)
 }
 
 /// 一条回调的完整处置（两个入口共用）。
-async fn handle(
-    ctx: &Ctx,
-    query: &HashMap<String, String>,
-    aws_path: bool,
-) -> Outcome {
+async fn handle(ctx: &Ctx, query: &HashMap<String, String>, aws_path: bool) -> Outcome {
     let got = query.get("state").cloned().unwrap_or_default();
-    let pending = ctx
-        .pending
-        .lock()
-        .ok()
-        .and_then(|guard| guard.clone());
+    let pending = ctx.pending.lock().ok().and_then(|guard| guard.clone());
     let from_portal = got == ctx.state;
-    let from_aws =
-        pending.as_ref().is_some_and(|aws| !aws.state.is_empty() && aws.state == got);
+    let from_aws = pending
+        .as_ref()
+        .is_some_and(|aws| !aws.state.is_empty() && aws.state == got);
     // 认不出是谁的回调：本机端口谁都能打，不能拿一次性授权材料去换码
     if !from_portal && !from_aws {
         return Outcome::Page {
@@ -367,14 +364,18 @@ async fn handle(
                 Err(message) => fail(ctx, &message).await,
             }
         }
-        "external_idp" => {
+        "external_idp" => fail(
+            ctx,
+            "公司自建身份提供商的浏览器登录暂不支持；请先在 kiro-cli 里登录，再用「粘贴凭证」导入",
+        )
+        .await,
+        other => {
             fail(
                 ctx,
-                "公司自建身份提供商的浏览器登录暂不支持；请先在 kiro-cli 里登录，再用「粘贴凭证」导入",
+                &format!("Kiro 登录页返回了不认识的登录方式（{other}）"),
             )
             .await
         }
-        other => fail(ctx, &format!("Kiro 登录页返回了不认识的登录方式（{other}）")).await,
     }
 }
 
@@ -391,7 +392,11 @@ async fn exchange_social(ctx: &Ctx, option: &str, code: &str) -> Outcome {
         Ok(token) => token,
         Err(message) => return fail(ctx, &message).await,
     };
-    let Some(access) = token.get("accessToken").and_then(Value::as_str).filter(|value| !value.is_empty()) else {
+    let Some(access) = token
+        .get("accessToken")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+    else {
         return fail(ctx, "Kiro 没有返回 token").await;
     };
     let credentials = KiroCredentials {
@@ -475,7 +480,11 @@ async fn exchange_aws(ctx: &Ctx, aws: &Aws, code: &str) -> Outcome {
         Ok(token) => token,
         Err(message) => return fail(ctx, &message).await,
     };
-    let Some(access) = token.get("accessToken").and_then(Value::as_str).filter(|value| !value.is_empty()) else {
+    let Some(access) = token
+        .get("accessToken")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+    else {
         return fail(ctx, "AWS 没有返回 token").await;
     };
     let credentials = KiroCredentials {
@@ -505,7 +514,14 @@ async fn finish(ctx: &Ctx, mut credentials: KiroCredentials) -> Outcome {
             }
         }
     }
-    if let Ok(payload) = http::control(&credentials, http::OP_USAGE, &Value::Null, ctx.proxy.as_ref()).await {
+    if let Ok(payload) = http::control(
+        &credentials,
+        http::OP_USAGE,
+        &Value::Null,
+        ctx.proxy.as_ref(),
+    )
+    .await
+    {
         if let Some(email) = payload
             .pointer("/userInfo/email")
             .and_then(Value::as_str)
@@ -580,7 +596,11 @@ pub fn payload_of(credentials: &KiroCredentials) -> Value {
     Value::Object(map)
 }
 
-async fn post_json(proxy: &Option<ResolvedProxy>, url: &str, body: &Value) -> Result<Value, String> {
+async fn post_json(
+    proxy: &Option<ResolvedProxy>,
+    url: &str,
+    body: &Value,
+) -> Result<Value, String> {
     let response = http::client(proxy.as_ref())
         .post(url)
         .header("Content-Type", "application/json")
@@ -671,7 +691,9 @@ mod tests {
         assert_eq!(verifier.len(), 64, "48 字节 → 64 个 base64 字符");
         assert!(!verifier.contains('='), "不能带填充");
         assert!(
-            verifier.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_'),
+            verifier
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_'),
             "只能是 base64url 字符：{verifier}"
         );
         assert_ne!(verifier, random_token(48));
@@ -709,7 +731,11 @@ mod tests {
             account_id: "a@b.com".to_string(),
             ..Default::default()
         };
-        assert_eq!(display_name(&no_way), "a@b.com", "没有登录方式时不能出现空括号");
+        assert_eq!(
+            display_name(&no_way),
+            "a@b.com",
+            "没有登录方式时不能出现空括号"
+        );
         assert_eq!(display_name(&KiroCredentials::default()), "Kiro 账号");
     }
 
@@ -744,7 +770,10 @@ mod tests {
         let now = credentials::now_ms();
         let expires = expiry(&json!({ "accessToken": "x" }), "expiresIn");
         assert!(expires > now, "没给有效期也要落一个未来时间");
-        assert_eq!(expiry(&json!({ "expiresIn": 60 }), "expiresIn") - now, 60_000);
+        assert_eq!(
+            expiry(&json!({ "expiresIn": 60 }), "expiresIn") - now,
+            60_000
+        );
     }
 
     /// 白名单端口必须全是「非 root 可绑」的（Android 上低位端口会直接失败）
@@ -779,7 +808,11 @@ mod tests {
             "AWS 那一跳要交给浏览器，不能当作完成"
         );
         assert!(matches!(
-            submitted(Outcome::Page { ok: true, title: "登录完成", detail: String::new() }),
+            submitted(Outcome::Page {
+                ok: true,
+                title: "登录完成",
+                detail: String::new()
+            }),
             Ok(Submitted::Finished)
         ));
         // 失败时把上游给的原因原样交出去（不要换成一句「登录失败」）
@@ -803,6 +836,10 @@ mod tests {
             title: "登录没有完成",
             detail: "x".into(),
         });
-        assert_eq!(failed.status(), axum::http::StatusCode::OK, "失败也要给用户一页说明");
+        assert_eq!(
+            failed.status(),
+            axum::http::StatusCode::OK,
+            "失败也要给用户一页说明"
+        );
     }
 }

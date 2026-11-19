@@ -277,12 +277,24 @@ impl KiroCredentials {
     /// 写回记录（**只写自己认识的键**，调用方负责保留未知字段）
     pub fn write_into(&self, record: &mut Map<String, Value>) {
         record.insert("method".to_string(), Value::String(self.method.clone()));
-        record.insert("accessToken".to_string(), Value::String(self.access.clone()));
-        record.insert("refreshToken".to_string(), Value::String(self.refresh.clone()));
+        record.insert(
+            "accessToken".to_string(),
+            Value::String(self.access.clone()),
+        );
+        record.insert(
+            "refreshToken".to_string(),
+            Value::String(self.refresh.clone()),
+        );
         record.insert("expiresAt".to_string(), Value::from(self.expires));
         record.insert("region".to_string(), Value::String(self.region.clone()));
-        record.insert("profileArn".to_string(), Value::String(self.profile.clone()));
-        record.insert("clientId".to_string(), Value::String(self.client_id.clone()));
+        record.insert(
+            "profileArn".to_string(),
+            Value::String(self.profile.clone()),
+        );
+        record.insert(
+            "clientId".to_string(),
+            Value::String(self.client_id.clone()),
+        );
         record.insert(
             "clientSecret".to_string(),
             Value::String(self.client_secret.clone()),
@@ -291,11 +303,17 @@ impl KiroCredentials {
             "loginProvider".to_string(),
             Value::String(self.login_provider.clone()),
         );
-        record.insert("accountId".to_string(), Value::String(self.account_id.clone()));
+        record.insert(
+            "accountId".to_string(),
+            Value::String(self.account_id.clone()),
+        );
         // 空值不落：`tokenURL` / `plan` 缺省就是「没有」，写空串会让
         // `text()` 一族的「取第一个非空」逻辑白跑一遍，也让记录看起来更脏
         if !self.token_url.is_empty() {
-            record.insert("tokenURL".to_string(), Value::String(self.token_url.clone()));
+            record.insert(
+                "tokenURL".to_string(),
+                Value::String(self.token_url.clone()),
+            );
         }
         if !self.plan.is_empty() {
             record.insert("plan".to_string(), Value::String(self.plan.clone()));
@@ -369,7 +387,11 @@ pub fn identity(credentials: &KiroCredentials) -> String {
     use sha2::{Digest, Sha256};
     if credentials.is_api_key() {
         let digest = Sha256::digest(credentials.access.as_bytes());
-        let hex: String = digest.iter().take(8).map(|byte| format!("{byte:02x}")).collect();
+        let hex: String = digest
+            .iter()
+            .take(8)
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
         return format!("key:{hex}");
     }
     if !credentials.account_id.is_empty() {
@@ -420,8 +442,8 @@ mod tests {
     /// 过期判据：不知道过期 = 可用；真过期 = 不可用
     #[test]
     fn freshness_handles_the_unknown_expiry() {
-        let unknown = KiroCredentials::from_fields(&json!({ "accessToken": "jwt" }))
-            .expect("应能读出来");
+        let unknown =
+            KiroCredentials::from_fields(&json!({ "accessToken": "jwt" })).expect("应能读出来");
         assert_eq!(unknown.expires, 0);
         assert!(unknown.fresh(60_000), "不知道过期时间时不该判「过期」");
 
@@ -437,7 +459,10 @@ mod tests {
             "expiresAt": now_ms() + 30_000,
         }))
         .expect("应能读出来");
-        assert!(!soon.fresh(super::super::EARLY_REFRESH_MS), "30 秒后过期要先刷");
+        assert!(
+            !soon.fresh(super::super::EARLY_REFRESH_MS),
+            "30 秒后过期要先刷"
+        );
     }
 
     /// 地区：profile 里的优先；没有就按登录地区
@@ -451,8 +476,8 @@ mod tests {
         .expect("应能读出来");
         assert_eq!(eu.region(), "eu-central-1");
 
-        let fallback = KiroCredentials::from_fields(&json!({ "accessToken": "jwt" }))
-            .expect("应能读出来");
+        let fallback =
+            KiroCredentials::from_fields(&json!({ "accessToken": "jwt" })).expect("应能读出来");
         assert_eq!(fallback.region(), DEFAULT_REGION);
     }
 
@@ -494,10 +519,15 @@ mod tests {
             "accessToken": "jwt-b", "accountId": "user@example.com", "loginProvider": "google",
         }))
         .expect("应能读出来");
-        assert_eq!(identity(&first), identity(&second), "同一账号换令牌不该换身份");
+        assert_eq!(
+            identity(&first),
+            identity(&second),
+            "同一账号换令牌不该换身份"
+        );
 
-        let key = KiroCredentials::from_fields(&json!({ "accessToken": "ksk_secret-must-not-leak" }))
-            .expect("应能读出来");
+        let key =
+            KiroCredentials::from_fields(&json!({ "accessToken": "ksk_secret-must-not-leak" }))
+                .expect("应能读出来");
         let id = identity(&key);
         assert!(id.starts_with("key:"), "{id}");
         assert!(!id.contains("secret"), "{id}");
@@ -511,8 +541,8 @@ mod tests {
         assert_eq!(identity(&arn_only), "aws:638616132270:us-east-1");
 
         // 什么都没有 → 空身份（调用方据此报错，不生成随机 id）
-        let empty = KiroCredentials::from_fields(&json!({ "accessToken": "jwt" }))
-            .expect("应能读出来");
+        let empty =
+            KiroCredentials::from_fields(&json!({ "accessToken": "jwt" })).expect("应能读出来");
         assert_eq!(identity(&empty), "");
     }
 
@@ -528,7 +558,10 @@ mod tests {
         record.insert("unknownField".to_string(), json!("keep-me"));
         credentials.write_into(&mut record);
         assert_eq!(record.get("method").and_then(Value::as_str), Some("apikey"));
-        assert_eq!(record.get("accessToken").and_then(Value::as_str), Some("ksk_1"));
+        assert_eq!(
+            record.get("accessToken").and_then(Value::as_str),
+            Some("ksk_1")
+        );
         assert!(!record.contains_key("tokenURL"), "空值不该落盘");
         assert!(!record.contains_key("plan"), "空值不该落盘");
         assert_eq!(

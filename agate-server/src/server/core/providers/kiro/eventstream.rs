@@ -289,7 +289,11 @@ mod tests {
     #[test]
     fn two_frames_in_one_chunk_are_split() {
         let mut buffer = build("assistantResponseEvent", "event", r#"{"content":"a"}"#);
-        buffer.extend_from_slice(&build("metadataEvent", "event", r#"{"stopReason":"end_turn"}"#));
+        buffer.extend_from_slice(&build(
+            "metadataEvent",
+            "event",
+            r#"{"stopReason":"end_turn"}"#,
+        ));
         let first = take_frame(&mut buffer).expect("第一帧").expect("应有一帧");
         assert_eq!(first.event_type, "assistantResponseEvent");
         assert_eq!(first.payload_text(), r#"{"content":"a"}"#);
@@ -313,20 +317,31 @@ mod tests {
     /// 异常帧：类型名按 `exception-type` → `error-code` → `event-type` 的顺序取
     #[test]
     fn exception_frames_report_the_right_kind() {
-        let mut buffer =
-            build_full("", "exception", "ThrottlingException", "", r#"{"message":"slow"}"#);
-        let frame = take_frame(&mut buffer).expect("应能解析").expect("应有一帧");
+        let mut buffer = build_full(
+            "",
+            "exception",
+            "ThrottlingException",
+            "",
+            r#"{"message":"slow"}"#,
+        );
+        let frame = take_frame(&mut buffer)
+            .expect("应能解析")
+            .expect("应有一帧");
         assert!(frame.is_error());
         assert_eq!(frame.error_kind(), "ThrottlingException");
         assert_eq!(frame.payload_text(), r#"{"message":"slow"}"#);
 
         let mut buffer = build_full("", "error", "", "InternalServerException", "{}");
-        let frame = take_frame(&mut buffer).expect("应能解析").expect("应有一帧");
+        let frame = take_frame(&mut buffer)
+            .expect("应能解析")
+            .expect("应有一帧");
         assert_eq!(frame.error_kind(), "InternalServerException");
 
         // 没有 exception/error 头的事件帧不算错误
         let mut buffer = build("assistantResponseEvent", "event", "{}");
-        let frame = take_frame(&mut buffer).expect("应能解析").expect("应有一帧");
+        let frame = take_frame(&mut buffer)
+            .expect("应能解析")
+            .expect("应有一帧");
         assert!(!frame.is_error());
     }
 

@@ -109,7 +109,11 @@ pub async fn control(
             .json(&body);
         read(request.send().await, op.what).await?
     } else {
-        let mut url = format!("{}/{}?origin=KIRO_CLI", endpoints::management(&region), op.path);
+        let mut url = format!(
+            "{}/{}?origin=KIRO_CLI",
+            endpoints::management(&region),
+            op.path
+        );
         url.push_str(op.query);
         // profile ARN 是「这次查哪个订阅」的钥匙：缺了它 OAuth 账号会拿到
         // 一个空清单（上游实测），而带上它就必须整段编码（见 `query_escape`）
@@ -215,9 +219,9 @@ pub fn sdk_user_agent() -> String {
 /// 读推理接口的字节流（AWS event stream），已接上空闲兜底
 pub fn byte_stream(response: reqwest::Response, idle: Duration) -> Source {
     use futures::StreamExt;
-    let source = response.bytes_stream().map(move |item| {
-        item.map_err(|error| std::io::Error::other(describe(&error)))
-    });
+    let source = response
+        .bytes_stream()
+        .map(move |item| item.map_err(|error| std::io::Error::other(describe(&error))));
     crate::server::core::upstream::stall::idle_guard(Box::pin(source), idle)
 }
 
@@ -258,8 +262,14 @@ mod tests {
         if let (Some(map), Some(extra)) = (body.as_object_mut(), patch.as_object()) {
             merge(map, extra);
         }
-        assert_eq!(body.pointer("/origin").and_then(Value::as_str), Some("IGNORED"));
-        assert_eq!(body.pointer("/nextToken").and_then(Value::as_str), Some("abc"));
+        assert_eq!(
+            body.pointer("/origin").and_then(Value::as_str),
+            Some("IGNORED")
+        );
+        assert_eq!(
+            body.pointer("/nextToken").and_then(Value::as_str),
+            Some("abc")
+        );
     }
 
     /// 一次性 id 的形态：uuid 带连字符、message id 是 32 位 hex

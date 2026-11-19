@@ -29,8 +29,8 @@ use std::sync::{Mutex, OnceLock};
 
 use serde_json::{json, Value};
 
-use crate::server::core::proxies::ResolvedProxy;
 use crate::server::core::providers::adapter::ModelRefreshOutcome;
+use crate::server::core::proxies::ResolvedProxy;
 
 use super::client::{self, StudioError};
 use super::credentials::Credentials;
@@ -270,11 +270,13 @@ pub async fn refresh(
     proxy: Option<&ResolvedProxy>,
     force: bool,
 ) -> ModelRefreshOutcome {
-    if !force && with_cache(|table| {
-        table
-            .get(account_id)
-            .is_some_and(|catalog| now_ms() - catalog.fetched_at < TTL_MS)
-    }) {
+    if !force
+        && with_cache(|table| {
+            table
+                .get(account_id)
+                .is_some_and(|catalog| now_ms() - catalog.fetched_at < TTL_MS)
+        })
+    {
         return ModelRefreshOutcome::unchanged();
     }
     let payload = match client::catalog(&credentials.key, proxy).await {
@@ -386,7 +388,10 @@ mod tests {
         assert!(parse(&json!({ "data": {} })).is_err());
         assert!(parse(&json!({})).is_err());
         // 全部被过滤掉也算空
-        assert!(parse(&json!({ "data": { "models": [{ "slug": "x", "visibility": "hidden" }] } })).is_err());
+        assert!(
+            parse(&json!({ "data": { "models": [{ "slug": "x", "visibility": "hidden" }] } }))
+                .is_err()
+        );
     }
 
     /// 默认模型排第一
@@ -413,7 +418,13 @@ mod tests {
         assert_eq!(default["id"], DEFAULT_MODEL);
         // 兜底的行与远程行同形（缺字段会让前端两种来源显示成两种样子）
         for row in &models {
-            for key in ["id", "name", "maxInputTokens", "maxOutputTokens", "supportsToolCall"] {
+            for key in [
+                "id",
+                "name",
+                "maxInputTokens",
+                "maxOutputTokens",
+                "supportsToolCall",
+            ] {
                 assert!(row.get(key).is_some(), "兜底行缺 {key}");
             }
         }

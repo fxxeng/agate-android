@@ -67,10 +67,7 @@ fn credits_of(entitlement: &Value) -> Vec<Value> {
 }
 
 /// 查积分（`api::accounts` 的 `usage` 字段形状：`{available, unit, credits, raw}`）。
-pub async fn query(
-    store: &AccountStore,
-    account_id: &str,
-) -> Result<Value, GatewayError> {
+pub async fn query(store: &AccountStore, account_id: &str) -> Result<Value, GatewayError> {
     let data = refresh::protected(store, account_id, "GET", endpoints::SELF_PATH, None)
         .await
         .and_then(|reply| reply.data("积分查询"))?;

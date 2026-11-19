@@ -175,17 +175,20 @@ mod tests {
         // 这一条是共享原语的回归护栏：读请求 → 交给路由 → 写响应整条链。
         // 手搓那版曾经在这条链上出过「慢请求读死」与「响应不关闭连接」。
         let (listener, port) = bind_any().await.expect("端口可绑");
-        let router = Router::new().route(
-            "/ping",
-            get(|| async { Html(String::from("<b>pong</b>")) }),
-        );
+        let router =
+            Router::new().route("/ping", get(|| async { Html(String::from("<b>pong</b>")) }));
         let handle = serve(listener, router).await;
 
         let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
             .await
             .expect("服务应已在监听");
-        let request = format!("GET /ping?x=1 HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n");
-        stream.write_all(request.as_bytes()).await.expect("请求要写进去");
+        let request = format!(
+            "GET /ping?x=1 HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
+        );
+        stream
+            .write_all(request.as_bytes())
+            .await
+            .expect("请求要写进去");
         let mut response = Vec::new();
         tokio::time::timeout(Duration::from_secs(5), stream.read_to_end(&mut response))
             .await
@@ -199,7 +202,10 @@ mod tests {
         handle.abort();
         let mut released = false;
         for _ in 0..40 {
-            if tokio::net::TcpListener::bind(("127.0.0.1", port)).await.is_ok() {
+            if tokio::net::TcpListener::bind(("127.0.0.1", port))
+                .await
+                .is_ok()
+            {
                 released = true;
                 break;
             }
@@ -216,7 +222,10 @@ mod tests {
         let occupied = tokio::net::TcpListener::bind(("127.0.0.1", 0))
             .await
             .expect("占一个端口");
-        let port = occupied.local_addr().map(|addr| addr.port()).unwrap_or_default();
+        let port = occupied
+            .local_addr()
+            .map(|addr| addr.port())
+            .unwrap_or_default();
         let error = bind_from(&[port]).await.expect_err("占用的端口必须失败");
         assert!(error.contains("候选端口都被占用"), "{error}");
     }

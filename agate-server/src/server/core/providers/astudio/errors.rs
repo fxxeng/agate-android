@@ -67,9 +67,15 @@ pub fn too_long_said(message: &str) -> bool {
         return true;
     }
     // 中文文案不一定带上面那些英文词（上游会对中文请求回中文错误）
-    ["输入过长", "上下文过长", "超出上下文", "内容过长", "超过最大长度"]
-        .iter()
-        .any(|word| message.contains(word))
+    [
+        "输入过长",
+        "上下文过长",
+        "超出上下文",
+        "内容过长",
+        "超过最大长度",
+    ]
+    .iter()
+    .any(|word| message.contains(word))
 }
 
 /// 这段文案是不是在说「额度 / 限流」
@@ -208,7 +214,8 @@ mod tests {
     /// 「输入过长」既不能算额度，也不能被换号抵掉
     #[test]
     fn too_long_is_never_treated_as_quota() {
-        let body = r#"{"error":{"message":"This model's maximum context length is 262144 tokens"}}"#;
+        let body =
+            r#"{"error":{"message":"This model's maximum context length is 262144 tokens"}}"#;
         let (status, message) = failure(429, body);
         assert_eq!(status, 400, "超长 → 400，不换号");
         assert!(message.contains("maximum context length"), "{message}");
@@ -263,7 +270,10 @@ mod tests {
             message_of(r#"{"error":{"message":"boom"}}"#),
             "boom".to_string()
         );
-        assert_eq!(message_of(r#"{"code":80000,"desc":"请重新登录"}"#), "请重新登录");
+        assert_eq!(
+            message_of(r#"{"code":80000,"desc":"请重新登录"}"#),
+            "请重新登录"
+        );
         assert_eq!(message_of("Bad gateway"), "Bad gateway");
         assert_eq!(message_of("   "), "");
         // 空体 → 标准文案（不编造）

@@ -210,12 +210,7 @@ pub async fn query(
         return probe(credentials, proxy).await;
     }
     let (balance, membership) = tokio::join!(
-        client::studio_json(
-            credentials,
-            endpoints::POINTS_BALANCE,
-            "积分余额",
-            proxy
-        ),
+        client::studio_json(credentials, endpoints::POINTS_BALANCE, "积分余额", proxy),
         client::studio_json(credentials, endpoints::MEMBERSHIP_ME, "会员信息", proxy),
     );
     // 会话失效优先：任一接口说会话没了，整体就是「请重新登录」
@@ -290,11 +285,7 @@ mod tests {
     #[test]
     fn the_two_wallets_stay_separate_and_only_one_is_available() {
         let membership = json!({ "planName": "星火会员", "uid": 10086 });
-        let out = report(
-            Some(&balance(12.5, Some(30.0))),
-            Some(&membership),
-            &[],
-        );
+        let out = report(Some(&balance(12.5, Some(30.0))), Some(&membership), &[]);
         assert_eq!(out["provider"], ID);
         assert_eq!(out["unit"], "积分");
         let windows = out["windows"].as_array().expect("有窗口");
@@ -332,8 +323,7 @@ mod tests {
         let out = report(Some(&seconds), None, &[]);
         assert_eq!(out["windows"][0]["runsOut"].as_f64(), Some(5.0));
         assert_eq!(
-            out["windows"][0]["runsOutAt"],
-            1_800_000_000_000i64,
+            out["windows"][0]["runsOutAt"], 1_800_000_000_000i64,
             "秒要换成毫秒"
         );
 
@@ -343,7 +333,10 @@ mod tests {
             "activityNextExpireTime": "2026-12-01 00:00:00",
         });
         let out = report(Some(&text), None, &[]);
-        assert!(out["windows"][0].get("runsOutAt").is_none(), "不把字符串塞进毫秒字段");
+        assert!(
+            out["windows"][0].get("runsOutAt").is_none(),
+            "不把字符串塞进毫秒字段"
+        );
         assert_eq!(out["windows"][0]["runsOutText"], "2026-12-01 00:00:00");
     }
 

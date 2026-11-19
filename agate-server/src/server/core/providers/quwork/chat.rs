@@ -42,9 +42,7 @@ pub fn request_body(body: &Value) -> Value {
         .unwrap_or(true);
     object.insert("stream".to_string(), Value::Bool(stream));
     if stream {
-        let options = object
-            .entry("stream_options")
-            .or_insert_with(|| json!({}));
+        let options = object.entry("stream_options").or_insert_with(|| json!({}));
         if let Some(options) = options.as_object_mut() {
             options.insert("include_usage".to_string(), Value::Bool(true));
         }
@@ -232,10 +230,14 @@ mod tests {
             "stream_options": { "foo": 1 }
         }));
         assert_eq!(
-            out.pointer("/stream_options/include_usage").and_then(Value::as_bool),
+            out.pointer("/stream_options/include_usage")
+                .and_then(Value::as_bool),
             Some(true)
         );
-        assert_eq!(out.pointer("/stream_options/foo").and_then(Value::as_i64), Some(1));
+        assert_eq!(
+            out.pointer("/stream_options/foo").and_then(Value::as_i64),
+            Some(1)
+        );
     }
 
     #[test]
@@ -251,16 +253,25 @@ mod tests {
             ]
         });
         let out = request_body(&body);
-        assert!(out.get("store").is_none(), "supportsStore=false 要移除 store");
+        assert!(
+            out.get("store").is_none(),
+            "supportsStore=false 要移除 store"
+        );
         assert_eq!(out.get("max_tokens").and_then(Value::as_i64), Some(100));
         assert!(out.get("max_completion_tokens").is_none());
         let messages = out.get("messages").and_then(Value::as_array);
         assert_eq!(
-            messages.and_then(|m| m.first()).and_then(|m| m.get("role")).and_then(Value::as_str),
+            messages
+                .and_then(|m| m.first())
+                .and_then(|m| m.get("role"))
+                .and_then(Value::as_str),
             Some("system")
         );
         assert_eq!(
-            messages.and_then(|m| m.get(1)).and_then(|m| m.get("reasoning_content")).and_then(Value::as_str),
+            messages
+                .and_then(|m| m.get(1))
+                .and_then(|m| m.get("reasoning_content"))
+                .and_then(Value::as_str),
             Some("")
         );
     }
@@ -273,13 +284,22 @@ mod tests {
             "reasoning_effort": "high"
         });
         let out = request_body(&body);
-        assert_eq!(out.pointer("/thinking/type").and_then(Value::as_str), Some("enabled"));
-        assert_eq!(out.get("reasoning_effort").and_then(Value::as_str), Some("high"));
+        assert_eq!(
+            out.pointer("/thinking/type").and_then(Value::as_str),
+            Some("enabled")
+        );
+        assert_eq!(
+            out.get("reasoning_effort").and_then(Value::as_str),
+            Some("high")
+        );
     }
 
     #[test]
     fn classify_maps_401_to_token_expired() {
-        let out = classify(401, &json!({ "message": "invalid api key", "error": { "code": "invalid_api_key" } }));
+        let out = classify(
+            401,
+            &json!({ "message": "invalid api key", "error": { "code": "invalid_api_key" } }),
+        );
         assert!(matches!(out, UpstreamErrorClass::TokenExpired { .. }));
     }
 
@@ -287,7 +307,9 @@ mod tests {
     fn classify_maps_429_to_quota_limited_with_reset() {
         let out = classify(429, &json!({ "message": "too many requests" }));
         let reset = match out {
-            UpstreamErrorClass::QuotaLimited { reset_at, status, .. } => {
+            UpstreamErrorClass::QuotaLimited {
+                reset_at, status, ..
+            } => {
                 assert_eq!(status, 429);
                 reset_at
             }
@@ -307,7 +329,10 @@ mod tests {
 
     #[test]
     fn classify_maps_content_filter_to_content_blocked() {
-        let out = classify(400, &json!({ "error": { "code": "content_filter" }, "message": "blocked" }));
+        let out = classify(
+            400,
+            &json!({ "error": { "code": "content_filter" }, "message": "blocked" }),
+        );
         assert!(matches!(out, UpstreamErrorClass::ContentBlocked { .. }));
     }
 }

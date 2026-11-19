@@ -202,7 +202,8 @@ mod tests {
     /// 「输入过长」既不能算额度，也不能被换号抵掉
     #[test]
     fn too_long_is_never_treated_as_quota() {
-        let body = r#"{"message":"Input is too long.","reason":"CONTENT_LENGTH_EXCEEDS_THRESHOLD"}"#;
+        let body =
+            r#"{"message":"Input is too long.","reason":"CONTENT_LENGTH_EXCEEDS_THRESHOLD"}"#;
         let (status, message) = failure(400, body);
         assert_eq!(status, 400);
         assert!(message.starts_with(TOO_LONG), "{message}");
@@ -213,7 +214,10 @@ mod tests {
         ));
         // 流内判据也一致
         assert!(stream_error_is_too_long(&message));
-        assert!(!stream_error_is_quota(&message), "文案里有 limit 也不能算额度");
+        assert!(
+            !stream_error_is_quota(&message),
+            "文案里有 limit 也不能算额度"
+        );
         assert_eq!(stream_error_status(&message), Some(400));
     }
 

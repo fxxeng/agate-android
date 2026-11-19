@@ -107,17 +107,16 @@ pub async fn run_chat(
     };
     let kiro_body = request::build(body, &model, &profile, budget, native.as_ref());
 
-    let (response, credentials) =
-        match http::ask(&credentials, &kiro_body, proxy.as_ref()).await {
-            Ok(response) => (response, credentials),
-            Err(error) if error.status_code == 401 || error.status_code == 403 => {
-                let refreshed = refresh::force(&id, &credentials, proxy.as_ref()).await?;
-                write_back(store, &record, &refreshed);
-                let response = http::ask(&refreshed, &kiro_body, proxy.as_ref()).await?;
-                (response, refreshed)
-            }
-            Err(error) => return Err(error),
-        };
+    let (response, credentials) = match http::ask(&credentials, &kiro_body, proxy.as_ref()).await {
+        Ok(response) => (response, credentials),
+        Err(error) if error.status_code == 401 || error.status_code == 403 => {
+            let refreshed = refresh::force(&id, &credentials, proxy.as_ref()).await?;
+            write_back(store, &record, &refreshed);
+            let response = http::ask(&refreshed, &kiro_body, proxy.as_ref()).await?;
+            (response, refreshed)
+        }
+        Err(error) => return Err(error),
+    };
 
     let url = format!(
         "{}{}",
@@ -330,10 +329,7 @@ impl Forwarder {
             }
             Event::Error { status, text } => {
                 let status = status.unwrap_or(502);
-                crate::server::logging::verbose(
-                    "[Kiro]",
-                    &format!("流内错误（{status}）：{text}"),
-                );
+                crate::server::logging::verbose("[Kiro]", &format!("流内错误（{status}）：{text}"));
                 // 流已经开始，状态码改不了了：按 OpenAI 的流内错误帧下发，
                 // 客户端据此识别失败（而不是把半截回答当成完整回答）
                 chunks.push(json!({
@@ -494,7 +490,12 @@ mod tests {
 
     fn forwarder() -> Forwarder {
         Forwarder::new(
-            Decoder::new(Box::pin(futures::stream::empty()), "auto", "kiro:test", false),
+            Decoder::new(
+                Box::pin(futures::stream::empty()),
+                "auto",
+                "kiro:test",
+                false,
+            ),
             "auto".to_string(),
             HashMap::new(),
         )
@@ -550,7 +551,10 @@ mod tests {
             .find(|chunk| chunk.pointer("/choices/0/delta/tool_calls").is_some())
             .expect("有 tool_calls")
             .clone();
-        assert_eq!(first.pointer("/choices/0/delta/tool_calls/0/index"), Some(&json!(0)));
+        assert_eq!(
+            first.pointer("/choices/0/delta/tool_calls/0/index"),
+            Some(&json!(0))
+        );
         assert_eq!(
             first.pointer("/choices/0/delta/tool_calls/0/function/name"),
             Some(&json!("get_weather"))
@@ -572,9 +576,17 @@ mod tests {
     #[test]
     fn tool_names_are_mapped_back_for_the_client() {
         let mut names = HashMap::new();
-        names.insert("weather_lookup_ab12".to_string(), "weather/lookup".to_string());
+        names.insert(
+            "weather_lookup_ab12".to_string(),
+            "weather/lookup".to_string(),
+        );
         let mut forwarder = Forwarder::new(
-            Decoder::new(Box::pin(futures::stream::empty()), "auto", "kiro:test", false),
+            Decoder::new(
+                Box::pin(futures::stream::empty()),
+                "auto",
+                "kiro:test",
+                false,
+            ),
             "auto".to_string(),
             names,
         );
@@ -609,8 +621,15 @@ mod tests {
             },
         });
         assert!(matches!(frames.last(), Some(Frame::Done)));
-        let last = chunks(&frames).into_iter().last().cloned().expect("有收尾帧");
-        assert_eq!(last.pointer("/choices/0/finish_reason"), Some(&json!("stop")));
+        let last = chunks(&frames)
+            .into_iter()
+            .last()
+            .cloned()
+            .expect("有收尾帧");
+        assert_eq!(
+            last.pointer("/choices/0/finish_reason"),
+            Some(&json!("stop"))
+        );
         // prompt = input + cache_read（缓存命中也要算进 prompt）
         assert_eq!(last.pointer("/usage/prompt_tokens"), Some(&json!(150)));
         assert_eq!(last.pointer("/usage/completion_tokens"), Some(&json!(20)));

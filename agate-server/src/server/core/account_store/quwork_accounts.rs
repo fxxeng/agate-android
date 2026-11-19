@@ -37,8 +37,7 @@ use super::store_util::{token_tail_of, truncate_chars};
 use super::CredentialWrite;
 
 /// 本家的 provider id（从注册表推导，不写第二份字面量）
-pub const QUWORK_PROVIDER_ID: &str =
-    crate::server::core::providers::kind_id(ProviderKind::QuWork);
+pub const QUWORK_PROVIDER_ID: &str = crate::server::core::providers::kind_id(ProviderKind::QuWork);
 
 const MAX_NAME_LENGTH: usize = 100;
 
@@ -81,10 +80,7 @@ fn account_id_for(identity: &str) -> String {
 
 fn default_name(secret: &Value) -> String {
     let view = credentials::public_view(secret);
-    let label = view
-        .get("name")
-        .and_then(Value::as_str)
-        .unwrap_or("QuWork");
+    let label = view.get("name").and_then(Value::as_str).unwrap_or("QuWork");
     format!("QuWork {label}")
 }
 
@@ -197,7 +193,12 @@ impl AccountStore {
         record.insert("priority".to_string(), Value::from(priority));
         record.insert(
             "enabled".to_string(),
-            Value::Bool(existing.as_ref().map(StoredAccount::enabled).unwrap_or(true)),
+            Value::Bool(
+                existing
+                    .as_ref()
+                    .map(StoredAccount::enabled)
+                    .unwrap_or(true),
+            ),
         );
         record.insert(
             "addedAt".to_string(),
@@ -223,7 +224,11 @@ impl AccountStore {
             "[Accounts]",
             &format!(
                 "✅ QuWork 账号已保存: {record_name}（优先级 {priority}，{}，令牌 {}）",
-                if login.is_empty() { "仅模型凭证" } else { "含登录凭证" },
+                if login.is_empty() {
+                    "仅模型凭证"
+                } else {
+                    "含登录凭证"
+                },
                 token_tail_of(&llm)
             ),
         );
@@ -340,12 +345,21 @@ mod tests {
             .unwrap_or_default(),
         );
         let public = public_shape(&record);
-        for key in ["accessToken", "llmToken", "loginToken", "secret", "credentials"] {
+        for key in [
+            "accessToken",
+            "llmToken",
+            "loginToken",
+            "secret",
+            "credentials",
+        ] {
             assert!(public.get(key).is_none(), "公开形态漏了 {key}：{public}");
         }
         assert_eq!(public.get("hasToken"), Some(&Value::Bool(true)));
         assert_eq!(public.get("uid").and_then(Value::as_str), Some("u-1"));
         assert_eq!(public.get("phone").and_then(Value::as_str), Some("138"));
-        assert_eq!(public.get("name").and_then(Value::as_str), Some("QuWork u-1"));
+        assert_eq!(
+            public.get("name").and_then(Value::as_str),
+            Some("QuWork u-1")
+        );
     }
 }

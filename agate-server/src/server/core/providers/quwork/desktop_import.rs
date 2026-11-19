@@ -110,13 +110,15 @@ fn read_session_json(path: &std::path::Path) -> Result<String, String> {
         Err(_) => read(&format!("select session_json from {SESSION_TABLE} limit 1"))
             .map_err(|error| format!("读取登录会话失败（{error}）"))?,
     };
-    session.filter(|text| !text.trim().is_empty()).ok_or_else(|| {
-        format!(
-            "数据库里没有登录会话（{SESSION_TABLE} 为空或 session_json 为空）。\
+    session
+        .filter(|text| !text.trim().is_empty())
+        .ok_or_else(|| {
+            format!(
+                "数据库里没有登录会话（{SESSION_TABLE} 为空或 session_json 为空）。\
              最新一次登录很可能还在 -wal 文件里没合并：请先完全退出 QuWork 客户端\
              （退出时会把 -wal 合并回主库），再把 qurwork-desktop.sqlite 拷一次重试"
-        )
-    })
+            )
+        })
 }
 
 /// `session_json` → 本仓凭证对象（`accessToken` / `llmToken` / `user` / `expiresAt`）。
@@ -189,13 +191,22 @@ mod tests {
             "user": { "id": 5217, "phone": "13900000000" }
         }"#;
         let secret = secret_from_session_json(session).unwrap_or_default();
-        assert_eq!(secret.get("loginToken").and_then(Value::as_str), Some("a.b.c"));
-        assert_eq!(secret.get("llmToken").and_then(Value::as_str), Some("llm-raw"));
+        assert_eq!(
+            secret.get("loginToken").and_then(Value::as_str),
+            Some("a.b.c")
+        );
+        assert_eq!(
+            secret.get("llmToken").and_then(Value::as_str),
+            Some("llm-raw")
+        );
         assert_eq!(
             secret.pointer("/user/uid").and_then(Value::as_str),
             Some("5217")
         );
-        assert!(secret.get("accessToken").is_none(), "转发占用的键不能被写进去");
+        assert!(
+            secret.get("accessToken").is_none(),
+            "转发占用的键不能被写进去"
+        );
     }
 
     #[test]
