@@ -284,7 +284,9 @@ internal fun groupDescription(id: String): String = when (id) {
 
 /* ── 轮次读数的说明（首页/总览用） ── */
 internal fun roundSummary(row: CheckinCenter.RoundRow): String = buildString {
-    append(row.label)
-    if (row.done < row.total) append("（${row.done}/${row.total}）")
-    if (row.skipped > 0) append(" 跳过 ${row.skipped}")
+    append(row.reason.ifBlank { "签到" })
+    append(" · 成功 ${row.succeeded}")
+    if (row.active > 0) append(" · 保活 ${row.active}")
+    if (row.skipped > 0) append(" · 跳过 ${row.skipped}")
+    if (row.failedCount > 0) append(" · 失败 ${row.failedCount}")
 }
