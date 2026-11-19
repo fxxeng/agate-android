@@ -1149,6 +1149,10 @@ pub fn adapter_for(kind: ProviderKind) -> &'static dyn ProviderAdapter {
         // 余额全部已接通（建会话 → assistant SSE，`is_stateful` 为 true，
         // 见 `orcaterm/mod.rs` 与 `orcaterm/adapter.rs` 的模块头）
         ProviderKind::OrcaTerm => &super::orcaterm::ORCATERM_ADAPTER,
+        ProviderKind::Modelscope => &super::modelscope::MODELSCOPE_ADAPTER,
+        ProviderKind::ModelscopeIntl => &super::modelscope::MODELSCOPE_INTL_ADAPTER,
+        ProviderKind::Atomcode => &super::atomcode::ATOMCODE_ADAPTER,
+        ProviderKind::LobsterAi => &super::lobsterai::LOBSTERAI_ADAPTER,
     }
 }
 
@@ -1248,6 +1252,13 @@ pub fn implemented_kinds() -> Vec<ProviderKind> {
         // 远程模型目录（静态清单，`supports_model_refresh()` 为 false）——
         // 进本列表只代表「已实现」（与 Zcode 同一口径：刷新循环对它是空操作）。
         ProviderKind::OrcaTerm,
+        // ModelScope：远程目录（GET /api/v1/model-manager/models），必须进列表。
+        ProviderKind::Modelscope,
+        ProviderKind::ModelscopeIntl,
+        // AtomCode：远程目录（coding-plan/models-v2）。
+        ProviderKind::Atomcode,
+        // LobsterAI：远程目录（/api/models/available）。
+        ProviderKind::LobsterAi,
     ]
 }
 

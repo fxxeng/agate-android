@@ -103,6 +103,7 @@ pub mod adapter;
 /// 构造 v1internal 信封，响应走 `UpstreamResponse::AntigravityGemini` 那条
 /// Gemini SSE 翻译层）全部已接通；`is_stateful` 恒 false，见 `antigravity/mod.rs`）。
 pub mod antigravity;
+pub mod atomcode;
 pub mod autoclaw;
 pub mod catalog;
 /// 远程模型清单的**持久化缓存**（各家的清单在进程重启后由它读回，见模块头）。
@@ -129,7 +130,9 @@ pub mod content_block;
 /// 形态调用它 —— 挂在这里与其它子模块并列，便于对照「内置家走适配器、
 /// 自定义家走独立通道」的两条路径。
 pub mod custom;
+pub mod images;
 pub mod kuku;
+pub mod lobsterai;
 pub mod loomy;
 /// MonkeyCode（长亭科技的开源 AI 开发平台）。适配实现在 `monkeycode/`：
 /// 账号管理（粘贴 session）+ 模型目录（`GET /api/v1/users/models`）+
@@ -473,6 +476,14 @@ pub enum ProviderKind {
     /// 会话转发（建会话 → assistant SSE）+ 余额（月度 AI 配额）；
     /// `is_stateful` 为 true（请求内会话），见 `orcaterm/mod.rs` 的模块头。
     OrcaTerm,
+    // ModelScope（魔搭）国内站；适配实现见 `modelscope/`。
+    Modelscope,
+    // ModelScope 国际站（modelscope-intl）。
+    ModelscopeIntl,
+    // AtomCode（atomgit 码栈 AI）。
+    Atomcode,
+    // LobsterAI（网易有道）。
+    LobsterAi,
 }
 
 /// 一个提供商的静态元数据。
@@ -645,6 +656,23 @@ pub const PROVIDERS: &[ProviderMeta] = &[
         id: "orcaterm",
         label: "OrcaTerm",
     },
+    // ModelScope（魔搭）两地两 provider：国内版在前（与存量账号归属一致）。
+    ProviderMeta {
+        id: "modelscope",
+        label: "ModelScope 国内版",
+    },
+    ProviderMeta {
+        id: "modelscope-intl",
+        label: "ModelScope 国际版",
+    },
+    ProviderMeta {
+        id: "atomcode",
+        label: "AtomCode",
+    },
+    ProviderMeta {
+        id: "lobsterai",
+        label: "LobsterAI",
+    },
 ];
 
 /// provider id 在注册表里的下标（未知 id → None）。
@@ -730,6 +758,10 @@ pub fn kind_from_id(id: &str) -> Option<ProviderKind> {
         "chatglm" => Some(ProviderKind::Chatglm),
         "officeace" => Some(ProviderKind::OfficeAce),
         "orcaterm" => Some(ProviderKind::OrcaTerm),
+        "modelscope" => Some(ProviderKind::Modelscope),
+        "modelscope-intl" => Some(ProviderKind::ModelscopeIntl),
+        "atomcode" => Some(ProviderKind::Atomcode),
+        "lobsterai" => Some(ProviderKind::LobsterAi),
         // 走到这里 = 上面的注册表判定已放行、这个 match 却没有对应分支：
         // 只可能是有人给 `PROVIDERS` 加了条目忘了加这里。开发期喊出来；
         // release 返回 None（见上：宁可为「未知」，不可误认成别家）。
@@ -773,6 +805,10 @@ pub const fn kind_id(kind: ProviderKind) -> &'static str {
         ProviderKind::Chatglm => "chatglm",
         ProviderKind::OfficeAce => "officeace",
         ProviderKind::OrcaTerm => "orcaterm",
+        ProviderKind::Modelscope => "modelscope",
+        ProviderKind::ModelscopeIntl => "modelscope-intl",
+        ProviderKind::Atomcode => "atomcode",
+        ProviderKind::LobsterAi => "lobsterai",
     }
 }
 
