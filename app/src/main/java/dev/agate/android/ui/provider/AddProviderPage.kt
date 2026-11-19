@@ -72,6 +72,7 @@ import dev.agate.android.data.LoginKind
 import dev.agate.android.data.ProviderPreset
 import dev.agate.android.data.PresetApiRegistry
 import dev.agate.android.data.PresetRegistry
+import dev.agate.android.data.ProviderCategory
 import dev.agate.core.AgateForegroundService
 import dev.agate.core.GatewayPrefs
 import dev.agate.android.auth.AuthWebViewSheet
@@ -197,7 +198,8 @@ fun AddProviderPage(onBack: () -> Unit, initialProviderId: String? = null) {
                 // 走 ImportFileForm；需要粘贴的家有「粘贴凭证」。再开一个页签
                 // 只会让人多选一次提供商，做的是同一件事。
                 listOf(
-                    "Agent · ${PresetRegistry.ALL.size}",
+                    "Agent · ${PresetRegistry.byCategory(ProviderCategory.AGENT).size}",
+                    "Web · ${PresetRegistry.byCategory(ProviderCategory.WEB).size}",
                     "预置 API · ${PresetApiRegistry.ALL.size}",
                     "自定义",
                 ).forEachIndexed { i, label ->
@@ -226,9 +228,16 @@ fun AddProviderPage(onBack: () -> Unit, initialProviderId: String? = null) {
 
             Spacer(Modifier.height(12.dp))
 
-            if (tab == 0) {
+            if (tab <= 1) {
                 // ── 选择提供商卡：pick-cur + 最近 chips ──
-                val picked = current
+                // tab 0 = Agent、tab 1 = Web：两段共用这一段渲染，差别只有
+                // 数据源与文案。选中项按分段收窄 —— 从 Agent 切到 Web 时，
+                // 上一段选中的家不该继续显示（否则「加智谱清言」会变成
+                // 「加了一个 Cline 账号」）。
+                val segment = if (tab == 1) ProviderCategory.WEB else ProviderCategory.AGENT
+                val segmentLabel = if (segment == ProviderCategory.WEB) "Web" else "Agent"
+                val segmentCount = PresetRegistry.byCategory(segment).size
+                val picked = current?.takeIf { it.category == segment }
                 Column(
                     Modifier
                         .fillMaxWidth()
@@ -252,7 +261,7 @@ fun AddProviderPage(onBack: () -> Unit, initialProviderId: String? = null) {
                         if (shown == null) {
                             Column(Modifier.weight(1f)) {
                                 Text("选择要添加的家", color = C.textMain, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-                                Text("24 家 Agent · 点此打开选择器", color = C.textSub, fontSize = 12.sp)
+                                Text("$segmentCount 家 $segmentLabel · 点此打开选择器", color = C.textSub, fontSize = 12.sp)
                             }
                         } else {
                             AgateProviderAvatar(providerId = shown.id, label = shown.label, size = 40.dp)
@@ -392,15 +401,15 @@ fun AddProviderPage(onBack: () -> Unit, initialProviderId: String? = null) {
                         onBack()
                     }
                 }
-                // tab 0 是 Agent（上面那一支），这里只剩 1（预置 API）/ 2（自定义）。
+                // tab 0/1 是 Agent/Web（上面那一支），这里只剩 2（预置 API）/ 3（自定义）。
                 // 用 else 兜底而不是穷举：tab 来自上面的 forEachIndexed，
                 // 万一以后加页签却忘了这里，宁可不渲染也不要崩溃。
                 when (tab) {
-                    1 -> PresetApiTab(
+                    2 -> PresetApiTab(
                         custom = customProviders,
                         onDone = done,
                     )
-                    2 -> CustomProviderTab(
+                    3 -> CustomProviderTab(
                         custom = customProviders,
                         loaded = customLoaded,
                         initialTarget = initialCustomTarget,
@@ -416,6 +425,8 @@ fun AddProviderPage(onBack: () -> Unit, initialProviderId: String? = null) {
     if (showPicker) {
         ProviderPickerSheet(
             currentId = current?.id,
+            // tab 1 = Web 段、tab 0 = Agent 段（与上面分段渲染同一判据）
+            category = if (tab == 1) ProviderCategory.WEB else ProviderCategory.AGENT,
             onPick = {
                 current = it
                 showPicker = false
@@ -605,6 +616,7 @@ private fun PasteLoginForm(preset: ProviderPreset, onDone: (Boolean, String) -> 
 @Composable
 private fun ProviderPickerSheet(
     currentId: String?,
+    category: ProviderCategory = ProviderCategory.AGENT,
     onPick: (ProviderPreset) -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -614,7 +626,7 @@ private fun ProviderPickerSheet(
     var q by remember { mutableStateOf("") }
     var kindFilter by remember { mutableStateOf<LoginKind?>(null) }
 
-    val filtered = PresetRegistry.ALL.filter { p ->
+    val filtered = PresetRegistry.byCategory(category).filter { p ->
         (kindFilter == null || p.kind == kindFilter) &&
             (q.isBlank() || p.label.contains(q, ignoreCase = true) || p.desc.contains(q, ignoreCase = true))
     }

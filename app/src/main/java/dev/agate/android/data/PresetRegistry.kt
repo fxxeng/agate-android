@@ -27,6 +27,9 @@ enum class AuthChannel(val label: String) {
     IMPORT_DESKTOP("桌面登录态"),
 }
 
+/** 添加账号页的分段归属：Agent（编程/对话客户端）/ Web（网页版）。 */
+enum class ProviderCategory { AGENT, WEB }
+
 data class ProviderPreset(
     val id: String,
     val label: String,
@@ -35,6 +38,8 @@ data class ProviderPreset(
     val kind: LoginKind,
     /** 该家真实支持的通道，顺序即 UI 顺序；首项为默认。 */
     val channels: List<AuthChannel>,
+    /** 添加账号页的分段归属；默认 Agent，Web 家逐个声明。 */
+    val category: ProviderCategory = ProviderCategory.AGENT,
     /** 粘贴通道的主输入提示（为空表示该家不走粘贴）。 */
     val pasteHint: String? = null,
     val pasteSecondaryHint: String? = null,
@@ -88,6 +93,7 @@ object PresetRegistry {
         ProviderPreset(
             "chatglm", "智谱清言", "chatglm.cn · 粘贴 Token 或导入桌面登录态", LoginKind.WEBVIEW,
             listOf(AuthChannel.PASTE, AuthChannel.IMPORT_DESKTOP),
+            category = ProviderCategory.WEB,
             pasteHint = "粘贴 accessToken（或 refreshToken）",
             pasteSecondaryHint = "留空则按访客（guest）添加",
         ),
@@ -229,9 +235,69 @@ object PresetRegistry {
             "orcaterm", "OrcaTerm", "网页登录", LoginKind.WEBVIEW,
             listOf(AuthChannel.EMBEDDED),
         ),
+
+        // ══ R63 批3 已移植进内核的七家（预设与 main 逐字对齐）══
+        ProviderPreset(
+            "modelscope", "ModelScope 国内版", "modelscope.cn · 粘贴 ms- 令牌",
+            LoginKind.PASTE,
+            listOf(AuthChannel.PASTE),
+            pasteHint = "粘贴 ms- 开头的 API 令牌（modelscope.cn「访问令牌」页）",
+            supportsCheckin = true,
+        ),
+        ProviderPreset(
+            "modelscope-intl", "ModelScope 国际版", "modelscope.ai · 粘贴 ms- 令牌",
+            LoginKind.PASTE,
+            listOf(AuthChannel.PASTE),
+            pasteHint = "粘贴国际站的 ms- 令牌（modelscope.ai；与国内站不通用）",
+            supportsCheckin = true,
+        ),
+        ProviderPreset(
+            "atomcode", "AtomCode", "AtomGit · 浏览器授权 / 粘贴令牌", LoginKind.WEBVIEW,
+            listOf(
+                AuthChannel.EMBEDDED, AuthChannel.EXTERNAL,
+                AuthChannel.PASTE, AuthChannel.IMPORT_FILE,
+            ),
+            pasteHint = "粘贴 accessToken（登录输出里的 access_token）",
+            pasteSecondaryHint = "续期令牌 refreshToken（可选；留空则到期后需重新登录）",
+            supportsCheckin = true,
+        ),
+        ProviderPreset(
+            "lobsterai", "LobsterAI", "lobsterai.youdao.com · 网页登录", LoginKind.WEBVIEW,
+            listOf(AuthChannel.EMBEDDED, AuthChannel.EXTERNAL),
+            supportsCheckin = true,
+            needsGateway = true,
+        ),
+        ProviderPreset(
+            "kiro", "Kiro", "kiro.dev · 浏览器登录 / 粘贴 API key",
+            LoginKind.WEBVIEW,
+            listOf(AuthChannel.EXTERNAL, AuthChannel.PASTE, AuthChannel.IMPORT_FILE),
+            pasteHint = "粘贴 ksk_ 开头的 API key，或整段 kiro-auth-token.json（含 accessToken / refreshToken）",
+            pasteMultiline = true,
+        ),
+        ProviderPreset(
+            "astudio", "AStudio", "讯飞星辰 · 手机号登录 / 粘贴 astron-session.json",
+            LoginKind.WEBVIEW,
+            listOf(AuthChannel.EMBEDDED, AuthChannel.PASTE, AuthChannel.IMPORT_FILE),
+            pasteHint = "粘贴 modelBearerToken，或整段 astron-session.json（带上 token / accountId 时余额与签到才可用）",
+            pasteMultiline = true,
+            supportsCheckin = true,
+        ),
+        ProviderPreset(
+            "quwork", "QuWork", "QuWork 1.6.0 · 粘贴凭证 / 导入桌面登录库",
+            LoginKind.PASTE,
+            listOf(AuthChannel.PASTE, AuthChannel.IMPORT_FILE),
+            pasteHint = "模型凭证 llmToken 必填：粘贴凭证 JSON（含 llmToken，可选 accessToken）、纯 llmToken，或 QURIVS_LLM_API_KEY: 的 yaml 行",
+            pasteSecondaryHint = "登录凭证 accessToken（可选；填写后可用积分 / 续期 / 每日奖励 / 权益兑换）",
+            pasteMultiline = true,
+            supportsCheckin = true,
+        ),
     )
 
     fun byId(id: String): ProviderPreset? = ALL.firstOrNull { it.id == id }
+
+    /** 某一分段（Agent / Web）下的全部家，顺序沿用 [ALL]。 */
+    fun byCategory(category: ProviderCategory): List<ProviderPreset> =
+        ALL.filter { it.category == category }
 
     /** 未知家（手改数据文件塞进来的 id）回落到 id 本身显示。 */
     fun labelOf(id: String): String = byId(id)?.label ?: id
