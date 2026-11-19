@@ -676,7 +676,10 @@ mod tests {
             token("  abc.def  ", "模型凭证").unwrap_or_default(),
             "abc.def"
         );
-        assert_eq!(token("Bearer abc.def", "模型凭证").unwrap_or_default(), "abc.def");
+        assert_eq!(
+            token("Bearer abc.def", "模型凭证").unwrap_or_default(),
+            "abc.def"
+        );
         assert!(token("abc def", "模型凭证").is_err());
         assert!(token("abc\n", "模型凭证").is_err());
         assert!(token("令牌", "模型凭证").is_err());
