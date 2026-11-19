@@ -291,6 +291,53 @@ object PresetRegistry {
             pasteMultiline = true,
             supportsCheckin = true,
         ),
+
+        // ══ R63 批3-C 移植进内核的四家（6 身份）══
+        ProviderPreset(
+            "deepseek-web", "DeepSeek 网页", "chat.deepseek.com · 粘贴 userToken",
+            LoginKind.PASTE,
+            listOf(AuthChannel.PASTE),
+            category = ProviderCategory.WEB,
+            pasteHint = "粘贴 userToken（浏览器 F12 → localStorage 里 userToken 的 value）",
+            pasteMultiline = true,
+        ),
+        ProviderPreset(
+            "doubaowork", "豆包工作", "www.doubao.com · 网页登录 / 粘贴 Cookie",
+            LoginKind.WEBVIEW,
+            listOf(AuthChannel.EMBEDDED, AuthChannel.PASTE, AuthChannel.IMPORT_FILE),
+            pasteHint = "Cookie 整串（必须含 sessionid），也支持 Cookie JSON 数组或对象",
+            pasteMultiline = true,
+            supportsCheckin = true,
+        ),
+        ProviderPreset(
+            "lingxi", "WPS 灵犀", "WPS 灵犀 · 网页登录 / 粘贴 wps_sid",
+            LoginKind.WEBVIEW,
+            listOf(AuthChannel.EMBEDDED, AuthChannel.PASTE),
+            pasteHint = "粘贴整段 Cookie（含 wps_sid）或 V02S 开头的裸 sid",
+            supportsCheckin = true,
+        ),
+        ProviderPreset(
+            "tabbit", "Tabbit 国内版", "web.tabbit.com · 手机验证码 / 粘贴 Cookie",
+            LoginKind.SMS,
+            listOf(AuthChannel.SMS, AuthChannel.PASTE),
+            category = ProviderCategory.WEB,
+            pasteHint = "粘贴网页 Cookie 整串（token=…; user_id=…），或 DevTools 的 Copy as cURL 整段，或裸 JWT",
+            pasteMultiline = true,
+            supportsCheckin = true,
+        ),
+        ProviderPreset(
+            "tabbit-intl", "Tabbit 国际版", "web.tabbit.ai · 粘贴 Cookie / 登录 JWT",
+            LoginKind.PASTE,
+            listOf(AuthChannel.PASTE),
+            category = ProviderCategory.WEB,
+            pasteHint = "粘贴国际站的网页 Cookie（与国内站不通用），或裸 JWT",
+            pasteMultiline = true,
+            supportsCheckin = true,
+        ),
+        ProviderPreset(
+            "qwenwork", "千问办公 国内版", "设备授权登录", LoginKind.WEBVIEW,
+            listOf(AuthChannel.DEVICE_CODE, AuthChannel.EXTERNAL),
+        ),
     )
 
     fun byId(id: String): ProviderPreset? = ALL.firstOrNull { it.id == id }
