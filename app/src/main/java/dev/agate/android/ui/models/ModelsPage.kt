@@ -330,6 +330,32 @@ fun ModelsPage(
     var availToken by remember { mutableStateOf(0) }
 
     /**
+     * **有账号的家**——「登录过」这一件事实，与「有没有模型清单」无关。
+     *
+     * ── 为什么模型页需要它（2026-11-16 真实故障：魔搭授权后不显示）────
+     * 一批家**没有内置兜底清单**（ModelScope / Loomy / AtomCode / Trae…）：清单
+     * 只可能来自远程，拉到之前是空的。而页面上「一家」的存在感完全由模型行
+     * 派生（`allRows`）—— 于是这些家在授权后**整家消失**：
+     *   · 筛选芯片里没有它（用户找不到这家）；
+     *   · 「拉取模型」候选只认「页面上的家 ∪ 自定义家」⇒ 也不在候选里。
+     * 合成死循环：「要有模型才能拉模型」。自定义家当年踩过同一个坑（见
+     * `scopes` 里 `fromCustoms` 的注释），内置家当时漏了。
+     *
+     * ⚠️ **不能用 `snap.providerCounts` 当这个判据**：内核 `provider_summary` 走
+     * `providers::summary_json`，它对**注册表里每一家**都输出一行、没账号的给
+     * `count: 0` —— 拿它的 `keys` 等于「37 家全列出来」，与「授权后才出现」正好
+     * 相反。判据必须是**真实的账号行**（`snap.accountList`，每条带 provider），
+     * 它只含有账号的家。能力层早在 GatewayRepository.kt 就备好了这份数据，
+     * 模型页入口层此前没用上。
+     *
+     * 判据只问「加过账号没有」，不问「现在能不能用」：可用性由转发选路回答
+     * （enabled + 凭证），而这里回答的是「这家该不该出现在页面上」。
+     */
+    val accountProviders = remember(snap.accountList) {
+        snap.accountList.map { it.provider.trim() }.filter { it.isNotEmpty() }.toSet()
+    }
+
+    /**
      * 提供商 (id, label) 列表：混合模式的 pin 选择要用。
      *
      * ⚠️ 必须 **manage ∪ session** 两处取并集。只从 `models`（`/api/session`）
@@ -360,10 +386,16 @@ fun ModelsPage(
      * 它有模型**，所以这里必须包含「零模型」的自定义家 —— 否则就变成
      * 「要有模型才能拉模型」的死循环（用户反馈的形态）。
      */
-    val pullProviders = remember(providers, customProviders) {
+    val pullProviders = remember(providers, customProviders, accountProviders) {
         val customIds = customProviders.map { it.id }.toSet()
         val built = providers.filter { it.first !in customIds }
-        (built + customProviders.map { it.id to it.displayName })
+        // 「有账号、但一家模型都还没拉到」的内置家：它们不在 [providers]（那份由
+        // 模型行派生），而恰恰是最需要拉一次的那批 —— 漏了就是「要有模型才能
+        // 拉模型」的死循环（见 [accountProviders]）。名字取注册表的 label。
+        val accountOnly = accountProviders
+            .filter { it !in customIds && built.none { pair -> pair.first == it } }
+            .map { it to PresetRegistry.labelOf(it) }
+        (built + customProviders.map { it.id to it.displayName } + accountOnly)
             .distinctBy { it.first }
             .sortedBy { it.second }
     }
@@ -721,6 +753,74 @@ fun ModelsPage(
         }
     }
 
+    /**
+     * 拉取**一家**（内置家走 `/api/models/refresh` 的范围白名单，自定义家走
+     * `pullCustom` 的两步合并保存）。
+     *
+     * 从「拉取模型」弹层的单行按钮里提出来，是因为**零模型的家**也需要它：
+     * 那些家在内置清单为空时既没有模型行、也不在候选里（见 [accountProviders]），
+     * 空态那一行得给同一个动作，否则用户只能看着一句「没有模型」。
+     */
+    fun pullOne(pid: String) {
+        if (refreshing) return
+        refreshing = true
+        scope.launch {
+            // 自定义家：另一个端点（拉上游 + 合并保存），见 pullCustom
+            if (CustomProviderOps.isCustomProviderId(pid)) {
+                val row = pullCustom(pid)
+                refreshing = false
+                refreshRows = refreshRows.filterNot { it.provider == pid } + row
+                refreshAt = System.currentTimeMillis()
+                if (!row.failed) {
+                    GatewayRepository.refreshOnce()
+                    loadManage()
+                    loadCustom()
+                }
+                if (row.failed) {
+                    Toast.makeText(ctx, row.message ?: "拉取失败", Toast.LENGTH_SHORT).show()
+                }
+                return@launch
+            }
+            val r = ModelOps.refresh(providers = listOf(pid))
+            refreshing = false
+            RefreshRow.parseAll(r.data).takeIf { it.isNotEmpty() }?.let { fresh ->
+                // 单家结果并回既有列表：只替换这一家的行，
+                // 其余家的结论与时间保持不变（否则一拉一家就把别家的清空）
+                val merged = refreshRows.filterNot { it.provider == pid } + fresh
+                refreshRows = merged
+            }
+            refreshAt = System.currentTimeMillis()
+            if (r.ok) GatewayRepository.refreshOnce()
+            if (r.ok) loadManage()
+        }
+    }
+
+    // ── 每条上游 id 的别名（2026-11-12 #129：按内核真值分两堆）──────
+    // `effective` 由内核请求侧同名入口 `builtin_target` 现算：模型被关、映射被关、
+    // 目标已不在清单、别名被原生 id 抢走，全都反映在那一个 bool 上。界面**不再
+    // 自己拼判据**（拼了就是第二套规则，内核一改就漂移）。沿用上一轮的 `aliasByKey`
+    // 作为「生效别名」那一份（决定全局视图原名行让不让位、单家视图标小字）；新增
+    // `inactiveAliasByKey` 只承载未生效的，写进 ModelRow.inactiveAliases 置灰标注。
+    // dev 的数据层没有 main 那种 ModelRow.aliases 字段，别名映射在 UI 侧实时派生，
+    // 这里就是等价的唯一入口；映射一关/一失效，别名变空 ⇒ 原名卡自动恢复。
+    val namedMappings = manageMappings
+        .filter { !it.isDefault && it.enabled && !it.dangling }
+        .filter { mapping ->
+            val alias = mapping.alias.trim()
+            val target = mapping.target.trim()
+            alias.isNotEmpty() && target.isNotEmpty() &&
+                !alias.equals(target, ignoreCase = true)
+        }
+    fun aliasIndex(rows: List<ModelOps.MappingRow>): Map<String, List<String>> = rows
+        .groupBy { "${it.provider?.lowercase()}|${it.target.lowercase()}" }
+        .mapValues { (_, list) -> list.map { it.alias } }
+    val aliasByKey = aliasIndex(namedMappings.filter { it.effective })
+    val inactiveAliasByKey = aliasIndex(namedMappings.filter { !it.effective })
+    fun aliasesOf(row: GatewayRepository.ModelRow): List<String> = aliasByKey[
+        "${row.provider.lowercase()}|" +
+            (row.upstreamId ?: wireModelId(row.id, row.provider)).lowercase()
+    ].orEmpty()
+
     // ── 合并「已启用（会话清单）」与「管理视图（含已禁用 + 可见性）」──
     // 会话清单（`/api/session` 的 models）给的是富数据（上下文 / 能力位），但
     // **只含已启用**的、且没有 `enabled` 字段；管理视图给全量 + 启停状态，但
@@ -768,9 +868,12 @@ fun ModelsPage(
                 val owner = mapping.provider ?: return@mapNotNull null
                 val alias = mapping.alias.trim()
                 val target = mapping.target.trim()
-                // 默认绑定（alias == target）不是别名；关掉的映射不构成候选
+                // 默认绑定（alias == target）不是别名；关掉的映射不构成候选；
+                // 内核判定未生效的（模型被关 / 目标不在清单）也不该当成一个能选的家。
                 if (alias.isEmpty() || target.isEmpty() || mapping.isDefault) return@mapNotNull null
-                if (alias.equals(target, ignoreCase = true) || !mapping.enabled) return@mapNotNull null
+                if (alias.equals(target, ignoreCase = true) || !mapping.enabled || !mapping.effective) {
+                    return@mapNotNull null
+                }
                 val ownerKey = owner.lowercase()
                 val cardKey = "$ownerKey|${alias.lowercase()}"
                 // 这一家在「这个对外名」下已经有一行了（原生同名）就不再补
@@ -797,32 +900,19 @@ fun ModelsPage(
                     upstreamId = target,
                 )
             }
-            fromSession + extra + aliasRows
-        }
-    // ── 每条上游 id 的启用别名（供全局视图隐藏原名卡、单家视图标小字）──
-    // main 把它挂在 ModelRow.aliases 上；dev 的数据层暂未暴露该字段，这里用
-    // 同一份 mappings 在 UI 侧实时算出等价的 map（键 = "家|上游 id"）。判据一样：
-    // 映射一关，别名变空 ⇒ 原名卡在全局视图自动恢复，不是一次性的隐藏标记。
-    val aliasByKey = remember(manageMappings) {
-        manageMappings
-            .filter { !it.isDefault && it.enabled }
-            .filter { mapping ->
-                val alias = mapping.alias.trim()
-                val target = mapping.target.trim()
-                alias.isNotEmpty() && target.isNotEmpty() &&
-                    !alias.equals(target, ignoreCase = true)
+            // 未生效的别名随行下发，界面只置灰标注、不让位、不进候选（见 #129）。
+            fun keyOf(row: GatewayRepository.ModelRow): String =
+                "${row.provider.lowercase()}|" +
+                    (row.upstreamId ?: wireModelId(row.id, row.provider)).lowercase()
+            (fromSession + extra + aliasRows).map { row ->
+                row.copy(inactiveAliases = inactiveAliasByKey[keyOf(row)].orEmpty())
             }
-            .groupBy { "${it.provider?.lowercase()}|${it.target.lowercase()}" }
-            .mapValues { (_, list) -> list.map { it.alias } }
-    }
-    fun aliasesOf(row: GatewayRepository.ModelRow): List<String> = aliasByKey[
-        "${row.provider.lowercase()}|" +
-            (row.upstreamId ?: wireModelId(row.id, row.provider)).lowercase()
-    ].orEmpty()
+        }
     // 两个视图各看一个名字（用户定的口径）：
     //   · 全局聚合（listScope == null）→ 看**别名**：隐藏已改名的原名行，只留别名卡；
     //   · 单家视图 → 看**原名**：只留这一家的原名行，别名卡属于聚合视图。
-    // 判据实时算（aliases 由当前 mappings 推出），映射一关原名卡自动恢复。
+    // 判据实时算（aliasByKey 由当前 mappings 的**生效**别名推出），映射一关、
+    // 或内核判定别名已失效（模型被关 / 目标不在清单），原名卡在全局视图自动恢复。
     val scopeRows = remember(allRows, listScope) {
         val s0 = listScope
         if (s0 == null) {
@@ -926,7 +1016,7 @@ fun ModelsPage(
             // 列出全部自定义家，与有没有模型无关）。点进去看到「这家没有匹配
             // 的模型」是**诚实**的读数：这家确实还没登记模型，而「登记模型」
             // 的入口就在那个视图里（见下面的自定义家段落）。
-            val scopes = remember(allRows, customProviders) {
+            val scopes = remember(allRows, customProviders, accountProviders) {
                 val order = PresetRegistry.ALL.map { it.id }
                 val fromRows = allRows.groupBy { it.provider }
                     .map { (pid, list) ->
@@ -935,7 +1025,15 @@ fun ModelsPage(
                 // 零模型的自定义家也要有芯片（见上）。名字取自定义家自己的
                 // `name`（`providerLabel` 那份来自模型行，零模型时压根没有行）。
                 val fromCustoms = customProviders.map { it.id to it.displayName }
-                (fromRows + fromCustoms)
+                // 零模型的**内置**家同样要有芯片：没有内置兜底清单的那几家
+                // （ModelScope / Loomy / AtomCode / Trae…）在第一次拉取成功之前
+                // 就是这个状态，而「授权了却哪儿都找不到它」正是用户报的故障。
+                // 名字取注册表 label（零模型时没有行可读）。
+                val customIds = customProviders.map { it.id }.toSet()
+                val fromAccounts = accountProviders
+                    .filter { it !in customIds && fromRows.none { pair -> pair.first == it } }
+                    .map { it to PresetRegistry.labelOf(it) }
+                (fromRows + fromCustoms + fromAccounts)
                     .distinctBy { it.first }
                     .sortedBy { pair ->
                         // 注册表内的家按注册表顺序排，自定义家排在最后
@@ -1045,7 +1143,47 @@ fun ModelsPage(
                 }
                 val list = filtered.filter { it.provider == pid }
                 if (list.isEmpty()) {
-                    Text("这家没有匹配的模型", color = C.textDim, fontSize = 12.sp)
+                    // ── 「已授权、但一家模型都没有」 vs 「这次筛选没命中」──
+                    // 前者是真实状态（没有内置兜底清单的家在第一次拉取成功前就是
+                    // 这样），必须**给动作**；后者只是搜索词没命中，给一句话就够。
+                    // 合成一句「没有匹配的模型」会让前者看起来像是搜索问题 ——
+                    // 而它其实是用户刚授权完、正等着看模型的那一家。
+                    val noModelsAtAll = allRows.none { it.provider == pid }
+                    if (query.isBlank() && noModelsAtAll && pid in accountProviders) {
+                        // 账号数从**真实账号行**数（providerCounts 是注册表全集，
+                        // 那里的数字对没账号的家是 0、对有账号的家才是真值 —— 这里
+                        // 既然已经按 accountList 判定了成员，数字也走同一份来源）。
+                        val accounts = snap.accountList.count { it.provider == pid }
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .background(C.insetBg, RoundedCornerShape(10.dp))
+                                .padding(horizontal = 10.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                if (accounts > 0) {
+                                    "已授权 $accounts 个账号 · 还没有拉到模型清单"
+                                } else {
+                                    "还没有拉到模型清单"
+                                },
+                                color = C.textSub,
+                                fontSize = 11.5.sp,
+                                modifier = Modifier.weight(1f),
+                            )
+                            Text(
+                                if (refreshing) "拉取中…" else "拉取模型",
+                                color = if (refreshing) C.textDim else C.accent,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier
+                                    .clickable(enabled = !refreshing) { pullOne(pid) }
+                                    .padding(horizontal = 6.dp, vertical = 4.dp),
+                            )
+                        }
+                    } else {
+                        Text("这家没有匹配的模型", color = C.textDim, fontSize = 12.sp)
+                    }
                 } else {
                     ProviderModelGroup(
                         providerId = pid,
@@ -1162,43 +1300,15 @@ fun ModelsPage(
             providers = pullProviders,
             rows = refreshRows,
             customModelCounts = customModelCounts,
+            customPresetKeys = customProviders
+                .filter { it.presetKey.isNotBlank() }
+                .associate { it.id to it.presetKey },
             refreshing = refreshing,
             onDismiss = { if (!refreshing) showPull = false },
             onPullAll = { refreshAll() },
-            onPullOne = { pid ->
-                if (!refreshing) {
-                    refreshing = true
-                    scope.launch {
-                        // 自定义家：另一个端点（拉上游 + 合并保存），见 pullCustom
-                        if (CustomProviderOps.isCustomProviderId(pid)) {
-                            val row = pullCustom(pid)
-                            refreshing = false
-                            refreshRows = refreshRows.filterNot { it.provider == pid } + row
-                            refreshAt = System.currentTimeMillis()
-                            if (!row.failed) {
-                                GatewayRepository.refreshOnce()
-                                loadManage()
-                                loadCustom()
-                            }
-                            if (row.failed) {
-                                Toast.makeText(ctx, row.message ?: "拉取失败", Toast.LENGTH_SHORT).show()
-                            }
-                            return@launch
-                        }
-                        val r = ModelOps.refresh(providers = listOf(pid))
-                        refreshing = false
-                        RefreshRow.parseAll(r.data).takeIf { it.isNotEmpty() }?.let { fresh ->
-                            // 单家结果并回既有列表：只替换这一家的行，
-                            // 其余家的结论与时间保持不变（否则一拉一家就把别家的清空）
-                            val merged = refreshRows.filterNot { it.provider == pid } + fresh
-                            refreshRows = merged
-                        }
-                        refreshAt = System.currentTimeMillis()
-                        if (r.ok) GatewayRepository.refreshOnce()
-                        if (r.ok) loadManage()
-                    }
-                }
-            },
+            // 单家拉取的动作提到 `pullOne`：零模型的内置家空态行要复用同一个
+            // 动作（那条路不在这个弹层里）。
+            onPullOne = { pid -> pullOne(pid) },
         )
     }
 }
@@ -1600,6 +1710,8 @@ private fun PullModelsDialog(
     rows: List<RefreshRow>,
     /** 自定义家「已登记几个模型」；内置家不在表里（条数由 [rows] 给）。 */
     customModelCounts: Map<String, Int> = emptyMap(),
+    /** id → 预置模板 slug（图标身份，随创建固化；空 = 无身份记录） */
+    customPresetKeys: Map<String, String> = emptyMap(),
     refreshing: Boolean,
     onDismiss: () -> Unit,
     onPullAll: () -> Unit,
@@ -1681,7 +1793,13 @@ private fun PullModelsDialog(
                         Modifier.fillMaxWidth().padding(vertical = 7.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        AgateProviderAvatar(providerId = pid, label = label, size = 28.dp, corner = 9.dp)
+                        AgateProviderAvatar(
+                            providerId = pid,
+                            label = label,
+                            size = 28.dp,
+                            corner = 9.dp,
+                            customPresetKey = customPresetKeys[pid].orEmpty(),
+                        )
                         Spacer(Modifier.width(9.dp))
                         Column(Modifier.weight(1f)) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -2152,6 +2270,16 @@ private fun ModelLine(
             if (note != null) {
                 Text(note, color = C.textDim, fontSize = 9.sp)
             }
+            // 配过、但内核判定调不通的别名单独标一行（2026-11-12 #129）。
+            // 只说「未生效」，不猜原因：模型被关 / 目标不在清单 / 映射被关 /
+            // 撞了原生 id 都会落到这堆，界面拿不到是哪一种，写具体原因就是谎报。
+            m.inactiveAliases.takeIf { it.isNotEmpty() }?.let { aliases ->
+                Text(
+                    "别名 ${aliases.joinToString(" / ")} · 未生效",
+                    color = C.textDim.copy(alpha = 0.7f),
+                    fontSize = 9.sp,
+                )
+            }
             if (testResult != null) {
                 Text(
                     testResult.summary(),
@@ -2422,6 +2550,14 @@ private fun ModelAggregateCard(
                             ?.let { "别名 ${it.joinToString(" / ")}" }
                     if (note != null) {
                         Text(note, color = C.textDim, fontSize = 9.sp)
+                    }
+                    // 未生效的别名：置灰另起一行，不让位、不算候选（见 #129）
+                    if (m.inactiveAliases.isNotEmpty()) {
+                        Text(
+                            "别名 ${m.inactiveAliases.joinToString(" / ")} · 未生效",
+                            color = C.textDim.copy(alpha = 0.7f),
+                            fontSize = 9.sp,
+                        )
                     }
                 }
                 if (m.official == false) {

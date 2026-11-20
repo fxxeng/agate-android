@@ -181,6 +181,15 @@ object GatewayRepository {
          * `upstreamId` = 真实上游 id（用于启停与转发的实际名字）。
          */
         val upstreamId: String? = null,
+        /**
+         * 配过、但**内核判定未生效**的别名（2026-11-12 #129，`MappingRow.effective`）。
+         *
+         * 与 ModelsPage 里生效别名的 `aliasByKey` 分开存：后者决定「原名行让不让
+         * 位、才进候选卡」，这一份只用于行内置灰标注「别名 X · 未生效」，**不猜
+         * 原因**（失效形状有四种，界面拿不到是哪一种，写具体原因就是谎报）。
+         * 内核没给真值（`effective=false`）时不写。
+         */
+        val inactiveAliases: List<String> = emptyList(),
     )
 
     /** v44 .qrow 一行：序号由渲染端下标，这里只带语义字段。 */

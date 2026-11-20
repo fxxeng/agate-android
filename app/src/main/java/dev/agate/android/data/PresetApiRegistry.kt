@@ -228,6 +228,16 @@ object PresetApiRegistry {
     fun byKey(key: String): Preset? = ALL.firstOrNull { it.key == key }
 
     /**
+     * 按 slug 查模板（`key` 与 [Preset.name] 的差别：name 是可读展示串，
+     * key 是稳定标识）。提供商记录从预置卡创建时把 key 固化进 `presetKey`，
+     * 此后用户改名也不影响图标身份 —— 反查链见 `ProviderIcons.resOfCustomIdentity`。
+     *
+     * 空 / 纯空白 key 直接算查不到；其余按精确匹配（[byKey]）。
+     */
+    fun findByKey(key: String?): Preset? =
+        key?.trim()?.takeIf { it.isNotEmpty() }?.let { byKey(it) }
+
+    /**
      * 某条自定义记录是否「由某张模板建出来的」—— 判据是**名称相等**。
      * 与上游 `matchesPresetName` 同一口径；改了名的家会回到「自定义」段。
      */

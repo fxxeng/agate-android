@@ -383,6 +383,9 @@ fun AddProviderPage(onBack: () -> Unit, initialProviderId: String? = null) {
                                     // 给内核发 mode 会被明确拒绝（见该字段的注释）。
                                     browserMode = channel == AuthChannel.EXTERNAL &&
                                         picked.browserLogin,
+                                    // 网关探活结果：needsGateway 家的浏览器回调落在网关
+                                    // 端口，网关没起时别让用户点「在浏览器中打开」白跑一趟。
+                                    gatewayUp = kernelUp,
                                     onDone = onAdded,
                                 )
                             AuthChannel.SMS -> SmsLoginForm(preset = picked, onDone = onAdded)
@@ -1276,6 +1279,8 @@ private fun CustomProviderForm(
                     headers = preset?.headers?.takeIf { it.isNotEmpty() },
                     anthropicToolType = preset?.anthropicToolType?.takeIf { it.isNotBlank() },
                     clientEmulation = preset?.clientEmulation?.takeIf { it.isNotBlank() },
+                    // 模板身份随创建固化：此后改名不再影响图标（见 ProviderIcons）
+                    presetKey = preset?.key,
                     balanceQuery = query.takeIf { it.isNotEmpty() },
                 )
             }
@@ -1465,6 +1470,8 @@ private fun ChannelChips(
 private fun ExternalLoginForm(
     preset: ProviderPreset,
     browserMode: Boolean = false,
+    /** 网关是否在监听；needsGateway 家的浏览器回调走 `localhost:<网关端口>`，不能用 JNI 直调顶替。 */
+    gatewayUp: Boolean? = null,
     onDone: (Boolean, String) -> Unit,
 ) {
     val C = agateColors()
@@ -1554,6 +1561,12 @@ private fun ExternalLoginForm(
         Button(
             onClick = {
                 hint = null
+                // 网关未运行时拦截网页登录：这几家的回调落在网关端口，点了
+                // 也只会在授权完成后卡在 localhost。粘贴/导入通道不走这里。
+                if (preset.needsGateway && gatewayUp == false) {
+                    hint = "请先运行网关，再发起网页登录（回调落在 localhost:<网关端口>）"
+                    return@Button
+                }
                 scope.launch {
                     val mode = if (browserMode) "browser" else null
                     when (val r = LoginClient.start(preset.id, mode)) {

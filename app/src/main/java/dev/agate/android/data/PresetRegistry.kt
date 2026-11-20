@@ -157,6 +157,10 @@ object PresetRegistry {
         ProviderPreset(
             "autoclaw-intl", "AutoClaw 国际版", "autoglm.ai · 网页登录", LoginKind.WEBVIEW,
             WEB, supportsCheckin = true,
+            // 浏览器通道的授权回调落在网关端口（localhost:<port>/...），Core 态
+            // 不监听该端口 ⇒ 网关没运行时浏览器得到 ERR_CONNECTION_REFUSED（实测）。
+            // 添加页那张「先运行网关」提示正是读这个字段；登录按钮也据此拦一道。
+            needsGateway = true,
         ),
         // Qoder：设备码 + PAT 粘贴
         ProviderPreset(
