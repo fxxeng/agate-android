@@ -138,6 +138,40 @@ pub fn list_item(model: &Value, provider_id: &str) -> Value {
             _ => Value::String("chat".to_string()),
         },
     );
+    // ── 图片模型多给三个键（对话模型一个都不给，输出逐字不变）────────
+    // 客户端靠它们区分「这是生图模型」与「这是能看图的对话模型」：
+    //   · `output_modalities`：生态通用说法（OpenRouter / ZenMux 同款），
+    //     生图模型的产出是图片而不是文本；
+    //   · `supports_image_generation` / `supports_image_editing`：能做什么。
+    //     两个分开给 —— ModelScope 的生图与编辑是两组不同型号，合一个
+    //     `supports_image` 会让客户端在只能生图的型号上显示出「编辑」入口。
+    //
+    // 只在 `kind == image` 时插入：给对话模型补 `supports_image_generation:
+    // false` 会改变现有 `/v1/models` 的字节，而客户端没有任何一处需要它。
+    if model_is_image(model) {
+        item.insert(
+            "output_modalities".to_string(),
+            Value::Array(vec![Value::String("image".to_string())]),
+        );
+        item.insert(
+            "supports_image_generation".to_string(),
+            Value::Bool(
+                model
+                    .get("supports_image_generation")
+                    .map(js_truthy)
+                    .unwrap_or(false),
+            ),
+        );
+        item.insert(
+            "supports_image_editing".to_string(),
+            Value::Bool(
+                model
+                    .get("supports_image_editing")
+                    .map(js_truthy)
+                    .unwrap_or(false),
+            ),
+        );
+    }
     Value::Object(item)
 }
 
@@ -239,4 +273,21 @@ pub fn suggest_from(
     scored.sort_by(|a, b| a.1.cmp(&b.1).then(b.2.cmp(&a.2)));
     scored.truncate(limit);
     scored.into_iter().map(|(id, _, _)| id).collect()
+}
+
+/// 这条目录条目产出的是图片吗（与 `providers::images::model_is_image` 同判据）。
+///
+/// 这里自己写一份而不是调那边：`shape` 是「清单条目 → 对外 JSON」的纯函数层，
+/// 不依赖 providers 注册表（那会让一条纯映射依赖整个 provider 体系）。
+/// 判据只有两行，重复的代价远小于引入那条依赖。
+fn model_is_image(model: &Value) -> bool {
+    model
+        .get("kind")
+        .or_else(|| model.get("type"))
+        .and_then(Value::as_str)
+        .is_some_and(|kind| kind.eq_ignore_ascii_case("image"))
+        || model
+            .get("output_modalities")
+            .and_then(Value::as_array)
+            .is_some_and(|items| items.iter().any(|item| item.as_str() == Some("image")))
 }
