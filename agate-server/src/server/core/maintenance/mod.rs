@@ -82,9 +82,10 @@ pub fn summary(detail: &Detail) -> String {
     );
     if let Some(metadata) = &run.metadata {
         match metadata.status.as_str() {
-            "refreshed" => {
-                text.push_str(&format!("；models.dev 已更新 {} 条", metadata.count.unwrap_or(0)))
-            }
+            "refreshed" => text.push_str(&format!(
+                "；models.dev 已更新 {} 条",
+                metadata.count.unwrap_or(0)
+            )),
             "failed" => text.push_str(&format!(
                 "；models.dev 更新失败：{}",
                 metadata.message.as_deref().unwrap_or("未知原因")
@@ -184,8 +185,7 @@ async fn complete(
 async fn refresh_forced(store: &AccountStore, ids: &[String]) -> Vec<Value> {
     let mut slots: Vec<Option<Value>> = vec![None; ids.len()];
     for (index, id) in ids.iter().enumerate() {
-        let provider = store
-            .list_accounts()["accounts"]
+        let provider = store.list_accounts()["accounts"]
             .as_array()
             .into_iter()
             .flatten()
@@ -229,7 +229,8 @@ fn complete_missing_targets(
             {
                 continue;
             }
-            let raw = json!({ "id": id, "status": "skipped", "message": "账号已不存在，未执行维护" });
+            let raw =
+                json!({ "id": id, "status": "skipped", "message": "账号已不存在，未执行维护" });
             items.push(types::item(&raw, items.len(), snapshots));
         }
     }
@@ -250,7 +251,10 @@ pub async fn execute(store: &AccountStore, request: Request) -> Result<Detail, S
     let manual = request.source == "manual";
     let (guard, recorder) = prepare(&task_id, manual, request.retry_of.as_deref())?;
     let detail = complete(store, request, recorder).await;
-    let note = detail.as_ref().map(summary).unwrap_or_else(|error| error.clone());
+    let note = detail
+        .as_ref()
+        .map(summary)
+        .unwrap_or_else(|error| error.clone());
     let succeeded = detail
         .as_ref()
         .map(|detail| detail.run.failed == 0 || detail.run.refreshed > 0)
@@ -292,7 +296,10 @@ pub fn launch(store: AccountStore, request: Request) -> Result<Detail, String> {
     };
     crate::spawn_task(async move {
         let detail = complete(&store, request, recorder).await;
-        let note = detail.as_ref().map(summary).unwrap_or_else(|error| error.clone());
+        let note = detail
+            .as_ref()
+            .map(summary)
+            .unwrap_or_else(|error| error.clone());
         let succeeded = detail
             .as_ref()
             .map(|detail| detail.run.failed == 0 || detail.run.refreshed > 0)
