@@ -2296,6 +2296,6 @@ impl ResponsesCollector {
 
 impl Default for ResponsesCollector {
     fn default() -> Self {
-        Self::new()
+        Self::new(false)
     }
 }
