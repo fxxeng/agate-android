@@ -35,6 +35,8 @@
 //! 并保持与 Node 版一致的分组（需鉴权的一律挂 `protected`）。
 
 pub mod accounts;
+/// 账号排序（GET/PUT /api/accounts/sort）：把已有的排序能力接到管理面。
+pub mod accounts_sort;
 // `/api/accounts/usage` 的查询与结果组装（从 accounts.rs 拆出：余额能力从
 // 「只服务 workbuddy」扩到四家混查时新增，见该文件模块头）
 pub mod accounts_usage;

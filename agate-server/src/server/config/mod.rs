@@ -76,9 +76,9 @@ mod routing_groups;
 mod routing_profiles;
 mod routing_workspace;
 pub(crate) mod sql;
-pub mod vision_compat;
 pub mod title_routes;
 mod types;
+pub mod vision_compat;
 
 pub use account_sort::{
     account_sort_settings, save_account_sort, validate_account_sort, AccountSortRule,

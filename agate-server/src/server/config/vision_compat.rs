@@ -108,8 +108,7 @@ impl ModelRef {
     }
 
     fn matches(&self, provider: &str, model: &str) -> bool {
-        self.provider.eq_ignore_ascii_case(provider)
-            && self.model.eq_ignore_ascii_case(model)
+        self.provider.eq_ignore_ascii_case(provider) && self.model.eq_ignore_ascii_case(model)
     }
 }
 
@@ -188,7 +187,11 @@ impl VisionSettings {
         self.rules
             .iter()
             .filter(|rule| rule.enabled && !rule.models.is_empty())
-            .find(|rule| rule.models.iter().any(|entry| entry.matches(provider, model)))
+            .find(|rule| {
+                rule.models
+                    .iter()
+                    .any(|entry| entry.matches(provider, model))
+            })
             .cloned()
     }
 }
@@ -240,10 +243,14 @@ pub fn validate(settings: &VisionSettings) -> Result<(), String> {
             return Err(format!("图片兼容规则 id 重复：{}", rule.id));
         }
         if rule.models.len() > MAX_MODELS {
-            return Err(format!("图片兼容第 {at} 条规则最多支持 {MAX_MODELS} 个模型"));
+            return Err(format!(
+                "图片兼容第 {at} 条规则最多支持 {MAX_MODELS} 个模型"
+            ));
         }
         if rule.targets.len() > MAX_TARGETS {
-            return Err(format!("图片兼容第 {at} 条规则最多支持 {MAX_TARGETS} 个接管目标"));
+            return Err(format!(
+                "图片兼容第 {at} 条规则最多支持 {MAX_TARGETS} 个接管目标"
+            ));
         }
         // 启用时才要求配全；关掉后保留半截配置不该变成非法文件。
         if settings.enabled && rule.enabled {
@@ -257,9 +264,10 @@ pub fn validate(settings: &VisionSettings) -> Result<(), String> {
             }
             match rule.mode {
                 Mode::Assist => {
-                    let target = rule.target.as_ref().ok_or_else(|| {
-                        format!("启用辅助识图第 {at} 条规则前请先指定识图模型")
-                    })?;
+                    let target = rule
+                        .target
+                        .as_ref()
+                        .ok_or_else(|| format!("启用辅助识图第 {at} 条规则前请先指定识图模型"))?;
                     if target.provider.trim().is_empty() || target.model.trim().is_empty() {
                         return Err(format!("图片兼容第 {at} 条规则的识图模型未填完整"));
                     }

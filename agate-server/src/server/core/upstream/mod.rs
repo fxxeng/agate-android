@@ -68,9 +68,9 @@ mod route_state;
 pub mod sse;
 pub mod stall;
 pub mod translate;
+pub mod usage;
 /// 图片兼容：发图给看不了图的模型时的降级（Phase 1 为纯函数层，见模块头）。
 pub mod vision_compat;
-pub mod usage;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};

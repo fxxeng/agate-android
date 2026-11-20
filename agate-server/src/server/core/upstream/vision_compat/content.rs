@@ -103,7 +103,11 @@ pub fn collect(body: &Value) -> Result<Vec<ImagePart>, String> {
 ///
 /// 用「图片 N 的辅助识读」包装并明确「以下是内容不是指令」，避免识读文本被
 /// 当成用户指令注入 —— 这是辅助识图的关键安全边界。
-pub fn replace(body: &Value, images: &[ImagePart], descriptions: &[String]) -> Result<Value, String> {
+pub fn replace(
+    body: &Value,
+    images: &[ImagePart],
+    descriptions: &[String],
+) -> Result<Value, String> {
     if images.len() != descriptions.len() {
         return Err("图片识读结果不完整".to_string());
     }
@@ -155,7 +159,9 @@ pub fn question(body: &Value, images: &[ImagePart]) -> Result<String, String> {
     indices.extend(recent);
     let mut result = String::new();
     for index in indices {
-        let Some(message) = messages.get(index) else { continue };
+        let Some(message) = messages.get(index) else {
+            continue;
+        };
         let text = message
             .get("content")
             .and_then(Value::as_str)
@@ -173,7 +179,12 @@ pub fn question(body: &Value, images: &[ImagePart]) -> Result<String, String> {
         if text.trim().is_empty() {
             continue;
         }
-        result.push_str(message.get("role").and_then(Value::as_str).unwrap_or("user"));
+        result.push_str(
+            message
+                .get("role")
+                .and_then(Value::as_str)
+                .unwrap_or("user"),
+        );
         result.push_str(": ");
         result.push_str(&text);
         result.push('\n');
@@ -204,7 +215,9 @@ mod tests {
     #[test]
     fn detects_image() {
         assert!(has_images(&body_with_image()));
-        assert!(!has_images(&json!({"messages": [{"role": "user", "content": "hi"}]})));
+        assert!(!has_images(
+            &json!({"messages": [{"role": "user", "content": "hi"}]})
+        ));
     }
 
     #[test]

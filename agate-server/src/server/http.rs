@@ -414,6 +414,13 @@ pub fn panel_router(state: ServerState) -> Router {
         // 单独登记尾斜杠形态：`/api/accounts/` 在 axum 的 `{*rest}` 里匹配不上
         // （通配要求至少一个非空段），不登记就会落到全局 404（OpenAI 形状），
         // 而 Node 版对它的响应是管理 API 形状的 404
+        // 账号排序：能力层（config::account_sort + core::account_order::sorting）早已
+        // 就绪并被路由层调用，这里只补管理入口。必须注册在 /api/accounts/{*rest}
+        // 通配之前——axum 精确路径优先，但显式顺序更利于阅读与排障。
+        .route(
+            "/api/accounts/sort",
+            get(api::accounts_sort::get_sorting).put(api::accounts_sort::save_sorting),
+        )
         .route("/api/accounts", any(api::accounts::accounts_entry))
         .route("/api/accounts/", any(api::accounts::accounts_entry))
         .route("/api/accounts/{*rest}", any(api::accounts::accounts_entry))

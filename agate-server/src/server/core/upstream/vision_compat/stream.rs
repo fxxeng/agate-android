@@ -69,7 +69,9 @@ mod tests {
     fn matches_english_rejection() {
         assert!(rejection_text("model does not support image input"));
         assert!(rejection_text("This model only supports text"));
-        assert!(rejection_text("image_url is only supported by certain models"));
+        assert!(rejection_text(
+            "image_url is only supported by certain models"
+        ));
     }
 
     #[test]
