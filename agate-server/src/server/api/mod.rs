@@ -146,6 +146,8 @@ pub mod subscriptions;
 pub mod timeouts_api;
 pub mod update;
 pub mod upgrade_api;
+/// 图片兼容配置（GET/PUT /api/vision-compat）：发图给看不了图的模型时的降级规则。
+pub mod vision_compat;
 pub mod zwsp;
 // 活动套餐通道的人机验证令牌池（界面铸造 → 网关消费），见该文件模块头
 pub mod zcode_captcha;

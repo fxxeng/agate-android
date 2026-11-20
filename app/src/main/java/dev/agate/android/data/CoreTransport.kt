@@ -77,11 +77,28 @@ object CoreTransport {
     }
 
     suspend fun call(method: String, path: String, body: String? = null): Reply =
-        withContext(Dispatchers.IO) {
+        callWithKey(method, path, body, null)
+
+    /**
+     * 按次指定鉴权 Key（`/api/model-access/models` 用）——「你问的是这把 Key 的
+     * 权限」，不能拿面板那把兜底：否则界面选 A、结果按 B 的权限算，两边对不上。
+     *
+     * [apiKey] 为 null 时退回全局面板凭证（[configure] 设的那把），与 [call]
+     * 完全等价 —— 把差异收在一个入口，避免两条链路各自演化出不同的重试/
+     * 错误映射。内核侧 `api_request` 把它注入 `Authorization: Bearer`，
+     * `model_access::presented_key` 优先读 x-api-key、其次这个头，所以这里
+     * 用 Bearer 即可命中（JNI 通道没有单独的头传参口，也不必加）。
+     */
+    suspend fun callWithKey(
+        method: String,
+        path: String,
+        body: String? = null,
+        apiKey: String?,
+    ): Reply = withContext(Dispatchers.IO) {
             val deadlineNanos = System.nanoTime() + CORE_READY_TIMEOUT_MS * 1_000_000
             while (true) {
                 val rawReply = withTimeoutOrNull(NATIVE_TIMEOUT_MS) {
-                    awaitOnce(method, path, body)
+                    awaitOnce(method, path, body, apiKey)
                 }
                 val reply = rawReply?.let(::parseReply)
                     ?: Reply.Down("操作超时（超过 2 分钟），请稍后重试")
@@ -110,7 +127,12 @@ object CoreTransport {
 
     suspend fun post(path: String, body: String): Reply = call("POST", path, body)
 
-    private suspend fun awaitOnce(method: String, path: String, body: String?): String? {
+    private suspend fun awaitOnce(
+        method: String,
+        path: String,
+        body: String?,
+        keyOverride: String? = null,
+    ): String? {
         ensureCallback()?.let { return errorEnvelope(it) }
         val requestId = nextRequestId.getAndIncrement()
         return suspendCancellableCoroutine { continuation ->
@@ -122,8 +144,9 @@ object CoreTransport {
                     runCatching { Gateway.cancelApiCall(requestId) }
                 }
             }
+            val effectiveKey = keyOverride ?: apiKey
             val accepted = try {
-                JSONObject(Gateway.apiCallAsync(requestId, method, path, body, apiKey))
+                JSONObject(Gateway.apiCallAsync(requestId, method, path, body, effectiveKey))
             } catch (error: Throwable) {
                 pending.remove(requestId)
                 continuation.resume(errorEnvelope(nativeFailure(error)))

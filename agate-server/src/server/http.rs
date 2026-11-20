@@ -760,6 +760,13 @@ pub fn panel_router(state: ServerState) -> Router {
             "/api/client-identification/preview",
             post(api::client_identification::preview_settings),
         )
+        // ── 图片兼容配置 ──
+        // 与 /api/prompt-rules 同形（整份规则表 + revision）：改的是「发图给看不了图的
+        // 模型时怎么降级」，属可观测行为的一部分。挂 protected。
+        .route(
+            "/api/vision-compat",
+            get(api::vision_compat::get_settings).put(api::vision_compat::put_settings),
+        )
         // ── 会话图片压缩 ──
         // 与 /api/auto-continue 同一族（GET 读 / PUT 写、默认关、改的是发往上游的
         // 字节），比它多两项参数：一个开关 + 三个有界整数（长边 / 质量 / 阈值）。
