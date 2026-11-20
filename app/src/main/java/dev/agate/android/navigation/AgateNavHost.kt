@@ -26,6 +26,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Assignment
+import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Settings
@@ -113,6 +114,7 @@ object Routes {
     const val PROVIDERS = "providers"
     const val MODELS = "models"
     const val TASKS = "tasks"
+    const val IMAGES = "images"
 
     const val GATEWAY = "gateway"
     const val PROVIDER_DETAIL = "provider_detail"
@@ -152,6 +154,9 @@ private val DrawerSections: List<DrawerSection> = listOf(
         DrawerEntry(Routes.PROVIDERS, "提供商", Icons.Filled.Dns),
         DrawerEntry(Routes.MODELS, "模型", Icons.Filled.Dataset),
         DrawerEntry(Routes.TASKS, "任务中心", Icons.Filled.Assignment),
+        // 图像创作与那四个主入口同级：它是「拿到图」这条链的唯一界面，
+        // 埋在运维分组里会让人以为它是诊断工具。
+        DrawerEntry(Routes.IMAGES, "图像创作", Icons.Filled.Image),
     )),
     DrawerSection("数据与报表", listOf(
         DrawerEntry(Routes.QUOTA, "额度中心", Icons.Filled.WorkspacePremium),
@@ -447,6 +452,9 @@ fun AgateNavHost(
                         },
                         onOpenMapping = { navController.navigate(Routes.MODEL_MAPPING) },
                     )
+                }
+                composable(Routes.IMAGES) {
+                    dev.agate.android.ui.images.ImagesPage(onOpenDrawer = { openDrawer() })
                 }
                 composable(Routes.TASKS) {
                     TasksPage(

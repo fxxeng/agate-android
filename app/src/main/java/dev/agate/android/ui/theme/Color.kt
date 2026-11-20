@@ -104,6 +104,15 @@ data class AgateColors(
     val badgeGrayText: Color = BadgeGrayText,
     /** 热力图四级强度（0 空 → 3 满） */
     val heatLevels: List<Color>,
+    /**
+     * 遮罩色（半透明黑）：压在图片上的角标/关闭按钮底、以及需要「压暗一层」
+     * 的浮层用它。
+     *
+     * 为什么单独一格而不是各处写 `Color(0xB3000000)`：深浅两套主题的遮罩
+     * 不透明度不同（深色 0x99、浅色 0xB3），散落写字面量时「浅色主题下角标
+     * 看不见」这类问题只会出现在某一条路径上。
+     */
+    val scrim: Color,
 ) {
     companion object {
         val Dark = AgateColors(
@@ -122,6 +131,7 @@ data class AgateColors(
                 Color(0x9938BDF8),
                 DarkAccent,
             ),
+            scrim = Color(0x99000000),
         )
 
         val Light = AgateColors(
@@ -140,6 +150,7 @@ data class AgateColors(
                 Color(0x990284C7),
                 LightAccent,
             ),
+            scrim = Color(0xB3000000),
         )
     }
 }
