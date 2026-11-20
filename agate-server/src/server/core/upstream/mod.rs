@@ -51,6 +51,11 @@ pub mod connections;
 pub mod continuation;
 /// 生图响应的读取层：把一家上游返回的东西读成统一的 `{created, data:[…]}`，
 /// 以及 ModelScope 异步任务的轮询。
+/// 会话图片压缩（转发前把内联 base64 大图压小）。
+///
+/// 公开而非 `mod`：`payload::send_body` 是唯一调用方，但用例要直接驱动
+/// 「给定请求体 → 改写成什么样」，藏起来就没法钉住「坏图必须原样放行」。
+pub mod image_compress;
 mod image_tasks;
 mod images;
 pub mod multipart;
@@ -408,6 +413,7 @@ impl UpstreamService {
                 sanitize_fingerprints: config.sanitize_fingerprints(),
                 sanitize_zwsp_words: config.sanitize_zwsp_words(),
                 developer_role_compat: config.developer_role_compat(),
+                image_compress: crate::server::config::image_compress_settings(),
                 prompt: config.prompt_plan(),
                 key_scope: request.allowed_providers.as_ref(),
                 pinned_account: request.pinned_account.as_deref(),
@@ -473,6 +479,8 @@ impl UpstreamService {
             sanitize_fingerprints,
             sanitize_zwsp_words,
             developer_role_compat,
+            // 图片压缩设置随请求取一次快照（同一次请求内四参数必须一致）。
+            image_compress: crate::server::config::image_compress_settings(),
             prompt,
             key_scope: key_scope.as_ref(),
             pinned_account: pinned_account.as_deref(),

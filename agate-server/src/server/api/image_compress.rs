@@ -283,8 +283,8 @@ mod tests {
     /// 且 `set_image_compress` 那边根本分不出「没给」与「给的是默认值」。
     #[test]
     fn an_absent_key_stays_absent_rather_than_becoming_the_default() {
-        let only_edge = patch_from(&body(&[(KEY_IMAGE_COMPRESS_MAX_EDGE, json!(1280))]))
-            .expect("合法");
+        let only_edge =
+            patch_from(&body(&[(KEY_IMAGE_COMPRESS_MAX_EDGE, json!(1280))])).expect("合法");
         assert_eq!(
             (
                 only_edge.enabled,

@@ -92,7 +92,11 @@ pub fn pick(rows: &[Value]) -> Vec<Value> {
 /// 目录一到就整份替换掉它 —— 与对话模型的内置清单同一个道理。
 pub fn builtin() -> Vec<Value> {
     [
-        ("hunyuan-image-alpha", "Hunyuan Image Alpha", TEXT_TO_IMAGE_TAG),
+        (
+            "hunyuan-image-alpha",
+            "Hunyuan Image Alpha",
+            TEXT_TO_IMAGE_TAG,
+        ),
         (
             "hunyuan-image-alpha-edit",
             "Hunyuan Image Alpha Edit",
@@ -187,7 +191,10 @@ pub fn build(
         "generations"
     };
     Ok(ImageRequestPlan::with_response(
-        format!("{}/v2/images/{path}", super::adapter::session_endpoint(account, region)),
+        format!(
+            "{}/v2/images/{path}",
+            super::adapter::session_endpoint(account, region)
+        ),
         super::adapter::chat_headers(account, region, Some("application/json")),
         payload,
         ImageResponseKind::Workbuddy,
@@ -205,14 +212,18 @@ mod tests {
         let row = json!({ "id": "hunyuan-image-alpha", "tags": ["image-to-image"] });
         assert_eq!(capabilities(&row), Some((false, true)));
         // 名字像图像模型但没标签 ⇒ 不是（上游的 id 命名不作数）
-        assert_eq!(capabilities(&json!({ "id": "hunyuan-image-x", "tags": ["chat"] })), None);
+        assert_eq!(
+            capabilities(&json!({ "id": "hunyuan-image-x", "tags": ["chat"] })),
+            None
+        );
         assert_eq!(capabilities(&json!({ "id": "x" })), None);
     }
 
     #[test]
     fn decorate_closes_chat_capabilities() {
-        let item = decorate(&json!({ "id": "a", "tags": ["text-to-image"], "supportsToolCall": true }))
-            .expect("image entry");
+        let item =
+            decorate(&json!({ "id": "a", "tags": ["text-to-image"], "supportsToolCall": true }))
+                .expect("image entry");
         assert_eq!(item["kind"], json!("image"));
         assert_eq!(item["supportsToolCall"], json!(false));
         assert_eq!(item["supports_image_editing"], json!(false));
@@ -225,8 +236,12 @@ mod tests {
     #[test]
     fn builtin_covers_both_operations() {
         let rows = builtin();
-        assert!(rows.iter().any(|row| row["supports_image_generation"] == json!(true)));
-        assert!(rows.iter().any(|row| row["supports_image_editing"] == json!(true)));
+        assert!(rows
+            .iter()
+            .any(|row| row["supports_image_generation"] == json!(true)));
+        assert!(rows
+            .iter()
+            .any(|row| row["supports_image_editing"] == json!(true)));
         assert!(rows.iter().all(|row| row["kind"] == json!("image")));
     }
 
@@ -238,8 +253,14 @@ mod tests {
             "prompt": "画一只猫",
             "style": "vivid",
         });
-        let error = build(&account, &body, Region::Cn, &HeaderMap::new(), ImageOperation::Generate)
-            .expect_err("style 应被拒绝");
+        let error = build(
+            &account,
+            &body,
+            Region::Cn,
+            &HeaderMap::new(),
+            ImageOperation::Generate,
+        )
+        .expect_err("style 应被拒绝");
         assert!(error.message.contains("style"), "{}", error.message);
     }
 
@@ -251,8 +272,14 @@ mod tests {
             "prompt": "把背景换成蓝色",
             "images": [{ "image_url": "data:image/png;base64,AA" }],
         });
-        let plan = build(&account, &body, Region::Cn, &HeaderMap::new(), ImageOperation::Edit)
-            .expect("编辑请求");
+        let plan = build(
+            &account,
+            &body,
+            Region::Cn,
+            &HeaderMap::new(),
+            ImageOperation::Edit,
+        )
+        .expect("编辑请求");
         assert!(plan.url.ends_with("/v2/images/edits"), "{}", plan.url);
         assert_eq!(plan.body["image"][0], json!("data:image/png;base64,AA"));
         assert_eq!(plan.response, ImageResponseKind::Workbuddy);
@@ -262,8 +289,14 @@ mod tests {
     fn editing_without_references_is_rejected() {
         let account = json!({ "endpoint": "https://example.com" });
         let body = json!({ "model": "hunyuan-image-alpha-edit", "prompt": "改一下" });
-        let error = build(&account, &body, Region::Cn, &HeaderMap::new(), ImageOperation::Edit)
-            .expect_err("缺参考图应被拒绝");
+        let error = build(
+            &account,
+            &body,
+            Region::Cn,
+            &HeaderMap::new(),
+            ImageOperation::Edit,
+        )
+        .expect_err("缺参考图应被拒绝");
         assert!(error.message.contains("参考图"), "{}", error.message);
     }
 
@@ -271,13 +304,25 @@ mod tests {
     fn openai_compatible_tier_asks_for_b64() {
         let account = json!({ "endpoint": "https://example.com" });
         let body = json!({ "model": "some-image-model", "prompt": "画一只猫" });
-        let plan = build(&account, &body, Region::Cn, &HeaderMap::new(), ImageOperation::Generate)
-            .expect("生图请求");
+        let plan = build(
+            &account,
+            &body,
+            Region::Cn,
+            &HeaderMap::new(),
+            ImageOperation::Generate,
+        )
+        .expect("生图请求");
         assert_eq!(plan.body["response_format"], json!("b64_json"));
         // `auto` 不发给上游：官方客户端从不发这个值
         let body = json!({ "model": "some-image-model", "prompt": "画一只猫", "size": "auto" });
-        let plan = build(&account, &body, Region::Cn, &HeaderMap::new(), ImageOperation::Generate)
-            .expect("生图请求");
+        let plan = build(
+            &account,
+            &body,
+            Region::Cn,
+            &HeaderMap::new(),
+            ImageOperation::Generate,
+        )
+        .expect("生图请求");
         assert_eq!(plan.body["size"], json!(DEFAULT_SIZE));
     }
 }

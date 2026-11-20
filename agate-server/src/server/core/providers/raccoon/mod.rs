@@ -69,9 +69,9 @@ use super::{kind_id, ProviderKind};
 
 pub mod balance;
 pub mod credentials;
-pub mod jwt;
 pub mod headers;
 pub mod image_generation;
+pub mod jwt;
 pub mod models;
 pub mod oauth;
 pub mod onboarding;
@@ -140,7 +140,12 @@ impl ProviderAdapter for RaccoonAdapter {
             .get("x-session-id")
             .and_then(|value| value.to_str().ok())
             .unwrap_or("");
-        headers.extend(headers::chat_identity(account, body, model, inbound_session)?);
+        headers.extend(headers::chat_identity(
+            account,
+            body,
+            model,
+            inbound_session,
+        )?);
         Ok(ChatRequestPlan::chat(
             format!("{}/chat/completions", self.llm_base_url()),
             headers,
@@ -579,9 +584,7 @@ fn is_glm_5_3(model: &str) -> bool {
         return false;
     };
     let rest = &lower[head + 3..];
-    let after_sep = rest
-        .strip_prefix(['-', '_', '.'])
-        .unwrap_or(rest);
+    let after_sep = rest.strip_prefix(['-', '_', '.']).unwrap_or(rest);
     let Some(after_five) = after_seg_digit(after_sep, '5') else {
         return false;
     };

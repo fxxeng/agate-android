@@ -547,7 +547,10 @@ fn doubao_images(text: &str) -> Vec<DoubaoImage> {
             );
         }
         // 全量帧：两种挂法都见过
-        for holder in [&value["content"]["content_block"], &value["message"]["content_block"]] {
+        for holder in [
+            &value["content"]["content_block"],
+            &value["message"]["content_block"],
+        ] {
             blocks.extend(holder.as_array().into_iter().flatten());
         }
         for block in blocks {
@@ -560,11 +563,15 @@ fn doubao_images(text: &str) -> Vec<DoubaoImage> {
                         .flatten()
                     {
                         let Some(url) = ["uri", "thumb_url"].iter().find_map(|key| {
-                            image[*key].as_str().filter(|value| !value.trim().is_empty())
+                            image[*key]
+                                .as_str()
+                                .filter(|value| !value.trim().is_empty())
                         }) else {
                             continue;
                         };
-                        let Some(key) = doubao_object_key(url) else { continue };
+                        let Some(key) = doubao_object_key(url) else {
+                            continue;
+                        };
                         doubao_merge(&mut found, key, None, Some(url.to_string()));
                     }
                 }
@@ -581,9 +588,11 @@ fn doubao_images(text: &str) -> Vec<DoubaoImage> {
                             .filter(|value| !value.trim().is_empty())
                             .map(str::to_string)
                             .or_else(|| {
-                                ["image_ori", "image_preview", "image_thumb"].iter().find_map(
-                                    |field| doubao_object_key(image[*field]["url"].as_str()?),
-                                )
+                                ["image_ori", "image_preview", "image_thumb"]
+                                    .iter()
+                                    .find_map(|field| {
+                                        doubao_object_key(image[*field]["url"].as_str()?)
+                                    })
                             });
                         let Some(key) = key else { continue };
                         let raw = image["image_ori_raw"]["url"]
@@ -706,7 +715,8 @@ async fn doubao_without_watermark(
     for (name, value) in &transport.headers {
         // `content-length` / `content-type` 交给 reqwest 按 `.json()` 自己写：
         // 照搬会多出第二条同名字段（父请求的长度还是那份 SSE 的）。
-        if name.eq_ignore_ascii_case("content-length") || name.eq_ignore_ascii_case("content-type") {
+        if name.eq_ignore_ascii_case("content-length") || name.eq_ignore_ascii_case("content-type")
+        {
             continue;
         }
         request = request.header(name, value);
@@ -727,10 +737,14 @@ async fn doubao_without_watermark(
     };
     let status = response.status().as_u16();
     let Ok(value) = response.json::<Value>().await else {
-        crate::server::logging::verbose("[Upstream]", "豆包换无水印原图的响应不是 JSON，改用预览地址");
+        crate::server::logging::verbose(
+            "[Upstream]",
+            "豆包换无水印原图的响应不是 JSON，改用预览地址",
+        );
         return Vec::new();
     };
-    if !(200..300).contains(&status) || value.get("code").and_then(Value::as_i64).unwrap_or(0) != 0 {
+    if !(200..300).contains(&status) || value.get("code").and_then(Value::as_i64).unwrap_or(0) != 0
+    {
         crate::server::logging::verbose(
             "[Upstream]",
             &format!("豆包换无水印原图被拒（HTTP {status}），改用预览地址"),
@@ -750,7 +764,10 @@ async fn doubao_without_watermark(
             .into_iter()
             .flatten()
         {
-            let Some(url) = entry.get("url").and_then(Value::as_str).filter(|url| !url.is_empty())
+            let Some(url) = entry
+                .get("url")
+                .and_then(Value::as_str)
+                .filter(|url| !url.is_empty())
             else {
                 continue;
             };
@@ -798,7 +815,6 @@ fn failure_from(payload: &Value, http_status: u16) -> ImageFailure {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -829,7 +845,10 @@ mod tests {
     fn workbuddy_error_code_wins_even_on_http_200() {
         let payload = json!({ "code": 6004, "msg": "使用量已超出频率限制" });
         let failure = workbuddy_body(&payload, 200).expect_err("code != 0 就是失败");
-        assert!(failure.body["message"].as_str().unwrap_or("").contains("频率限制"));
+        assert!(failure.body["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("频率限制"));
     }
 
     /// 信封里没有图（只有文字回复 / 被策略拦截）时不能当成功：客户端会拿到
@@ -948,7 +967,10 @@ mod tests {
                 r#"{{"content":{{"content_block":[{{"block_type":10084,"content":{{"rich_media_layout_block":{{"media":[{{"creation":{{"image":{{"key":"{key}","image_ori":{{"url":"https://cdn.example.com/{key}~tplv-preview?x=1"}},"image_ori_raw":{{"url":"https://cdn.example.com/{key}~tplv-image_raw.png"}}}}}}}}]}}}}}}]}}}}"#
             ),
         ];
-        let text = frames.iter().map(|frame| format!("data: {frame}\n\n")).collect::<String>();
+        let text = frames
+            .iter()
+            .map(|frame| format!("data: {frame}\n\n"))
+            .collect::<String>();
         let found = doubao_images(&text);
         assert_eq!(found.len(), 1, "同一张图只应当有一条");
         assert_eq!(found[0].key, key);
@@ -957,7 +979,9 @@ mod tests {
             found[0].raw.as_deref(),
             Some(format!("https://cdn.example.com/{key}~tplv-image_raw.png").as_str())
         );
-        assert!(found[0].preview.contains("downsize_watermark") || found[0].preview.contains("preview"));
+        assert!(
+            found[0].preview.contains("downsize_watermark") || found[0].preview.contains("preview")
+        );
     }
 
     /// 两种块**顺序无关**：先到哪一张都要能合并出来（上游的下发顺序不保证）。
@@ -968,7 +992,12 @@ mod tests {
         let preview = format!("https://cdn.example.com/{key}~tplv-downsize_watermark");
         // 先原图、再预览
         let mut found = Vec::new();
-        doubao_merge(&mut found, key.to_string(), Some(raw.clone()), Some(preview.clone()));
+        doubao_merge(
+            &mut found,
+            key.to_string(),
+            Some(raw.clone()),
+            Some(preview.clone()),
+        );
         doubao_merge(&mut found, key.to_string(), None, Some(preview.clone()));
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].raw.as_deref(), Some(raw.as_str()));
@@ -984,7 +1013,8 @@ mod tests {
     #[test]
     fn doubao_object_key_strips_host_and_template() {
         assert_eq!(
-            doubao_object_key("https://host.example/tos-cn-i-abc/rc_gen_image/x.jpeg~tplv-a?y=1").as_deref(),
+            doubao_object_key("https://host.example/tos-cn-i-abc/rc_gen_image/x.jpeg~tplv-a?y=1")
+                .as_deref(),
             Some("tos-cn-i-abc/rc_gen_image/x.jpeg")
         );
         // 没有模板后缀也认

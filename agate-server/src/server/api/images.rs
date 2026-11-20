@@ -86,7 +86,9 @@ pub(super) fn parameter_supported(field: &str) -> bool {
 /// 两条路径上有两种措辞（客户端从 multipart 上来时先过 `parse`，从 JSON 上来时
 /// 先过 `validate`，措辞不一致会被当成两个不同的问题）。
 pub(super) fn mask_unsupported() -> GatewayError {
-    GatewayError::bad_request("当前图片接口不支持 mask 或 input_fidelity，请在 prompt 中描述修改范围")
+    GatewayError::bad_request(
+        "当前图片接口不支持 mask 或 input_fidelity，请在 prompt 中描述修改范围",
+    )
 }
 
 /// 入口参数校验：把不认识的、越界的、还没实现的一律挡在网关里。
@@ -308,7 +310,8 @@ fn resolve_model(
         )
         .with_code("model_not_found"));
     }
-    let candidates = crate::server::core::providers::images::operation_providers(&requested, operation);
+    let candidates =
+        crate::server::core::providers::images::operation_providers(&requested, operation);
     // ── 两种「没有可用通道」必须分开报（2026-11-06 审计）────────────
     // `operation_providers` **只看能力位、不看 Key**，所以这里有两件不同的事：
     //   · `candidates` 为空      → 真的没有家声明这个能力（该更新/换模型）
@@ -567,7 +570,11 @@ mod tests {
     fn generation_rejects_reference_images() {
         let mut body = json!({ "prompt": "画一只猫", "images": [{ "image_url": "data:image/png;base64,AA" }] });
         let error = validate(&mut body, ImageOperation::Generate).unwrap_err();
-        assert!(error.message.contains("/v1/images/edits"), "{}", error.message);
+        assert!(
+            error.message.contains("/v1/images/edits"),
+            "{}",
+            error.message
+        );
 
         let mut body = json!({ "prompt": "画一只猫", "image": "data:image/png;base64,AA" });
         assert!(validate(&mut body, ImageOperation::Generate).is_err());

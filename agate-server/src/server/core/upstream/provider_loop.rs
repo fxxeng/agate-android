@@ -475,9 +475,7 @@ pub(super) async fn forward_with_providers(
         let available =
             crate::server::core::providers::images::operation_providers(&model, operation);
         match &locked_provider {
-            Some(provider)
-                if available.iter().any(|id| id.eq_ignore_ascii_case(provider)) =>
-            {
+            Some(provider) if available.iter().any(|id| id.eq_ignore_ascii_case(provider)) => {
                 vec![provider.clone()]
             }
             Some(_) => Vec::new(),
@@ -1108,7 +1106,8 @@ async fn attempt_queue(
                                 url: image.url,
                                 headers: image.headers,
                                 body: image.body,
-                                response: crate::server::core::providers::adapter::UpstreamResponse::Chat,
+                                response:
+                                    crate::server::core::providers::adapter::UpstreamResponse::Chat,
                             },
                             Some(image.response),
                             image.multipart,
@@ -2747,7 +2746,9 @@ async fn send_with_retry(
                         };
                         logging::console_line(
                             "[Upstream]",
-                            &format!("生图响应读取失败（HTTP {status}，可能已消耗额度）: {message}"),
+                            &format!(
+                                "生图响应读取失败（HTTP {status}，可能已消耗额度）: {message}"
+                            ),
                         );
                         Err(OutboundFailure {
                             class,

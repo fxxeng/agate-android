@@ -23,8 +23,8 @@
 
 use serde_json::{json, Value};
 
-use crate::server::core::providers::images::{ImageOperation, ImageRequestPlan, ImageResponseKind};
 use crate::server::core::protocol::antigravity_outbound;
+use crate::server::core::providers::images::{ImageOperation, ImageRequestPlan, ImageResponseKind};
 use crate::server::errors::GatewayError;
 
 /// 图片模型判据：`gemini-*` 且名字里带 `image`。
@@ -218,9 +218,8 @@ pub fn build(
         .and_then(Value::as_str)
         .map(str::trim)
         .unwrap_or("");
-    let enterprise = !email.is_empty()
-        && !email.ends_with("@gmail.com")
-        && !email.ends_with("@googlemail.com");
+    let enterprise =
+        !email.is_empty() && !email.ends_with("@gmail.com") && !email.ends_with("@googlemail.com");
     let config = image_config(body)?;
     let chat = as_chat(body, wire_model);
     let mut envelope =
@@ -253,7 +252,12 @@ mod tests {
     }
 
     fn build_generate(body: Value) -> Result<ImageRequestPlan, GatewayError> {
-        build(&account(), &body, ImageOperation::Generate, "gemini-3-pro-image")
+        build(
+            &account(),
+            &body,
+            ImageOperation::Generate,
+            "gemini-3-pro-image",
+        )
     }
 
     #[test]
@@ -279,8 +283,9 @@ mod tests {
         assert_eq!(config("4096x4096")["imageSize"], json!("4K"));
         // auto：生成给方图，编辑不指定比例（让上游按原图走）
         assert_eq!(config("auto")["aspectRatio"], json!("1:1"));
-        let editing = image_config(&json!({ "images": [{ "image_url": "data:image/png;base64,AA" }] }))
-            .unwrap();
+        let editing =
+            image_config(&json!({ "images": [{ "image_url": "data:image/png;base64,AA" }] }))
+                .unwrap();
         assert!(editing.get("aspectRatio").is_none(), "{editing}");
         assert_eq!(editing["imageSize"], json!("1K"));
     }
@@ -348,7 +353,9 @@ mod tests {
         assert!(error.message.contains("内联"), "{}", error.message);
 
         // 2.5 系只有三张
-        let four: Vec<Value> = (0..4).map(|_| json!({ "image_url": "data:image/png;base64,AA" })).collect();
+        let four: Vec<Value> = (0..4)
+            .map(|_| json!({ "image_url": "data:image/png;base64,AA" }))
+            .collect();
         let error = build_edit("gemini-2.5-flash-image", json!(four)).expect_err("超过上限");
         assert!(error.message.contains("3 张"), "{}", error.message);
     }
@@ -364,6 +371,10 @@ mod tests {
             "gemini-3-flash",
         )
         .expect_err("对话模型不能生图");
-        assert!(error.message.contains("gemini-*-image"), "{}", error.message);
+        assert!(
+            error.message.contains("gemini-*-image"),
+            "{}",
+            error.message
+        );
     }
 }

@@ -21,8 +21,8 @@
 //! 余额 / 签到 / 新手任务走的是浏览器域「`X-Client-*` 大写三头」（无架构后缀），
 //! 见 `balance::desktop_client_headers()`，本文件不动它。
 
-use sha2::{Digest, Sha256};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 use crate::server::errors::GatewayError;
 
@@ -293,7 +293,10 @@ pub(super) fn image_identity(account: &Value) -> Result<Vec<(String, String)>, G
     let (session, _) = session_and_turn(account, "image", 1);
     headers.push(("X-RACCOON-Session-ID".to_string(), session));
     headers.push(("X-RACCOON-Title".to_string(), "Raccoon Image".to_string()));
-    headers.push(("X-RACCOON-Call-Kind".to_string(), "raccoon-image".to_string()));
+    headers.push((
+        "X-RACCOON-Call-Kind".to_string(),
+        "raccoon-image".to_string(),
+    ));
     Ok(headers)
 }
 
@@ -322,7 +325,10 @@ mod tests {
             "messages": [{ "role": "user", "content": "你好" }] });
         let headers =
             chat_identity(&account_with(TOKEN), &body, "raccoon-8c4485", "").expect("个人账号");
-        assert_eq!(has(&headers, "x-client-name").as_deref(), Some("raccoon-ai"));
+        assert_eq!(
+            has(&headers, "x-client-name").as_deref(),
+            Some("raccoon-ai")
+        );
         assert_eq!(
             has(&headers, "x-client-platform").as_deref(),
             Some("desktop-windows-x64")
@@ -332,14 +338,23 @@ mod tests {
             has(&headers, "x-client-os-version").as_deref(),
             Some("10.0.26200")
         );
-        assert_eq!(has(&headers, "x-client-channel").as_deref(), Some("official"));
+        assert_eq!(
+            has(&headers, "x-client-channel").as_deref(),
+            Some("official")
+        );
         assert!(has(&headers, "x-client-device-id").is_some());
-        assert_eq!(has(&headers, "User-Agent").as_deref(), Some("OpenAI/Python 2.8.0"));
+        assert_eq!(
+            has(&headers, "User-Agent").as_deref(),
+            Some("OpenAI/Python 2.8.0")
+        );
         assert_eq!(
             has(&headers, "X-Stainless-Retry-Count").as_deref(),
             Some("0")
         );
-        assert_eq!(has(&headers, "X-RACCOON-Call-Kind").as_deref(), Some("chat"));
+        assert_eq!(
+            has(&headers, "X-RACCOON-Call-Kind").as_deref(),
+            Some("chat")
+        );
         assert!(has(&headers, "X-Org-Code").is_none());
     }
 
@@ -354,7 +369,11 @@ mod tests {
         assert_eq!(&first[19..20], "a", "变体位：{first}");
 
         let other_token = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1c2VyLTc3In0.sig";
-        assert_ne!(first, device_id(&account_with(other_token)), "不同账号必须互异");
+        assert_ne!(
+            first,
+            device_id(&account_with(other_token)),
+            "不同账号必须互异"
+        );
     }
 
     /// 同一会话内 Session-ID 恒定；轮次推进只换 Turn-ID；跨账号不共享
@@ -402,10 +421,18 @@ mod tests {
             { "role": "user", "content": "  帮我  写一段\n代码  " }
         ] });
         let title = title_header(&body);
-        assert_eq!(title, "%E5%B8%AE%E6%88%91 %E5%86%99%E4%B8%80%E6%AE%B5 %E4%BB%A3%E7%A0%81");
+        assert_eq!(
+            title,
+            "%E5%B8%AE%E6%88%91 %E5%86%99%E4%B8%80%E6%AE%B5 %E4%BB%A3%E7%A0%81"
+        );
 
-        let long = json!({ "messages": [{ "role": "user", "content": "0123456789abcdefghijKLMNOP" }] });
-        assert_eq!(title_header(&long), "0123456789abcdefghij", "只取前 20 字符");
+        let long =
+            json!({ "messages": [{ "role": "user", "content": "0123456789abcdefghijKLMNOP" }] });
+        assert_eq!(
+            title_header(&long),
+            "0123456789abcdefghij",
+            "只取前 20 字符"
+        );
 
         let empty = json!({ "messages": [] });
         assert_eq!(title_header(&empty), "");

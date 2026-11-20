@@ -47,9 +47,9 @@
 //! 复核双进程冲突表现，本章今天只证明了「能锁上」。
 
 use std::fs::{File, OpenOptions};
-use std::io::Write;
 #[cfg(unix)]
 use std::io::ErrorKind;
+use std::io::Write;
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 #[cfg(unix)]
@@ -220,12 +220,18 @@ fn platform_lock(path: &Path) -> Result<File, LockError> {
     unsafe {
         let flags = libc::fcntl(fd, libc::F_GETFD);
         if flags < 0 {
-            return Err(LockError::Io(path.to_path_buf(), std::io::Error::last_os_error()));
+            return Err(LockError::Io(
+                path.to_path_buf(),
+                std::io::Error::last_os_error(),
+            ));
         }
         if flags & libc::FD_CLOEXEC == 0
             && libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) != 0
         {
-            return Err(LockError::Io(path.to_path_buf(), std::io::Error::last_os_error()));
+            return Err(LockError::Io(
+                path.to_path_buf(),
+                std::io::Error::last_os_error(),
+            ));
         }
     }
     // 非阻塞排他锁；EWOULDBLOCK/EAGAIN = 已有 Owner。

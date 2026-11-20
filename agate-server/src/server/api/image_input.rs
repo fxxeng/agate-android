@@ -135,14 +135,13 @@ async fn decode(parts: Parts, bytes: Bytes) -> Result<Value, GatewayError> {
         let name = field.name().unwrap_or("").to_string();
         if image_field(&name) {
             if images.len() >= MAX_IMAGES {
-                return Err(invalid(format!(
-                    "图片编辑最多支持 {MAX_IMAGES} 张参考图"
-                )));
+                return Err(invalid(format!("图片编辑最多支持 {MAX_IMAGES} 张参考图")));
             }
             // 逐块累加而不是 `field.bytes()`：后者会把整个字段一次读进内存，
             // 上限只能事后检查 —— 一个 500 MiB 的字段就能把进程撑死。
             let mut data = Vec::new();
-            while let Some(chunk) = field.chunk().await.map_err(|_| invalid("参考图上传中断"))? {
+            while let Some(chunk) = field.chunk().await.map_err(|_| invalid("参考图上传中断"))?
+            {
                 if data.len().saturating_add(chunk.len()) > MAX_IMAGE_BYTES {
                     return Err(GatewayError::with_status(413, "单张参考图不得超过 10 MiB"));
                 }
@@ -353,7 +352,14 @@ mod tests {
     /// 「未知参数」分支，用户看到的是一句完全对不上的抱怨。
     #[test]
     fn reference_field_names_are_recognized() {
-        for name in ["image", "image[]", "images", "images[]", "image[0]", "image[12]"] {
+        for name in [
+            "image",
+            "image[]",
+            "images",
+            "images[]",
+            "image[0]",
+            "image[12]",
+        ] {
             assert!(image_field(name), "{name}");
         }
         for name in ["prompt", "images[", "image[a]", "image[]x", "", "mask"] {
@@ -444,10 +450,7 @@ mod tests {
         // 以 PNG 头开始（`mime_of` 只看文件头），后面接 CRLF 与一段「长得像
         // boundary」的文本。切错的实现会在这里截断或错位。
         let raw: &[u8] = b"\x89PNG\r\n\x1a\n\x00\x01\r\n--not-the-boundary\r\n\x02\x03";
-        let body = multipart_body(
-            "----agate",
-            &[("prompt", b"x".as_slice()), ("image", raw)],
-        );
+        let body = multipart_body("----agate", &[("prompt", b"x".as_slice()), ("image", raw)]);
         let payload = decode(
             parts_with("multipart/form-data; boundary=----agate"),
             Bytes::from(body),
@@ -470,14 +473,14 @@ mod tests {
     #[tokio::test]
     async fn json_body_passes_through_untouched() {
         let body = br#"{"prompt":"x","n":4,"images":[{"image_url":"data:image/png;base64,AA"}]}"#;
-        let payload = decode(
-            parts_with("application/json"),
-            Bytes::from_static(body),
-        )
-        .await
-        .unwrap();
+        let payload = decode(parts_with("application/json"), Bytes::from_static(body))
+            .await
+            .unwrap();
         assert_eq!(payload["n"], 4);
-        assert_eq!(payload["images"][0]["image_url"], "data:image/png;base64,AA");
+        assert_eq!(
+            payload["images"][0]["image_url"],
+            "data:image/png;base64,AA"
+        );
     }
 
     /// 既不是 JSON 也不是 multipart 时，文案要指出两条正确形态，而不是一句
@@ -487,7 +490,11 @@ mod tests {
         let error = decode(parts_with("text/plain"), Bytes::from_static(b"hi"))
             .await
             .unwrap_err();
-        assert!(error.message.contains("multipart/form-data"), "{}", error.message);
+        assert!(
+            error.message.contains("multipart/form-data"),
+            "{}",
+            error.message
+        );
         assert!(error.message.contains("image_url"), "{}", error.message);
     }
 }

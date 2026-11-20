@@ -735,6 +735,18 @@ pub fn panel_router(state: ServerState) -> Router {
             "/api/keepalive-strip",
             get(api::keepalive::get_keepalive_strip).put(api::keepalive::put_keepalive_strip),
         )
+        // ── 会话图片压缩 ──
+        // 与 /api/auto-continue 同一族（GET 读 / PUT 写、默认关、改的是发往上游的
+        // 字节），比它多两项参数：一个开关 + 三个有界整数（长边 / 质量 / 阈值）。
+        // 挂 protected 的理由与那几条相同：开着它会改写用户要发出去的图片内容
+        // （模型看到的是压缩后的像素），是「改客户端可观测行为」里较重的一类。
+        // 代价与判据见 core::upstream::image_compress、默认值的取舍见
+        // config::KEY_IMAGE_COMPRESS_ENABLED。
+        .route(
+            "/api/image-compress",
+            get(api::image_compress::get_image_compress)
+                .put(api::image_compress::put_image_compress),
+        )
         // ── 长度截断的自动续写 ──
         // 与 /api/keepalive-strip 同一族（GET 读 / PUT 写、默认关、改的是客户端
         // 看得见的行为），比它多一项：一个布尔开关 + 一个有界整数（轮数上限）——

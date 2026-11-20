@@ -82,14 +82,28 @@ fn normalize_size(body: &Value) -> Result<String, GatewayError> {
         .trim()
         .split_once('x')
         .or_else(|| size.trim().split_once('X'))
-        .and_then(|(width, height)| Some((width.trim().parse::<u32>().ok()?, height.trim().parse::<u32>().ok()?)))
+        .and_then(|(width, height)| {
+            Some((
+                width.trim().parse::<u32>().ok()?,
+                height.trim().parse::<u32>().ok()?,
+            ))
+        })
         .filter(|(width, height)| (1..=16_384).contains(width) && (1..=16_384).contains(height));
     let Some((width, height)) = parsed else {
         return Err(GatewayError::bad_request(
             "小浣熊生图的 size 需要正整数 WIDTHxHEIGHT，或 auto",
         ));
     };
-    let ratios: [(u32, u32); 8] = [(1, 1), (3, 4), (4, 3), (16, 9), (9, 16), (3, 2), (2, 3), (21, 9)];
+    let ratios: [(u32, u32); 8] = [
+        (1, 1),
+        (3, 4),
+        (4, 3),
+        (16, 9),
+        (9, 16),
+        (3, 2),
+        (2, 3),
+        (21, 9),
+    ];
     for (ratio_width, ratio_height) in ratios {
         if width * ratio_height != height * ratio_width {
             continue;
@@ -108,7 +122,9 @@ fn normalize_size(body: &Value) -> Result<String, GatewayError> {
             .max(1);
         return Ok(format!("{}x{}", step_w * units, step_h * units));
     }
-    let scale = (1_048_576.0 / (f64::from(width) * f64::from(height))).sqrt().max(1.0);
+    let scale = (1_048_576.0 / (f64::from(width) * f64::from(height)))
+        .sqrt()
+        .max(1.0);
     let aligned = |value: u32| (f64::from(value) * scale / 16.0).ceil() as u32 * 16;
     Ok(format!("{}x{}", aligned(width), aligned(height)))
 }
@@ -163,10 +179,7 @@ fn validate_request(body: &Value) -> Result<(), GatewayError> {
         ("moderation", &["auto"][..]),
     ] {
         if let Some(value) = body.get(field).filter(|value| !value.is_null()) {
-            if !value
-                .as_str()
-                .is_some_and(|value| allowed.contains(&value))
-            {
+            if !value.as_str().is_some_and(|value| allowed.contains(&value)) {
                 return Err(GatewayError::bad_request(format!(
                     "小浣熊图片接口不支持 {field}={value}"
                 )));
@@ -318,16 +331,28 @@ mod tests {
     #[test]
     fn size_is_aligned_and_upscaled() {
         // 已经是 1024²：原样
-        assert_eq!(normalize_size(&json!({ "size": "1024x1024" })).unwrap(), "1024x1024");
+        assert_eq!(
+            normalize_size(&json!({ "size": "1024x1024" })).unwrap(),
+            "1024x1024"
+        );
         // 16:9 的常见请求值落在合法档位上
-        assert_eq!(normalize_size(&json!({ "size": "1792x1024" })).unwrap(), "1792x1024");
+        assert_eq!(
+            normalize_size(&json!({ "size": "1792x1024" })).unwrap(),
+            "1792x1024"
+        );
         // 太小：抬到 1024² 以上
         let small = normalize_size(&json!({ "size": "256x256" })).unwrap();
         let (w, h) = small.split_once('x').unwrap();
-        assert!(w.parse::<u32>().unwrap() >= 1024 && h.parse::<u32>().unwrap() >= 1024, "{small}");
+        assert!(
+            w.parse::<u32>().unwrap() >= 1024 && h.parse::<u32>().unwrap() >= 1024,
+            "{small}"
+        );
         // auto / 缺省
         assert_eq!(normalize_size(&json!({})).unwrap(), "1024x1024");
-        assert_eq!(normalize_size(&json!({ "size": "auto" })).unwrap(), "1024x1024");
+        assert_eq!(
+            normalize_size(&json!({ "size": "auto" })).unwrap(),
+            "1024x1024"
+        );
         // 非比例值按比例缩放后 16 对齐
         let odd = normalize_size(&json!({ "size": "1000x700" })).unwrap();
         let (w, h) = odd.split_once('x').unwrap();
@@ -343,8 +368,14 @@ mod tests {
             "style": "黑白线条",
             "negative_prompt": "文字",
         });
-        let plan = build(&account(), &body, "https://api.example.com", &HeaderMap::new(), ImageOperation::Generate)
-            .unwrap();
+        let plan = build(
+            &account(),
+            &body,
+            "https://api.example.com",
+            &HeaderMap::new(),
+            ImageOperation::Generate,
+        )
+        .unwrap();
         let prompt = plan.body["prompt"].as_str().unwrap();
         assert!(prompt.starts_with("一只猫"), "{prompt}");
         assert!(prompt.contains("Style: 黑白线条"), "{prompt}");
@@ -356,8 +387,14 @@ mod tests {
     #[test]
     fn other_models_are_rejected_with_a_hint() {
         let body = json!({ "model": "raccoon-8c4485", "prompt": "一只猫" });
-        let error = build(&account(), &body, "https://api.example.com", &HeaderMap::new(), ImageOperation::Generate)
-            .expect_err("对话模型不能打生图路由");
+        let error = build(
+            &account(),
+            &body,
+            "https://api.example.com",
+            &HeaderMap::new(),
+            ImageOperation::Generate,
+        )
+        .expect_err("对话模型不能打生图路由");
         assert!(error.message.contains(MODEL_ID), "{}", error.message);
     }
 
@@ -419,10 +456,7 @@ mod tests {
             "{header}"
         );
         // 参考图字节逐字节在报文里
-        assert!(form
-            .bytes
-            .windows(raw.len())
-            .any(|window| window == raw));
+        assert!(form.bytes.windows(raw.len()).any(|window| window == raw));
         // prompt 是 UTF-8 文本字段
         assert!(String::from_utf8_lossy(&form.bytes).contains("把背景换成蓝色"));
         // 闭合分隔符
@@ -430,7 +464,10 @@ mod tests {
             .bytes
             .ends_with(format!("--{}--\r\n", form.boundary).as_bytes()));
         // 可读近似里只有文件名与字节数，没有二进制
-        assert_eq!(form.preview["image"][0]["filename"], json!("reference-1.png"));
+        assert_eq!(
+            form.preview["image"][0]["filename"],
+            json!("reference-1.png")
+        );
     }
 
     /// 参考图的三种坏形态各自有话说：少了、多了、不是 data URL。
