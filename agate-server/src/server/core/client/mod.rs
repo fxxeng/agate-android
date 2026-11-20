@@ -29,6 +29,50 @@
 //! 不存原始 UA）：明细里留一份原始 UA 会随每个客户端的版本号变化而膨胀，
 //! 而「是谁」这一维只需要归类后的结果（与 OmniProxy 存 `client_type` 同一取舍）。
 
+//! ── 两种识别，别混用（这是本模块最重要的一条分界）──────────────
+//! · [`classify`]：**严格行为识别**。固定前缀表，不读任何配置，也不看
+//!   调用方自报的身份。协议兼容（Codex 的推理折叠、按客户端改写请求）只认它
+//!   —— 让显示用的规则去改协议行为，等于「用户改了个名字，请求就变了个形状」。
+//! · [`identify`]：**显示识别**。读 `clientIdentification` 配置，支持用户自定义
+//!   规则与调用方声明。它只影响统计列与提示词规则匹配（[`super::prompt::rules`]），
+//!   从不参与选路或协议分支。
+//!
+//! 两套共用同一份固定目录（[`catalog::CLIENTS`]）：`identify` 在没配规则时
+//! 退化成 `classify`，所以「不配」与「配了但没命中」的表现一致。
+
+pub mod catalog;
+mod evidence;
+mod matcher;
+
+pub use catalog::{ClientRule, ClientSettings};
+pub use evidence::ClientEvidence;
+pub use matcher::{identify, rule_matches};
+
+/// Codex 的严格行为归类值（协议兼容判据用它，见上面那条分界）。
+pub const CLIENT_CODEX: &str = "Codex";
+
+/// 把识别值翻成展示名（自定义规则取规则的 name，内置取目录的 name）。
+///
+/// `recorded` 是**落库时**那份展示名：规则后来被改名或删掉时，历史记录仍
+/// 显示当时的名字（`display_name` 只对「现在还认识的值」重新翻译）。
+pub fn display_name(value: &str, recorded: &str) -> String {
+    if let Some(id) = value.strip_prefix("custom:") {
+        let snapshot = crate::server::config::client_identification::current();
+        if let Ok(settings) = &snapshot.settings {
+            if let Some(client) = settings.clients.iter().find(|client| client.id == id) {
+                return client.name.clone();
+            }
+        }
+    }
+    if let Some(client) = catalog::CLIENTS.iter().find(|client| client.value == value) {
+        return client.name.to_string();
+    }
+    if !recorded.is_empty() {
+        return recorded.to_string();
+    }
+    value.to_string()
+}
+
 /// UA 无匹配但非空时的归类值（前端显示为「其它」）。
 pub const CLIENT_OTHER: &str = "other";
 

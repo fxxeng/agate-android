@@ -735,6 +735,19 @@ pub fn panel_router(state: ServerState) -> Router {
             "/api/keepalive-strip",
             get(api::keepalive::get_keepalive_strip).put(api::keepalive::put_keepalive_strip),
         )
+        // ── 客户端识别规则 ──
+        // 挂 protected：它改的是「请求日志里这条请求算谁发的」，以及提示词规则
+        // 能匹配到哪些客户端 —— 都是可观测行为的一部分。协议兼容不受它影响
+        // （见 `core::client` 模块头那条分界）。
+        .route(
+            "/api/client-identification",
+            get(api::client_identification::get_settings)
+                .put(api::client_identification::put_settings),
+        )
+        .route(
+            "/api/client-identification/preview",
+            post(api::client_identification::preview_settings),
+        )
         // ── 会话图片压缩 ──
         // 与 /api/auto-continue 同一族（GET 读 / PUT 写、默认关、改的是发往上游的
         // 字节），比它多两项参数：一个开关 + 三个有界整数（长边 / 质量 / 阈值）。

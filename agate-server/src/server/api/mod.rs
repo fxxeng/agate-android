@@ -64,6 +64,7 @@ pub mod checkin_runs;
 // 定时签到的**条目**（GET/POST /api/checkin-schedules + {id}/delete|run）：
 // 总开关仍在 /api/auto-checkin，条目 CRUD 在这里，见该文件模块头
 pub mod checkin_schedules;
+pub mod client_identification;
 pub mod cline_headers;
 pub mod codearts_welfare;
 pub mod compact_routes;

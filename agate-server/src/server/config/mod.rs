@@ -67,6 +67,7 @@ use crate::server::db::Db;
 
 pub mod account_sort;
 mod assistant_config;
+pub mod client_identification;
 pub mod compact_routes;
 mod mutations;
 pub(crate) mod parse;
