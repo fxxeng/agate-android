@@ -21,9 +21,10 @@ use crate::server::{config, errors, logging, ServerState};
 /// GET /api/accounts/sort —— 当前各家的排序规则投影。
 pub async fn get_sorting(State(state): State<ServerState>) -> Response {
     let accounts = routing::accounts_of(&state.store().list_accounts());
-    ok_json(serde_json::json!(
-        account_order::sorting(&accounts, logging::now_ms())
-    ))
+    ok_json(serde_json::json!(account_order::sorting(
+        &accounts,
+        logging::now_ms()
+    )))
 }
 
 /// PUT /api/accounts/sort —— body `{provider, rules: [...]|null, onlyIfUnset?: bool}`
@@ -45,12 +46,14 @@ pub async fn save_sorting(State(state): State<ServerState>, body: Bytes) -> Resp
     }
     let rules = match payload.get("rules") {
         Some(Value::Null) => None,
-        Some(value) => match serde_json::from_value::<Vec<config::AccountSortRule>>(value.clone()) {
-            Ok(rules) => Some(rules),
-            Err(error) => {
-                return errors::management_error(400, format!("账号排序规则格式错误: {error}"))
+        Some(value) => {
+            match serde_json::from_value::<Vec<config::AccountSortRule>>(value.clone()) {
+                Ok(rules) => Some(rules),
+                Err(error) => {
+                    return errors::management_error(400, format!("账号排序规则格式错误: {error}"))
+                }
             }
-        },
+        }
         None => return errors::management_error(400, "缺少 rules 字段，恢复默认请传 null"),
     };
     if let Err(error) =
