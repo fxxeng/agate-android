@@ -117,7 +117,12 @@ def main():
     else:
         base = remote_head
 
-    changes = parse_raw(git("diff", "--raw", "-z", parent, commit, binary=True).decode("utf-8"))
+    # `--no-renames`：rename 在 `--raw -z` 下是「双路径」格式（old\0new\0），
+    # 解析器若只认单路径会把 old 当成待上传的 path，然后 `git show` 报不存在。
+    # 拆成 D + A 之后两条都能按常规路径处理，语义也等价。
+    changes = parse_raw(
+        git("diff", "--raw", "-z", "--no-renames", parent, commit, binary=True).decode("utf-8")
+    )
     print(f"changes       : {len(changes)} 个路径")
 
     tree = []

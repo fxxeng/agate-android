@@ -83,6 +83,9 @@ mod report;
 // 路由回放明细（`GET /api/routing/replays`）：逐条请求的选路决策快照，
 // 与 groups 维度的回放（`api::routing_groups`）不是同一件事。
 mod routing;
+// 请求来源（客户端 + Key 身份 + 识别证据）：日志、统计、容量共用同一个形状。
+mod source;
+pub use source::{ApiKeyIdentity, RequestSource};
 mod sql;
 mod trace;
 

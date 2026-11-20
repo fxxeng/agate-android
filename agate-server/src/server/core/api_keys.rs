@@ -288,6 +288,14 @@ impl ApiKeyEntry {
     /// 唯一的例外是降级态：那时 `key` 里是解不开的密文（见 `from_value`），
     /// 这里照样原样输出 —— 磁盘上是什么、界面上看到什么，用户在密钥丢失时
     /// 看到的就不是一把「看起来正常却复制出去也没用」的假 Key。
+    /// 这条记录现在能不能拿去用：启用 **且** 明文解得开。
+    ///
+    /// 降级态（密钥文件丢失）的记录仍在列表里、仍是 `enabled`，但它的 `key`
+    /// 是密文本身 —— 拿它去比对永远不相等，让用户选中只是在制造一次 401。
+    pub fn is_usable(&self) -> bool {
+        self.enabled && !self.key_unreadable
+    }
+
     pub fn public_json(&self) -> Value {
         json!({
             "id": self.id,
@@ -381,6 +389,19 @@ pub fn stored_plaintext(stored: &str) -> String {
 /// 当前全部记录
 pub fn list() -> Vec<ApiKeyEntry> {
     entries_from(config::current().raw())
+}
+
+/// 当前**启用**的记录（含 `id` / `name`）。
+///
+/// 与 [`active_keys_from`] 是同一批记录的两个投影：那个只要明文（比对用），
+/// 这个要身份（落日志、按 Key 分组统计、容量准入标识调用方）。分成两个函数
+/// 而不是返回一个元组，是因为两条路径的使用频率差三个数量级 —— 鉴权每个请求
+/// 都跑，身份只在「命中之后」取一次。
+pub fn active_entries_from(raw: &Map<String, Value>) -> Vec<ApiKeyEntry> {
+    entries_from(raw)
+        .into_iter()
+        .filter(|entry| entry.enabled)
+        .collect()
 }
 
 /// 当前**启用**的明文 Key（鉴权中间件用）；空 = 免鉴权

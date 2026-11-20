@@ -735,6 +735,11 @@ pub fn panel_router(state: ServerState) -> Router {
             "/api/keepalive-strip",
             get(api::keepalive::get_keepalive_strip).put(api::keepalive::put_keepalive_strip),
         )
+        // ── 模型访问（按「这一把 Key」回答能用什么）──
+        // 与 /v1/models 的分工见 `api::model_access` 模块头：那条是免鉴权探针，
+        // 拿不到限制就给全量；这两条必须明确带 Key —— 问的是权限，不回退。
+        .route("/api/model-access/models", get(api::model_access::models))
+        .route("/api/model-access/keys", get(api::model_access::list_keys))
         // ── 客户端识别规则 ──
         // 挂 protected：它改的是「请求日志里这条请求算谁发的」，以及提示词规则
         // 能匹配到哪些客户端 —— 都是可观测行为的一部分。协议兼容不受它影响
@@ -1208,6 +1213,11 @@ async fn require_api_key(mut request: Request, next: Next) -> Response {
         if crate::server::access::v1_fail_closed() && path.starts_with("/v1/") {
             return errors::v1_fail_closed_response();
         }
+        // 免鉴权模式：没有 Key 挡在前面。显式记 none 而不是「缺这个扩展」——
+        // 下游据此区分「不知道来源」与「明确没有 Key」。
+        request
+            .extensions_mut()
+            .insert(crate::server::request_stats::ApiKeyIdentity::none());
         return next.run(request).await;
     }
 
@@ -1220,6 +1230,16 @@ async fn require_api_key(mut request: Request, next: Next) -> Response {
         if let Some(scope) = scope_for_key(&snapshot.raw(), &matched) {
             crate::server::core::key_scope::attach(&mut request, scope);
         }
+        // 命中的**是哪一把**：日志要落它，统计要按它分组，容量准入要拿它
+        // 当调用方标识。反查一次（记录数是几把，代价可忽略）而不是改动上面
+        // 的匹配逻辑 —— 那条路径每个请求都跑，保持「只比对明文」最省。
+        let identity = crate::server::core::api_keys::active_entries_from(&snapshot.raw())
+            .into_iter()
+            .find(|entry| entry.key == matched)
+            .map(|entry| crate::server::request_stats::ApiKeyIdentity::key(entry.id, entry.name))
+            // 明文对得上但表里没有 = 环境变量注入的那把（见 active_keys_from）
+            .unwrap_or_else(crate::server::request_stats::ApiKeyIdentity::env);
+        request.extensions_mut().insert(identity);
         return next.run(request).await;
     }
 
@@ -1310,7 +1330,7 @@ fn request_matches_key(request: &Request, expected: &str) -> bool {
 
 /// 去掉 `Bearer ` 前缀（大小写不敏感，`\s+` 至少一个空白）。
 /// 不匹配时**原样返回**整个字符串 —— 与 Node 的 `String.replace` 语义一致。
-fn strip_bearer_prefix(value: &str) -> &str {
+pub(crate) fn strip_bearer_prefix(value: &str) -> &str {
     const PREFIX: &str = "bearer";
     if value.len() < PREFIX.len() {
         return value;
