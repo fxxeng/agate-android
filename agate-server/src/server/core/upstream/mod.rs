@@ -468,7 +468,44 @@ impl UpstreamService {
         // （body / headers）同样以借用形式进了 context，直接 `&request.allowed_providers`
         // 会因为「同时持有 request 的可变借用（上面改过 body）」而借不过 ——
         // 移出后所有权清晰，也不必再多一次克隆。
-        let key_scope = request.allowed_providers;
+        let mut key_scope = request.allowed_providers;
+        let mut ignore_model_gate = request.ignore_model_gate;
+
+        // ── 图片兼容（Phase 2）：命中用户显式配置的规则就先降级 ──────────
+        // 本地语义与上游「先发原模型、拒答再降级」不同：规则本身就是用户在
+        // 配置页声明的「这些模型看不了图」，命中即按他选的方式处理，避免把
+        // 一张注定被拒的图先打一遍（多花一次额度还留下拒答日志）。内部识图
+        // 调用带标记头，plan() 见它就返回 None，不会递归。
+        if let Some(vision_plan) =
+            vision_compat::plan(&upstream_body, &request.client_headers, key_scope.as_ref())?
+        {
+            let snapshot = crate::server::config::vision_compat::current();
+            let timeout = snapshot
+                .settings
+                .as_ref()
+                .map(|settings| settings.timeout_seconds)
+                .unwrap_or(30);
+            let telemetry = request.telemetry.clone();
+            if vision_plan.is_assist() {
+                upstream_body =
+                    vision_compat::assist(self, &vision_plan, &upstream_body, telemetry, timeout)
+                        .await?;
+            } else {
+                let (rerouted, provider) =
+                    vision_compat::reroute(&vision_plan, &upstream_body).await?;
+                upstream_body = rerouted;
+                // 整体接管：钉住视觉模型那一家，避免按被替换掉的旧模型名选路。
+                // plan() 已校验目标家在这把 Key 的允许名单里，这里直接钉住即可。
+                key_scope = Some(crate::server::core::key_scope::KeyScope::provider_only(
+                    &provider,
+                ));
+                // 视觉目标由用户在配置页显式指定，跳过「这个模型在目录里启用没」
+                // 那道门禁（同模型测试的用法）：他配的就是要用这只，别让一个开关
+                // 把显式配置悄悄挡掉。
+                ignore_model_gate = true;
+            }
+        }
+
         // 钉住的账号与它同样处理：ownership 移出来、借给 context，
         // 于是 `request` 在下面不再被借用（理由同上一条）
         let pinned_account = request.pinned_account;
@@ -486,8 +523,8 @@ impl UpstreamService {
             prompt,
             key_scope: key_scope.as_ref(),
             pinned_account: pinned_account.as_deref(),
-            // bool 是 Copy，直接读：不存在上面那两条的借用问题
-            ignore_model_gate: request.ignore_model_gate,
+            // bool 是 Copy：reroute 时会把它置 true（见上面的兼容分支）
+            ignore_model_gate,
             proxy_override: proxy_override.as_ref(),
             image: None,
         };
