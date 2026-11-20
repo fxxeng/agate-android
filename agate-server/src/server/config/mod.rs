@@ -1932,9 +1932,10 @@ pub fn set_developer_role_compat(enabled: bool) -> bool {
 /// 写入第三方回答完自动折叠过程开关（与 `set_developer_role_compat` 同模式）。
 pub fn set_third_party_reasoning_collapse(enabled: bool) -> bool {
     update(|config| {
-        config
-            .raw
-            .insert(KEY_THIRD_PARTY_REASONING_COLLAPSE.to_string(), Value::Bool(enabled));
+        config.raw.insert(
+            KEY_THIRD_PARTY_REASONING_COLLAPSE.to_string(),
+            Value::Bool(enabled),
+        );
         config.third_party_reasoning_collapse = enabled;
     })
 }

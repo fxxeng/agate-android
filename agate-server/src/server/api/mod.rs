@@ -122,11 +122,11 @@ pub mod pipeline;
 pub mod prompt;
 pub mod prompt_rules;
 pub mod protocol;
-/// 第三方回答完自动折叠过程开关（GET/PUT /api/reasoning-collapse）。
-pub mod reasoning_collapse;
 pub mod proxies;
 pub mod qoder_umid;
 pub mod queue_api;
+/// 第三方回答完自动折叠过程开关（GET/PUT /api/reasoning-collapse）。
+pub mod reasoning_collapse;
 pub mod retry_api;
 // 开发者角色兼容开关（GET/PUT /api/developer-role-compat）：与 /api/sanitize
 // 同形的单开关端点，转换实施点在 `core::upstream::payload` 的 send_body，

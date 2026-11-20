@@ -54,10 +54,12 @@ pub(super) fn message_phase(
 /// 响应体是否成功（错误 / 截断态不补 phase）。
 pub(super) fn response_is_successful(body: &Value) -> bool {
     !body.get("error").is_some_and(super::is_truthy)
-        && !body.get(super::FIELD_IS_ERROR).is_some_and(super::is_truthy)
-        && body.get("status").is_none_or(|status| {
-            status.is_null() || status.as_str() == Some("completed")
-        })
+        && !body
+            .get(super::FIELD_IS_ERROR)
+            .is_some_and(super::is_truthy)
+        && body
+            .get("status")
+            .is_none_or(|status| status.is_null() || status.as_str() == Some("completed"))
 }
 
 /// 把 phase 写进一个 output item（已有 phase 不覆盖；final_answer 要求正文非空）。
@@ -85,7 +87,10 @@ mod tests {
 
     #[test]
     fn normal_answer_gets_final_answer() {
-        assert_eq!(message_phase(Some("stop"), false, true), Some("final_answer"));
+        assert_eq!(
+            message_phase(Some("stop"), false, true),
+            Some("final_answer")
+        );
     }
 
     #[test]
@@ -107,14 +112,21 @@ mod tests {
     #[test]
     fn incomplete_reason_mapping() {
         assert_eq!(incomplete_reason(Some("length")), Some("max_output_tokens"));
-        assert_eq!(incomplete_reason(Some("max_length")), Some("max_output_tokens"));
-        assert_eq!(incomplete_reason(Some("content_filter")), Some("content_filter"));
+        assert_eq!(
+            incomplete_reason(Some("max_length")),
+            Some("max_output_tokens")
+        );
+        assert_eq!(
+            incomplete_reason(Some("content_filter")),
+            Some("content_filter")
+        );
         assert_eq!(incomplete_reason(Some("stop")), None);
     }
 
     #[test]
     fn apply_writes_phase_but_keeps_existing() {
-        let mut item = json!({"type": "message", "content": [{"type": "output_text", "text": "hi"}]});
+        let mut item =
+            json!({"type": "message", "content": [{"type": "output_text", "text": "hi"}]});
         apply(&mut item, Some("final_answer"));
         assert_eq!(item["phase"], "final_answer");
         apply(&mut item, Some("commentary"));
