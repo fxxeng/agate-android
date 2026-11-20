@@ -20,22 +20,21 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import android.widget.Toast
 import dev.agate.core.GatewayPrefs
-import dev.agate.android.data.GatewayRepository
 import dev.agate.android.data.ModelOps
 import dev.agate.android.ui.components.AgateBadge
 import dev.agate.android.ui.components.AgateFormInput
@@ -46,19 +45,26 @@ import dev.agate.android.ui.theme.AgateType
 import dev.agate.android.ui.components.agateCard
 import dev.agate.android.ui.theme.agateColors
 import dev.agate.android.ui.components.AgatePageHeader
+import dev.agate.android.ui.components.BadgeTone
 import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
 
 /**
- * 模型映射（M3 · MODEL_MAPPING 子页）。
+ * 模型映射（M3 · MODEL_MAPPING 子页）—— 这一页只做一件事：**改名**。
  *
- * 数据源 GET /api/models/manage：mappings[] 拆「用户映射」（isDefault=false，
- * 可删可改）与「默认绑定」（isDefault=true，视图合成的 alias=target 行，只展示
- * 与改思考等级，不提供删除——内核里它不是一条独立实体）。新增 / 改等级 / 切
- * 开关都走 POST /api/models/mappings（同三元组 = 命中已有条目），写接口返回
- * 最新 manage 视图就地替换。reasoning 候选表用响应里随发的 reasoningLevels
- * （内核 model_rules::REASONING_LEVELS，前端不自己抄一份避免漂移）。
+ * 模型的启停与思考等级是模型自己的属性，已在「模型」页每行设置
+ * （`models[].enabled` / `reasoningBinding`），不再在这里以「默认绑定」的形式
+ * 冒充映射。映射页只维护 `alias → target` 的改名关系：
+ *   · 三元组 (alias, target, provider) 是身份，建好后锁定（内核无原子 rename，
+ *     改名要删旧建新，风险大）——编辑弹窗只让它改开关与那条别名自己的思考档位；
+ *   · 内核 `mappings[].effective` / `issue` 是生效真值与诊断码，界面只读不算，
+ *     据 issue 显示具体原因，而不是「未生效」三个字；
+ *   · alias / target / model id 一键复制。
+ *
+ * 数据源 GET /api/models/manage；所有写走 POST /api/models/mappings（同三元组
+ * = 命中已有条目），写接口返回最新 manage 视图就地替换。reasoning 候选表用
+ * 响应里随发的 reasoningLevels（内核事实来源，前端不自己抄一份避免漂移）。
  */
 @Composable
 fun ModelMappingPage(
@@ -68,18 +74,23 @@ fun ModelMappingPage(
     val C = agateColors()
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
+    val clipboard = LocalClipboardManager.current
 
     var view by remember { mutableStateOf<JSONObject?>(null) }
     var loading by remember { mutableStateOf(false) }
-    var tab by remember { mutableIntStateOf(0) } // 0 用户映射 / 1 默认绑定
     var showAdd by remember { mutableStateOf(false) }
-    // 行内等级选择展开态：alias|target|provider 标识哪一行
     var expandedRow by remember { mutableStateOf<String?>(null) }
-    // 删除映射的待确认项（误删一条映射要重新配一遍，值得一次确认）
+    var editing by remember { mutableStateOf<ModelOps.MappingRow?>(null) }
     var pendingDelete by remember { mutableStateOf<Triple<String, String, String?>?>(null) }
 
     fun toast(ok: Boolean, what: String, error: String?) {
         Toast.makeText(ctx, if (ok) "${what}成功" else "${what}失败：${error ?: "未知"}", Toast.LENGTH_SHORT).show()
+    }
+
+    fun copy(text: String, label: String) {
+        if (text.isBlank()) return
+        clipboard.setText(AnnotatedString(text))
+        Toast.makeText(ctx, "已复制$label", Toast.LENGTH_SHORT).show()
     }
 
     fun applyResult(r: ModelOps.OpResult, what: String) {
@@ -118,60 +129,13 @@ fun ModelMappingPage(
         (0 until arr.length()).map { arr.optString(it) }.filter { it.isNotBlank() }
     }
 
-    // ── 用户映射：默认隐藏「失效」的（目标模型已不存在）──────────
-    // `dangling` 由内核按「该家当前清单里有没有这个 target」算出。目标都没了，
-    // 这条映射转发时必然 404 —— 留在首屏除了制造噪音没有别的用。
-    // 但仍要能看见与清理：底部给一行「另有 N 条失效」，点开才铺开。
+    // 默认隐藏「失效」的（目标模型已不存在，转发必然 404），底部给开关铺开。
     var showDangling by remember { mutableStateOf(false) }
-    val allUserRows = mappings.filter { !it.isDefault }
-    val danglingRows = allUserRows.filter { it.dangling }
-    val userRows = if (showDangling) allUserRows else allUserRows.filterNot { it.dangling }
-
-    val allDefaultRows = mappings.filter { it.isDefault }
-
-    // ── 内置映射默认只显示「有账号的家」──────────────────────────
-    // 没登录的提供商的默认绑定点了也用不了（`/v1/models` 根本不会广告它，
-    // 内核 `active_manifests` 也是同一口径）。把它们全列出来会让这一页被
-    // 20 多家的空绑定淹没 —— 这正是「太混乱」的来源。
-    // 仍保留「全部」切换：配映射之前想看看某家有哪些模型名是合理需求。
-    val snap by GatewayRepository.snapshot.collectAsState()
-    var showAllProviders by remember { mutableStateOf(false) }
-    val activeProviders = remember(snap.providerCounts) {
-        snap.providerCounts.filterValues { it > 0 }.keys
-    }
-    // ── 默认绑定：只显示「**真配了东西**」的那些 ─────────────────
-    // 每条清单模型都天然带一条 `alias == target` 的默认绑定，而绝大多数是
-    // 「启用 + 没设思考等级 + 没挂别名」—— 那是**没有配置**，不是映射。
-    // 全列出来就是用户说的「全部显示内置默认映射」：40 个模型 × N 家 = 一屏
-    // 全是同名的 alias→target，真正配过的几条反而找不到。
-    //
-    // 所以默认只留「有信息量」的三类：
-    //   · 被关掉的（`enabled == false`）—— 用户显式做的决定；
-    //   · 设了思考等级的（`reasoning != null`）；
-    //   · 挂了用户别名的（同一 target 另有 alias≠target 的映射）。
-    var showPlainDefaults by remember { mutableStateOf(false) }
-    val aliasedTargets = remember(mappings) {
-        mappings.filter { !it.isDefault && it.alias != it.target }
-            .map { (it.provider ?: "") to it.target }
-            .toSet()
-    }
-    val providerFiltered = if (showAllProviders || activeProviders.isEmpty()) {
-        allDefaultRows
-    } else {
-        allDefaultRows.filter { it.provider.isNullOrBlank() || it.provider in activeProviders }
-    }
-    val defaultRows = if (showPlainDefaults) {
-        providerFiltered
-    } else {
-        // 「有信息量」与「有账号的家」两个条件同时成立才算要显示
-        providerFiltered.filter { row ->
-            !row.enabled || row.reasoning != null ||
-                aliasedTargets.contains((row.provider ?: "") to row.target)
-        }
-    }
-    val hiddenCount = allDefaultRows.size - defaultRows.size
-    val hiddenPlainCount = providerFiltered.size - defaultRows.size
-    val rows = if (tab == 0) userRows else defaultRows
+    // 内核已不再输出 isDefault=true 的自映射（那是模型自己的状态），但老配置/
+    // 老内核可能还发；兜底过滤，不让「A → A」混进改名页。
+    val renameRows = mappings.filter { !it.isDefault }
+    val danglingRows = renameRows.filter { it.dangling }
+    val userRows = if (showDangling) renameRows else renameRows.filterNot { it.dangling }
     val danglingCount = danglingRows.size
 
     Column(modifier = modifier.fillMaxSize().background(C.bg)) {
@@ -185,104 +149,71 @@ fun ModelMappingPage(
         ) {
             Spacer(Modifier.height(10.dp))
 
-            // ── 统计行 ──
             Row(verticalAlignment = Alignment.CenterVertically) {
-                AgateBadge(text = "用户映射 ${userRows.size}", tone = dev.agate.android.ui.components.BadgeTone.BLUE)
-                Spacer(Modifier.width(8.dp))
-                AgateBadge(text = "默认绑定 ${defaultRows.size}")
+                AgateBadge(text = "改名映射 ${userRows.size}", tone = BadgeTone.BLUE)
                 if (danglingCount > 0) {
                     Spacer(Modifier.width(8.dp))
-                    AgateBadge(text = "悬空 $danglingCount", tone = dev.agate.android.ui.components.BadgeTone.AMBER)
+                    AgateBadge(text = "悬空 $danglingCount", tone = BadgeTone.AMBER)
                 }
             }
             Spacer(Modifier.height(8.dp))
             Text(
-                "alias 是对外名，可自由命名；路由时同名模型的原生映射优先，用户映射是追加的主备路",
+                "alias 是对外名，可自由命名；模型名点一下即复制。开关与思考等级在改名行上就地可改；" +
+                    "标了原因的行当前调不通，与开关未必相关。模型的启停与思考等级在「模型」页每行设置。",
                 style = AgateType.Caption, color = C.textDim,
             )
             Spacer(Modifier.height(10.dp))
 
-            // ── 视图切换 + 新增入口 ──
-            AgateSegmented(
-                options = listOf("用户映射", "默认绑定"),
-                selected = tab,
-                onSelect = { tab = it },
-            )
-            // 用户映射页：有失效条目时给一个开关（默认隐藏，见上面 userRows 的说明）
-            if (tab == 0 && danglingCount > 0) {
-                Spacer(Modifier.height(8.dp))
+            if (danglingCount > 0) {
                 AgateSegmented(
                     options = listOf("有效映射", "含失效 · $danglingCount"),
                     selected = if (showDangling) 1 else 0,
                     onSelect = { showDangling = it == 1 },
                 )
-            }
-            // 默认绑定页：只显示有账号的家 / 全部（默认前者，见上面 defaultRows 的说明）
-            if (tab == 1 && activeProviders.isNotEmpty()) {
-                Spacer(Modifier.height(8.dp))
-                AgateSegmented(
-                    options = listOf("仅有账号", "全部"),
-                    selected = if (showAllProviders) 1 else 0,
-                    onSelect = { showAllProviders = it == 1 },
-                )
-            }
-            // 默认绑定页：默认只看「有配置」的（关掉 / 设了思考等级 / 挂了别名），
-            // 否则一屏全是 alias==target 的同名行，真正配过的反而找不到
-            if (tab == 1 && hiddenPlainCount > 0) {
-                Spacer(Modifier.height(8.dp))
-                AgateSegmented(
-                    options = listOf("仅有配置", "含未配置 · $hiddenPlainCount"),
-                    selected = if (showPlainDefaults) 1 else 0,
-                    onSelect = { showPlainDefaults = it == 1 },
-                )
-            }
-            Spacer(Modifier.height(10.dp))
-
-            if (tab == 0) {
-                if (showAdd) {
-                    AddMappingCard(
-                        models = models,
-                        levels = levels,
-                        busy = loading,
-                        onCancel = { showAdd = false },
-                        onSubmit = { alias, target, provider, reasoning ->
-                            scope.launch {
-                                val r = ModelOps.setMapping(
-                                    alias = alias, target = target, provider = provider,
-                                    reasoning = reasoning, reasoningExplicit = reasoning != null,
-                                )
-                                applyResult(r, "新增映射")
-                                if (r.ok) showAdd = false
-                            }
-                        },
-                    )
-                    Spacer(Modifier.height(10.dp))
-                } else {
-                    EntryCard(
-                        icon = "＋", title = "新增映射",
-                        sub = "alias → 上游模型 · 同名可多家主备",
-                        onClick = { showAdd = true },
-                    )
-                    Spacer(Modifier.height(10.dp))
-                }
+                Spacer(Modifier.height(10.dp))
             }
 
-            // ── 映射行列表 ──
-            if (rows.isEmpty()) {
+            if (showAdd) {
+                AddMappingCard(
+                    models = models,
+                    levels = levels,
+                    busy = loading,
+                    onCancel = { showAdd = false },
+                    onSubmit = { alias, target, provider, reasoning ->
+                        scope.launch {
+                            val r = ModelOps.setMapping(
+                                alias = alias, target = target, provider = provider,
+                                reasoning = reasoning, reasoningExplicit = reasoning != null,
+                            )
+                            applyResult(r, "新增映射")
+                            if (r.ok) showAdd = false
+                        }
+                    },
+                )
+                Spacer(Modifier.height(10.dp))
+            } else {
+                EntryCard(
+                    icon = "＋", title = "新增映射",
+                    sub = "alias → 上游模型 · 同名可多家主备",
+                    onClick = { showAdd = true },
+                )
+                Spacer(Modifier.height(10.dp))
+            }
+
+            if (userRows.isEmpty()) {
                 Spacer(Modifier.height(18.dp))
                 Text(
-                    if (tab == 0) "暂无用户映射 —— 建一条把多家同名模型串成主备"
-                    else "尚无模型清单（先到「模型」页刷新目录）",
+                    "暂无改名映射 —— 建一条把多家同名模型串成主备",
                     style = AgateType.Caption, color = C.textDim,
                     modifier = Modifier.fillMaxWidth(),
                 )
             }
-            rows.forEach { row ->
+            userRows.forEach { row ->
                 MappingRowCard(
                     row = row,
                     levels = levels,
-                    expanded = expandedRow == row.key(),
-                    allowDelete = tab == 0,
+                    onCopyAlias = { copy(row.alias, "对外名") },
+                    onCopyTarget = { copy(row.target, "上游模型名") },
                     onToggle = { checked ->
                         scope.launch {
                             applyResult(
@@ -293,6 +224,9 @@ fun ModelMappingPage(
                             )
                         }
                     },
+                    onEdit = { editing = row },
+                    onExpandLevel = { expandedRow = if (expandedRow == row.key()) null else row.key() },
+                    expanded = expandedRow == row.key(),
                     onPickLevel = { level ->
                         expandedRow = null
                         scope.launch {
@@ -303,9 +237,6 @@ fun ModelMappingPage(
                                 ), "设置思考等级",
                             )
                         }
-                    },
-                    onExpandLevel = {
-                        expandedRow = if (expandedRow == row.key()) null else row.key()
                     },
                     onDelete = { pendingDelete = Triple(row.alias, row.target, row.provider) },
                 )
@@ -322,9 +253,9 @@ fun ModelMappingPage(
                 onRemove = { pv, mid ->
                     scope.launch { applyResult(ModelOps.removeCustomModel(pv, mid), "移除自定义模型") }
                 },
+                onCopy = { copy(it, "模型 id") },
             )
-            // 用户映射页：失效条数说明白（它们被隐藏了，不是被删了）
-            if (tab == 0 && danglingCount > 0) {
+            if (danglingCount > 0) {
                 Spacer(Modifier.height(10.dp))
                 Text(
                     "另有 $danglingCount 条失效映射（目标模型已不在该家清单里，转发会 404）；" +
@@ -333,18 +264,28 @@ fun ModelMappingPage(
                     color = C.textDim,
                 )
             }
-            // 被隐藏的条数要说明白：不能让用户以为「我的绑定丢了」
-            if (tab == 1 && hiddenCount > 0) {
-                Spacer(Modifier.height(10.dp))
-                Text(
-                    "另有 $hiddenCount 条默认绑定属于未登录的提供商（没账号，客户端也不会看到）；" +
-                        "切到「全部」可查看",
-                    style = AgateType.Caption,
-                    color = C.textDim,
-                )
-            }
             Spacer(Modifier.height(28.dp))
         }
+    }
+
+    editing?.let { row ->
+        EditMappingDialog(
+            row = row,
+            levels = levels,
+            onDismiss = { editing = null },
+            onCopyAlias = { copy(row.alias, "对外名") },
+            onCopyTarget = { copy(row.target, "上游模型名") },
+            onSave = { enabled, level ->
+                scope.launch {
+                    val r = ModelOps.setMapping(
+                        alias = row.alias, target = row.target, provider = row.provider,
+                        enabled = enabled, reasoning = level, reasoningExplicit = true,
+                    )
+                    if (r.ok) editing = null
+                    applyResult(r, "保存映射")
+                }
+            },
+        )
     }
 
     pendingDelete?.let { (alias, target, provider) ->
@@ -367,16 +308,28 @@ fun ModelMappingPage(
 
 private fun ModelOps.MappingRow.key(): String = "$alias|$target|${provider ?: ""}"
 
-/* ── 一条映射行 ── */
+/** 诊断码 → 人话原因。未知码不显示具体原因（不猜）。 */
+private fun issueText(issue: String?): String? = when (issue) {
+    "mapping-off" -> "别名开关已关闭"
+    "target-absent" -> "目标模型已不在清单"
+    "target-off" -> "目标模型已被关闭"
+    "shadowed" -> "别名被原生名抢占"
+    "no-account" -> "该家暂无可用账号"
+    else -> null
+}
+
+/* ── 一条改名映射行 ── */
 @Composable
 private fun MappingRowCard(
     row: ModelOps.MappingRow,
     levels: List<String>,
     expanded: Boolean,
-    allowDelete: Boolean,
+    onCopyAlias: () -> Unit,
+    onCopyTarget: () -> Unit,
     onToggle: (Boolean) -> Unit,
-    onPickLevel: (String) -> Unit,
+    onEdit: () -> Unit,
     onExpandLevel: () -> Unit,
+    onPickLevel: (String) -> Unit,
     onDelete: () -> Unit,
 ) {
     val C = agateColors()
@@ -389,16 +342,37 @@ private fun MappingRowCard(
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
-                Text(
-                    "${row.alias}  →  ${row.target}",
-                    style = AgateType.Body, color = C.textMain, fontWeight = FontWeight.SemiBold,
-                )
-                Spacer(Modifier.height(3.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    AgateBadge(text = row.provider ?: "全部承载家", tone = dev.agate.android.ui.components.BadgeTone.GRAY)
-                    if (row.dangling) {
+                    Text(
+                        row.alias, style = AgateType.Body, color = C.textMain,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.clickable(onClick = onCopyAlias),
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Text("⧉", fontSize = 10.sp, color = C.textDim,
+                        modifier = Modifier.clickable(onClick = onCopyAlias))
+                }
+                Spacer(Modifier.height(2.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("→ ", style = AgateType.Caption, color = C.textDim)
+                    Text(
+                        row.target, style = AgateType.BodyS, color = C.textSub,
+                        modifier = Modifier.clickable(onClick = onCopyTarget),
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Text("⧉", fontSize = 10.sp, color = C.textDim,
+                        modifier = Modifier.clickable(onClick = onCopyTarget))
+                }
+                Spacer(Modifier.height(5.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    AgateBadge(text = row.provider ?: "全部承载家", tone = BadgeTone.GRAY)
+                    val reason = issueText(row.issue)
+                    if (!row.effective && reason != null) {
                         Spacer(Modifier.width(6.dp))
-                        AgateBadge(text = "目标已不存在", tone = dev.agate.android.ui.components.BadgeTone.AMBER)
+                        AgateBadge(text = reason, tone = BadgeTone.AMBER)
+                    } else if (!row.effective) {
+                        Spacer(Modifier.width(6.dp))
+                        AgateBadge(text = "未生效", tone = BadgeTone.AMBER)
                     }
                 }
             }
@@ -407,11 +381,14 @@ private fun MappingRowCard(
 
         Spacer(Modifier.height(8.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                "思考等级", style = AgateType.Caption, color = C.textDim,
-                modifier = Modifier.width(58.dp),
-            )
-            // 等级 chip：点击展开候选行；空 = 未绑定（跟随对话请求）
+            Text("编辑", style = AgateType.BodyS, color = C.accent, fontWeight = FontWeight.SemiBold,
+                modifier = Modifier
+                    .clickable(onClick = onEdit)
+                    .background(C.accent.copy(alpha = 0.10f), AgateShape.small)
+                    .padding(horizontal = 10.dp, vertical = 4.dp))
+            Spacer(Modifier.width(8.dp))
+            Text("等级", style = AgateType.Caption, color = C.textDim)
+            Spacer(Modifier.width(4.dp))
             Text(
                 row.reasoning ?: "未绑定",
                 style = AgateType.BodyS,
@@ -423,30 +400,24 @@ private fun MappingRowCard(
                     .padding(horizontal = 10.dp, vertical = 4.dp),
             )
             Spacer(Modifier.weight(1f))
-            if (allowDelete) {
-                Text(
-                    "删除",
-                    style = AgateType.BodyS, color = C.badgeRedText, fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier
-                        .clickable(onClick = onDelete)
-                        .background(C.redBg, AgateShape.small)
-                        .padding(horizontal = 10.dp, vertical = 4.dp),
-                )
-            }
+            Text(
+                "删除",
+                style = AgateType.BodyS, color = C.badgeRedText, fontWeight = FontWeight.SemiBold,
+                modifier = Modifier
+                    .clickable(onClick = onDelete)
+                    .background(C.redBg, AgateShape.small)
+                    .padding(horizontal = 10.dp, vertical = 4.dp),
+            )
         }
 
         if (expanded) {
             Spacer(Modifier.height(8.dp))
-            // 8 档 + 清除；等级表随 manage 响应下发（内核事实来源）
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text(
-                    "清除",
-                    style = AgateType.Caption, color = C.textSub,
+                Text("清除", style = AgateType.Caption, color = C.textSub,
                     modifier = Modifier
                         .clickable { onPickLevel("") }
                         .background(C.segBg, AgateShape.small)
-                        .padding(horizontal = 8.dp, vertical = 5.dp),
-                )
+                        .padding(horizontal = 8.dp, vertical = 5.dp))
                 levels.forEach { level ->
                     Text(
                         level,
@@ -465,6 +436,67 @@ private fun MappingRowCard(
             }
         }
     }
+}
+
+/* ── 编辑映射弹窗：身份只读 + 复制，开关/思考可改 ── */
+@Composable
+private fun EditMappingDialog(
+    row: ModelOps.MappingRow,
+    levels: List<String>,
+    onDismiss: () -> Unit,
+    onCopyAlias: () -> Unit,
+    onCopyTarget: () -> Unit,
+    onSave: (enabled: Boolean, level: String?) -> Unit,
+) {
+    val C = agateColors()
+    var enabled by remember { mutableStateOf(row.enabled) }
+    var level by remember { mutableStateOf(row.reasoning) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("编辑映射", fontSize = 15.sp) },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                Text("对外名（不可改，点可复制）", style = AgateType.Caption, color = C.textDim)
+                Text(row.alias, style = AgateType.Body, color = C.textMain, fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.clickable(onClick = onCopyAlias).padding(vertical = 4.dp))
+                Spacer(Modifier.height(6.dp))
+                Text("上游模型（不可改，点可复制）", style = AgateType.Caption, color = C.textDim)
+                Text(row.target, style = AgateType.Body, color = C.textMain,
+                    modifier = Modifier.clickable(onClick = onCopyTarget).padding(vertical = 4.dp))
+                Spacer(Modifier.height(10.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("启用", style = AgateType.Body, color = C.textMain, modifier = Modifier.weight(1f))
+                    Switch(checked = enabled, onCheckedChange = { enabled = it })
+                }
+                Spacer(Modifier.height(10.dp))
+                Text("思考等级（这条别名的档位）", style = AgateType.Caption, color = C.textDim)
+                Spacer(Modifier.height(4.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("清除", style = AgateType.Caption,
+                        color = if (level == null) C.onAccent else C.textSub,
+                        modifier = Modifier
+                            .clickable { level = null }
+                            .background(if (level == null) C.accent else C.segBg, AgateShape.small)
+                            .padding(horizontal = 8.dp, vertical = 5.dp))
+                    levels.forEach { lv ->
+                        Text(lv, style = AgateType.Caption,
+                            color = if (lv == level) C.onAccent else C.textSub,
+                            modifier = Modifier
+                                .clickable { level = lv }
+                                .background(if (lv == level) C.accent else C.segBg, AgateShape.small)
+                                .padding(horizontal = 8.dp, vertical = 5.dp))
+                    }
+                }
+                if (levels.isEmpty()) {
+                    Text("该环境未声明思考档位", style = AgateType.Caption, color = C.textDim)
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onSave(enabled, level) }) { Text("保存") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+    )
 }
 
 /* ── 新增映射卡 ── */
@@ -505,7 +537,6 @@ private fun AddMappingCard(
         AgateFormInput(value = alias, onValueChange = { alias = it }, hint = "映射名（对外 alias，如 my-gpt）")
         Spacer(Modifier.height(8.dp))
 
-        // 目标模型选择：点开搜索列表（收起时显示已选）
         if (picked == null || picking) {
             AgateSearchBar(value = query, onValueChange = { query = it }, hint = "搜索目标模型 id / 家")
             Spacer(Modifier.height(6.dp))
@@ -617,6 +648,7 @@ private fun CustomModelCard(
     busy: Boolean,
     onAdd: (String, String) -> Unit,
     onRemove: (String, String) -> Unit,
+    onCopy: (String) -> Unit,
 ) {
     val C = agateColors()
     var open by remember { mutableStateOf(false) }
@@ -666,7 +698,6 @@ private fun CustomModelCard(
         if (open) {
             Spacer(Modifier.height(10.dp))
 
-            // 登记表单：家选择 + 模型 id
             if (pickedP == null || picking) {
                 AgateSearchBar(value = query, onValueChange = { query = it }, hint = "搜索提供商")
                 Spacer(Modifier.height(6.dp))
@@ -733,7 +764,6 @@ private fun CustomModelCard(
                 )
             }
 
-            // 已登记的自定义模型
             if (manual.isNotEmpty()) {
                 Spacer(Modifier.height(10.dp))
                 manual.forEach { m ->
@@ -743,7 +773,7 @@ private fun CustomModelCard(
                     ) {
                         Text(
                             m.optString("id"), style = AgateType.BodyS, color = C.textMain,
-                            modifier = Modifier.weight(1f),
+                            modifier = Modifier.weight(1f).clickable { onCopy(m.optString("id")) },
                         )
                         Text(m.optString("providerLabel"), style = AgateType.Caption, color = C.textDim)
                         Spacer(Modifier.width(8.dp))
@@ -762,5 +792,4 @@ private fun CustomModelCard(
             }
         }
     }
-
 }

@@ -70,6 +70,15 @@ object ModelOps {
         val images: Boolean,
         val reasoning: Boolean,
         val isDefault: Boolean,
+        /**
+         * 模型自己绑的思考档位（内核 `models[].reasoningBinding`，现算自自映射）。
+         * null = 没绑（跟随请求）。注意与 [reasoning]（能力位「支持思考」）不同。
+         */
+        val reasoningBinding: String? = null,
+        /** 内核有没有发 `reasoningBinding` 键：没有就不给模型行「思考」入口。 */
+        val reasoningEditable: Boolean = false,
+        /** 这家自己声明的思考档位；空 = 回落顶层通用表。 */
+        val reasoningLevels: List<String> = emptyList(),
     ) {
         fun toModelRow(): GatewayRepository.ModelRow = GatewayRepository.ModelRow(
             id = id,
@@ -119,6 +128,10 @@ object ModelOps {
                         images = caps?.optBoolean("supportsImages") ?: false,
                         reasoning = caps?.optBoolean("supportsReasoning") ?: false,
                         isDefault = o.optBoolean("isDefault"),
+                        reasoningBinding = jsonTextOrNull(o, "reasoningBinding"),
+                        reasoningEditable = o.has("reasoningBinding"),
+                        reasoningLevels = (0 until (o.optJSONArray("reasoningLevels")?.length() ?: 0))
+                            .mapNotNull { o.optJSONArray("reasoningLevels")?.optString(it)?.takeIf { s -> s.isNotBlank() } },
                     )
                 }
                 return out
@@ -136,20 +149,45 @@ object ModelOps {
         val isDefault: Boolean,
         val dangling: Boolean,
         val carried: Boolean,
+        /**
+         * 这条别名此刻是否真能把请求解析到上游（内核 `mapping_effective` 用
+         * 请求侧 `builtin_target` 现算）。与 [enabled] 是两件事：后者只是映射
+         * 开关，前者还覆盖目标被关、目标已不在清单、别名被原生 id 抢走等所有
+         * 失效形状。界面**只读不算**。缺省 false = 内核没给，按「未生效」降级。
+         */
+        val effective: Boolean,
+        /**
+         * 未生效的具体原因码（`mapping-off` / `target-absent` / `target-off` /
+         * `shadowed` / `no-account`），生效时为 null。界面据此给具体原因与修复
+         * 入口；未知码一律不显示具体原因（不猜）。
+         */
+        val issue: String?,
     ) {
         companion object {
             fun from(o: JSONObject): MappingRow = MappingRow(
                 alias = o.optString("alias"),
                 target = o.optString("target"),
-                // provider 可空（空串 = 全局语义：由所有承载 target 的家接收）
-                provider = o.optString("provider").ifBlank { null },
+                // provider / reasoning 是 JSON null 与真机 AOSP 的 optString 坑：
+                // optString(null) 在真机返回字符串 "null"，ifBlank 拦不住。
+                provider = jsonTextOrNull(o, "provider"),
                 enabled = o.optBoolean("enabled", true),
-                reasoning = o.optString("reasoning").ifBlank { null },
+                reasoning = jsonTextOrNull(o, "reasoning"),
                 isDefault = o.optBoolean("isDefault", false),
                 dangling = o.optBoolean("dangling", false),
                 carried = o.optBoolean("carried", true),
+                effective = o.optBoolean("effective", false),
+                issue = jsonTextOrNull(o, "issue"),
             )
         }
+    }
+
+    /**
+     * 只认真正的 JSON 字符串；JSON null 与真机 AOSP 把 `optString(null)` 变成的
+     * 字符串 "null" 都归一为 null（单测库对 null 返回空串，故单测看不出这个坑）。
+     */
+    private fun jsonTextOrNull(o: JSONObject, key: String): String? {
+        val raw = o.opt(key) as? String ?: return null
+        return raw.trim().takeIf { it.isNotEmpty() && !it.equals("null", ignoreCase = true) }
     }
 
     /** 强制刷新模型清单（不带 accounts/providers = 刷新所有已实现家）。 */

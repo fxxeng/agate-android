@@ -23,9 +23,11 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -71,6 +73,16 @@ import dev.agate.android.ui.theme.agateColors
  * `failed`。卡片据此分三档显示 —— 失败的要能一眼看到并重试，跳过的要说明
  * 「这家用固定清单（重试也没用）」，成功的只是在汇总里计数。
  */
+/**
+ * 模型行「思考」入口的一次查询结论。null = 内核没给这个模型发 reasoningBinding
+ * 键（自定义家 / 老内核），不显示入口。`levels` 已按「逐模型优先、全局兜底」排好。
+ */
+internal data class ReasoningInfo(
+    val current: String?,
+    val levels: List<String>,
+    val busy: Boolean,
+)
+
 internal data class RefreshRow(
     val provider: String,
     val label: String,
@@ -229,6 +241,10 @@ fun ModelsPage(
     // 管理视图（含已禁用条目 + 官方可见性）。`snap.models` 只有「已启用」，
     // 光靠它画不出开关，也画不出被关掉的那些（它们已从清单里消失）。
     var manage by remember { mutableStateOf<List<ModelOps.ManageModelRow>>(emptyList()) }
+    /** 通用思考档位表（内核 `reasoningLevels`，逐模型未声明时兜底）。 */
+    var globalLevels by remember { mutableStateOf<List<String>>(emptyList()) }
+    /** 模型行「思考」入口的写入忙态（provider|id），防连点。 */
+    var levelBusy by remember { mutableStateOf<String?>(null) }
     /**
      * 自定义 / 预置 API 建出来的家。
      *
@@ -313,7 +329,13 @@ fun ModelsPage(
     }
 
     fun loadManage() {
-        scope.launch { manage = ModelOps.ManageModelRow.parse(ModelOps.fetchManage().data) }
+        scope.launch {
+            val r = ModelOps.fetchManage()
+            manage = ModelOps.ManageModelRow.parse(r.data)
+            val arr = r.data?.optJSONArray("reasoningLevels")
+            globalLevels = if (arr == null) emptyList() else
+                (0 until arr.length()).mapNotNull { arr.optString(it).takeIf { s -> s.isNotBlank() } }
+        }
     }
 
     // 管理视图进页面拉一次：启停状态与「桌面端是否列出」只有它给得出。
@@ -399,6 +421,26 @@ fun ModelsPage(
             } else {
                 Toast.makeText(ctx, r.error ?: "切换失败", Toast.LENGTH_SHORT).show()
             }
+        }
+    }
+
+    /**
+     * 模型行「思考」入口的写入：等级存在 `alias == target` 的自映射上。
+     * 存储没变，变的只是入口位置（从映射页「默认绑定」搬来，主线同款）。
+     * level=null = 显式清除（回落到跟随请求），走三态协议的 explicit 清除。
+     */
+    fun setReasoning(provider: String, id: String, level: String?) {
+        val key = "$provider|$id"
+        if (levelBusy != null) return
+        levelBusy = key
+        scope.launch {
+            val r = ModelOps.setMapping(
+                alias = id, target = id, provider = provider.ifBlank { null },
+                reasoning = level, reasoningExplicit = true,
+            )
+            levelBusy = null
+            if (r.ok) loadManage()
+            else Toast.makeText(ctx, "思考等级保存失败：${r.error ?: "未知"}", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -595,6 +637,17 @@ fun ModelsPage(
     }
     val enabledCount = scopeRows.count { it.enabled }
 
+    // 模型行「思考」入口的数据：只有内核发了 reasoningBinding 键的模型才给入口。
+    // key 用 (provider, 裸 id)，与会话清单对齐（后者 id 可能带 provider/ 前缀）。
+    fun bareId(id: String) = if ('/' in id) id.substringAfter('/') else id
+    val reasoningByKey = remember(manage) {
+        manage.filter { it.reasoningEditable }
+            .associate { "${it.provider.lowercase()}|${it.id.lowercase()}" to it.reasoningBinding }
+    }
+    val reasoningLevelsByKey = remember(manage) {
+        manage.associate { "${it.provider.lowercase()}|${it.id.lowercase()}" to it.reasoningLevels }
+    }
+
     val filtered = allRows.filter {
         query.isBlank() ||
             it.id.contains(query, ignoreCase = true) ||
@@ -775,6 +828,15 @@ fun ModelsPage(
                         onToggleAll = { ids, enabled -> toggleAll(pid, ids, enabled) },
                         batchBusy = batchBusy,
                         onOpenCaps = { modelId -> onOpenCaps(pid, modelId) },
+                        reasoning = { modelId ->
+                            val key = "${pid.lowercase()}|${bareId(modelId).lowercase()}"
+                            if (key in reasoningByKey) ReasoningInfo(
+                                current = reasoningByKey[key],
+                                levels = reasoningLevelsByKey[key].orEmpty().ifEmpty { globalLevels },
+                                busy = levelBusy == key,
+                            ) else null
+                        },
+                        onSetReasoning = { modelId, level -> setReasoning(pid, bareId(modelId), level) },
                         // 单家范围就是「看这家」，没有折叠的必要
                         expandByDefault = true,
                         hybrid = listView.mode == "hybrid",
@@ -805,6 +867,15 @@ fun ModelsPage(
                         toggling = toggling,
                         onToggle = { toggle(it) },
                         onOpenCaps = onOpenCaps,
+                        reasoning = { provider, modelId ->
+                            val key = "${provider.lowercase()}|${bareId(modelId).lowercase()}"
+                            if (key in reasoningByKey) ReasoningInfo(
+                                current = reasoningByKey[key],
+                                levels = reasoningLevelsByKey[key].orEmpty().ifEmpty { globalLevels },
+                                busy = levelBusy == key,
+                            ) else null
+                        },
+                        onSetReasoning = { provider, modelId, level -> setReasoning(provider, bareId(modelId), level) },
                     )
                     Spacer(Modifier.height(10.dp))
                 }
@@ -1648,6 +1719,9 @@ private fun ProviderModelGroup(
     onToggleAll: (List<String>, Boolean) -> Unit,
     batchBusy: Boolean,
     onOpenCaps: (String) -> Unit,
+    /** 查某模型的思考绑定；null = 该模型没有思考入口。参数是上游裸 id。 */
+    reasoning: (String) -> ReasoningInfo? = { null },
+    onSetReasoning: (String, String?) -> Unit = { _, _ -> },
     /** 单家范围用：进来就展开、且不可折叠（这时卡片只是容器，不是手风琴）。 */
     expandByDefault: Boolean = false,
     /** 当前清单形态是不是混合（只有混合下「前缀」才有意义）。 */
@@ -1729,6 +1803,8 @@ private fun ProviderModelGroup(
                     toggling = toggling,
                     onToggle = onToggle,
                     onOpenCaps = onOpenCaps,
+                    reasoning = reasoning(m.id),
+                    onSetReasoning = { level -> onSetReasoning(m.id, level) },
                     entryOn = if (!hybrid || homePinned) null else ("$providerId/$bare" in pins),
                     onToggleEntry = { onToggleEntry(providerId, bare) },
                 )
@@ -1765,6 +1841,8 @@ private fun ProviderModelGroup(
                             toggling = toggling,
                             onToggle = onToggle,
                             onOpenCaps = onOpenCaps,
+                            reasoning = reasoning(m.id),
+                            onSetReasoning = { level -> onSetReasoning(m.id, level) },
                             entryOn = if (!hybrid || homePinned) null else ("$providerId/$bare" in pins),
                             onToggleEntry = { onToggleEntry(providerId, bare) },
                         )
@@ -1787,6 +1865,8 @@ private fun ModelLine(
     toggling: String?,
     onToggle: (GatewayRepository.ModelRow) -> Unit,
     onOpenCaps: (String) -> Unit,
+    reasoning: ReasoningInfo? = null,
+    onSetReasoning: (String?) -> Unit = {},
     /**
      * 「这一条也带前缀暴露」的状态：
      * `null` = 不显示（非混合模式，或这家已整家勾选 —— 那时每一条本来就带前缀）；
@@ -1842,6 +1922,11 @@ private fun ModelLine(
                     .clickable { onToggleEntry() }
                     .padding(horizontal = 7.dp, vertical = 3.dp),
             )
+        }
+        // 「思考」：模型自己的思考档位（从映射页「默认绑定」搬来）。
+        // 只有内核发了 reasoningBinding 键的模型才给这个入口。
+        if (reasoning != null) {
+            ReasoningChip(info = reasoning, onSet = onSetReasoning)
         }
         // 「能力位」：带 (provider, model) 上下文跳到编辑器并直接落到这一条。
         // 之前只能在聚合卡里跳一次「全量列表」，找不到刚点的那条。
@@ -1983,6 +2068,8 @@ private fun ModelAggregateCard(
     toggling: String?,
     onToggle: (GatewayRepository.ModelRow) -> Unit,
     onOpenCaps: (String, String) -> Unit,
+    reasoning: (String, String) -> ReasoningInfo? = { _, _ -> null },
+    onSetReasoning: (String, String, String?) -> Unit = { _, _, _ -> },
 ) {
     val C = agateColors()
     val scope = rememberCoroutineScope()
@@ -2079,6 +2166,9 @@ private fun ModelAggregateCard(
                         }
                         .padding(horizontal = 7.dp, vertical = 3.dp),
                 )
+                reasoning(m.provider, m.id)?.let { info ->
+                    ReasoningChip(info = info, onSet = { level -> onSetReasoning(m.provider, m.id, level) })
+                }
                 m.credits?.let { CreditsTag(it) }
                 Spacer(Modifier.width(6.dp))
                 ModelToggle(enabled = m.enabled, busy = busy, onToggle = { onToggle(m) })
@@ -2248,4 +2338,62 @@ private fun fmtK(n: Int): String = when {
     n >= 1_000_000 -> "${n / 1_000_000}M"
     n >= 1000 -> "${n / 1000}K"
     else -> n.toString()
+}
+/**
+ * 模型行上的「思考」入口：一颗显示当前档位的 chip，点开弹层选档 / 清除。
+ *
+ * 档位候选来自 [ReasoningInfo.levels]（逐模型声明优先、全局兜底）。「清除」
+ * 传 null，走三态协议的显式清除（跟随请求），不是空串。
+ */
+@Composable
+private fun ReasoningChip(info: ReasoningInfo, onSet: (String?) -> Unit) {
+    val C = agateColors()
+    var open by remember { mutableStateOf(false) }
+    Text(
+        if (info.busy) "思考…" else if (info.current != null) "思考 ${info.current}" else "思考",
+        color = if (info.current != null) C.onAccent else C.accent,
+        fontSize = 9.sp,
+        fontWeight = FontWeight.SemiBold,
+        modifier = Modifier
+            .padding(end = 6.dp)
+            .background(
+                if (info.current != null) C.accent else C.accent.copy(alpha = 0.10f),
+                RoundedCornerShape(7.dp),
+            )
+            .clickable(enabled = !info.busy) { open = true }
+            .padding(horizontal = 7.dp, vertical = 3.dp),
+    )
+    if (open) {
+        AlertDialog(
+            onDismissRequest = { open = false },
+            title = { Text("思考等级", fontSize = 15.sp) },
+            text = {
+                Column(Modifier.verticalScroll(rememberScrollState())) {
+                    Text("清除（跟随请求）", color = C.accent, fontSize = 13.sp,
+                        modifier = Modifier.clickable {
+                            open = false
+                            onSet(null)
+                        }.padding(vertical = 8.dp))
+                    info.levels.forEach { lv ->
+                        Text(
+                            (if (lv == info.current) "✓ " else "   ") + lv,
+                            color = if (lv == info.current) C.accent else C.textSub,
+                            fontSize = 13.sp,
+                            modifier = Modifier.clickable {
+                                open = false
+                                onSet(lv)
+                            }.padding(vertical = 8.dp),
+                        )
+                    }
+                    if (info.levels.isEmpty()) {
+                        Text("该模型未声明思考档位", color = C.textDim, fontSize = 12.sp,
+                            modifier = Modifier.padding(vertical = 8.dp))
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { open = false }) { Text("取消") }
+            },
+        )
+    }
 }

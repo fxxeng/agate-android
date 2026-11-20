@@ -15,6 +15,48 @@ use crate::server::core::providers::{kind_from_id, kind_id, ProviderKind};
 use super::routing::{builtin_target, entry_id_in_manifest};
 use super::{active_manifests, aggregate_source, manifest_for, refresh_meta};
 
+/// 一条映射此刻能不能真把请求解析到上游 —— 与 `enabled` 是两件事。
+///
+/// 复用请求侧 [`builtin_target`]（转发走的就是它），界面只读不算：自己拼判据
+/// 等于抄一份内核规则，迟早漂移。`kind=None`（自定义家 / 未知家）一律不算生效。
+fn mapping_effective(
+    rules: &model_rules::ModelRules,
+    kind: Option<ProviderKind>,
+    manifest: &[Value],
+    alias: &str,
+) -> bool {
+    let Some(kind) = kind else { return false };
+    builtin_target(rules, kind, manifest, alias).is_some()
+}
+
+/// 未生效的具体原因（`effective=false` 时才有意义；生效返回 `None`）。
+///
+/// 前三种按现成判据精确算，其余归 `shadowed`（原生名抢占等混合形状 —— 界面
+/// 分不出是哪一种，不谎报具体原因）。顺序与 [`builtin_target`] 的失败路径一致：
+/// 先看别名开关，再看目标在不在清单 / 有没有被关。
+fn mapping_issue(
+    rules: &model_rules::ModelRules,
+    provider: &str,
+    manifest: &[Value],
+    target: &str,
+    enabled: bool,
+    effective: bool,
+) -> Option<&'static str> {
+    if effective {
+        return None;
+    }
+    if !enabled {
+        return Some("mapping-off");
+    }
+    let Some(id) = entry_id_in_manifest(manifest, target) else {
+        return Some("target-absent");
+    };
+    if !rules.default_enabled(provider, &id) {
+        return Some("target-off");
+    }
+    Some("shadowed")
+}
+
 /// 一家会对外广告哪些名字：清单里原生的上游 id + **已启用**的映射别名。
 ///
 /// ── `enabled` 这一道过滤不能少（曾经的漏洞）──────────────────
@@ -319,21 +361,21 @@ pub fn manage_view(store: &AccountStore) -> Value {
         // 一次取「远程与否 + 拉取时刻」：两者是同一处状态，分两次取会多读一次锁
         let (remote, refreshed_at) = refresh_meta(kind);
         let source = if remote { "remote" } else { "builtin" };
-        for item in manifest {
-            let id = model_id(&item);
+        // 按引用遍历：`mapping_effective` 要拿同一份清单问请求侧入口，不能把
+        // manifest move 掉（主线 e0c70ad 同款；判据不自己拼，抄一份必漂移）。
+        for item in &manifest {
+            let id = model_id(item);
             if id.is_empty() {
                 continue;
             }
             if !claimed.insert((provider.to_string(), id.to_lowercase())) {
                 continue; // 同家同 id 的重复条目（见 claimed 的说明）
             }
+            // 模型自己的状态：启停 + 思考等级从 `alias == target` 的自映射读，
+            // 但**只挂在模型行上**（`models[].enabled` / `reasoningBinding`），
+            // 不再伪装成一条映射 —— 那是模型属性，不是改名关系。
             let default = rules.binding(provider, &id, &id);
             let enabled = rules.default_enabled(provider, &id);
-            mappings.push(json!({
-                "alias": id, "target": id, "provider": provider, "enabled": enabled,
-                "reasoning": default.and_then(|mapping| mapping.reasoning.clone()),
-                "isDefault": true, "dangling": false, "carried": true,
-            }));
             let mut aliases = Vec::new();
             for (index, mapping) in rules.mappings.iter().enumerate() {
                 if !mapping.target.eq_ignore_ascii_case(&id)
@@ -356,10 +398,15 @@ pub fn manage_view(store: &AccountStore) -> Value {
                     continue;
                 };
                 aliases.push(mapping.alias.clone());
+                let alias_ok = mapping_effective(&rules, Some(kind), &manifest, &mapping.alias);
+                let issue = mapping_issue(
+                    &rules, provider, &manifest, &id, effective.enabled, alias_ok,
+                );
                 mappings.push(json!({
                     "alias": effective.alias, "target": id, "provider": provider,
                     "enabled": effective.enabled, "reasoning": effective.reasoning,
                     "isDefault": false, "dangling": false, "carried": true,
+                    "effective": alias_ok, "issue": issue,
                 }));
             }
             let source = if rules
@@ -384,6 +431,9 @@ pub fn manage_view(store: &AccountStore) -> Value {
                 "isDefault": item.get("isDefault").and_then(Value::as_bool).unwrap_or(false),
                 "provider": provider, "providerLabel": super::super::label_of(provider),
                 "source": source, "enabled": enabled, "aliases": aliases,
+                // 模型自己的思考等级档位（存在自映射上，但作为模型属性暴露）。
+                // 键**恒存在**：没绑时是 null，客户端据此区分「没绑」与「内核没给」。
+                "reasoningBinding": default.and_then(|mapping| mapping.reasoning.clone()),
                 "capabilities": capability::effective(&item),
                 "capOverrides": cap_overrides,
                 // 在不在**官方客户端下拉（picker）**里：`shown` / `hidden`，
@@ -537,17 +587,34 @@ pub fn manage_view(store: &AccountStore) -> Value {
         if attached.contains(&index) {
             continue;
         }
+        // 自映射（alias == target）是模型自己的状态，已挂到 models[] 行上；
+        // 这里不再输出成一条「A → A」的默认绑定。模型回到清单时状态自然还在，
+        // 所以只是不展示，不是丢弃（主线 e0c70ad 同款）。
+        if mapping.alias.eq_ignore_ascii_case(&mapping.target) {
+            continue;
+        }
         let carried = match mapping.provider.as_deref() {
             Some(provider) => kind_from_id(provider).is_some_and(|kind| {
                 entry_id_in_manifest(&manifest_for(kind), &mapping.target).is_some()
             }),
             None => !super::providers_for_model(&mapping.target).is_empty(),
         };
+        // 走到这里的映射都没挂到任何激活家的清单 ⇒ 必然不生效。
+        // `carried` 区分两种形状：目标还在某家清单（只是那家没账号/没启用）
+        // → no-account；目标压根不在任何清单 → target-absent。
+        let issue = if !mapping.enabled {
+            Some("mapping-off")
+        } else if carried {
+            Some("no-account")
+        } else {
+            Some("target-absent")
+        };
         mappings.push(json!({
             "alias": mapping.alias, "target": mapping.target, "provider": mapping.provider,
             "enabled": mapping.enabled, "reasoning": mapping.reasoning,
             "isDefault": mapping.alias.eq_ignore_ascii_case(&mapping.target),
             "dangling": true, "carried": carried,
+            "effective": false, "issue": issue,
         }));
     }
     json!({
@@ -625,5 +692,44 @@ mod tests {
         ]));
         let names = advertised_names(&rules, "cline-free", &manifest());
         assert!(!names.iter().any(|name| name == "x-alias"));
+    }
+
+    /// 诊断码：生效→None；关开关→mapping-off；目标不在清单→target-absent；
+    /// 目标在但被关→target-off。判据跟随请求侧解析，界面只读不算。
+    #[test]
+    fn mapping_issue_reflects_failure_shape() {
+        let m = manifest();
+        let target = "stealth/space-bunny-alpha";
+        // 生效
+        let rules = rules_with(json!([
+            { "alias": "my-alias", "target": target, "provider": "cline-free", "enabled": true }
+        ]));
+        let ok = mapping_effective(&rules, kind_from_id("cline-free"), &m, "my-alias");
+        assert!(ok, "目标在清单且开着 ⇒ 生效");
+        assert_eq!(mapping_issue(&rules, "cline-free", &m, target, true, ok), None);
+        // 开关关掉
+        let ok2 = mapping_effective(&rules, kind_from_id("cline-free"), &m, "my-alias");
+        assert_eq!(
+            mapping_issue(&rules, "cline-free", &m, target, false, ok2),
+            Some("mapping-off")
+        );
+        // 目标不在清单
+        assert_eq!(
+            mapping_issue(&rules, "cline-free", &m, "no/such-model", true, false),
+            Some("target-absent")
+        );
+    }
+
+    /// `effective` 必须跟随请求侧解析：关掉目标模型后，指向它的别名随之失效。
+    #[test]
+    fn effective_follows_request_side_resolver() {
+        let m = manifest();
+        let rules = rules_with(json!([
+            { "alias": "my-alias", "target": "stealth/space-bunny-alpha",
+              "provider": "cline-free", "enabled": true }
+        ]));
+        assert!(mapping_effective(&rules, kind_from_id("cline-free"), &m, "my-alias"));
+        // 未知家一律不算生效（自定义家 / 缺 kind）
+        assert!(!mapping_effective(&rules, None, &m, "my-alias"));
     }
 }
