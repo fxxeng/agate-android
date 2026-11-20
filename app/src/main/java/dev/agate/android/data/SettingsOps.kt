@@ -186,6 +186,20 @@ object SettingsOps {
     const val AUTO_CONTINUE_MAX_ROUNDS = 8
     const val AUTO_CONTINUE_DEFAULT_ROUNDS = 3
 
+    // ── 会话图片压缩（/api/image-compress）───────────────────────────
+    // 四个值的合法区间与内核 `config::IMAGE_COMPRESS_*` 逐字一致：内核按「已合法」
+    // 处理，越界值不会被拦在那里，而是在下一次解析时被 `bounded_int_field` 丢掉 ——
+    // 症状是「刚设的值悄悄变回默认」，所以范围校验必须在提交之前做。
+    const val IMAGE_COMPRESS_MIN_MAX_EDGE = 256
+    const val IMAGE_COMPRESS_MAX_MAX_EDGE = 8192
+    const val IMAGE_COMPRESS_MIN_QUALITY = 40
+    const val IMAGE_COMPRESS_MAX_QUALITY = 95
+    const val IMAGE_COMPRESS_MIN_THRESHOLD_KB = 0
+    const val IMAGE_COMPRESS_MAX_THRESHOLD_KB = 10240
+    const val IMAGE_COMPRESS_DEFAULT_MAX_EDGE = 2048
+    const val IMAGE_COMPRESS_DEFAULT_QUALITY = 80
+    const val IMAGE_COMPRESS_DEFAULT_THRESHOLD_KB = 512
+
     /**
      * 流式与输出组的三个开关。
      *
@@ -207,6 +221,14 @@ object SettingsOps {
         val debugRows: Long,
         /** 调试报文的保留上限（内核 `debug_traffic::MAX_ENTRIES`）。 */
         val debugLimit: Long,
+        /** 会话图片压缩总开关（默认关，见内核 `KEY_IMAGE_COMPRESS_ENABLED`）。 */
+        val imageCompress: Boolean = false,
+        /** 长边像素上限（超过等比缩小，不放大）。 */
+        val imageCompressMaxEdge: Int = IMAGE_COMPRESS_DEFAULT_MAX_EDGE,
+        /** JPEG 重编码质量。 */
+        val imageCompressQuality: Int = IMAGE_COMPRESS_DEFAULT_QUALITY,
+        /** 触发阈值 KB（解码后小于它保持原样）。 */
+        val imageCompressThresholdKb: Int = IMAGE_COMPRESS_DEFAULT_THRESHOLD_KB,
     )
 
     suspend fun stream(): OpResult<Stream> = withContext(Dispatchers.IO) {
@@ -214,7 +236,8 @@ object SettingsOps {
         val keepalive = get("/api/keepalive-strip")
         val auto = get("/api/auto-continue")
         val debug = get("/api/debug")
-        if (keepalive == null && auto == null && debug == null) {
+        val compress = get("/api/image-compress")
+        if (keepalive == null && auto == null && debug == null && compress == null) {
             return@withContext OpResult(false, null, "无法连接内核")
         }
         OpResult(
@@ -230,6 +253,18 @@ object SettingsOps {
                 // 库行数快照是同名不同源。读不到就当 0，不让它拖垮整组。
                 debugRows = debug?.optLong("count", 0L) ?: 0L,
                 debugLimit = debug?.optLong("limit", 0L) ?: 0L,
+                // 读不到就是「内核没有这条端点」（旧内核）—— 按默认关处理，
+                // 界面显示成关闭而不是把它当成一次失败。
+                imageCompress = compress?.optBoolean("imageCompressEnabled", false) ?: false,
+                imageCompressMaxEdge = compress?.optInt(
+                    "imageCompressMaxEdge", IMAGE_COMPRESS_DEFAULT_MAX_EDGE,
+                ) ?: IMAGE_COMPRESS_DEFAULT_MAX_EDGE,
+                imageCompressQuality = compress?.optInt(
+                    "imageCompressQuality", IMAGE_COMPRESS_DEFAULT_QUALITY,
+                ) ?: IMAGE_COMPRESS_DEFAULT_QUALITY,
+                imageCompressThresholdKb = compress?.optInt(
+                    "imageCompressThresholdKb", IMAGE_COMPRESS_DEFAULT_THRESHOLD_KB,
+                ) ?: IMAGE_COMPRESS_DEFAULT_THRESHOLD_KB,
             ),
             null,
         )
@@ -267,6 +302,51 @@ object SettingsOps {
         enabled?.let { body.put("autoContinue", it) }
         rounds?.let { body.put("autoContinueMaxRounds", it) }
         return saveSwitch("/api/auto-continue", body)
+    }
+
+    /**
+     * 保存会话图片压缩（缺省项不动）。
+     *
+     * 与 [saveAutoContinue] 的 `null` 语义一致：`null` = 「这一项不改」，不进 body。
+     * 范围校验在这里做（内核按「已合法」处理，越界值会被静默丢弃）。
+     */
+    suspend fun saveImageCompress(
+        enabled: Boolean? = null,
+        maxEdge: Int? = null,
+        quality: Int? = null,
+        thresholdKb: Int? = null,
+    ): OpResult<Unit> {
+        if (maxEdge != null &&
+            maxEdge !in IMAGE_COMPRESS_MIN_MAX_EDGE..IMAGE_COMPRESS_MAX_MAX_EDGE
+        ) {
+            return OpResult(
+                false, null,
+                "长边必须在 $IMAGE_COMPRESS_MIN_MAX_EDGE–$IMAGE_COMPRESS_MAX_MAX_EDGE 之间（收到 $maxEdge）",
+            )
+        }
+        if (quality != null && quality !in IMAGE_COMPRESS_MIN_QUALITY..IMAGE_COMPRESS_MAX_QUALITY) {
+            return OpResult(
+                false, null,
+                "质量必须在 $IMAGE_COMPRESS_MIN_QUALITY–$IMAGE_COMPRESS_MAX_QUALITY 之间（收到 $quality）",
+            )
+        }
+        if (thresholdKb != null &&
+            thresholdKb !in IMAGE_COMPRESS_MIN_THRESHOLD_KB..IMAGE_COMPRESS_MAX_THRESHOLD_KB
+        ) {
+            return OpResult(
+                false, null,
+                "阈值必须在 $IMAGE_COMPRESS_MIN_THRESHOLD_KB–$IMAGE_COMPRESS_MAX_THRESHOLD_KB KB 之间（收到 $thresholdKb）",
+            )
+        }
+        if (enabled == null && maxEdge == null && quality == null && thresholdKb == null) {
+            return OpResult(false, null, "没有要保存的改动")
+        }
+        val body = JSONObject()
+        enabled?.let { body.put("imageCompressEnabled", it) }
+        maxEdge?.let { body.put("imageCompressMaxEdge", it) }
+        quality?.let { body.put("imageCompressQuality", it) }
+        thresholdKb?.let { body.put("imageCompressThresholdKb", it) }
+        return saveSwitch("/api/image-compress", body)
     }
 
     // ──────────────────────────────────────────────────────────

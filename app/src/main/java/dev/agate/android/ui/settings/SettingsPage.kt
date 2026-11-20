@@ -413,6 +413,18 @@ fun SettingsPage(
                 var autoContinue by remember(s) { mutableStateOf(s?.autoContinue ?: false) }
                 var rounds by remember(s) { mutableStateOf(s?.autoContinueRounds ?: 3) }
                 var debug by remember(s) { mutableStateOf(s?.debug ?: false) }
+                var compress by remember(s) { mutableStateOf(s?.imageCompress ?: false) }
+                var maxEdge by remember(s) {
+                    mutableStateOf(s?.imageCompressMaxEdge ?: SettingsOps.IMAGE_COMPRESS_DEFAULT_MAX_EDGE)
+                }
+                var quality by remember(s) {
+                    mutableStateOf(s?.imageCompressQuality ?: SettingsOps.IMAGE_COMPRESS_DEFAULT_QUALITY)
+                }
+                var thresholdKb by remember(s) {
+                    mutableStateOf(
+                        s?.imageCompressThresholdKb ?: SettingsOps.IMAGE_COMPRESS_DEFAULT_THRESHOLD_KB,
+                    )
+                }
 
                 SwitchRow(
                     label = "丢弃纯换行的保活分片",
@@ -502,6 +514,121 @@ fun SettingsPage(
                         label = "出网取证",
                         desc = "已采集 ${s?.debugRows ?: 0} 条，去「调用记录」页按调试标记查看",
                         value = "${s?.debugRows ?: 0} 条",
+                    )
+                }
+                // ── 会话图片压缩 ──────────────────────────────────
+                // 默认关，且文案要写清代价：开着的那一刻起，发出去的图片会被
+                // **改写**（模型看到的是压缩后的像素），「为什么这张图糊了」
+                // 必须能在界面上找到答案。
+                SwitchRow(
+                    label = "会话图片压缩",
+                    desc = "发图给上游前，把内联的大图缩到长边上限并重编码 · 只在对话链路生效 · " +
+                        "外链图片与 gif/svg 不动 · 压不小就原样保留",
+                    checked = compress,
+                    enabled = "/api/image-compress" !in pending,
+                    onToggle = { want ->
+                        val before = compress
+                        compress = want
+                        toggle("/api/image-compress", "流式", want, { compress = before }) {
+                            val result = SettingsOps.saveImageCompress(enabled = want)
+                            if (result.ok) stream = stream?.copy(imageCompress = want)
+                            result
+                        }
+                    },
+                )
+                if (compress) {
+                    NumberRow(
+                        label = "长边上限",
+                        desc = "超过就等比缩小，不放大 · 多数视觉模型内部也缩到这个量级附近",
+                        value = maxEdge.toLong(),
+                        unit = " px",
+                        enabled = "/api/image-compress" !in pending,
+                        onPick = { picked ->
+                            val next = picked.coerceIn(
+                                SettingsOps.IMAGE_COMPRESS_MIN_MAX_EDGE.toLong(),
+                                SettingsOps.IMAGE_COMPRESS_MAX_MAX_EDGE.toLong(),
+                            ).toInt()
+                            val before = maxEdge
+                            maxEdge = next
+                            scope.launch {
+                                val r = SettingsOps.saveImageCompress(maxEdge = next)
+                                if (!r.ok) {
+                                    maxEdge = before
+                                    setError("流式", r.error)
+                                }
+                            }
+                        },
+                        field = SettingsOps.Field(
+                            "imageCompressMaxEdge",
+                            "长边上限",
+                            SettingsOps.IMAGE_COMPRESS_MIN_MAX_EDGE.toLong(),
+                            SettingsOps.IMAGE_COMPRESS_MAX_MAX_EDGE.toLong(),
+                            " px",
+                            "超过就等比缩小，不放大。",
+                            SettingsOps.IMAGE_COMPRESS_DEFAULT_MAX_EDGE.toLong(),
+                        ),
+                    )
+                    NumberRow(
+                        label = "重编码质量",
+                        desc = "JPEG 质量 · 80 在翻拍照片上看不出差别，体积约为 95 的三分之一",
+                        value = quality.toLong(),
+                        unit = " 分",
+                        enabled = "/api/image-compress" !in pending,
+                        onPick = { picked ->
+                            val next = picked.coerceIn(
+                                SettingsOps.IMAGE_COMPRESS_MIN_QUALITY.toLong(),
+                                SettingsOps.IMAGE_COMPRESS_MAX_QUALITY.toLong(),
+                            ).toInt()
+                            val before = quality
+                            quality = next
+                            scope.launch {
+                                val r = SettingsOps.saveImageCompress(quality = next)
+                                if (!r.ok) {
+                                    quality = before
+                                    setError("流式", r.error)
+                                }
+                            }
+                        },
+                        field = SettingsOps.Field(
+                            "imageCompressQuality",
+                            "重编码质量",
+                            SettingsOps.IMAGE_COMPRESS_MIN_QUALITY.toLong(),
+                            SettingsOps.IMAGE_COMPRESS_MAX_QUALITY.toLong(),
+                            " 分",
+                            "JPEG 质量，低于 40 文字边缘会糊。",
+                            SettingsOps.IMAGE_COMPRESS_DEFAULT_QUALITY.toLong(),
+                        ),
+                    )
+                    NumberRow(
+                        label = "触发阈值",
+                        desc = "解码后小于它保持原样 · 0 = 不设阈值，所有候选图都过一遍",
+                        value = thresholdKb.toLong(),
+                        unit = " KB",
+                        enabled = "/api/image-compress" !in pending,
+                        onPick = { picked ->
+                            val next = picked.coerceIn(
+                                SettingsOps.IMAGE_COMPRESS_MIN_THRESHOLD_KB.toLong(),
+                                SettingsOps.IMAGE_COMPRESS_MAX_THRESHOLD_KB.toLong(),
+                            ).toInt()
+                            val before = thresholdKb
+                            thresholdKb = next
+                            scope.launch {
+                                val r = SettingsOps.saveImageCompress(thresholdKb = next)
+                                if (!r.ok) {
+                                    thresholdKb = before
+                                    setError("流式", r.error)
+                                }
+                            }
+                        },
+                        field = SettingsOps.Field(
+                            "imageCompressThresholdKb",
+                            "触发阈值",
+                            SettingsOps.IMAGE_COMPRESS_MIN_THRESHOLD_KB.toLong(),
+                            SettingsOps.IMAGE_COMPRESS_MAX_THRESHOLD_KB.toLong(),
+                            " KB",
+                            "小于它保持原样；0 = 全部过一遍。",
+                            SettingsOps.IMAGE_COMPRESS_DEFAULT_THRESHOLD_KB.toLong(),
+                        ),
                     )
                 }
                 // 开发者角色兼容只放在「脱敏与安全」组里。
