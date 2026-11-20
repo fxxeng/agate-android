@@ -71,10 +71,17 @@ pub fn resolve(provider: &Value, requested: &str) -> Option<(String, Option<Stri
         {
             return None;
         }
-        // target 的 enabled 只控制原始 ID，不能阻止别名调用它。
+        // 关掉的模型不该因为有了别名而重新出现：别名是这一行的另一个名字，
+        // 不是绕过启停的后门。与内置家 catalog::routing::builtin_target 同一判据。
         let model = models
             .iter()
-            .find(|model| model_id(model).eq_ignore_ascii_case(target))?;
+            .find(|model| model_id(model).eq_ignore_ascii_case(target))
+            .filter(|model| {
+                model
+                    .get("enabled")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(true)
+            })?;
         Some((model_id(model), level(mapping)))
     })
 }
@@ -134,4 +141,27 @@ pub fn public_models(provider: &Value) -> Vec<Value> {
         result.push(item);
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve;
+    use serde_json::json;
+
+    /// 关掉的模型不该因为有了别名而重新解析得通（与内置家同一判据）：
+    /// 别名是这一行的另一个名字，不是绕过启停的后门。
+    #[test]
+    fn alias_of_a_disabled_model_does_not_resolve() {
+        let p = json!({
+            "id": "custom-x", "enabled": true,
+            "models": [{ "id": "sn-kimi-k8", "enabled": false }, { "id": "keep-me" }],
+            "mappings": [{ "alias": "kimi-k8", "target": "sn-kimi-k8", "enabled": true }],
+        });
+        assert!(
+            resolve(&p, "kimi-k8").is_none(),
+            "模型已关，别名不该还能解析"
+        );
+        assert!(resolve(&p, "sn-kimi-k8").is_none(), "原名同样不可用");
+        assert!(resolve(&p, "keep-me").is_some(), "未关闭的模型仍可用");
+    }
 }

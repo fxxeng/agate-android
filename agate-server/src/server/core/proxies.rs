@@ -244,8 +244,9 @@ pub fn normalize_account_proxy(input: &Value) -> Result<Option<Value>, ProxyConf
     Ok(Some(Value::Object(normalized)))
 }
 
-/// 解析结果：成功时给出可用的出口，失败时 `error` 说明原因
-/// （调用方据此回退直连并记日志，对应 Node 版 `{ error }` 分支）。
+/// 解析结果：成功时给出可用的出口，失败时带上原因（对应 Node 版 `{ error }`
+/// 分支）。失败怎么处置由调用方按自己的链路定 —— 辅助链路回退直连并记日志，
+/// 转发链路见 [`ProxyResolution`] 的两支之分。
 ///
 /// `port` 是 `Option<u16>`：Node 的 custom 分支直接写 `Number(config.port)`，
 /// 手工编辑出的非法端口会变成 `NaN` → JSON `null`。这里如实保留那个 null，
@@ -298,11 +299,21 @@ impl ResolvedProxy {
         };
         let protocol = {
             let protocol = text("protocol");
-            if protocol.is_empty() {
+            let protocol = if protocol.is_empty() {
                 "http".to_string()
             } else {
                 protocol
+            };
+            // 协议白名单：reqwest 只认这四种。不拦的后果不是「报错」，而是
+            // `Proxy::all()` 在 `egress::client_for` 里失败、被那句
+            // `unwrap_or_else` 悄悄改成**直连** —— 用户以为在走代理，实际拿
+            // 本机 IP 出去了。脏协议 / 老版本遗留都会走到这里。
+            if !matches!(protocol.as_str(), "http" | "https" | "socks5" | "socks5h") {
+                return Err(format!(
+                    "代理协议不支持: {protocol}（只支持 http / https / socks5 / socks5h）"
+                ));
             }
+            protocol
         };
         Ok(Some(ResolvedProxy {
             source: text("source"),
@@ -319,9 +330,13 @@ impl ResolvedProxy {
 /// 会话里的出口（`session.proxy`）。
 ///
 /// 账号存储组装的会话已经带上了 `proxy`（解析成功）或 `proxyError`（解析失败，
-/// 此时 `proxy` 为 null）—— 所以拿到 None 就表示「直连」：没配代理、
-/// 配了但解析失败（如引用了已被删掉的 Clash 监听器）、以及配了但数据坏了，
-/// 这三种情况在出网层是同一个动作。第三种会额外记一条日志提醒。
+/// 此时 `proxy` 为 null）—— 所以拿到 None 就是「直连」：没配代理、或配了但
+/// 解析失败（引用的 Clash 监听器被删、数据被手改坏……）。
+///
+/// ⚠️ 这条「回退直连」只对**辅助链路**成立（计费、签到、余额这类「拿着
+/// session 直接发请求」的低频动作）。转发链路的出口不是从这里取的，而是走
+/// `get_session_by_id` 带上 `proxy_broken` 标记，配置坏时**直接失败**
+/// —— 判据与理由见 [`ProxyResolution::Broken`]。
 pub fn session_proxy(session: &Value) -> Option<ResolvedProxy> {
     match ResolvedProxy::from_json(session.get("proxy").unwrap_or(&Value::Null)) {
         Ok(proxy) => proxy,
@@ -373,24 +388,51 @@ fn js_interpolation(value: Option<&Value>) -> String {
 }
 
 /// 解析失败的原因（与成功结果互斥）
+///
+/// ── 为什么「配置本身坏了」要单独一支 ──────────────────────────
+/// 两种失败的正确处置**相反**：
+///   - `Failed`（Clash 没运行、轮询池一条都取不出来、混合端口没启用）是环境
+///     状态，用户可能下一秒就恢复 —— 转发层回退直连并在本轮明细里提示，
+///     优先保证请求能出去。
+///   - `Broken`（来源不认识、引用的池条目已被删、Clash 里那个监听器已经不存在
+///     或被禁用、协议不在白名单）是**配置与现实不一致**，用户不改就一直坏。
+///     这时静默直连是最坏的结果：用户多半正是为了不暴露本机 IP 才配代理，
+///     结果流量却带着真实地址直连上游。所以转发层见到它必须**停止本次
+///     请求**并说明原因。
+///
+/// 判定下沉到变体里而不是比对文案前缀：这几个字符串会随文案润色而变，变体不会，
+/// 而且新增一支时编译器会把所有 match 点逐个点出来。
 #[derive(Clone, Debug)]
 pub enum ProxyResolution {
     Resolved(ResolvedProxy),
+    /// 环境/瞬时不可用：转发层回退直连（可用性优先）
     Failed(String),
+    /// 配置本身坏了：转发层**不得**回退直连，必须明确失败
+    Broken(String),
 }
 
 impl ProxyResolution {
     pub fn error(&self) -> Option<&str> {
         match self {
             ProxyResolution::Resolved(_) => None,
-            ProxyResolution::Failed(message) => Some(message.as_str()),
+            ProxyResolution::Failed(message) | ProxyResolution::Broken(message) => {
+                Some(message.as_str())
+            }
         }
+    }
+
+    /// 是不是「配置本身坏了」（见枚举上方的判别说明）。
+    ///
+    /// 转发层据此决定「回退直连」还是「停下并发错」—— 这是两种失败唯一的
+    /// 分叉点，别在别处再判一次文案。
+    pub fn is_broken(&self) -> bool {
+        matches!(self, ProxyResolution::Broken(_))
     }
 
     pub fn resolved(&self) -> Option<&ResolvedProxy> {
         match self {
             ProxyResolution::Resolved(proxy) => Some(proxy),
-            ProxyResolution::Failed(_) => None,
+            ProxyResolution::Failed(_) | ProxyResolution::Broken(_) => None,
         }
     }
 }
@@ -416,7 +458,8 @@ pub fn resolve_account_proxy(config: Option<&Value>) -> Option<ProxyResolution> 
     // 于是落到「不支持的代理来源: undefined」—— 手工编辑账号记录
     // 写错形状时就是这条文案，照抄不改成更「友好」的提示
     let Some(object) = config.as_object() else {
-        return Some(ProxyResolution::Failed(
+        // 不是对象 = 配置形状本身坏了（对照 main 的判据：不认识的来源归 Broken）
+        return Some(ProxyResolution::Broken(
             "不支持的代理来源: undefined".to_string(),
         ));
     };
@@ -446,12 +489,14 @@ pub fn resolve_account_proxy(config: Option<&Value>) -> Option<ProxyResolution> 
     if source == "pool" {
         let proxy_id = object.get("proxyId").and_then(Value::as_str).unwrap_or("");
         if proxy_id.is_empty() {
-            return Some(ProxyResolution::Failed("代理引用缺少条目 id".to_string()));
+            return Some(ProxyResolution::Broken("代理引用缺少条目 id".to_string()));
         }
+        // 池引用的三种失败（条目被删 / 已禁用 / 它指向的 Clash 监听器没了）
+        // 都是配置坏 —— 用户不重新选一条就一直坏，归 `Broken`
         return Some(
             match crate::server::core::proxy_pool::resolve_reference(proxy_id) {
                 Ok(proxy) => ProxyResolution::Resolved(proxy),
-                Err(reason) => ProxyResolution::Failed(reason),
+                Err(reason) => ProxyResolution::Broken(reason),
             },
         );
     }
@@ -502,7 +547,8 @@ pub fn resolve_account_proxy(config: Option<&Value>) -> Option<ProxyResolution> 
         }));
     }
     if source != "clash" {
-        return Some(ProxyResolution::Failed(format!(
+        // 来源不认识 = 配置坏，不是「Clash 没开」那种可自愈的状态
+        return Some(ProxyResolution::Broken(format!(
             "不支持的代理来源: {source}"
         )));
     }
@@ -543,12 +589,14 @@ pub fn resolve_account_proxy(config: Option<&Value>) -> Option<ProxyResolution> 
         .iter()
         .find(|item| item.uid == listener_uid)
     else {
-        return Some(ProxyResolution::Failed(format!(
+        // 监听器在 Clash 里被删 —— 账号还指着它，属于配置坏（不是 Clash 没开）
+        return Some(ProxyResolution::Broken(format!(
             "Clash Verge 中找不到监听器「{listener_uid}」（可能已在 Clash 中删除）"
         )));
     };
     if !listener.enabled {
-        return Some(ProxyResolution::Failed(format!(
+        // 监听器被用户在 Clash 里关掉 —— 同样是配置坏：转发层不该悄悄改直连
+        return Some(ProxyResolution::Broken(format!(
             "Clash Verge 监听器「{}」已禁用",
             listener.name
         )));
@@ -595,8 +643,10 @@ pub fn resolve_account_proxy_rotating(
 /// 账号代理的展示描述（公开形态，不带单独字段的密码 —— 与 Node 版一致，
 /// 密码只在 config 里原样带回）。
 ///
-/// 无代理返回 Null；解析失败时 `label` 为「解析失败」并附 `error`
-/// （前端据此提示「转发时会回退直连」）。
+/// 无代理返回 Null；解析失败时 `label` 为「解析失败」并附 `error` —— 文案给
+/// 原因是**如实呈现**，至于转发时是回退直连还是直接失败，取决于它是
+/// [`ProxyResolution::Failed`] 还是 [`ProxyResolution::Broken`]（见枚举说明），
+/// 界面不该在这一层替用户下结论。
 ///
 /// 轮询档单独一支（见下）：它的「当前出口」是个随机进度的概念，展示要回答的是
 /// 「轮询了几条、都可用吗」，不能借用某一次解析的 label 冒充「当前出口」。
@@ -616,7 +666,9 @@ pub fn describe_account_proxy(config: Option<&Value>) -> Value {
         .unwrap_or("")
         .to_string();
     match &resolution {
-        ProxyResolution::Failed(message) => json!({
+        // 两种失败都如实呈现原因；转发时是回退直连还是直接失败，取决于它是
+        // Failed 还是 Broken（见枚举说明），界面不该在这一层替用户下结论。
+        ProxyResolution::Failed(message) | ProxyResolution::Broken(message) => json!({
             "source": source,
             "label": "解析失败",
             "error": message,
@@ -666,4 +718,68 @@ fn describe_rotate_proxy(config: &Value) -> Value {
             "usable": summary.usable,
         },
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// 配置坏与瞬时不可用必须分得开：前者转发层要停下，后者可以回退直连。
+    #[test]
+    fn broken_and_failed_are_distinguishable() {
+        let broken = ProxyResolution::Broken("Clash Verge 监听器「x」已禁用".to_string());
+        let failed = ProxyResolution::Failed("Clash Verge 配置不可用".to_string());
+        assert!(broken.is_broken());
+        assert!(!failed.is_broken());
+        // 两种都要把原因给界面看，但都不提供可用出口
+        assert_eq!(broken.error(), Some("Clash Verge 监听器「x」已禁用"));
+        assert!(broken.resolved().is_none());
+        assert!(failed.resolved().is_none());
+    }
+
+    /// 不认识的来源 = 配置坏（不是「Clash 没开」那种可自愈的状态）。
+    #[test]
+    fn unknown_source_is_broken() {
+        let Some(resolution) = resolve_account_proxy(Some(&json!({ "source": "singbox" }))) else {
+            assert!(false, "有配置就一定有解析结果");
+            return;
+        };
+        assert!(resolution.is_broken(), "{resolution:?}");
+        assert!(resolution
+            .error()
+            .unwrap_or("")
+            .contains("不支持的代理来源: singbox"));
+    }
+
+    /// 池引用缺 id：同样是配置坏。
+    #[test]
+    fn pool_reference_without_id_is_broken() {
+        let Some(resolution) = resolve_account_proxy(Some(&json!({ "source": "pool" }))) else {
+            assert!(false, "有配置就一定有解析结果");
+            return;
+        };
+        assert!(resolution.is_broken(), "{resolution:?}");
+    }
+
+    /// 协议白名单：脏协议必须在解析期就被拒，不能留到建 Client 时静默直连。
+    #[test]
+    fn unknown_protocol_is_rejected_when_resolving_session_proxy() {
+        let bad = json!({ "protocol": "socks4", "host": "127.0.0.1", "port": 7890 });
+        assert!(ResolvedProxy::from_json(&bad).is_err());
+        let good = json!({ "protocol": "socks5", "host": "127.0.0.1", "port": 7890 });
+        match ResolvedProxy::from_json(&good) {
+            Ok(Some(proxy)) => {
+                assert_eq!(proxy.protocol, "socks5");
+                assert_eq!(proxy.port, Some(7890));
+            }
+            other => assert!(false, "合法协议应通过: {other:?}"),
+        }
+        // 缺 protocol 的存量记录按 http 处理（Node 版口径）
+        let legacy = json!({ "host": "127.0.0.1", "port": 7890 });
+        match ResolvedProxy::from_json(&legacy) {
+            Ok(Some(proxy)) => assert_eq!(proxy.protocol, "http"),
+            other => assert!(false, "缺协议应回落 http: {other:?}"),
+        }
+    }
 }

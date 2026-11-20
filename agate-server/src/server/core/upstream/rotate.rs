@@ -138,6 +138,7 @@ pub(super) async fn select_target_account(
             proxy: None,
             priority: None,
             proxy_notice: None,
+            proxy_broken: false,
             decision: None,
         });
     }
@@ -202,6 +203,7 @@ pub(super) async fn select_target_account(
                 entry.account.clone(),
                 picked_session.proxy,
                 picked_session.proxy_error,
+                picked_session.proxy_broken,
                 entry.id.clone(),
                 Some(decision),
             ));
@@ -286,6 +288,7 @@ pub(super) async fn select_target_account(
                         account,
                         entry.proxy,
                         entry.proxy_error,
+                        entry.proxy_broken,
                         id,
                         Some(decision),
                     ));
@@ -300,6 +303,7 @@ pub(super) async fn select_target_account(
                     account,
                     entry.proxy,
                     entry.proxy_error,
+                    entry.proxy_broken,
                     id,
                     Some(decision),
                 ));
@@ -313,6 +317,7 @@ pub(super) async fn select_target_account(
         proxy: None,
         priority: None,
         proxy_notice: None,
+        proxy_broken: false,
         decision: Some(decision),
     })
 }
@@ -388,25 +393,36 @@ pub(super) fn accounts_in_providers(
 /// 两个来源合并成一条文案：账号存储里记的 `proxyError`（上次解析失败的原因）
 /// 与本次现场解析失败的原因。**后者优先** —— 它说明的是「这次为什么直连」，
 /// 而 `proxyError` 可能是更早的旧状态。
+///
+/// `proxy_broken` 决定文案口径，也决定转发层的动作（见
+/// `ProxyResolution::Broken`）：配置坏的那种请求**不会发出去**，所以文案必须
+/// 写「已停止」而不是「本次直连」—— 后者是一句与事实相反的话。
 pub(super) fn with_proxy_notice(
     account: Value,
     proxy: Value,
     proxy_error: Option<String>,
+    proxy_broken: bool,
     account_id: String,
     decision: Option<Value>,
 ) -> RouteTarget {
+    let name = account_display(&account);
+    let mut broken = proxy_broken;
     let mut notice = proxy_error.map(|error| {
-        format!(
-            "账号「{}」代理不可用，本次直连: {error}",
-            account_display(&account)
-        )
+        if broken {
+            format!("账号「{name}」代理配置不可用: {error}")
+        } else {
+            format!("账号「{name}」代理不可用，本次直连: {error}")
+        }
     });
     let resolved = match ResolvedProxy::from_json(&proxy) {
         Ok(proxy) => proxy,
         Err(reason) => {
-            // 会话里的 proxy 由账号存储解析过（成功才会带过来），
-            // 这里失败说明数据在两次读盘之间变了：按直连兜底
-            notice = Some(format!("账号代理不可用（{reason}），本次回退直连"));
+            // 会话里的 proxy 由账号存储解析过（成功才会带过来），这里失败说明
+            // 数据在两次读盘之间变了。脏协议 / 脏端口都是「不改就一直坏」，
+            // 按配置坏处置 —— 这正是 `ResolvedProxy::from_json` 那份白名单
+            // 想拦住的东西（拦在这里总比在 `egress::client_for` 里静默直连好）。
+            broken = true;
+            notice = Some(format!("账号「{name}」代理配置不可用: {reason}"));
             None
         }
     };
@@ -417,6 +433,7 @@ pub(super) fn with_proxy_notice(
         account: Some(account),
         proxy: resolved,
         proxy_notice: notice,
+        proxy_broken: broken,
         decision,
     }
 }

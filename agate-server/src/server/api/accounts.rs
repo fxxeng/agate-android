@@ -60,7 +60,11 @@ use crate::server::core::account_store::AccountStoreError;
 use crate::server::core::auth::WorkBuddyAuthError;
 use crate::server::core::billing::checkin;
 use crate::server::core::providers::adapter::adapter_for;
+use crate::server::core::providers::chatglm::credentials as chatglm_credentials;
+use crate::server::core::providers::kuku::credentials as kuku_credentials;
 use crate::server::core::providers::kuku::credentials::KukuCredentials;
+use crate::server::core::providers::officeace::credentials::from_desktop_models_json;
+use crate::server::core::providers::orcaterm::credentials as orcaterm_credentials;
 use crate::server::core::providers::zcode;
 use crate::server::core::providers::ProviderKind;
 use crate::server::core::proxies::ProxyConfigError;
@@ -121,6 +125,28 @@ fn describe_file_import_error(
         ),
         error.status_code,
     )
+}
+
+/// 「文本凭证文件 → JSON 载荷」的**唯一入口**（各家文件导入共用）。
+///
+/// 上游把这件事叫 `NormalizeSource::FileText`：文件内容就是一份 JSON，解析完
+/// **走与手动粘贴完全相同的落库入口** —— 所以本函数只做解析，产物直接顶替
+/// `payload`，各家分支不必再写第二套字段解析（字段名容错留在各家自己的
+/// `add_*_account` / `normalize_paste` 里，那才是它们的唯一入口）。
+///
+/// 语义要点（别和 `importDesktop` 混）：文件导入＝把文件里的凭证**解析后落库**，
+/// 得到一个可独立转发的账号，文件可以来自另一台机器或备份；`importDesktop` ＝
+/// 只建一条「转发时实时读本机固定路径」的记录。手机上没有那些客户端，所以
+/// 文件导入才是跨设备复用的那条路。
+///
+/// `hint` 是各家的「不像 JSON」文案（上游每家的措辞不同，逐字对齐）。
+fn json_from_auth_file(
+    content: &str,
+    file_name: Option<&str>,
+    hint: &str,
+) -> Result<Value, AccountStoreError> {
+    serde_json::from_str::<Value>(content.trim())
+        .map_err(|_| describe_file_import_error(AccountStoreError::new(hint, 400), file_name))
 }
 
 /// `authFileB64`（二进制凭证文件）的统一 400：**只识别、不实现**的几家才调它。
@@ -723,6 +749,29 @@ pub async fn add_account(state: &ServerState, body: &Bytes) -> Response {
         ) => {
             let region = crate::server::core::providers::autoclaw::Region::from_kind(kind)
                 .unwrap_or(crate::server::core::providers::autoclaw::Region::Cn);
+            // ── 文件导入（对齐上游 `NormalizeSource::FileText`）──────────
+            // 只接受**明文** auth.json：`add_autoclaw_account` 的解密链要 DPAPI
+            // 保护的 os_crypt 密钥，客户端自己写的 `enc:` 密文**拷到手机上解不开**
+            // （`autoclaw::crypto` 的模块头）。所以别把入口说成「把客户端文件
+            // 拷过来就行」——那会让人白试一次；能用的是别的机器导出的明文。
+            let payload = match auth_file_content {
+                Some(content) => match json_from_auth_file(
+                    content,
+                    auth_file_name,
+                    "不是合法 JSON（请选择 AutoClaw 的明文凭证 JSON；客户端自带的 \
+                     auth.json 是 DPAPI 密文，拷到手机上解不开）",
+                ) {
+                    Ok(parsed) => parsed,
+                    Err(error) => return store_error(error),
+                },
+                None => payload.clone(),
+            };
+            if auth_file_b64.is_some() && auth_file_content.is_none() {
+                return store_error(describe_file_import_error(
+                    binary_auth_file_unsupported(provider),
+                    auth_file_name,
+                ));
+            }
             if import_desktop {
                 store.import_autoclaw_desktop_account(region, "manual")
             } else {
@@ -847,14 +896,36 @@ pub async fn add_account(state: &ServerState, body: &Bytes) -> Response {
         ) => {
             let region = crate::server::core::providers::zcode::region::Region::from_kind(kind)
                 .unwrap_or(crate::server::core::providers::zcode::region::Region::Cn);
-            if import_desktop {
-                return management_error(
-                    400,
-                    format!(
-                        "ZCode {}不支持导入桌面端登录态，请用「网页登录」或粘贴凭证添加账号",
-                        region.label()
-                    ),
-                );
+            // ── 文件导入（对齐上游 `NormalizeSource::FileText`）──────────
+            // 文件就是一份含 accessToken / jwt 的凭证 JSON，解析后走**与粘贴
+            // 同一条**取值链（下面的 `text_field`），不复刻第二套字段映射。
+            let payload = match auth_file_content {
+                Some(content) => match json_from_auth_file(
+                    content,
+                    auth_file_name,
+                    "不是合法 JSON（请选择含 accessToken / jwt 的凭证 JSON）",
+                ) {
+                    Ok(parsed) => parsed,
+                    Err(error) => return store_error(error),
+                },
+                None => {
+                    if import_desktop {
+                        return management_error(
+                            400,
+                            format!(
+                                "ZCode {}不支持导入桌面端登录态，请用「网页登录」或粘贴凭证添加账号",
+                                region.label()
+                            ),
+                        );
+                    }
+                    payload.clone()
+                }
+            };
+            if auth_file_b64.is_some() && auth_file_content.is_none() {
+                return store_error(describe_file_import_error(
+                    binary_auth_file_unsupported(provider),
+                    auth_file_name,
+                ));
             }
             let text_field = |key: &str| {
                 payload
@@ -884,7 +955,17 @@ pub async fn add_account(state: &ServerState, body: &Bytes) -> Response {
                     )
                     .unwrap_or_default(),
                 };
-            store.add_zcode_account(&credentials, import_name, "manual")
+            // 来源标记：文件导入的账号与粘贴的等价（都能独立转发），只是文案上
+            // 好区分「这份是从别处带过来的」。
+            store.add_zcode_account(
+                &credentials,
+                import_name,
+                if auth_file_content.is_some() {
+                    "file"
+                } else {
+                    "manual"
+                },
+            )
         }
         // Trae：**粘贴凭据**（`accessToken` / `refreshToken` / 设备三件套）→ 手动添加。
         // 「网页登录」是另一条链路（`api::session::login_start` 的 Trae 分支 →
@@ -937,11 +1018,36 @@ pub async fn add_account(state: &ServerState, body: &Bytes) -> Response {
         // 没有 auth.json 那种稳定可读的文件形态 —— 给了入口只会稳定失败
         // （与 Accio / ZCode 同一处境）。
         Some(crate::server::core::providers::ProviderKind::Loomy) => {
-            if import_desktop {
-                return management_error(
-                    400,
-                    "Loomy 不支持导入桌面端登录态，请用「手机号验证码登录」或粘贴 session 添加账号",
-                );
+            // ── 文件导入（对齐上游 `FileText`）────────────────────────
+            // Loomy 客户端**没有**可交叉验证的明文登录文件（Electron 会话 /
+            // 加密区，见 `loomy::credentials` 模块头），所以这条只服务「用户手里
+            // 有一份 session JSON」的情形 —— 与粘贴走同一个落库入口。
+            // `importDesktop` 仍然明确拒绝：那条路读的是本机固定路径，手机上必然失败。
+            let payload = match auth_file_content {
+                Some(content) => match json_from_auth_file(
+                    content,
+                    auth_file_name,
+                    "不是合法 JSON（Loomy 请选择含 session 的凭证 JSON，或改用手机号验证码登录）",
+                ) {
+                    Ok(parsed) => parsed,
+                    Err(error) => return store_error(error),
+                },
+                None => {
+                    if import_desktop {
+                        return management_error(
+                            400,
+                            "Loomy 不支持导入本机登录态（登录态在客户端自己的加密存储里），\
+                             请用「手机号验证码登录」、粘贴 session，或导入凭证文件",
+                        );
+                    }
+                    payload.clone()
+                }
+            };
+            if auth_file_b64.is_some() && auth_file_content.is_none() {
+                return store_error(describe_file_import_error(
+                    binary_auth_file_unsupported(provider),
+                    auth_file_name,
+                ));
             }
             store.add_loomy_account(&payload, import_name)
         }
@@ -1010,15 +1116,12 @@ pub async fn add_account(state: &ServerState, body: &Bytes) -> Response {
                 // ── 历史路径（行为逐字不变）：importDesktop → 实时读本机固定
                 //    路径；否则把 payload 当粘贴的 Cookie 解析 ──
                 let parsed = if import_desktop {
-                    match crate::server::core::providers::kuku::credentials::read_desktop_credentials()
-                    {
+                    match kuku_credentials::read_desktop_credentials() {
                         Ok(credentials) => credentials,
                         Err(reason) => return management_error(400, reason),
                     }
                 } else {
-                    match crate::server::core::providers::kuku::credentials::credentials_from_payload(
-                        &payload,
-                    ) {
+                    match kuku_credentials::credentials_from_payload(&payload) {
                         Ok(credentials) => credentials,
                         Err(reason) => return management_error(400, reason),
                     }
@@ -1102,25 +1205,54 @@ pub async fn add_account(state: &ServerState, body: &Bytes) -> Response {
         // `importDesktop` 不提供：本家的凭证就是一枚 API Key，没有客户端
         // 「auth.json」那种可读登录态（与 Loomy / MonkeyCode 同一处境）。
         Some(crate::server::core::providers::ProviderKind::CommandCode) => {
-            if import_desktop {
-                return management_error(
-                    400,
-                    "Command Code 不支持导入桌面端登录态，请粘贴 API Key（user_ 开头）添加账号",
-                );
-            }
-            let raw = payload
-                .get("apiKey")
-                .or_else(|| payload.get("accessToken"))
-                .or_else(|| payload.get("token"))
-                .or_else(|| payload.get("key"))
-                .and_then(Value::as_str)
-                .unwrap_or("");
+            // ── 文件导入（对齐上游 `FileText`）────────────────────────
+            // 官方 `~/.commandcode/auth.json` 里就是一枚 `user_…` Key，所以文件
+            // 可能是 JSON（取其中一枚）也可能**整份就是 Key**（上游对解析失败
+            // 的处置是「整段当 Key」，本仓照此，不做额外猜测）。
+            let (raw, source) = match auth_file_content {
+                Some(content) => {
+                    let trimmed = content.trim();
+                    let key = match serde_json::from_str::<Value>(trimmed) {
+                        Ok(parsed) => ["apiKey", "accessToken", "token", "key"]
+                            .iter()
+                            .find_map(|field| {
+                                parsed
+                                    .get(*field)
+                                    .and_then(Value::as_str)
+                                    .map(str::trim)
+                                    .filter(|value| !value.is_empty())
+                                    .map(str::to_string)
+                            })
+                            .unwrap_or_else(|| trimmed.to_string()),
+                        Err(_) => trimmed.to_string(),
+                    };
+                    (key, "file")
+                }
+                None => {
+                    if import_desktop {
+                        return management_error(
+                            400,
+                            "Command Code 不支持导入本机登录态，请粘贴 API Key（user_ 开头）\
+                             或导入凭证文件",
+                        );
+                    }
+                    let raw = payload
+                        .get("apiKey")
+                        .or_else(|| payload.get("accessToken"))
+                        .or_else(|| payload.get("token"))
+                        .or_else(|| payload.get("key"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string();
+                    (raw, "manual")
+                }
+            };
             let credentials =
-                match crate::server::core::providers::commandcode::login::verify_key(raw).await {
+                match crate::server::core::providers::commandcode::login::verify_key(&raw).await {
                     Ok(credentials) => credentials,
                     Err(error) => return management_error(error.status_code, error.message),
                 };
-            store.add_commandcode_account(&credentials, import_name, "manual")
+            store.add_commandcode_account(&credentials, import_name, source)
         }
         // Antigravity（Google 的 AI IDE）：**粘贴 Google refresh token**
         // → 本地归一化（剥引号 / `refresh_token=` 整行 / 空白；`1//` 是令牌本体，
@@ -1154,6 +1286,47 @@ pub async fn add_account(state: &ServerState, body: &Bytes) -> Response {
         // **不调上游**（与 CodeArts 同口径）——凭据是导入/登录换来的，添加时
         // 没有可交换的授权码；目录与连通性由刷新链路验。
         Some(crate::server::core::providers::ProviderKind::OfficeAce) => {
+            // ── 文件导入（对齐上游 `FileText`）────────────────────────
+            // 桌面端 `models.json` 里的网关凭据是**拼好的 Basic 头**，所以这里
+            // 不是「把文件当 payload」，而是先归一成 baseUrl + 一对网关凭据
+            // （`from_desktop_models_json` 负责，含 Basic 拆解）。
+            let payload = match auth_file_content {
+                Some(content) => {
+                    let parsed = match json_from_auth_file(
+                        content,
+                        auth_file_name,
+                        "不是合法 JSON（请选择桌面端 models.json，或手填 API 基址与网关凭据）",
+                    ) {
+                        Ok(parsed) => parsed,
+                        Err(error) => return store_error(error),
+                    };
+                    match from_desktop_models_json(&parsed) {
+                        Ok(normalized) => normalized,
+                        Err(error) => {
+                            return store_error(describe_file_import_error(
+                                AccountStoreError::new(error.message, error.status_code),
+                                auth_file_name,
+                            ))
+                        }
+                    }
+                }
+                None => {
+                    if import_desktop {
+                        return management_error(
+                            400,
+                            "OfficeAce 不支持导入本机登录态（客户端只落 models.json，\
+                             而手机上读不到它的固定路径）：请导入凭证文件或手填凭据",
+                        );
+                    }
+                    payload.clone()
+                }
+            };
+            if auth_file_b64.is_some() && auth_file_content.is_none() {
+                return store_error(describe_file_import_error(
+                    binary_auth_file_unsupported(provider),
+                    auth_file_name,
+                ));
+            }
             // 面板传来的名字是用户自己打的 ⇒ 标 custom（此后续期/重登不改它）
             store.add_officeace_account(&payload, import_name, true)
         }
@@ -1168,48 +1341,82 @@ pub async fn add_account(state: &ServerState, body: &Bytes) -> Response {
         // 无需解密，见 `orcaterm::credentials::read_desktop_credentials`）→
         // 同样校验 → 落账号。校验失败（token 无效 / 文件不存在）→ 400，不落空记录。
         Some(crate::server::core::providers::ProviderKind::OrcaTerm) => {
-            let parsed = if import_desktop {
-                match crate::server::core::providers::orcaterm::credentials::read_desktop_credentials()
-                {
-                    Ok(credentials) => credentials,
+            // ── 三条入口的顺序：文件 → 本机 → 粘贴 ────────────────────
+            // 文件导入对齐上游的 `FileText` 与 `FileBase64` 两条：桌面端
+            // `data.bin` 是 Tauri store 的**明文 JSON**（`orcaterm::credentials`
+            // 模块头），里面 `oauth_access_token` 就是那枚 JWT —— 所以用户把
+            // 文件拷到手机上选一次即可，不必手抄令牌。
+            //   · `authFileB64`：原样传整份 data.bin 的字节（前端读成 base64）
+            //   · `authFileContent`：文本形态，可能是整份 JSON，也可能是裸令牌
+            // 两条最终都汇到 `credentials_from_payload`（它三种形态都认），
+            // 因此下面只有一处解析、一处校验、一处落库。
+            let (parsed, source) = if let Some(encoded) =
+                auth_file_b64.filter(|_| auth_file_content.is_none())
+            {
+                let bytes = match BASE64.decode(encoded) {
+                    Ok(bytes) => bytes,
+                    Err(error) => {
+                        return management_error(400, format!("文件内容不是合法 base64：{error}"))
+                    }
+                };
+                let text = match String::from_utf8(bytes) {
+                    Ok(text) => text,
+                    Err(_) => return management_error(400, "data.bin 不是 UTF-8 文本"),
+                };
+                let parsed = match json_from_auth_file(
+                    &text,
+                    auth_file_name,
+                    "data.bin 不是合法 JSON（请选择 OrcaTerm 桌面端的 data.bin，或粘贴 accessToken）",
+                ) {
+                    Ok(parsed) => parsed,
+                    Err(error) => return store_error(error),
+                };
+                match orcaterm_credentials::credentials_from_payload(&parsed) {
+                    Ok(credentials) => (credentials, "file"),
+                    Err(reason) => return management_error(400, reason),
+                }
+            } else if let Some(content) = auth_file_content {
+                let trimmed = content.trim();
+                // 上游 FileText 同口径：解析不成 JSON 就当裸令牌（`Bearer …` /
+                // `ot_session=…` 由 `normalize_token` 剥）
+                let payload = match serde_json::from_str::<Value>(trimmed) {
+                    Ok(parsed) => parsed,
+                    Err(_) => Value::String(trimmed.to_string()),
+                };
+                match orcaterm_credentials::credentials_from_payload(&payload) {
+                    Ok(credentials) => (credentials, "file"),
+                    Err(reason) => return management_error(400, reason),
+                }
+            } else if import_desktop {
+                match orcaterm_credentials::read_desktop_credentials() {
+                    Ok(credentials) => (credentials, "desktop"),
                     Err(reason) => return management_error(400, reason),
                 }
             } else {
-                match crate::server::core::providers::orcaterm::credentials::credentials_from_payload(
-                    &payload,
-                ) {
-                    Ok(credentials) => credentials,
+                match orcaterm_credentials::credentials_from_payload(&payload) {
+                    Ok(credentials) => (credentials, "manual"),
                     Err(reason) => return management_error(400, reason),
                 }
             };
             // 真实校验 + 补身份：GetUserInfo 失败（token 无效 / 上游拒绝）→ 400。
             // 网络失败同样 400 —— 添加时验证与 kuku 同一口径（要的是「现在真的能用」）。
-            let verified =
-                match crate::server::core::providers::orcaterm::credentials::fetch_user_info(
-                    &parsed, None,
-                )
-                .await
-                {
-                    Ok((user_id, nickname)) => {
-                        let mut credentials = parsed;
-                        if credentials.user_id.is_empty() {
-                            credentials.user_id = user_id;
-                        }
-                        if credentials.nickname.is_empty() {
-                            credentials.nickname = nickname;
-                        }
-                        credentials
+            let verified = match orcaterm_credentials::fetch_user_info(&parsed, None).await {
+                Ok((user_id, nickname)) => {
+                    let mut credentials = parsed;
+                    if credentials.user_id.is_empty() {
+                        credentials.user_id = user_id;
                     }
-                    Err(error) => return management_error(error.status_code, error.message),
-                };
-            store.add_orcaterm_account(
-                &verified,
-                import_name,
-                if import_desktop { "desktop" } else { "manual" },
-            )
+                    if credentials.nickname.is_empty() {
+                        credentials.nickname = nickname;
+                    }
+                    credentials
+                }
+                Err(error) => return management_error(error.status_code, error.message),
+            };
+            store.add_orcaterm_account(&verified, import_name, source)
         }
         Some(crate::server::core::providers::ProviderKind::Chatglm) => {
-            let device_id = crate::server::core::providers::chatglm::credentials::resolve_device_id(
+            let device_id = chatglm_credentials::resolve_device_id(
                 payload
                     .get("deviceId")
                     .and_then(Value::as_str)
@@ -1231,8 +1438,7 @@ pub async fn add_account(state: &ServerState, body: &Bytes) -> Response {
 
             // ── 路径 3：导入本机客户端登录态 ─────────────────────────
             let (access, refresh) = if import_desktop {
-                match crate::server::core::providers::chatglm::credentials::read_desktop_credentials(
-                ) {
+                match chatglm_credentials::read_desktop_credentials() {
                     Ok(Some((access, refresh))) => {
                         let access = (!access.trim().is_empty()).then_some(access);
                         let refresh = (!refresh.trim().is_empty()).then_some(refresh);
@@ -1288,11 +1494,7 @@ pub async fn add_account(state: &ServerState, body: &Bytes) -> Response {
             let is_guest = verified
                 .get("is_guest")
                 .and_then(Value::as_bool)
-                .unwrap_or_else(|| {
-                    crate::server::core::providers::chatglm::credentials::token_is_guest(
-                        &access, want_guest,
-                    )
-                });
+                .unwrap_or_else(|| chatglm_credentials::token_is_guest(&access, want_guest));
             let uid = verified
                 .get("_id")
                 .or_else(|| verified.get("user_id"))
@@ -1306,16 +1508,15 @@ pub async fn add_account(state: &ServerState, body: &Bytes) -> Response {
                 .unwrap_or("")
                 .trim()
                 .to_string();
-            let credentials =
-                crate::server::core::providers::chatglm::credentials::ChatglmCredentials {
-                    access_token: access,
-                    // 粘贴路径拿不到 refresh_token：留空，续期会如实报「没有 refresh_token」
-                    refresh_token: refresh.unwrap_or_default(),
-                    device_id,
-                    is_guest,
-                    uid,
-                    nickname,
-                };
+            let credentials = chatglm_credentials::ChatglmCredentials {
+                access_token: access,
+                // 粘贴路径拿不到 refresh_token：留空，续期会如实报「没有 refresh_token」
+                refresh_token: refresh.unwrap_or_default(),
+                device_id,
+                is_guest,
+                uid,
+                nickname,
+            };
             store.add_chatglm_account(
                 &credentials,
                 import_name,
@@ -1356,6 +1557,52 @@ pub async fn add_account(state: &ServerState, body: &Bytes) -> Response {
         | None => {
             let provider = crate::server::core::providers::kind_from_id(provider)
                 .map(crate::server::core::providers::kind_id);
+            // ── 文件导入（对齐上游 `FileText`）────────────────────────
+            // 客户端「导入凭证文件」只发 `authFileContent`，**不带 payload 本体**
+            // （见 `AccountOps::importCredential`）—— 这里再不解析，这条入口就是
+            // 静默无效的：`add_account` 拿到空对象只会回「缺少 accessToken」。
+            // 官方 `.info` 是嵌套 JSON `{auth:{accessToken…}, account:{uid…}}`，
+            // 正是 `store.add_account` 认的形态，所以只做解析、不复刻字段映射。
+            // Atomcode 额外收官方 `auth.toml`：它自己有 `parse_credential_file`
+            // （先试 JSON 再试 TOML），字段名的下划线/驼峰容错仍由 `add_account`
+            // 的取值链负责 —— 这里不新增第二套字段映射。
+            let payload = match auth_file_content {
+                Some(content) => {
+                    let is_atomcode = provider
+                        == Some(crate::server::core::providers::kind_id(
+                            crate::server::core::providers::ProviderKind::Atomcode,
+                        ));
+                    if is_atomcode {
+                        match crate::server::core::providers::atomcode::parse_credential_file(
+                            content,
+                        ) {
+                            Ok(parsed) => parsed,
+                            Err(error) => {
+                                return store_error(describe_file_import_error(
+                                    AccountStoreError::new(error.message, error.status_code),
+                                    auth_file_name,
+                                ))
+                            }
+                        }
+                    } else {
+                        match json_from_auth_file(
+                            content,
+                            auth_file_name,
+                            "不是合法 JSON（请选择官方客户端 auth 目录下的 *.info 文件）",
+                        ) {
+                            Ok(parsed) => parsed,
+                            Err(error) => return store_error(error),
+                        }
+                    }
+                }
+                None => payload.clone(),
+            };
+            if auth_file_b64.is_some() && auth_file_content.is_none() {
+                return store_error(describe_file_import_error(
+                    binary_auth_file_unsupported(provider.unwrap_or("workbuddy")),
+                    auth_file_name,
+                ));
+            }
             if import_desktop {
                 let Some(provider) = provider else {
                     return management_error(

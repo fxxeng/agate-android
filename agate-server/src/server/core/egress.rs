@@ -420,17 +420,17 @@ pub fn client_for(proxy: Option<&ResolvedProxy>) -> Arc<reqwest::Client> {
         // 它每个出口缓存条目最多触发一次 —— 构造失败的兜底 Client 也会被缓存
         // （见下面 ③），后续请求直接命中缓存、不再走到这里，所以条数**不随
         // 请求量增长**。判据与其它日志一致：看它的条数会不会跟着请求一起涨。
-        logging::log("[Upstream]", &format!("⚠️ {error}，本次回退直连"));
-        // 构造失败的兜底客户端：TLS 后端初始化都失败时没有别的退路，只能返回
-        // 一个「请求时才报错」的客户端（几乎不会失败）。这里显式 `.no_proxy()`：
-        // 本函数是**显式出口**（直连 / 指定代理），兜底也不能变成跟随系统代理
-        // —— `Client::new()` 的 auto_sys_proxy 默认开启（见 Cargo.toml 的
-        // `system-proxy` 说明），直接用它会让「直连」出口在极端路径上悄悄
-        // 走系统代理；二级兜底才是裸 Client::new()（两处 build 都失败）。
-        reqwest::Client::builder()
-            .no_proxy()
-            .build()
-            .unwrap_or_else(|_| reqwest::Client::new())
+        //
+        // ⚠️ 不能回退直连：本函数是「显式出口」，一旦构造失败就改成 no_proxy，
+        // 用户以为在走代理的流量会带着本机真实 IP 出去 —— 这正是
+        // `ProxyResolution::Broken` 在选路层想堵、却堵不到的一层（那边只管
+        // 配置解析，这里才是 Client 构造）。返回一个必然连不上的客户端，
+        // 让本次请求明确失败。
+        logging::log(
+            "[Upstream]",
+            &format!("账号出口连接无法创建（{error}），本次请求未改走直连"),
+        );
+        blocked_client()
     }));
     // ③ 回填缓存（锁内只做插入与淘汰）
     let mut guard = lock_clients();
@@ -464,6 +464,25 @@ pub fn client_for(proxy: Option<&ResolvedProxy>) -> Arc<reqwest::Client> {
         }
     };
     client
+}
+
+/// 「出口构造失败」专用的必失败客户端：所有请求被导到 `127.0.0.1:0`，
+/// 一秒内连接失败。用它替代 `.no_proxy()` 直连兜底，是为了让失败**可见**。
+///
+/// 注意 `.no_proxy()` 只清掉系统代理；随后再挂 `Proxy::custom` 仍然生效
+/// （reqwest 的 builder 按顺序累积），所以「黑洞代理」不会被它抵消。
+fn blocked_client() -> reqwest::Client {
+    let blocked = reqwest::Proxy::custom(|_: &url::Url| Some("http://127.0.0.1:0"));
+    match reqwest::Client::builder()
+        .no_proxy()
+        .proxy(blocked)
+        .timeout(Duration::from_secs(1))
+        .build()
+    {
+        Ok(client) => client,
+        // 连黑洞 Client 都建不出来（极端）：裸 Client 几乎不会失败
+        Err(_) => reqwest::Client::new(),
+    }
 }
 
 /// 取 Client 缓存的锁；锁中毒（某次持锁 panic）不致命，接管内部数据继续用

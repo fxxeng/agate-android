@@ -397,7 +397,7 @@ pub async fn refresh(
         Some(crate::server::core::proxies::ProxyResolution::Resolved(proxy)) => Some(proxy),
         Some(
             crate::server::core::proxies::ProxyResolution::Failed(reason)
-            | crate::server::core::proxies::ProxyResolution::Failed(reason),
+            | crate::server::core::proxies::ProxyResolution::Broken(reason),
         ) => {
             return ModelRefreshOutcome::failed(reason);
         }

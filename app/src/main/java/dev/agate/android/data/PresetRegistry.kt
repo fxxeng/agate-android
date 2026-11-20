@@ -76,6 +76,26 @@ data class ProviderPreset(
      * 需要有人接），授权地址其实与前一条相同。
      */
     val browserLogin: Boolean = false,
+    /**
+     * true = 这家没有授权码可拦，靠「读登录窗口的 Cookie」收尾：壳侧登录窗按
+     * [sessionCookieNames] 判定登录态，读到整串 Cookie 后当 callbackUrl 交回内核。
+     */
+    val webLoginCookies: Boolean = false,
+    /** 与 [webLoginCookies] 配套：算「已登录」要认哪些 Cookie 名（各家不同）。 */
+    val sessionCookieNames: List<String> = emptyList(),
+    /**
+     * `webLoginCookies = true` 时，**除登录页自身域之外**还要读 Cookie 的域（有序）。
+     *
+     * 为什么需要它：有些家的登录态 Cookie 不落在登录页那个域上 —— 灵犀的登录页是
+     * WPS 通行证 `account.wps.cn`（`.wps.cn` 域），而转发要用的 `wps_sid` 在少数
+     * 流程里只会落在 `lingxi.kdocs.cn` 的集群域。只读登录页一域会表现为「用户明明
+     * 登录成功了，客户端却一直判不出登录态」。
+     *
+     * 读取顺序：登录页 URL 优先，然后从左到右；**第一个读到登录态 Cookie 的域整串
+     * 交回**（不跨域拼接 —— 不同域的 Cookie 混成一段会让内核拿到互相矛盾的
+     * `wps_sid`）。空列表 = 只读登录页那一域（绝大多数家都是这样）。
+     */
+    val extraCookieHosts: List<String> = emptyList(),
 )
 
 object PresetRegistry {
@@ -309,10 +329,21 @@ object PresetRegistry {
             pasteMultiline = true,
             supportsCheckin = true,
         ),
+        // 登录页是 **WPS 通行证 `account.wps.cn`**（服务端直出的手机号登录表单），
+        // 不是灵犀自己的网页版：`lingxi.kdocs.cn` 对移动 UA 返回的是 WPS 客户端
+        // 容器页（依赖 `window.wps` JSBridge），普通 WebView 里一片空白 —— 这正是
+        // 「登录页已就绪但整屏空着」的真因（内核 endpoints::LOGIN_HOST 已同步）。
+        // 登录态是 `wps_sid`（HttpOnly），没有授权码可拦 ⇒ 壳侧读 Cookie 后走通用
+        // 回调交回。⚠️ 未登录时通行证也下发匿名 wps_sid，探活回 401 是正常中间态。
         ProviderPreset(
             "lingxi", "WPS 灵犀", "WPS 灵犀 · 网页登录 / 粘贴 wps_sid",
             LoginKind.WEBVIEW,
             listOf(AuthChannel.EMBEDDED, AuthChannel.PASTE),
+            webLoginCookies = true,
+            sessionCookieNames = listOf("wps_sid"),
+            // 登录页在 `.wps.cn`（通行证域），转发用的会话可能只落在灵犀集群域：
+            // 两处都读一遍，读到哪个域就用哪个域的整串。
+            extraCookieHosts = listOf("https://lingxi.wps.cn/", "https://lingxi.kdocs.cn/"),
             pasteHint = "粘贴整段 Cookie（含 wps_sid）或 V02S 开头的裸 sid",
             supportsCheckin = true,
         ),

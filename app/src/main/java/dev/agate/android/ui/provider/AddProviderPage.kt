@@ -1,5 +1,7 @@
 package dev.agate.android.ui.provider
 
+import android.content.Context
+import android.provider.OpenableColumns
 import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.Image
@@ -1601,6 +1603,41 @@ private fun ExternalLoginForm(
 }
 
 /* ── 导入凭证文件：SAF 选文件 → 文本走 authFileContent / 二进制走 authFileB64 ── */
+
+/**
+ * 单个导入文件的上限。
+ *
+ * 二进制要走 base64（体积 ×4/3），而内核直调的缓冲只有 4 MiB —— 3 MB 的原始文件
+ * 编出来正好压线。KukuAI 的 Cookies 登录库实测很小，够用。
+ */
+private const val MAX_IMPORT_BYTES = 3 * 1024 * 1024
+
+/** SQLite 文件头魔数（`SQLite format 3\0`），与内核的 SQLite 判据一致 */
+private val SQLITE_MAGIC = "SQLite format 3\u0000".toByteArray(Charsets.ISO_8859_1)
+
+/**
+ * SAF 里的真实文件名。
+ *
+ * ⚠️ `uri.lastPathSegment` 在部分选择器（MediaStore / 厂商文件管理器）上给的是
+ * documentId（形如 `msf:355343`）—— 既不是文件名，也拿不到扩展名。之前就是拿它
+ * 判断「是不是 SQLite」，于是拷来的 SQLite 凭证库被当文本读成乱码导致导入静默失败。
+ * 这里改查 DISPLAY_NAME，类型判断改用文件头（见 [isSqliteFile]），两条路都不再依赖扩展名。
+ */
+private fun displayNameOf(ctx: Context, uri: Uri): String =
+    runCatching {
+        ctx.contentResolver
+            .query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
+            ?.use { cursor ->
+                if (cursor.moveToFirst()) cursor.getString(0)?.takeIf { it.isNotBlank() } else null
+            }
+    }.getOrNull()
+        ?: uri.lastPathSegment?.substringAfterLast('/')?.takeIf { it.isNotBlank() }
+        ?: "credential"
+
+/** 是不是 SQLite 文件（只看文件头，不看扩展名） */
+private fun isSqliteFile(bytes: ByteArray): Boolean =
+    bytes.size >= SQLITE_MAGIC.size && SQLITE_MAGIC.indices.all { bytes[it] == SQLITE_MAGIC[it] }
+
 @Composable
 private fun ImportFileForm(preset: ProviderPreset, onDone: (Boolean, String) -> Unit) {
     val C = agateColors()
@@ -1615,7 +1652,7 @@ private fun ImportFileForm(preset: ProviderPreset, onDone: (Boolean, String) -> 
             busy = true
             hint = null
             scope.launch {
-                val name = uri.lastPathSegment?.substringAfterLast('/')?.takeIf { it.isNotBlank() } ?: "credential"
+                val name = displayNameOf(ctx, uri)
                 pickedName = name
                 val bytes = runCatching {
                     ctx.contentResolver.openInputStream(uri)?.use { it.readBytes() }
@@ -1625,17 +1662,19 @@ private fun ImportFileForm(preset: ProviderPreset, onDone: (Boolean, String) -> 
                     hint = "读取文件失败（权限或路径不可用）"
                     return@launch
                 }
-                if (bytes.size > 4 * 1024 * 1024) {
+                if (bytes.size > MAX_IMPORT_BYTES) {
                     busy = false
-                    hint = "文件过大（超过 4MB），请改用文本 JSON"
+                    hint = "文件过大（${bytes.size / 1024 / 1024}MB，上限 ${MAX_IMPORT_BYTES / 1024 / 1024}MB），" +
+                        "请改用文本 JSON 或粘贴凭证"
                     return@launch
                 }
                 val asText = runCatching { String(bytes, Charsets.UTF_8) }.getOrNull()
                 val looksJson = asText != null && (asText.trimStart().startsWith("{") || asText.trimStart().startsWith("["))
-                val binary = !looksJson && (
-                    preset.id == "kuku" ||
-                        name.endsWith(".db", true) || name.endsWith(".sqlite", true)
-                    )
+                // ⚠️ 判类型看**文件头魔数**，不看扩展名：SAF 给的 uri 经常没有
+                // 扩展名（部分选择器 `lastPathSegment` 只有 documentId），靠扩展名判断
+                // 会把 SQLite 凭证库当文本读成乱码，导致「凭证格式不正确」导入失败。
+                val looksSqlite = isSqliteFile(bytes)
+                val binary = looksSqlite || (preset.id == "kuku" && !looksJson)
                 val r = if (binary) {
                     AccountOps.importCredential(
                         preset.id, name,

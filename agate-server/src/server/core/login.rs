@@ -1058,6 +1058,38 @@ impl LoginService {
                 .await
                 .map(|_| LoginCallbackSubmission::Completed(String::new()))
                 .map_err(|message| GatewayError::with_status(400, message))
+        } else if kind == ProviderKind::Lingxi {
+            // WPS 灵犀：壳侧把登录后的完整 Cookie 串当 callbackUrl 交回（与豆包
+            // 同款「Cookie 当载荷」，不是授权码）。本家不落 pending 表，归属校验
+            // 靠 state 对应的任务；换码与落库前的探活都在 adapter 的
+            // exchange_login_code 里（wps_sid 半天失效 + 多账号互斥）。
+            return match adapter_for(kind)
+                .exchange_login_code(&self.store, callback_url, state)
+                .await
+            {
+                Ok(account_id) => {
+                    let session = json!({
+                        "accountUid": account_id,
+                        "nickname": Value::Null,
+                        "edition": task.edition,
+                        "provider": task.provider,
+                    });
+                    handle.update(|task| {
+                        task.done = true;
+                        task.session = Some(session);
+                        task.finished_at = Some(logging::now_ms());
+                    });
+                    Ok(LoginCallbackSubmission::Completed(account_id))
+                }
+                Err(error) => {
+                    finish_task_error(&handle, &error.message);
+                    logging::log(
+                        "[Login]",
+                        &format!("❌ WPS 灵犀网页登录换取凭证失败: {}", error.message),
+                    );
+                    Err(error)
+                }
+            };
         } else {
             if kind != ProviderKind::Raccoon {
                 return Err(GatewayError::with_status(400, "该登录任务不接收授权码回调"));

@@ -1277,6 +1277,13 @@ fn is_opaque_raccoon_id(id: &str) -> bool {
 ///     同一对外名由多家承载正是主备路由的常态。
 const EXTRA_ALIASES: &[(&str, &str, &str)] = &[
     ("raccoon", "sn-deepseek-v4-1-flash", "deepseek-v4.1-flash"),
+    // 小浣熊的 glm 两条：与 deepseek 同款命名规律 —— 上游把版本号的点写成
+    // 连字符（`sn-glm-5-3`），下游习惯点号（`glm-5.3`）。缺了这两条，点号名
+    // 就得手建，而手建时几乎必跟着上游写成连字符 `glm-5-3`，与别家的
+    // `glm-5.3` 撞不上名，主备队列合不起来。旧名 `glm-5-3` 不删，避免打断
+    // 已在使用的客户端（映射是追加别名，不是改名）。
+    ("raccoon", "sn-glm-5-3", "glm-5.3"),
+    ("raccoon", "sn-glm-5-3-flash", "glm-5.3-flash"),
     // 两家 provider id 从 `Pool` 推导，别处已无 `"cline"` 这个 id（见
     // `providers::PROVIDERS` 的 cline-free / cline-pass 两条）
     (

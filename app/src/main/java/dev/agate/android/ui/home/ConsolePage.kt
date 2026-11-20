@@ -110,8 +110,11 @@ fun ConsolePage(
         ) {
         Spacer(Modifier.height(10.dp))
 
-        // ── 新手 3 步向导（accent 边框；三步完成自动收起，✕ 永久关闭）──
-        val wizardDone = running && snap.upstreamConfigured == true && snap.requestsToday > 0
+        // ── 新手 3 步向导（accent 边框；有账号即自动收起，✕ 永久关闭）──
+        // 完成判据：加过任意账号（含禁用）就不再显示；upstreamConfigured 保留老语义。
+        // 旧判据还要求 requestsToday > 0，账号加了没用也一直挂向导。
+        val wizardDone = running &&
+            (snap.accountsTotal > 0 || snap.upstreamConfigured == true)
         var wizardDismissed by remember { mutableStateOf(GatewayPrefs.wizardDismissed(ctx)) }
         if (!wizardDone && !wizardDismissed) {
             WizardCard(onNavigate = onNavigate, onDismiss = {

@@ -634,6 +634,9 @@ async fn attempt_queue(
     // 同样顺延（粘性不等于无条件）。
     let conv_key = super::route_state::RouteState::conversation_key(ctx.client_headers, &ctx.body);
     let mut tried_ids: Vec<String> = Vec::new();
+    // 因「代理配置本身坏了」被跳过的最后一条原因。全队列都坏时把它报出去；
+    // 有一条能用就正常转发（见下面 'accounts 里的判定）。
+    let mut proxy_broken_reason: Option<String> = None;
     // ── 两份独立的预算（见 config::RetrySettings）─────────────────────
     //   - `budget`：同一个账号上还能**原地重发**几次。整份请求共用一份，
     //     由 `send_with_retry` 逐次扣减 —— 于是它天然花在「第一个真正发出去的
@@ -690,7 +693,7 @@ async fn attempt_queue(
         if ctx.telemetry.is_cancelled() {
             return Err(cancellation::cancelled_error());
         }
-        let mut target = rotate::select_target_account(
+        let mut target = match rotate::select_target_account(
             service,
             provider_ids,
             &cooldown_keys,
@@ -698,16 +701,65 @@ async fn attempt_queue(
             ctx.pinned_account,
             &conv_key,
         )
-        .await?;
+        .await
+        {
+            Ok(target) => target,
+            // 已经一条可选账号都没有了。如果之所以走到这一步，是因为把「代理
+            // 配置坏」的账号逐条跳过了，就把那条原因报出去 —— 「无可用账号」
+            // 会把用户引向完全错误的方向（账号明明在，坏的是那行代理配置）。
+            Err(error) => {
+                return Err(match proxy_broken_reason.take() {
+                    Some(reason) => GatewayError::with_status(502, proxy_broken_message(&reason)),
+                    None => error,
+                });
+            }
+        };
         if let Some(override_proxy) = ctx.proxy_override {
             target.proxy = override_proxy.clone();
             target.proxy_notice = None;
+            // 出口被**显式**换掉了：原账号代理配置坏不坏与本轮无关，
+            // 不清会把一次能出去的请求误判成 502
+            target.proxy_broken = false;
         }
         // 决策快照挂进 telemetry（最后一次为准：请求日志的「路由回放」显示
         // 的是最终承载那次选路的完整排序 —— 与 attempts 明细的换号链互补，
         // 那边回答「试了谁」，这边回答「当时为什么这么排」）。
         if let Some(decision) = target.decision.clone() {
             ctx.telemetry.set_route_decision(decision);
+        }
+        // ── 代理配置本身坏了：**不发请求**，明确失败 ────────────────
+        // 判据见 `ProxyResolution::Broken`：来源不认识 / 引用的池条目被删 /
+        // Clash 监听器没了或被禁用 / 协议不在白名单。这些不改配置就一直坏，
+        // 而回退直连会让「以为走了代理」的流量带着本机真实 IP 出去 —— 比直接
+        // 失败危险得多。位置在 rebind 与尝试起头**之前**：没有真的发出去，
+        // 就不该占一个账号的并发名额，也不该在明细里多一条尝试。
+        //
+        // 处置：记进「已试过」并换队列里的下一个，而不是立刻把整个请求判死
+        // —— 队列里只要有一条坏配置排在前面，立刻 502 会让「明明还有好账号」
+        // 的请求全部失败。全队列都坏时才回 502（原因用 `proxy_broken_reason`
+        // 带出去，见选路失败与循环耗尽两个出口）。
+        if target.proxy_broken {
+            let reason = target
+                .proxy_notice
+                .clone()
+                .unwrap_or_else(|| "账号的代理配置不可用".to_string());
+            match target.account_id.clone() {
+                Some(id) => {
+                    // 记进「已试过」再换下一个：否则队列里只要有一条坏代理账号
+                    // 排在前面，每条请求都会被它挡住 —— 而用户往往只想修一条
+                    // 配置、或者根本不知道它有配置。
+                    tried_ids.push(id);
+                    proxy_broken_reason = Some(reason);
+                    continue 'accounts;
+                }
+                // 没有账号 id（走默认登录态直发）不该带这个标记，兜一层
+                None => {
+                    return Err(GatewayError::with_status(
+                        502,
+                        proxy_broken_message(&reason),
+                    ))
+                }
+            }
         }
         // 连接计数改绑到这一轮选中的账号：失败重试换账号时计数跟着走，
         // 于是「一个请求任意时刻只占一个账号」这条口径不需要每个分支各维护一次
@@ -1702,11 +1754,20 @@ async fn attempt_queue(
         // 字节 + 剩余流重建）。用枚举而不是 `Option`，是为了让 `response` 在**恰好
         // 一支**里被移动 —— 否则借用检查器无法证明「None 那支没被移走」。
         let refusal_finishes = adapter.stream_refusal_finishes();
-        let gate = if !refusal_finishes.is_empty()
+        // ── 预读门控**要不要开**：两支判据各自独立 ────────────────────────
+        //   · `watch_finishes` = 这家声明了 `finish_reason` 拒答集合（内容审核那一类）；
+        //   · `watch_error`    = 这家有流内错误帧分类器（余额耗尽/会话已死那一类）。
+        // 两者都为假 ⇒ 完全不预读（一个字节都不碰，与本次改动之前逐字节一致）。
+        // ⚠️ 这两支必须**分开判**：本改动之前门控的开关只有 `refusal_finishes`，
+        // 若沿用同一个开关，「只声明分类器、没声明拒答集合」的家（LobsterAI /
+        // AtomCode）根本进不来 —— 分类器就成了没有调用点的死代码。
+        let watch_finishes = !refusal_finishes.is_empty();
+        let watch_error = adapter.has_stream_error_classifier();
+        let gate = if (watch_finishes || watch_error)
             && response_protocol == crate::server::core::providers::adapter::UpstreamResponse::Chat
             && response.status().is_success()
         {
-            let head = refusal::hold_head(response).await;
+            let head = refusal::hold_head(response, watch_finishes, watch_error).await;
             if let Some(finish) = head.finish_reason.as_deref() {
                 if refusal::is_refusal(refusal_finishes, finish) {
                     let message = format!(
@@ -1789,6 +1850,113 @@ async fn attempt_queue(
         } else {
             Gate::Live(response)
         };
+
+        // ── 流内**错误帧**门控（与上面那条拒答门控并列，判据不同）──────────
+        // 上面那条看的是**终帧的 `finish_reason` 取值**（内容审核拒绝用它表达）。
+        // 这一条看的是**正文里有没有一条 `{"error":…}` 帧** —— 有一类上游把
+        // 「这次不给你答复」写成 `HTTP 200` + `data: {"error":{"message":"积分不足"}}`，
+        // 而**终帧的 `finish_reason` 仍是正常的 `stop`**，于是那条路认不出它，
+        // 状态码也是 200：编排层不换号、不冷却，客户端把「余额用完了」当成一次
+        // 正常回答（LobsterAI / AtomCode 的实现都明确记录了这个形态）。
+        //
+        // 判据（哪一档）由适配器的 `stream_error_classifier` 回答 —— 本通用层
+        // 只负责「把文案拿给适配器、按它的结论处置」，与拒答那条同一分工。
+        // 没声明 `finish_reason` 也**没有**分类器的家：分类器默认 `None` ⇒ 短路，
+        // 一个字节都不碰。
+        if let Gate::Held(head) = &gate {
+            if let Some(message) = head.stream_error.as_deref() {
+                // 注意：**不在这里**把账号记入 `tried_ids` —— 下面 `defer_to_next_account`
+                // 第一件事就是记它（判据只有一份，别写第二遍）。认不出而放行的那条
+                // 支路也不需要记：那时本轮直接结束，不再回到队首。
+                if let Some(class) = adapter.stream_error_classifier(message) {
+                    let stage = match &class {
+                        UpstreamErrorClass::QuotaLimited { .. } => "流内限额",
+                        UpstreamErrorClass::TokenExpired { .. } => "流内登录态失效",
+                        _ => "流内错误",
+                    };
+                    let detail = match &class {
+                        UpstreamErrorClass::QuotaLimited { message, .. }
+                        | UpstreamErrorClass::TokenExpired { message }
+                        | UpstreamErrorClass::Fatal { message, .. }
+                        | UpstreamErrorClass::ContentBlocked { message, .. } => message.clone(),
+                    };
+                    ctx.telemetry
+                        .finish_last_attempt(Some(i64::from(head.status)), Some(&detail));
+                    // 账号级的两档要**记账**：QuotaLimited 标冷却（与动作 1 同一
+                    // 记账口，`reset_at` / `upstream_code` 由分类器给），
+                    // TokenExpired 交给维护链路 —— 不在这里做强制刷新（流内帧
+                    // 之后没有可重试的响应体，刷新了也没东西可发）。
+                    if let (
+                        UpstreamErrorClass::QuotaLimited {
+                            status,
+                            upstream_code,
+                            reset_at,
+                            ..
+                        },
+                        Some(account_id),
+                    ) = (&class, target.account_id.clone())
+                    {
+                        let wire = cooldown_keys.for_provider(provider_id);
+                        let group = adapter.quota_cooldown_models(&account_id, &wire);
+                        let mark_message = format!("上游流内错误帧：{message}");
+                        for name in &group {
+                            rotate::mark_account_limited(
+                                service,
+                                &account_id,
+                                name,
+                                i32::from(*status),
+                                *upstream_code,
+                                *reset_at,
+                                &mark_message,
+                            );
+                        }
+                        logging::console_line(
+                            "[Upstream]",
+                            &format!(
+                                "⚠️ 账号 {account_id} 对模型 {model_label} 流内限额（{message}），\
+                                 标记冷却后按队列顺延"
+                            ),
+                        );
+                    }
+                    logging::console_line(
+                        "[Upstream]",
+                        &format!(
+                            "⚠️ {provider_id} 对模型 {model_label} 返回流内错误帧（{stage}）：{message}"
+                        ),
+                    );
+                    // 顺延与上面各处逐字同一路径（判据只有一份，见该函数的说明）。
+                    if defer_to_next_account(
+                        service,
+                        provider_ids,
+                        &cooldown_keys,
+                        &mut tried_ids,
+                        &target,
+                        &session,
+                        provider_id,
+                        &model,
+                        stage,
+                        i32::from(head.status),
+                        &mut switches_left,
+                        switch_total,
+                        ctx.pinned_account,
+                    ) {
+                        continue 'accounts;
+                    }
+                    // 队列没人 / 换号用尽：给客户端一句可读的话，而不是把上游的
+                    // 错误帧当成答案发出去（错误的正文绝不会是合理答复）。
+                    return Err(GatewayError::with_status(
+                        502,
+                        format!(
+                            "上游在流内返回错误（{stage}）：{message}。\
+                             且没有其他可用的账号或提供商可接管。请稍后重试，或在设置中更换该模型的服务商"
+                        ),
+                    ));
+                }
+                // 认不出（分类器回 None）：放行 —— fail-open。把认不出的流内帧
+                // 判死会盖掉一次**可能正常**的答复，比漏判更坏（与 `refusal`
+                // 模块头同取向）。
+            }
+        }
 
         // ── 上游响应协议（适配器在构造请求时一并给出）──────────────────
         // 绝大多数上游说 chat SSE（`ForwardStream` / 聚合器的默认输入）；
@@ -1958,7 +2126,23 @@ async fn attempt_queue(
             }
         }
     }
-    Err(GatewayError::with_status(500, "上游转发重试次数超限"))
+    Err(match proxy_broken_reason.take() {
+        Some(reason) => GatewayError::with_status(502, proxy_broken_message(&reason)),
+        None => GatewayError::with_status(500, "上游转发重试次数超限"),
+    })
+}
+
+/// 「账号代理配置本身坏了」的统一文案：原因 + 为什么停下 + 怎么修。
+///
+/// 为什么要单抽一个函数：这条文案在三个出口都要用（选中坏账号时、
+/// 选路已无账号时、循环耗尽时），而它必须同时说清「不是网络抖了」和
+/// 「改哪里」—— 只写「代理不可用」会让人去测网络，去重启 Clash，
+/// 就是不会去看那行配置。
+fn proxy_broken_message(reason: &str) -> String {
+    format!(
+        "{reason}。为避免绕过代理直连上游（会暴露本机真实 IP），本次请求已停止；\
+         请修正该账号的代理配置，或把它改成直连后重试。"
+    )
 }
 
 /// 门控后的 Chat 响应形态：`Live` = 未消费的 `Response`（原样直通）；

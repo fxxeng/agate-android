@@ -68,7 +68,13 @@ pub(super) fn builtin_target(
                 .is_some_and(|effective| effective.enabled)
         })
         .filter_map(|mapping| {
-            entry_id_in_manifest(manifest, &mapping.target).map(|target| (mapping, target))
+            // ── 目标在这家被关掉 → 别名跟着失效 ────────────────────
+            // 别名是「这一行的另一个名字」，不是绕过启停的后门。判据与上面
+            // 按原生 id 命中那条同源（default_enabled 同时覆盖 disabled
+            // 与恒等映射的开关），否则模型页关掉的模型仍能经别名被广告/派单。
+            entry_id_in_manifest(manifest, &mapping.target)
+                .filter(|target| rules.default_enabled(provider, target))
+                .map(|target| (mapping, target))
         })
         .collect();
     let prefix = super::super::cline::models::Pool::from_provider_id(provider)

@@ -77,7 +77,7 @@ pub(super) async fn prepare(
     let credentials = Credentials::from_fields(&record)?;
     let proxy = match proxies::resolve_account_proxy(record.get("proxy")) {
         Some(ProxyResolution::Resolved(proxy)) => Some(proxy),
-        Some(ProxyResolution::Failed(reason)) => {
+        Some(ProxyResolution::Failed(reason) | ProxyResolution::Broken(reason)) => {
             return Err(GatewayError::with_status(502, reason))
         }
         None => None,

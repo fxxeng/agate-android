@@ -187,6 +187,44 @@ internal data class ListView(
 }
 
 /**
+ * 把一个**对外名**拆成「(承载它的家), 上游裸 id」—— 全页唯一入口。
+ *
+ * ── 为什么不能见 `/` 就切（2026-11-16 真实故障）──────────────
+ * 有一批家的上游 id **本身带斜杠**（魔搭的 `组织/模型名`：
+ * `deepseek-ai/DeepSeek-V4-Flash-0731`）。原先满页写的是
+ * `if ('/' in id) id.substringAfter('/') else id` —— 那是把第一段无条件当成
+ * 网关的 `provider/` 前缀。对 `modelscope/xxx`（provider 形态）碰巧对，对
+ * **裸形态**就直接切掉组织段，留下一句 `DeepSeek-V4-Flash-0731`：
+ *   · `(provider, 上游 id)` 在管理视图里查不到 ⇒ `inCatalog=false`，点开关只弹
+ *     「这个模型不在当前目录清单里，启停对它无效」（用户报的那句）；
+ *   · 可用账号数按错误的 id 去问内核；批量启停写的是一个不存在的名字。
+ *
+ * ── 判据与内核同一条 ────────────────────────────────────────
+ * `split_provider_prefix` / `wire_target_for_provider`：只有第一段**确实是
+ * 这家网关的 provider id** 才是前缀。
+ *   · 手上有一行（知道 provider）⇒ 传 `provider`，逐字比对；
+ *   · 只有字符串（`list-view` 的 ids）⇒ 传 null，第一段在注册表 / 自定义家里才算。
+ * 大小写不敏感，与内核 `eq_ignore_ascii_case` 一致。
+ */
+internal fun splitExposedName(id: String, provider: String? = null): Pair<String?, String> {
+    val text = id.trim()
+    val slash = text.indexOf('/')
+    if (slash <= 0 || slash == text.length - 1) return null to text
+    val head = text.substring(0, slash)
+    val isPrefix = if (!provider.isNullOrBlank()) {
+        provider.equals(head, ignoreCase = true)
+    } else {
+        PresetRegistry.ALL.any { it.id.equals(head, ignoreCase = true) } ||
+            CustomProviderOps.isCustomProviderId(head)
+    }
+    return if (isPrefix) head to text.substring(slash + 1) else null to text
+}
+
+/** 对外名 → 上游裸 id（[splitExposedName] 的常用半边；`provider` 能给就给）。 */
+internal fun wireModelId(id: String, provider: String? = null): String =
+    splitExposedName(id, provider).second
+
+/**
  * 模型页（M3-5，对齐 v44 Tab 3）：
  * - 客户端所见清单卡（GET /v1/models 口径）：总数 + 两档视图（按模型聚合 / 按提供商分组）
  * - 搜索 + 提供商分组折叠（mgroups）或按模型聚合（提供商候选列表 + 倍率）
@@ -406,20 +444,25 @@ fun ModelsPage(
      */
     fun toggle(row: GatewayRepository.ModelRow) {
         // 会话清单里的 id 在 provider 形态下带 `provider/` 前缀，
-        // 而启停接口要的是**上游裸 id**。
-        val bare = if ('/' in row.id) row.id.substringAfter('/') else row.id
+        // 而启停接口要的是**上游裸 id**（见 `splitExposedName`：不能见斜杠就切）。
+        val bare = wireModelId(row.id, row.provider)
         val key = "${row.provider}|$bare"
         if (toggling != null) return
         toggling = key
         scope.launch {
-            val r = ModelOps.setState(bare, !row.enabled, row.provider.ifBlank { null })
-            toggling = null
-            if (r.ok) {
-                loadManage()
-                loadListView()
-                GatewayRepository.refreshOnce()
-            } else {
-                Toast.makeText(ctx, r.error ?: "切换失败", Toast.LENGTH_SHORT).show()
+            // `finally` 不是装饰：协程被取消（切页 / 组合重算）时 toggling 会
+            // 永远停住 ⇒ 该行开关变灰，且 toggle 开头的守卫吞掉之后所有点击。
+            try {
+                val r = ModelOps.setState(bare, !row.enabled, row.provider.ifBlank { null })
+                if (r.ok) {
+                    loadManage()
+                    loadListView()
+                    GatewayRepository.refreshOnce()
+                } else {
+                    Toast.makeText(ctx, r.error ?: "切换失败", Toast.LENGTH_SHORT).show()
+                }
+            } finally {
+                toggling = null
             }
         }
     }
@@ -616,14 +659,17 @@ fun ModelsPage(
     // 结果 = 会话清单那些（补上 official）+ 只存在于管理视图的那些（已禁用）。
     // 关掉的模型因此仍留在页面上（置灰），这正是「全部列出、关掉的置灰」。
     val allRows: List<GatewayRepository.ModelRow> = remember(models, manage) {
-        fun bare(id: String) = if ('/' in id) id.substringAfter('/') else id
+        // 剥前缀一律走 `wireModelId`：上游 id 本身可能带斜杠（魔搭 `组织/模型`），
+        // 见 `splitExposedName` 的说明 —— 那里就是这一页唯一拆名入口。
         val byKey = manage.associateBy { "${it.provider.lowercase()}|${it.id.lowercase()}" }
         val fromSession = models.map { m ->
-            val mg = byKey["${m.provider.lowercase()}|${bare(m.id).lowercase()}"]
-            m.copy(enabled = true, official = mg?.official)
+            val mg = byKey["${m.provider.lowercase()}|${wireModelId(m.id, m.provider).lowercase()}"]
+            // 启停状态以管理视图为准：会话清单是上一轮快照，硬编码 true 会让
+            // 刚关掉的模型弹回 ON（「关不掉」）。管理视图确实缺这条才退回 true。
+            m.copy(enabled = mg?.enabled ?: true, official = mg?.official)
         }
         val present = fromSession
-            .map { "${it.provider.lowercase()}|${bare(it.id).lowercase()}" }
+            .map { "${it.provider.lowercase()}|${wireModelId(it.id, it.provider).lowercase()}" }
             .toHashSet()
         val extra = manage
             .filter { "${it.provider.lowercase()}|${it.id.lowercase()}" !in present }
@@ -639,7 +685,9 @@ fun ModelsPage(
 
     // 模型行「思考」入口的数据：只有内核发了 reasoningBinding 键的模型才给入口。
     // key 用 (provider, 裸 id)，与会话清单对齐（后者 id 可能带 provider/ 前缀）。
-    fun bareId(id: String) = if ('/' in id) id.substringAfter('/') else id
+    // 裸 id 一律按本行 provider 走 `wireModelId` 剥前缀：上游 id 自带斜杠时
+    // 不能见斜杠就切（见 `splitExposedName`）。
+    fun bareId(id: String, provider: String? = null) = wireModelId(id, provider)
     val reasoningByKey = remember(manage) {
         manage.filter { it.reasoningEditable }
             .associate { "${it.provider.lowercase()}|${it.id.lowercase()}" to it.reasoningBinding }
@@ -692,7 +740,10 @@ fun ModelsPage(
                 // 只取第一家会把可用账号数算少 —— 一个模型在 A 家有 3 个号、
                 // B 家有 2 个，胶囊上写 3 就是错的。
                 modelProviders = remember(models) {
-                    models.groupBy({ it.id.substringAfter('/') }) { it.provider }
+                    // 裸模型名作聚合键：走 `wireModelId` 而不是见斜杠就切 —— 魔搭的
+                    // `deepseek-ai/DeepSeek-V4-Flash-0731` 切掉组织段后就与别家同名的
+                    // 不同模型撞进同一张卡（见 `splitExposedName`）。
+                    models.groupBy({ wireModelId(it.id, it.provider) }) { it.provider }
                         .mapValues { (_, list) -> list.distinct() }
                 },
                 availability = availability,
@@ -829,14 +880,14 @@ fun ModelsPage(
                         batchBusy = batchBusy,
                         onOpenCaps = { modelId -> onOpenCaps(pid, modelId) },
                         reasoning = { modelId ->
-                            val key = "${pid.lowercase()}|${bareId(modelId).lowercase()}"
+                            val key = "${pid.lowercase()}|${bareId(modelId, pid).lowercase()}"
                             if (key in reasoningByKey) ReasoningInfo(
                                 current = reasoningByKey[key],
                                 levels = reasoningLevelsByKey[key].orEmpty().ifEmpty { globalLevels },
                                 busy = levelBusy == key,
                             ) else null
                         },
-                        onSetReasoning = { modelId, level -> setReasoning(pid, bareId(modelId), level) },
+                        onSetReasoning = { modelId, level -> setReasoning(pid, bareId(modelId, pid), level) },
                         // 单家范围就是「看这家」，没有折叠的必要
                         expandByDefault = true,
                         hybrid = listView.mode == "hybrid",
@@ -868,14 +919,14 @@ fun ModelsPage(
                         onToggle = { toggle(it) },
                         onOpenCaps = onOpenCaps,
                         reasoning = { provider, modelId ->
-                            val key = "${provider.lowercase()}|${bareId(modelId).lowercase()}"
+                            val key = "${provider.lowercase()}|${bareId(modelId, provider).lowercase()}"
                             if (key in reasoningByKey) ReasoningInfo(
                                 current = reasoningByKey[key],
                                 levels = reasoningLevelsByKey[key].orEmpty().ifEmpty { globalLevels },
                                 busy = levelBusy == key,
                             ) else null
                         },
-                        onSetReasoning = { provider, modelId, level -> setReasoning(provider, bareId(modelId), level) },
+                        onSetReasoning = { provider, modelId, level -> setReasoning(provider, bareId(modelId, provider), level) },
                     )
                     Spacer(Modifier.height(10.dp))
                 }
@@ -1289,11 +1340,11 @@ private fun ExposedPills(
             verticalArrangement = Arrangement.spacedBy(5.dp),
         ) {
             shown.forEach { id ->
-                // `provider/model` 形态自带家；裸名要反查一次
-                // `provider/model` 形态自带家（就是那一家）；裸名要反查承载家
-                val carriers = if ('/' in id) listOf(id.substringBefore('/'))
-                else modelProviders[id.substringAfter('/')].orEmpty()
-                val model = id.substringAfter('/')
+                // 对外名在这里只有字符串（不知道家）：`provider/model` 形态自带家，
+                // 裸名要反查承载家。拆名走同一个入口 —— 见 `splitExposedName`
+                // （魔搭的裸 id 自己带斜杠，切错就查不到承载家、可用数显示成 0）。
+                val (idProvider, model) = splitExposedName(id)
+                val carriers = idProvider?.let { listOf(it) } ?: modelProviders[model].orEmpty()
                 // 测速定位只需要一家（跳过去那一页会列出该模型的全部可用账号）
                 val provider = carriers.firstOrNull()
                 // 数字来自内核预演（`plan_route`）：null = 还没算到，显示「—」。
@@ -1774,7 +1825,11 @@ private fun ProviderModelGroup(
                     fontSize = 11.sp,
                     modifier = Modifier.weight(1f),
                 )
-                val visibleIds = models.map { m -> if ('/' in m.id) m.id.substringAfter('/') else m.id }
+                val visibleIds = models.map { m ->
+                    // 批量写的是**上游 id**（内核按 (provider, 上游 id) 存规则）。
+                    // 魔搭 id 自带 `组织/`，不能见斜杠就切，见 `splitExposedName`。
+                    wireModelId(m.id, m.provider)
+                }
                 SmallPill("全部启用", enabled = !batchBusy) { onToggleAll(visibleIds, true) }
                 SmallPill("全部关闭", enabled = !batchBusy) { onToggleAll(visibleIds, false) }
             }
@@ -1797,7 +1852,10 @@ private fun ProviderModelGroup(
             // 整家已勾选时，行内不再给「前缀」开关（每一条本来就带前缀，见 ModelLine 的说明）
             val homePinned = providerId in pins
             onRows.forEach { m ->
-                val bare = if ('/' in m.id) m.id.substringAfterLast('/') else m.id
+                // 对外名 = 上游 id 本身（内核 `advertised_names` 给的就是它，单条 pin 的
+                // 键是 `provider/对外名`）。这里不能取最后一段：魔搭的 id 带组织段，
+                // 取末段拼出来的 pin 内核认不出（见 `splitExposedName`）。
+                val bare = wireModelId(m.id, m.provider)
                 ModelLine(
                     m = m,
                     toggling = toggling,
@@ -1835,7 +1893,7 @@ private fun ProviderModelGroup(
                 if (showOff) {
                     offRows.forEach { m ->
                         Box(Modifier.fillMaxWidth().height(1.dp).background(C.border.copy(alpha = 0.4f)))
-                        val bare = if ('/' in m.id) m.id.substringAfterLast('/') else m.id
+                        val bare = wireModelId(m.id, m.provider)
                         ModelLine(
                             m = m,
                             toggling = toggling,
@@ -1877,7 +1935,9 @@ private fun ModelLine(
 ) {
     val C = agateColors()
     val scope = rememberCoroutineScope()
-    val bareId = if ('/' in m.id) m.id.substringAfter('/') else m.id
+    // 上游裸 id：按本行 provider 剥前缀（魔搭的 id 自带 `组织/`，不能见斜杠就切，
+    // 见 `splitExposedName`）。启停 / 能力位 / 测速都按它定位。
+    val bareId = wireModelId(m.id, m.provider)
     val busy = toggling == "${m.provider}|$bareId"
     // 行内测速：结果与「模型测速」页共用一份（见 ModelTestStore 的说明）
     val testResults by ModelTestStore.results.collectAsState()
@@ -2124,7 +2184,9 @@ private fun ModelAggregateCard(
         // ── 各家候选（已启用在前，同组内倍率升序）──
         Spacer(Modifier.height(8.dp))
         ranked.forEachIndexed { i, m ->
-            val bareId = if ('/' in m.id) m.id.substringAfter('/') else m.id
+            // 上游裸 id：按本行 provider 剥前缀（魔搭的 id 自带 `组织/`，不能见斜杠
+            // 就切，见 `splitExposedName`）。启停 / 能力位 / 测速都按它定位。
+            val bareId = wireModelId(m.id, m.provider)
             val busy = toggling == "${m.provider}|$bareId"
             Row(
                 Modifier.fillMaxWidth().padding(vertical = 2.dp),
@@ -2201,7 +2263,7 @@ private fun ModelAggregateCard(
         ) {
             Text("能力位", color = C.textDim, fontSize = 12.sp, modifier = Modifier.padding(end = 8.dp))
             ranked.forEach { m ->
-                val bare = if ('/' in m.id) m.id.substringAfter('/') else m.id
+                val bare = wireModelId(m.id, m.provider)
                 SmallPill(m.providerLabel, true) { onOpenCaps(m.provider, bare) }
                 Spacer(Modifier.width(6.dp))
             }
