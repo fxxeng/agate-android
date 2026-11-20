@@ -154,6 +154,29 @@ pub(super) struct ProviderContext<'a> {
     pub image: Option<crate::server::core::providers::images::ImageOperation>,
 }
 
+impl ProviderContext<'_> {
+    /// 这一次请求（这一家）实际要用的提示词：规则命中优先，否则逐家覆盖。
+    ///
+    /// ── 客户端名为什么取严格识别 ────────────────────────────────
+    /// 规则匹配问的是「这是什么客户端」。用显示识别（可配置、可自定义名字）
+    /// 会让「用户把 Codex 改名叫别的」同时换掉提示词 —— 两件本该独立的事被
+    /// 一个配置绑在一起，是最难查的那类耦合。所以这里只认 `classify`。
+    ///
+    /// ── 为什么做成上下文的方法 ──────────────────────────────────
+    /// 提示词在两处被取用（发送体构造、内容拦截后的降级判断），两处必须拿到
+    /// **同一份**决定。把「取哪几个维度、怎么判」收在这里，调用点只传 provider。
+    pub fn prompt_for(&self, provider_id: &str) -> crate::server::core::prompt::PromptChoice<'_> {
+        let client = self
+            .client_headers
+            .get(axum::http::header::USER_AGENT)
+            .and_then(|value| value.to_str().ok())
+            .map(crate::server::core::client::classify)
+            .unwrap_or_default();
+        let model = self.body.get("model").and_then(Value::as_str).unwrap_or("");
+        self.prompt.for_request(provider_id, &client, model)
+    }
+}
+
 /// 某一家 provider 实际要发送的请求体（**每次转发前**决定，不做跨家复用），
 /// 以及这次发送用的上游模型名。
 ///
@@ -249,7 +272,7 @@ pub(super) fn send_body<'a>(
     // `degraded` = 本请求是否已进入降级（请求开始时状态机已生效，或本次撞了
     // 内容拦截后由转发层置位）：降级期用最小中性提示词（`custom` 模式除外，
     // 见 `PromptChoice::text_for`）。
-    let prompt = ctx.prompt.for_provider(provider_id);
+    let prompt = ctx.prompt_for(provider_id);
     let after_prompt = match prompt.apply(role_base.as_ref(), degraded) {
         Some(next) => {
             logging::verbose(

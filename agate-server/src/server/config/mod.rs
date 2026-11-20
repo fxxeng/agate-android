@@ -71,6 +71,7 @@ pub mod client_identification;
 pub mod compact_routes;
 mod mutations;
 pub(crate) mod parse;
+pub mod prompt_rules;
 mod routing_groups;
 mod routing_profiles;
 mod routing_workspace;
@@ -406,6 +407,9 @@ impl RuntimeConfig {
             },
             &self.prompt.providers,
         )
+        // 规则集是懒加载快照（见 `prompt_rules` 的模块头），这里拿一份 `Arc`
+        // 交给计划持有 —— 计划可能在 handler 栈帧之外活着（流式收尾）。
+        .with_rules(crate::server::config::prompt_rules::current())
     }
 
     /// 掩码后的 API Key，格式照抄 server.mjs 920 行：前 6 后 4。

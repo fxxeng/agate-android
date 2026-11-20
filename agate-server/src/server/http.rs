@@ -735,6 +735,13 @@ pub fn panel_router(state: ServerState) -> Router {
             "/api/keepalive-strip",
             get(api::keepalive::get_keepalive_strip).put(api::keepalive::put_keepalive_strip),
         )
+        // ── 提示词规则 ──
+        // 与 /api/prompt 同一族（都是「发往上游的字节被改写」），但这一条改的是
+        // 「什么条件下换哪份提示词」。挂 protected 的理由与另外几条相同。
+        .route(
+            "/api/prompt-rules",
+            get(api::prompt_rules::get_rules).put(api::prompt_rules::put_rules),
+        )
         // ── 模型访问（按「这一把 Key」回答能用什么）──
         // 与 /v1/models 的分工见 `api::model_access` 模块头：那条是免鉴权探针，
         // 拿不到限制就给全量；这两条必须明确带 Key —— 问的是权限，不回退。

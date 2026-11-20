@@ -118,6 +118,7 @@ pub mod onboarding;
 pub mod panel;
 pub mod pipeline;
 pub mod prompt;
+pub mod prompt_rules;
 pub mod protocol;
 pub mod proxies;
 pub mod qoder_umid;

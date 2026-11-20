@@ -38,6 +38,11 @@
 //! 开关时机由转发层决定；本模块无状态、无锁、无 IO，只回答「给定 body 与提示词，
 //! 出站的那份应该长什么样」。
 
+/// 提示词规则：按 (家, 客户端, 模型) 条件选不同提示词（见该文件的模块头）。
+///
+/// 与逐家覆盖（[`PromptPlan::providers`]）的分工：覆盖是「这一家固定用这份」，
+/// 规则是「满足这些条件时用这份」。规则先判，未命中才回落到覆盖。
+pub mod rules;
 use serde_json::{json, Value};
 
 /// 降级提示词：内容拦截误报时用的**最小中性提示词**（对应参考项目的
@@ -68,7 +73,12 @@ something you did not actually run.
 without explicit confirmation from the user.";
 
 /// 系统提示词的三种模式（配置文件里的字符串就是契约，见 `config::KEY_PROMPT_MODE`）
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+///
+/// `Serialize` / `Deserialize` 是为提示词规则服务的：规则里的 `content.mode`
+/// 要与配置里的 `promptMode` 用**同一串值**（`passthrough` / `custom` /
+/// `append`），两处各写一套字符串映射迟早会分叉。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum PromptMode {
     /// 透传客户端 system（默认；与改造前行为逐字相同）
     #[default]
@@ -250,12 +260,15 @@ impl GatewayBlocks {
 /// 而模式语义（透传 / 替换 / 追加）是同一条加工链（[`PromptChoice::apply`]）——
 /// 所以这里只做「取哪一份」的分派，加工一个字节都不分叉。`provider_id` 在
 /// `payload::send_body` 就有，那正是「某一家即将发送之前」的时刻。
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct PromptPlan<'a> {
     /// 未单独配置的家用的那一份（对应全局的 `promptMode` / `promptFile`）
     pub default: PromptChoice<'a>,
     /// 逐家覆盖（借自配置快照；空表 = 所有家都用 default）
     providers: &'a std::collections::BTreeMap<String, crate::server::config::ProviderPrompt>,
+    /// 提示词规则（按 (家, 客户端, 模型) 条件命中）。持有快照的 `Arc` 而不是
+    /// 借用：规则集是懒加载出来的独立快照，与 config 的栈帧不同寿。
+    rules: Option<std::sync::Arc<crate::server::config::prompt_rules::PromptRulesSnapshot>>,
 }
 
 impl<'a> PromptPlan<'a> {
@@ -271,7 +284,43 @@ impl<'a> PromptPlan<'a> {
         default: PromptChoice<'a>,
         providers: &'a std::collections::BTreeMap<String, crate::server::config::ProviderPrompt>,
     ) -> Self {
-        Self { default, providers }
+        Self {
+            default,
+            providers,
+            rules: None,
+        }
+    }
+
+    /// 挂上提示词规则（`config::RuntimeConfig::prompt_plan` 的唯一用法）。
+    pub fn with_rules(
+        mut self,
+        rules: std::sync::Arc<crate::server::config::prompt_rules::PromptRulesSnapshot>,
+    ) -> Self {
+        self.rules = Some(rules);
+        self
+    }
+
+    /// 这一次请求实际要用的提示词。
+    ///
+    /// 判定顺序：**规则 → 逐家覆盖 → 全局默认**。规则按配置顺序，第一条命中即止
+    /// —— 有序是规则语义的一部分（用户靠顺序表达「特殊情况放前面」），
+    /// 所以这里不能改成「最具体者优先」那种打分。
+    ///
+    /// 规则集解析失败（`error` 非空）时规则为空表，直接回落 —— 提示词写坏
+    /// 不该让请求失去提示词。
+    pub fn for_request(&self, provider_id: &str, client: &str, model: &str) -> PromptChoice<'_> {
+        if let Some(snapshot) = self.rules.as_deref() {
+            for rule in &snapshot.rules {
+                if rule.matches(provider_id, client, model) {
+                    return PromptChoice {
+                        mode: rule.prompt.mode,
+                        text: &rule.prompt.text,
+                        source: rule.prompt.source,
+                    };
+                }
+            }
+        }
+        self.for_provider(provider_id)
     }
 
     /// 这一家实际要用的那一份（没单独配就走 `default`）。
