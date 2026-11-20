@@ -400,7 +400,12 @@ pub fn manage_view(store: &AccountStore) -> Value {
                 aliases.push(mapping.alias.clone());
                 let alias_ok = mapping_effective(&rules, Some(kind), &manifest, &mapping.alias);
                 let issue = mapping_issue(
-                    &rules, provider, &manifest, &id, effective.enabled, alias_ok,
+                    &rules,
+                    provider,
+                    &manifest,
+                    &id,
+                    effective.enabled,
+                    alias_ok,
                 );
                 mappings.push(json!({
                     "alias": effective.alias, "target": id, "provider": provider,
@@ -706,7 +711,10 @@ mod tests {
         ]));
         let ok = mapping_effective(&rules, kind_from_id("cline-free"), &m, "my-alias");
         assert!(ok, "目标在清单且开着 ⇒ 生效");
-        assert_eq!(mapping_issue(&rules, "cline-free", &m, target, true, ok), None);
+        assert_eq!(
+            mapping_issue(&rules, "cline-free", &m, target, true, ok),
+            None
+        );
         // 开关关掉
         let ok2 = mapping_effective(&rules, kind_from_id("cline-free"), &m, "my-alias");
         assert_eq!(
@@ -728,7 +736,12 @@ mod tests {
             { "alias": "my-alias", "target": "stealth/space-bunny-alpha",
               "provider": "cline-free", "enabled": true }
         ]));
-        assert!(mapping_effective(&rules, kind_from_id("cline-free"), &m, "my-alias"));
+        assert!(mapping_effective(
+            &rules,
+            kind_from_id("cline-free"),
+            &m,
+            "my-alias"
+        ));
         // 未知家一律不算生效（自定义家 / 缺 kind）
         assert!(!mapping_effective(&rules, None, &m, "my-alias"));
     }
