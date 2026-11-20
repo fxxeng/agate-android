@@ -76,6 +76,9 @@ mod bindings;
 /// 定义的手工增删改走 `create` / `update` / `remove`，不走导入。
 pub(crate) mod transfer;
 pub use bindings::public_models;
+/// 同义名展开（别名 ↔ 原名）。清单出口的白名单过滤要靠它认老写法 ——
+/// 见 `bindings::synonymous` 的说明。
+pub use bindings::synonymous as synonymous_models;
 
 use std::time::Duration;
 

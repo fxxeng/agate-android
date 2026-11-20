@@ -182,6 +182,22 @@ object ModelOps {
     }
 
     /**
+     * 解析 manage 响应的 `mappings[]`（别名 → 上游 id）。
+     *
+     * 模型页用它补「别名承载者」这一层候选：`/api/models/manage` 的 `models[]`
+     * 只列上游 id，别名全在 `mappings[]` 里 —— 不解析这份，界面就看不到
+     * 「`glm-5.3` 其实也能由小浣熊承载」（2026-11-02）。
+     */
+    fun parseMappings(data: JSONObject?): List<MappingRow> {
+        val arr = data?.optJSONArray("mappings") ?: return emptyList()
+        val out = ArrayList<MappingRow>(arr.length())
+        for (i in 0 until arr.length()) {
+            arr.optJSONObject(i)?.let { out += MappingRow.from(it) }
+        }
+        return out
+    }
+
+    /**
      * 只认真正的 JSON 字符串；JSON null 与真机 AOSP 把 `optString(null)` 变成的
      * 字符串 "null" 都归一为 null（单测库对 null 返回空串，故单测看不出这个坑）。
      */

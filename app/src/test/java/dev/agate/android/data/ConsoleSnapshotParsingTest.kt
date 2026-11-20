@@ -1,0 +1,146 @@
+package dev.agate.android.data
+
+import org.json.JSONObject
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+/**
+ * 控制台快照里两段「新接的真读数」的解析判据。
+ *
+ * ── 为什么这两段值得钉住（2026-11-06 真机截图核对）─────────────
+ * 控制台原来有三句占位文案，其中「队列数据待 /api/routing/queue 结构核对」
+ * 不是功能没做，而是**解析找错了键**：客户端按 `queue / entries / rows /
+ * items / candidates` 猜，内核返回的是 `ordered / blocked`，于是队列恒空。
+ * 这类 bug 没有编译期信号、界面还自带一句看起来很合理的解释，只有拿内核
+ * 真实响应形状做输入才能挡住。
+ *
+ * 「各家占比」那段同理：`providers[].totalTokens` 一直在报表里用着，控制台
+ * 却写着「待 stats 端点字段接入」。这里钉住冠军是按 token 挑、不是按请求数挑。
+ */
+class ConsoleSnapshotParsingTest {
+
+    private fun queue(body: String) = GatewayRepository.parseRoutingQueue(JSONObject(body))
+
+    private fun entry(
+        id: String,
+        name: String,
+        provider: String,
+        label: String,
+        state: String,
+        reason: String,
+    ): String = """{"id":"$id","name":"$name","provider":"$provider",
+        |"providerLabel":"$label","state":"$state","reason":"$reason",
+        |"resetAt":null,"priority":1}""".trimMargin()
+
+    @Test
+    fun `内核真实的 ordered 与 blocked 都被解析`() {
+        val ordered = entry("a1", "主号", "zcode", "ZCode", "usable", "优先级最高")
+        val blocked = entry("a2", "备用号", "loomy", "Loomy", "cooldown", "上游 429，冷却至 21:03")
+        val parsed = queue(
+            """{"strategy":"balance","model":null,"lastRequestModel":"glm-4.6",
+               |"pickedId":"a1","ordered":[$ordered],"blocked":[$blocked]}""".trimMargin(),
+        )
+        assertNotNull("旧实现的五个候选键一个都不命中，这里必须解析出来", parsed)
+        val q = parsed!!
+        assertEquals("glm-4.6", q.model)
+        assertEquals(2, q.rows.size)
+
+        val first = q.rows[0]
+        assertEquals("主号", first.account)
+        assertEquals("ZCode", first.provider)
+        assertEquals("glm-4.6", first.model)
+        assertEquals("可出战", first.note)
+        assertEquals("优先级最高", first.detail)
+        assertFalse(first.blocked)
+
+        val second = q.rows[1]
+        assertEquals("备用号", second.account)
+        assertEquals("冷却中", second.note)
+        assertTrue(second.detail!!.contains("429"))
+        assertTrue("blocked 数组里的行必须标成被排除", second.blocked)
+    }
+
+    @Test
+    fun `旧的猜测键不再被静默当成空队列`() {
+        // 内核从来没返回过 "queue"。真拿到这种形状时宁可返回 null，
+        // 让界面如实说「暂不可用」，也不要显示「当前无候选账号」骗人。
+        assertNull(queue("""{"queue":[{"id":"a1","name":"主号"}]}"""))
+        assertNull(queue("{}"))
+        assertNull(GatewayRepository.parseRoutingQueue(null))
+    }
+
+    @Test
+    fun `两个空数组是合法的空队列而不是解析失败`() {
+        val parsed = queue("""{"ordered":[],"blocked":[]}""")
+        assertNotNull(parsed)
+        assertTrue(parsed!!.rows.isEmpty())
+        assertNull(parsed.model)
+    }
+
+    @Test
+    fun `显式 model 优先于最近一次请求模型`() {
+        val e = entry("a1", "主号", "zcode", "ZCode", "usable", "队首")
+        val parsed = queue(
+            """{"model":"kimi-k2","lastRequestModel":"glm-4.6",
+               |"ordered":[$e],"blocked":[]}""".trimMargin(),
+        )
+        assertEquals("kimi-k2", parsed!!.model)
+        assertEquals("kimi-k2", parsed.rows[0].model)
+    }
+
+    @Test
+    fun `未知状态回显原值，空状态按是否排除兜底`() {
+        val unknown = entry("a1", "甲", "zcode", "ZCode", "maintenance", "维护中")
+        val blank = entry("a2", "乙", "zcode", "ZCode", "", "被门禁挡下")
+        val parsed = queue("""{"ordered":[$unknown],"blocked":[$blank]}""")!!
+        assertEquals("maintenance", parsed.rows[0].note)
+        assertEquals("已排除", parsed.rows[1].note)
+    }
+
+    @Test
+    fun `各家占比冠军按 totalTokens 挑，不按请求数挑`() {
+        val summary = JSONObject(
+            """{"providers":[
+               |{"id":"a","label":"A家","requests":900,"totalTokens":1200},
+               |{"id":"b","label":"B家","requests":12,"totalTokens":98000},
+               |{"id":"c","label":"C家","requests":5,"totalTokens":300}
+               |]}""".trimMargin(),
+        )
+        val top = GatewayRepository.parseTopProvider(summary)
+        assertNotNull(top)
+        assertEquals("B家", top!!.first)
+        assertEquals(98_000L, top.second)
+    }
+
+    @Test
+    fun `零用量不参与冠军，数字串也要认，空数组返回 null`() {
+        val summary = JSONObject(
+            """{"providers":[
+               |{"id":"a","label":"A家","requests":900,"totalTokens":0},
+               |{"id":"b","label":"B家","requests":9,"totalTokens":9},
+               |{"id":"c","label":"C家","requests":0,"totalTokens":"42"}
+               |]}""".trimMargin(),
+        )
+        val top = GatewayRepository.parseTopProvider(summary)
+        assertNotNull(top)
+        assertEquals("C家", top!!.first)
+        assertEquals("数字串也要认", 42L, top.second)
+        assertNull(GatewayRepository.parseTopProvider(JSONObject("""{"providers":[]}""")))
+        assertNull(GatewayRepository.parseTopProvider(null))
+    }
+
+    @Test
+    fun `label 缺失时回退到 id 而不是丢掉这家`() {
+        // 内核对空 provider 会给「未知提供商」这类 label，正常不会走到这里；
+        // 但手改 / 旧内核少给 label 时，宁可显示 id 也别凭空少一家。
+        val summary = JSONObject("""{"providers":[{"id":"zcode","totalTokens":7}]}""")
+        val top = GatewayRepository.parseTopProvider(summary)
+        assertNotNull(top)
+        assertEquals("zcode", top!!.first)
+        assertEquals(7L, top.second)
+    }
+}

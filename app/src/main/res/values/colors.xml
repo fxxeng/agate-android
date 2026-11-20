@@ -1,9 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- 深色科技蓝底（v44 深色基调）× 青玛瑙前景：启动图标背景 -->
+    <!-- 启动图标背景是独立品牌资产，不随主题切换 -->
     <color name="ic_launcher_background">#0F172A</color>
-    <!-- v44 深色基调，作为窗口初始背景，避免启动白闪/黑闪 -->
-    <color name="agate_bg">#0F172A</color>
-    <!-- 外壳色（页头/底栏/系统栏统一，与 Color.kt DarkChrome 一致） -->
-    <color name="agate_chrome">#1D283A</color>
+
+    <!-- 「跟随系统」档基准（浅色）：这两项由 values-night 覆盖，preview 按系统夜间模式取色。
+         色值与 Color.kt 的 LightBg / LightChrome 逐字一致。 -->
+    <color name="agate_bg">#F1F5F9</color>
+    <color name="agate_chrome">#FEFEFE</color>
+
+    <!-- 手动档必须引用固定色：否则「用户选深色、系统却处于浅色」时 preview
+         会从 values 取到浅色，开机闪一下白底。 -->
+    <color name="agate_bg_light">#F1F5F9</color>
+    <color name="agate_chrome_light">#FEFEFE</color>
+    <color name="agate_bg_dark">#0F172A</color>
+    <color name="agate_chrome_dark">#1D283A</color>
 </resources>

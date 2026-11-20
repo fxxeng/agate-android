@@ -279,6 +279,19 @@ fun ModelsPage(
     // 管理视图（含已禁用条目 + 官方可见性）。`snap.models` 只有「已启用」，
     // 光靠它画不出开关，也画不出被关掉的那些（它们已从清单里消失）。
     var manage by remember { mutableStateOf<List<ModelOps.ManageModelRow>>(emptyList()) }
+    // 管理视图加载失败的原因（null = 正常）。页面顶部会显示一行可点重试的提示。
+    var manageError by remember { mutableStateOf<String?>(null) }
+    /** manage 的 `mappings[]`（别名 → 上游 id）；模型页据此补「别名承载者」候选。 */
+    var manageMappings by remember { mutableStateOf<List<ModelOps.MappingRow>>(emptyList()) }
+    /**
+     * 「刚点过、等 manage 回话」的临时覆盖：`"provider|id" -> enabled`。
+     *
+     * 点开关到 manage 回话之间有几帧，没有这层覆盖开关会**先弹回原状再跳过去**
+     * （看起来就是「点了没反应」）。它在请求发出前写入（点下即落位），请求失败
+     * 立即撤销；`loadManage()` 拿到权威数据后逐条对账 —— 不一致 = 内核没接受，
+     * 回退并明确提示。所以它只抢跑几百毫秒，绝不掩盖真实结果。
+     */
+    var optimistic by remember { mutableStateOf<Map<String, Boolean>>(emptyMap()) }
     /** 通用思考档位表（内核 `reasoningLevels`，逐模型未声明时兜底）。 */
     var globalLevels by remember { mutableStateOf<List<String>>(emptyList()) }
     /** 模型行「思考」入口的写入忙态（provider|id），防连点。 */
@@ -366,13 +379,48 @@ fun ModelsPage(
         customProviders.associate { it.id to it.modelCount }
     }
 
+    /**
+     * 拉管理视图（启停状态的唯一权威）。
+     *
+     * 失败必须**看得见**：旧写法 `parse(fetchManage().data)` 在失败时静默变空列表，
+     * 每行查不到自己就退回「默认开着」—— 所有开关显示「开」，点一下发「关闭」，
+     * 下一帧又退回「开」，症状就是「模型关不掉」。现在失败保留上一份并在页面
+     * 顶部给出可点重试的提示（基础设施故障不伪装成产品故障）。
+     */
     fun loadManage() {
         scope.launch {
             val r = ModelOps.fetchManage()
-            manage = ModelOps.ManageModelRow.parse(r.data)
-            val arr = r.data?.optJSONArray("reasoningLevels")
-            globalLevels = if (arr == null) emptyList() else
-                (0 until arr.length()).mapNotNull { arr.optString(it).takeIf { s -> s.isNotBlank() } }
+            if (r.ok) {
+                val fresh = ModelOps.ManageModelRow.parse(r.data)
+                manageMappings = ModelOps.parseMappings(r.data)
+                // ── 对账：乐观值 vs 权威值 ───────────────────────────
+                // 乐观值只抢跑几百毫秒；权威数据一到就逐条比对：不一致说明
+                // **内核没接受这次修改**（provider/id 对不上、规则没写进去…）。
+                // 旧实现只 `optimistic = emptyMap()` 静默清掉 → 开关自己弹回、
+                // 什么解释都没有。现在回退 + 明确告诉你哪一条没生效。
+                val freshByKey = fresh.associateBy {
+                    "${it.provider.lowercase()}|${it.id.lowercase()}"
+                }
+                val rejected = optimistic.filter { (key, wanted) ->
+                    freshByKey[key]?.enabled?.let { it != wanted } == true
+                }
+                manage = fresh
+                manageError = null
+                optimistic = emptyMap()
+                if (rejected.isNotEmpty()) {
+                    val which = rejected.keys.first().replace("|", " / ")
+                    Toast.makeText(
+                        ctx,
+                        "内核未接受这次修改（$which 已恢复原状）",
+                        Toast.LENGTH_LONG,
+                    ).show()
+                }
+                val arr = r.data?.optJSONArray("reasoningLevels")
+                globalLevels = if (arr == null) emptyList() else
+                    (0 until arr.length()).mapNotNull { arr.optString(it).takeIf { s -> s.isNotBlank() } }
+            } else {
+                manageError = r.error ?: "模型状态加载失败"
+            }
         }
     }
 
@@ -439,26 +487,49 @@ fun ModelsPage(
      * （`/api/session` 的 models、以及 `list-view` 的推演计数）是另一个出口 ——
      * 关掉一个模型后「客户端会看到几个」要跟着变，所以两边都得刷。
      *
-     * 不做乐观更新：开关回弹比慢半秒更让人困惑（而且内核可能拒绝，比如 tid
-     * 不属于任何已知提供商）。`toggling` 期间禁用本行，避免连点打架。
+     * ── 为什么现在**点下就改** ─────────────────────────────────
+     * 旧实现等内核回话之后才动开关，而 `toggling` 立刻把这一行置灰 —— 点击后
+     * 有一到两秒**没有任何视觉变化**（既没拨动、也不能再点），就是「点了没反应」。
+     * 现在**先本地落位（乐观）再发请求**：点下立刻拨动；请求失败 → 撤掉乐观值并
+     * Toast；请求成功但内核不认账 → `loadManage()` 回来比对不一致，同样回退并
+     * 明确提示。乐观状态只抢跑几百毫秒，绝不掩盖真实结果。
      */
     fun toggle(row: GatewayRepository.ModelRow) {
-        // 会话清单里的 id 在 provider 形态下带 `provider/` 前缀，
-        // 而启停接口要的是**上游裸 id**（见 `splitExposedName`：不能见斜杠就切）。
-        val bare = wireModelId(row.id, row.provider)
+        // 别名行的 `id` 是对外名（用于分组），真正要启停的是上游 id（见 upstreamId）；
+        // 其余行按本行 provider 剥前缀 —— 走全页唯一入口 wireModelId（不能见斜杠就切）。
+        val bare = row.upstreamId ?: wireModelId(row.id, row.provider)
         val key = "${row.provider}|$bare"
         if (toggling != null) return
+        // 不在管理视图里的行：内核按 (provider, id) 存规则，而清单里没有这个 id
+        // 就没有一行可回读 ⇒ 写了也看不到（日志一直刷「已禁用」但界面不变）。
+        // 这是「点了没反应」的最后一种成因，直接说明，不再白写一次盘。
+        if (!row.inCatalog) {
+            Toast.makeText(
+                ctx,
+                "这个模型不在当前目录清单里，启停对它无效（可先「拉取模型」刷新目录）",
+                Toast.LENGTH_LONG,
+            ).show()
+            return
+        }
+        val target = !row.enabled
+        val optKey = "${row.provider.lowercase()}|${bare.lowercase()}"
+        // ① 先落位：点下立刻可见（见上文的说明）
+        optimistic = optimistic + (optKey to target)
         toggling = key
         scope.launch {
             // `finally` 不是装饰：协程被取消（切页 / 组合重算）时 toggling 会
             // 永远停住 ⇒ 该行开关变灰，且 toggle 开头的守卫吞掉之后所有点击。
             try {
-                val r = ModelOps.setState(bare, !row.enabled, row.provider.ifBlank { null })
+                val r = ModelOps.setState(bare, target, row.provider.ifBlank { null })
                 if (r.ok) {
+                    // loadManage() 成功时会比对乐观值：不一致 = 内核没接受，
+                    // 那时回退并提示（见 loadManage 的「对账」段）。
                     loadManage()
                     loadListView()
                     GatewayRepository.refreshOnce()
                 } else {
+                    // 请求没成功：撤掉乐观值，让开关回到内核的真实状态
+                    optimistic = optimistic - optKey
                     Toast.makeText(ctx, r.error ?: "切换失败", Toast.LENGTH_SHORT).show()
                 }
             } finally {
@@ -658,28 +729,107 @@ fun ModelsPage(
     //
     // 结果 = 会话清单那些（补上 official）+ 只存在于管理视图的那些（已禁用）。
     // 关掉的模型因此仍留在页面上（置灰），这正是「全部列出、关掉的置灰」。
-    val allRows: List<GatewayRepository.ModelRow> = remember(models, manage) {
-        // 剥前缀一律走 `wireModelId`：上游 id 本身可能带斜杠（魔搭 `组织/模型`），
-        // 见 `splitExposedName` 的说明 —— 那里就是这一页唯一拆名入口。
-        val byKey = manage.associateBy { "${it.provider.lowercase()}|${it.id.lowercase()}" }
-        val fromSession = models.map { m ->
-            val mg = byKey["${m.provider.lowercase()}|${wireModelId(m.id, m.provider).lowercase()}"]
-            // 启停状态以管理视图为准：会话清单是上一轮快照，硬编码 true 会让
-            // 刚关掉的模型弹回 ON（「关不掉」）。管理视图确实缺这条才退回 true。
-            m.copy(enabled = mg?.enabled ?: true, official = mg?.official)
+    val allRows: List<GatewayRepository.ModelRow> =
+        remember(models, manage, customProviders, manageMappings, optimistic) {
+            // 剥前缀一律走 `wireModelId`：上游 id 本身可能带斜杠（魔搭 `组织/模型`），
+            // 见 `splitExposedName` 的说明 —— 那里就是这一页唯一拆名入口。
+            fun bare(id: String, provider: String?) = wireModelId(id, provider)
+            val byKey = manage.associateBy { "${it.provider.lowercase()}|${it.id.lowercase()}" }
+            // ── 自定义家（custom-xxxx）不走 manage 的启停 ──────────────
+            // 它们的启停状态在自己的记录里（set_models_enabled），而 manage_view
+            // 只遍历内置适配器 ⇒ 自定义家在 manage 里必然缺席。不能据此判成
+            // 「不在清单」，否则预置 API 建的那些家（商汤日日新）开关全被置灰。
+            val customIds = customProviders.map { it.id.lowercase() }.toSet()
+            val fromSession = models.map { m ->
+                val mg = byKey["${m.provider.lowercase()}|${bare(m.id, m.provider).lowercase()}"]
+                val key = "${m.provider.lowercase()}|${bare(m.id, m.provider).lowercase()}"
+                // 启停状态：临时覆盖 > 管理视图 > 默认开。保留「以 manage 为准」
+                // 的口径（硬编码 true 会让刚关掉的模型弹回 ON）。
+                m.copy(
+                    enabled = optimistic[key] ?: mg?.enabled ?: true,
+                    official = mg?.official,
+                    // 管理视图里没有这一行、且不是自定义家 ⇒ 启停无从写起
+                    // （见 inCatalog 的说明；自定义家判据见上面 customIds）
+                    inCatalog = mg != null || m.provider.lowercase() in customIds,
+                )
+            }
+            val present = fromSession
+                .map { "${it.provider.lowercase()}|${bare(it.id, it.provider).lowercase()}" }
+                .toHashSet()
+            val extra = manage
+                .filter { "${it.provider.lowercase()}|${it.id.lowercase()}" !in present }
+                .map { it.toModelRow() }
+            // ── 别名承载者：补进「对外名」那张卡的候选（2026-11-02）────────
+            // 路由真的会把 `glm-5.3` 派给小浣熊，但 /v1/models 同名只留第一家
+            // ⇒ 界面漏报一个真实候选。按 manage 的 mappings[] 把「别名 → (家, 上游 id)」
+            // 补成一行：id 用对外名（决定并进哪张卡），upstreamId 用真实上游 id
+            // （启停与转发的实际名字），启停/能力位从该上游 id 的 manage 行取。
+            val aliasRows = manageMappings.mapNotNull { mapping ->
+                val owner = mapping.provider ?: return@mapNotNull null
+                val alias = mapping.alias.trim()
+                val target = mapping.target.trim()
+                // 默认绑定（alias == target）不是别名；关掉的映射不构成候选
+                if (alias.isEmpty() || target.isEmpty() || mapping.isDefault) return@mapNotNull null
+                if (alias.equals(target, ignoreCase = true) || !mapping.enabled) return@mapNotNull null
+                val ownerKey = owner.lowercase()
+                val cardKey = "$ownerKey|${alias.lowercase()}"
+                // 这一家在「这个对外名」下已经有一行了（原生同名）就不再补
+                if (cardKey in present) return@mapNotNull null
+                val upstreamKey = "$ownerKey|${target.lowercase()}"
+                val upstream = byKey[upstreamKey]
+                GatewayRepository.ModelRow(
+                    id = alias,
+                    provider = owner,
+                    providerLabel = PresetRegistry.labelOf(owner),
+                    name = null,
+                    credits = upstream?.credits,
+                    maxInput = upstream?.maxInput,
+                    maxOutput = upstream?.maxOutput,
+                    toolCall = upstream?.toolCall ?: false,
+                    images = upstream?.images ?: false,
+                    reasoning = upstream?.reasoning ?: false,
+                    isDefault = false,
+                    // 启停跟**上游 id** 走（同一条规则）：临时覆盖 > manage > 默认开
+                    enabled = optimistic[upstreamKey] ?: upstream?.enabled ?: true,
+                    official = upstream?.official,
+                    // 上游 id 不在清单里 = 这条别名指向不存在的模型，开关置灰
+                    inCatalog = upstream != null,
+                    upstreamId = target,
+                )
+            }
+            fromSession + extra + aliasRows
         }
-        val present = fromSession
-            .map { "${it.provider.lowercase()}|${wireModelId(it.id, it.provider).lowercase()}" }
-            .toHashSet()
-        val extra = manage
-            .filter { "${it.provider.lowercase()}|${it.id.lowercase()}" !in present }
-            .map { it.toModelRow() }
-        fromSession + extra
+    // ── 每条上游 id 的启用别名（供全局视图隐藏原名卡、单家视图标小字）──
+    // main 把它挂在 ModelRow.aliases 上；dev 的数据层暂未暴露该字段，这里用
+    // 同一份 mappings 在 UI 侧实时算出等价的 map（键 = "家|上游 id"）。判据一样：
+    // 映射一关，别名变空 ⇒ 原名卡在全局视图自动恢复，不是一次性的隐藏标记。
+    val aliasByKey = remember(manageMappings) {
+        manageMappings
+            .filter { !it.isDefault && it.enabled }
+            .filter { mapping ->
+                val alias = mapping.alias.trim()
+                val target = mapping.target.trim()
+                alias.isNotEmpty() && target.isNotEmpty() &&
+                    !alias.equals(target, ignoreCase = true)
+            }
+            .groupBy { "${it.provider?.lowercase()}|${it.target.lowercase()}" }
+            .mapValues { (_, list) -> list.map { it.alias } }
     }
-    // 范围内的行（计数与列表都以此为准，避免「全部 10/48」出现在单家页上）
+    fun aliasesOf(row: GatewayRepository.ModelRow): List<String> = aliasByKey[
+        "${row.provider.lowercase()}|" +
+            (row.upstreamId ?: wireModelId(row.id, row.provider)).lowercase()
+    ].orEmpty()
+    // 两个视图各看一个名字（用户定的口径）：
+    //   · 全局聚合（listScope == null）→ 看**别名**：隐藏已改名的原名行，只留别名卡；
+    //   · 单家视图 → 看**原名**：只留这一家的原名行，别名卡属于聚合视图。
+    // 判据实时算（aliases 由当前 mappings 推出），映射一关原名卡自动恢复。
     val scopeRows = remember(allRows, listScope) {
         val s0 = listScope
-        if (s0 == null) allRows else allRows.filter { it.provider == s0 }
+        if (s0 == null) {
+            allRows.filter { it.upstreamId != null || aliasesOf(it).isEmpty() }
+        } else {
+            allRows.filter { it.provider == s0 && it.upstreamId == null }
+        }
     }
     val enabledCount = scopeRows.count { it.enabled }
 
@@ -696,7 +846,9 @@ fun ModelsPage(
         manage.associate { "${it.provider.lowercase()}|${it.id.lowercase()}" to it.reasoningLevels }
     }
 
-    val filtered = allRows.filter {
+    // 从 scopeRows（而非 allRows）过滤：否则会搜出已被口径隐藏的原名行，
+    // 点了却找不到那张卡（映射关掉后它才在全局视图自动恢复）。
+    val filtered = scopeRows.filter {
         query.isBlank() ||
             it.id.contains(query, ignoreCase = true) ||
             it.providerLabel.contains(query, ignoreCase = true)
@@ -804,6 +956,31 @@ fun ModelsPage(
                 }
             }
             Spacer(Modifier.height(10.dp))
+            // ── 管理视图没拉到 → 必须说出来 ─────────────────────────
+            // 它承载「哪个模型是开着的」这一唯一权威。拉失败时开关只能退回
+            // 「默认开着」，用户会看到「关不掉」—— 根因其实是这份数据没到手。
+            // 静默失败会把基础设施故障伪装成产品故障，所以显式一行、可点重试。
+            val mgErr = manageError
+            if (mgErr != null) {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .background(C.insetBg, RoundedCornerShape(12.dp))
+                        .border(1.dp, C.border, RoundedCornerShape(12.dp))
+                        .clickable { loadManage() }
+                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        "模型启停状态未加载（$mgErr）· 点此重试",
+                        color = C.textMain,
+                        fontSize = 12.sp,
+                        modifier = Modifier.weight(1f),
+                    )
+                    AgateBadge("重试", BadgeTone.BLUE)
+                }
+                Spacer(Modifier.height(8.dp))
+            }
             // 「已启用 / 全部」放在分段控件下面一行：它是**读数**（客户端真会
             // 收到几个），不是筛选器 —— 关掉的模型仍然列在下面（置灰），
             // 所以这里不给第二个分段，避免用户以为是一种新的视图形态。
@@ -901,6 +1078,7 @@ fun ModelsPage(
                                 else listView.pins + key
                             saveListView("hybrid", next)
                         },
+                        aliasByKey = aliasByKey,
                     )
                 }
             } else if (allRows.isEmpty()) {
@@ -927,6 +1105,7 @@ fun ModelsPage(
                             ) else null
                         },
                         onSetReasoning = { provider, modelId, level -> setReasoning(provider, bareId(modelId, provider), level) },
+                        aliasByKey = aliasByKey,
                     )
                     Spacer(Modifier.height(10.dp))
                 }
@@ -1781,6 +1960,8 @@ private fun ProviderModelGroup(
     pins: List<String> = emptyList(),
     /** 切换某一条的前缀暴露。 */
     onToggleEntry: (String, String) -> Unit = { _, _ -> },
+    /** "家|上游 id" → 启用的别名（见 ModelsPage 的 aliasByKey）。 */
+    aliasByKey: Map<String, List<String>> = emptyMap(),
 ) {
     val C = agateColors()
     var expanded by remember(providerId) { mutableStateOf(false) }
@@ -1865,6 +2046,7 @@ private fun ProviderModelGroup(
                     onSetReasoning = { level -> onSetReasoning(m.id, level) },
                     entryOn = if (!hybrid || homePinned) null else ("$providerId/$bare" in pins),
                     onToggleEntry = { onToggleEntry(providerId, bare) },
+                    aliasByKey = aliasByKey,
                 )
                 Box(Modifier.fillMaxWidth().height(1.dp).background(C.border.copy(alpha = 0.4f)))
             }
@@ -1903,6 +2085,7 @@ private fun ProviderModelGroup(
                             onSetReasoning = { level -> onSetReasoning(m.id, level) },
                             entryOn = if (!hybrid || homePinned) null else ("$providerId/$bare" in pins),
                             onToggleEntry = { onToggleEntry(providerId, bare) },
+                            aliasByKey = aliasByKey,
                         )
                     }
                 }
@@ -1932,12 +2115,15 @@ private fun ModelLine(
      */
     entryOn: Boolean? = null,
     onToggleEntry: () -> Unit = {},
+    /** "家|上游 id" → 启用的别名（见 ModelsPage 的 aliasByKey）。 */
+    aliasByKey: Map<String, List<String>> = emptyMap(),
 ) {
     val C = agateColors()
     val scope = rememberCoroutineScope()
-    // 上游裸 id：按本行 provider 剥前缀（魔搭的 id 自带 `组织/`，不能见斜杠就切，
-    // 见 `splitExposedName`）。启停 / 能力位 / 测速都按它定位。
-    val bareId = wireModelId(m.id, m.provider)
+    // 上游裸 id：别名行的 `id` 是对外名，启停/测速/能力位一律按上游 id 定位；
+    // 其余行按本行 provider 剥前缀（魔搭的 id 自带 `组织/`，不能见斜杠就切，
+    // 见 `splitExposedName`）。
+    val bareId = m.upstreamId ?: wireModelId(m.id, m.provider)
     val busy = toggling == "${m.provider}|$bareId"
     // 行内测速：结果与「模型测速」页共用一份（见 ModelTestStore 的说明）
     val testResults by ModelTestStore.results.collectAsState()
@@ -1956,6 +2142,16 @@ private fun ModelLine(
                 color = if (m.enabled) C.textSub else C.textDim,
                 fontSize = 12.sp,
             )
+            // 小字：别名行标「上游 id」（排查这个名字到底打到哪个模型时的唯一
+            // 线索）；原名行标启用的别名（单家视图看原名，留作兜底）。实时算，
+            // 映射关掉就自动消失。
+            val aliases = aliasByKey["${m.provider.lowercase()}|${bareId.lowercase()}"].orEmpty()
+            val note = m.upstreamId?.let { "上游 $it" }
+                ?: aliases.takeIf { it.isNotEmpty() }
+                    ?.let { "别名 ${it.joinToString(" / ")}" }
+            if (note != null) {
+                Text(note, color = C.textDim, fontSize = 9.sp)
+            }
             if (testResult != null) {
                 Text(
                     testResult.summary(),
@@ -2029,9 +2225,22 @@ private fun ModelLine(
         }
         m.credits?.let { CreditsTag(it) }
         Spacer(Modifier.width(6.dp))
+        if (!m.inCatalog) {
+            // 不在目录清单里：开关点了也没用（见 ModelRow.inCatalog），
+            // 与其让它反复弹回，不如直接说清「为什么」。
+            Text(
+                "不在目录清单",
+                color = C.textDim,
+                fontSize = 9.sp,
+                modifier = Modifier
+                    .padding(end = 6.dp)
+                    .border(1.dp, C.border, RoundedCornerShape(6.dp))
+                    .padding(horizontal = 4.dp, vertical = 1.dp),
+            )
+        }
         ModelToggle(
             enabled = m.enabled,
-            busy = busy,
+            busy = busy || !m.inCatalog,
             onToggle = { onToggle(m) },
         )
     }
@@ -2130,6 +2339,8 @@ private fun ModelAggregateCard(
     onOpenCaps: (String, String) -> Unit,
     reasoning: (String, String) -> ReasoningInfo? = { _, _ -> null },
     onSetReasoning: (String, String, String?) -> Unit = { _, _, _ -> },
+    /** "家|上游 id" → 启用的别名（见 ModelsPage 的 aliasByKey）。 */
+    aliasByKey: Map<String, List<String>> = emptyMap(),
 ) {
     val C = agateColors()
     val scope = rememberCoroutineScope()
@@ -2184,24 +2395,35 @@ private fun ModelAggregateCard(
         // ── 各家候选（已启用在前，同组内倍率升序）──
         Spacer(Modifier.height(8.dp))
         ranked.forEachIndexed { i, m ->
-            // 上游裸 id：按本行 provider 剥前缀（魔搭的 id 自带 `组织/`，不能见斜杠
-            // 就切，见 `splitExposedName`）。启停 / 能力位 / 测速都按它定位。
-            val bareId = wireModelId(m.id, m.provider)
+            // 上游裸 id：别名行的 `id` 是对外名，启停/测速一律按上游 id 定位；
+            // 其余行按本行 provider 剥前缀（魔搭 id 自带 `组织/`，不能见斜杠就切，
+            // 见 `splitExposedName`）。
+            val bareId = m.upstreamId ?: wireModelId(m.id, m.provider)
             val busy = toggling == "${m.provider}|$bareId"
             Row(
                 Modifier.fillMaxWidth().padding(vertical = 2.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(
-                    m.providerLabel,
-                    color = when {
-                        !m.enabled -> C.textDim
-                        i == 0 && usable.size > 1 -> C.green
-                        else -> C.textSub
-                    },
-                    fontSize = 12.sp,
-                    modifier = Modifier.weight(1f),
-                )
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        m.providerLabel,
+                        color = when {
+                            !m.enabled -> C.textDim
+                            i == 0 && usable.size > 1 -> C.green
+                            else -> C.textSub
+                        },
+                        fontSize = 12.sp,
+                    )
+                    // 小字：别名行标「上游 id」（排查这个名字到底打到哪个模型时
+                    // 的唯一线索）；原名行标启用的别名（兜底）。实时算。
+                    val aliases = aliasByKey["${m.provider.lowercase()}|${bareId.lowercase()}"].orEmpty()
+                    val note = m.upstreamId?.let { "上游 $it" }
+                        ?: aliases.takeIf { it.isNotEmpty() }
+                            ?.let { "别名 ${it.joinToString(" / ")}" }
+                    if (note != null) {
+                        Text(note, color = C.textDim, fontSize = 9.sp)
+                    }
+                }
                 if (m.official == false) {
                     Text(
                         "桌面端未列",
@@ -2228,12 +2450,24 @@ private fun ModelAggregateCard(
                         }
                         .padding(horizontal = 7.dp, vertical = 3.dp),
                 )
-                reasoning(m.provider, m.id)?.let { info ->
-                    ReasoningChip(info = info, onSet = { level -> onSetReasoning(m.provider, m.id, level) })
+                reasoning(m.provider, bareId)?.let { info ->
+                    ReasoningChip(info = info, onSet = { level -> onSetReasoning(m.provider, bareId, level) })
                 }
                 m.credits?.let { CreditsTag(it) }
                 Spacer(Modifier.width(6.dp))
-                ModelToggle(enabled = m.enabled, busy = busy, onToggle = { onToggle(m) })
+                if (!m.inCatalog) {
+                    // 不在目录清单里：开关点了也没用（见 ModelRow.inCatalog）。
+                    Text(
+                        "不在目录清单",
+                        color = C.textDim,
+                        fontSize = 9.sp,
+                        modifier = Modifier
+                            .padding(end = 6.dp)
+                            .border(1.dp, C.border, RoundedCornerShape(6.dp))
+                            .padding(horizontal = 4.dp, vertical = 1.dp),
+                    )
+                }
+                ModelToggle(enabled = m.enabled, busy = busy || !m.inCatalog, onToggle = { onToggle(m) })
             }
         }
 
@@ -2263,8 +2497,7 @@ private fun ModelAggregateCard(
         ) {
             Text("能力位", color = C.textDim, fontSize = 12.sp, modifier = Modifier.padding(end = 8.dp))
             ranked.forEach { m ->
-                val bare = wireModelId(m.id, m.provider)
-                SmallPill(m.providerLabel, true) { onOpenCaps(m.provider, bare) }
+                SmallPill(m.providerLabel, true) { onOpenCaps(m.provider, m.upstreamId ?: wireModelId(m.id, m.provider)) }
                 Spacer(Modifier.width(6.dp))
             }
         }

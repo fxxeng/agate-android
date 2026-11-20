@@ -97,6 +97,63 @@ pub(super) fn builtin_target(
     })
 }
 
+/// 这一家里「已被生效别名取代」的 `(原生 id, 别名)` 对。
+///
+/// 解析侧映射是「追加一个可用名」：原名照旧能调（见 [`builtin_target`] 第一段）。
+/// 但在清单里两个都列并不是用户要的 —— 建映射的动机是「我这边只叫这个名字」。
+/// 返回的是「该隐去哪条原名」，调用方**只从清单里删掉它**：老客户端 / 老 Key
+/// 白名单里写着的原名照旧打得通。
+///
+/// ── 三条判据（与自定义家 `bindings::renamed_away_targets` 同源）─────
+///   1. 有一条 **enabled** 映射，`target` 是这家的原生 id 且 `alias != target`；
+///   2. `target` 在这家**没被关掉**（关掉的模型本来就不该出现在清单里）；
+///   3. 那条别名在这家**至少能解析出某个上游模型**（[`builtin_target`] 命中）。
+///
+/// 第 3 条**不要求解析回 target 本身**：别名撞上这家另一个原生 id 时（映射更早
+/// 种下、上游后来新增同名模型），解析落到那条原生条目上，此时那个名字仍在清单
+/// 里，隐去原名不会让模型消失；真正要防的只有「别名解析不出任何东西」（target
+/// 被换名 / 下架）—— 那时隐去原名会让模型从清单里彻底消失。
+///
+/// 返回成对而不是只给原名集合：调用方还要回答「这条别名替谁顶了名」。
+pub(super) fn renamed_away_pairs(
+    rules: &model_rules::ModelRules,
+    kind: ProviderKind,
+    manifest: &[Value],
+) -> Vec<(String, String)> {
+    let provider = kind_id(kind);
+    let mut out: Vec<(String, String)> = Vec::new();
+    for mapping in rules.mappings.iter() {
+        if !mapping.enabled || mapping.alias.eq_ignore_ascii_case(&mapping.target) {
+            continue;
+        }
+        if !mapping
+            .provider
+            .as_deref()
+            .map_or(true, |owner| owner.eq_ignore_ascii_case(provider))
+        {
+            continue;
+        }
+        // `target` 必须是这家的原生 id（不是别家的、也不是另一个别名）
+        if !manifest
+            .iter()
+            .any(|item| model_id(item).eq_ignore_ascii_case(&mapping.target))
+        {
+            continue;
+        }
+        // target 自己也被关掉就不必谈「改名」：它本来就不该在清单里
+        if !rules.default_enabled(provider, &mapping.target) {
+            continue;
+        }
+        // 别名必须至少能解析出某个上游模型 —— 不要求是 target 本身（撞名时
+        // 那个名字仍是清单里的一条，隐去原名不会让模型消失）。
+        if builtin_target(rules, kind, manifest, &mapping.alias).is_none() {
+            continue;
+        }
+        out.push((mapping.target.clone(), mapping.alias.clone()));
+    }
+    out
+}
+
 /// 原始能力查询不应用开关，供管理 API 展开旧版全局规则。
 pub fn providers_for_model(model: &str) -> Vec<String> {
     let model = model.trim();
@@ -250,4 +307,134 @@ pub fn default_model_catalog() -> Vec<Value> {
 
 pub fn default_model_usable(model: &str) -> bool {
     entry_id_in_manifest(&default_model_catalog(), model).is_some()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::server::core::model_rules::ModelRules;
+
+    /// 构造一份只含 mappings 的规则（不碰全局 config）
+    fn rules_with(mappings: Value) -> ModelRules {
+        let raw = serde_json::json!({ "modelRules": { "mappings": mappings } })
+            .as_object()
+            .cloned()
+            .unwrap_or_default();
+        ModelRules::from_raw(&raw)
+    }
+
+    /// 带 disabled 段的规则（钉住「关掉的模型别名也失效」）
+    fn rules_with_disabled(mappings: Value, disabled: Value) -> ModelRules {
+        let raw = serde_json::json!({
+            "modelRules": { "mappings": mappings, "disabled": disabled }
+        })
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+        ModelRules::from_raw(&raw)
+    }
+
+    /// 上一轮修复：关掉的模型不该经别名被广告 / 派单（两条路同一判据）
+    #[test]
+    fn alias_of_a_disabled_target_does_not_resolve() {
+        let rules = rules_with_disabled(
+            serde_json::json!([
+                { "alias": "kimi-k8", "target": "sn-kimi-k8", "provider": "raccoon",
+                  "enabled": true },
+                { "alias": "glm-5.3", "target": "sn-glm-5-3", "provider": "raccoon",
+                  "enabled": true }
+            ]),
+            serde_json::json!([{ "provider": "raccoon", "id": "sn-kimi-k8" }]),
+        );
+        let manifest = vec![
+            serde_json::json!({ "id": "sn-kimi-k8" }),
+            serde_json::json!({ "id": "sn-glm-5-3" }),
+        ];
+        assert!(
+            builtin_target(&rules, ProviderKind::Raccoon, &manifest, "kimi-k8").is_none(),
+            "模型已关，别名不该还能解析出上游 id"
+        );
+        assert!(
+            builtin_target(&rules, ProviderKind::Raccoon, &manifest, "sn-kimi-k8").is_none(),
+            "原名同样不可用：两条路必须同一判据"
+        );
+        assert_eq!(
+            builtin_target(&rules, ProviderKind::Raccoon, &manifest, "glm-5.3")
+                .map(|target| target.model),
+            Some("sn-glm-5-3".to_string()),
+            "没关的那条不受影响"
+        );
+    }
+
+    /// 生效别名 → 原名进「让位」集合（清单出口据它把原名从 /v1/models 拿掉）
+    #[test]
+    fn enabled_alias_marks_the_original_as_renamed_away() {
+        let rules = rules_with(serde_json::json!([
+            { "alias": "glm-5.3", "target": "sn-glm-5-3", "provider": "raccoon",
+              "enabled": true }
+        ]));
+        let manifest = vec![serde_json::json!({ "id": "sn-glm-5-3" })];
+        let pairs = renamed_away_pairs(&rules, ProviderKind::Raccoon, &manifest);
+        assert_eq!(
+            pairs,
+            vec![("sn-glm-5-3".to_string(), "glm-5.3".to_string())]
+        );
+    }
+
+    /// 关掉的映射不让位（「关掉映射才显示原名」）
+    #[test]
+    fn disabled_alias_does_not_rename_away_the_original() {
+        let rules = rules_with(serde_json::json!([
+            { "alias": "glm-5.3", "target": "sn-glm-5-3", "provider": "raccoon",
+              "enabled": false }
+        ]));
+        let manifest = vec![serde_json::json!({ "id": "sn-glm-5-3" })];
+        assert!(renamed_away_pairs(&rules, ProviderKind::Raccoon, &manifest).is_empty());
+    }
+
+    /// 别家的映射不给这一家改名（provider 归属）
+    #[test]
+    fn other_providers_alias_does_not_rename_away_this_manifest() {
+        let rules = rules_with(serde_json::json!([
+            { "alias": "glm-5.3", "target": "sn-glm-5-3", "provider": "workbuddy",
+              "enabled": true }
+        ]));
+        let manifest = vec![serde_json::json!({ "id": "sn-glm-5-3" })];
+        assert!(renamed_away_pairs(&rules, ProviderKind::Raccoon, &manifest).is_empty());
+    }
+
+    /// 别名撞上本家另一个原生 id 时仍然让位（不再两条并列）
+    #[test]
+    fn alias_colliding_with_a_native_id_still_renames_the_original() {
+        let rules = rules_with(serde_json::json!([
+            { "alias": "glm-5.3", "target": "sn-glm-5-3", "provider": "raccoon",
+              "enabled": true }
+        ]));
+        let manifest = vec![
+            serde_json::json!({ "id": "glm-5.3", "name": "GLM-5.3" }),
+            serde_json::json!({ "id": "sn-glm-5-3", "name": "GLM-5.3 (Sensenova)" }),
+        ];
+        assert_eq!(
+            renamed_away_pairs(&rules, ProviderKind::Raccoon, &manifest),
+            vec![("sn-glm-5-3".to_string(), "glm-5.3".to_string())],
+            "别名与原生 id 撞名时也该收敛成一条"
+        );
+    }
+
+    /// target 被关掉时不必「改名」：它本来就不该出现在清单里
+    #[test]
+    fn disabled_target_is_not_renamed_away() {
+        let rules = rules_with_disabled(
+            serde_json::json!([
+                { "alias": "glm-5.3", "target": "sn-glm-5-3", "provider": "raccoon",
+                  "enabled": true }
+            ]),
+            serde_json::json!([{ "provider": "raccoon", "id": "sn-glm-5-3" }]),
+        );
+        let manifest = vec![serde_json::json!({ "id": "sn-glm-5-3", "name": "GLM-5.3" })];
+        assert!(
+            renamed_away_pairs(&rules, ProviderKind::Raccoon, &manifest).is_empty(),
+            "关掉的 target 不该进让位集合"
+        );
+    }
 }

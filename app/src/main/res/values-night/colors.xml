@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 系统夜间 + 「跟随系统」档：启动窗口取深色底，与 Color.kt DarkBg / DarkChrome 一致 -->
+    <color name="agate_bg">#0F172A</color>
+    <color name="agate_chrome">#1D283A</color>
+</resources>

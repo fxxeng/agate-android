@@ -622,7 +622,7 @@ private fun AssistantSettingsSheet(
     Box(
         Modifier
             .fillMaxSize()
-            .background(Color(0x99000000))
+            .background(C.scrim)
             .clickable(onClick = onDismiss),
         contentAlignment = Alignment.BottomCenter,
     ) {
@@ -631,6 +631,7 @@ private fun AssistantSettingsSheet(
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp))
                 .background(C.cardBg)
+                .border(1.dp, C.border, RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp))
                 .clickable(enabled = false, onClick = {})
                 .padding(16.dp),
         ) {

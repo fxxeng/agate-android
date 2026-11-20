@@ -55,13 +55,36 @@ pub fn append_models_response(
         .iter()
         .map(|item| model_id(item).to_lowercase())
         .collect();
+    let restricts = scope.is_some_and(KeyScope::restricts_models);
     for (provider, models) in catalog_providers(store) {
         if !key_scope::allows_provider(scope, &provider) {
             continue;
         }
+        // 这家的允许集合：勾了哪些名字 + 它们的同义名（只在真的限制了模型时算）
+        let allowed: Option<std::collections::HashSet<String>> = if restricts {
+            let record = custom_providers::get(&provider);
+            let mut set = std::collections::HashSet::new();
+            for name in scope.map(KeyScope::allowed_model_names).unwrap_or_default() {
+                set.insert(name.clone());
+                for synonym in record
+                    .as_ref()
+                    .map(|record| custom_providers::synonymous_models(record, &name))
+                    .unwrap_or_default()
+                {
+                    set.insert(synonym.to_lowercase());
+                }
+            }
+            Some(set)
+        } else {
+            None
+        };
         for model in models {
             let id = model_id(&model);
-            if key_scope::allows_model(scope, &id) && claimed.insert(id.to_lowercase()) {
+            let permitted = match &allowed {
+                None => true,
+                Some(set) => set.contains(&id.to_lowercase()),
+            };
+            if permitted && claimed.insert(id.to_lowercase()) {
                 data.push(list_item(&model, &provider));
             }
         }
