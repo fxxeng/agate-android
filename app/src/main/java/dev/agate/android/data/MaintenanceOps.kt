@@ -139,9 +139,15 @@ object MaintenanceOps {
     fun <T> parseReply(reply: CoreTransport.Reply, block: (JSONObject) -> T?): Outcome<T> {
         val ok = reply as? CoreTransport.Reply.Ok
             ?: return Outcome.Err((reply as? CoreTransport.Reply.Down)?.message ?: "链路不可达")
-        if (ok.status < 200 || ok.status >= 300) return Outcome.Err("HTTP ${ok.status}")
         val obj = runCatching { JSONObject(ok.text) }.getOrNull()
-            ?: return Outcome.Err("响应不是合法 JSON")
+        // 管理 API 的错误信封是「真实 HTTP 状态码 + body {success:false,error}」，
+        // 文案（如「未知的维护任务」）比 `HTTP 400` 有用得多：非 2xx 时也先读 body，
+        // 只有读不到才回落状态码。body 不是 JSON 的场合同样回落到 HTTP 状态。
+        if (ok.status < 200 || ok.status >= 300) {
+            val message = obj?.optString("error").orEmpty().ifBlank { "HTTP ${ok.status}" }
+            return Outcome.Err(message)
+        }
+        if (obj == null) return Outcome.Err("响应不是合法 JSON")
         if (!obj.optBoolean("success", false)) {
             return Outcome.Err(obj.optString("error").ifBlank { "请求失败" })
         }
