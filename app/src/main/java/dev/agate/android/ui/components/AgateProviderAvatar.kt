@@ -42,6 +42,32 @@ object ProviderIcons {
         "officeace" to R.drawable.provider_officeace,
         "orcaterm" to R.drawable.provider_orcaterm,
         "cline" to R.drawable.provider_cline,
+        // ── R63 批3 移植家（对齐 main 的 logo 表）──────────────────
+        // 智谱清言：上游网页插件包 assets/chatglm.png（256×256）。
+        // 归 Agent/Web 任一都走这条映射：分组只决定出现在哪一段，不改变身份。
+        "chatglm" to R.drawable.provider_chatglm,
+        // ModelScope（魔搭）：国内/国际共用一张，normalize() 会把
+        // modelscope-intl 折成 modelscope，故只登记一条。
+        "modelscope" to R.drawable.provider_modelscope,
+        // LobsterAI（网易有道「有道龙虾」）：上游 ui/assets/providers/lobsterai.png。
+        "lobsterai" to R.drawable.provider_lobsterai,
+        // AtomCode（AtomGit）：上游 ui/assets/providers/atomcode.png，单一站点。
+        "atomcode" to R.drawable.provider_atomcode,
+        // DeepSeek 网页版：上游网页提供商插件包 assets/deepseek-web.png。
+        "deepseek-web" to R.drawable.provider_deepseek_web,
+        // 豆包工作：上游 beta 桌面项目 desktop-tauri/ui/assets/providers/doubaowork.png。
+        "doubaowork" to R.drawable.provider_doubaowork,
+        // Tabbit 两家共用一个产品记号，normalize() 把 tabbit-intl 折成 tabbit。
+        "tabbit" to R.drawable.provider_tabbit,
+        // Kiro：上游只发 SVG，这里转成 VectorDrawable（res/drawable/provider_kiro.xml），
+        // 字段名与别家 PNG 一样，调用方不区分。
+        "kiro" to R.drawable.provider_kiro,
+        // AStudio（科大讯飞 Astron Studio）：上游 desktop-tauri/ui/assets/providers/astudio.png。
+        "astudio" to R.drawable.provider_astudio,
+        // QuWork 1.6.0：上游 assets/quwork.png，单一站点。
+        "quwork" to R.drawable.provider_quwork,
+        // 灵犀（WPS）：上游 assets/lingxi.png。
+        "lingxi" to R.drawable.provider_lingxi,
     )
 
     /**

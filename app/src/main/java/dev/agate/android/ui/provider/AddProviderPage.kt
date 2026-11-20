@@ -652,7 +652,9 @@ private fun ProviderPickerSheet(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
-                    "选择 AGENT",
+                    // 标题跟随分段：Web 段打开时必须显示「选择 WEB」，
+                    // 否则用户会以为点错了段（列表内容其实是 Web 的）。
+                    if (category == ProviderCategory.WEB) "选择 WEB" else "选择 AGENT",
                     color = C.textMain,
                     fontSize = 16.sp,
                     fontWeight = FontWeight.Bold,
