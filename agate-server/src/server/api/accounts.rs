@@ -365,7 +365,7 @@ pub async fn dispatch(
 
     // ② 固定子路径（Node 版把它们放在 `<id>` 通配之前的原因）
     match (method.as_str(), rest) {
-        ("GET", "export") => return export_accounts(&state),
+        ("GET", "export") => return export_accounts(&state, query),
         ("POST", "import") => return import_accounts(&state, body).await,
         ("POST", "current") => return set_current(&state, body).await,
         ("POST", "batch") => return batch_accounts(&state, body).await,
@@ -1384,8 +1384,31 @@ pub async fn add_account(state: &ServerState, body: &Bytes) -> Response {
 
 // ─── GET /api/accounts/export ───────────────────────────────
 
-pub fn export_accounts(state: &ServerState) -> Response {
-    let data = crate::server::core::account_transfer::export_accounts(state.store());
+pub fn export_accounts(state: &ServerState, query: &str) -> Response {
+    // 细粒度导出：?id=<账号 id> 或 ?provider=<提供商>；都不给 = 全量。
+    // 指定了选择器却没匹配到账号要明确报错，避免「导出成功但文件是空的」。
+    let id = query_param(query, "id");
+    let provider = query_param(query, "provider");
+    let data = crate::server::core::account_transfer::export_selected(
+        state.store(),
+        id.as_deref(),
+        provider.as_deref(),
+    );
+    if (id.is_some() || provider.is_some())
+        && data
+            .get("accounts")
+            .and_then(Value::as_array)
+            .is_some_and(|items| items.is_empty())
+    {
+        return management_error(
+            404,
+            format!(
+                "没有找到匹配的账号（id={}, provider={}）",
+                id.as_deref().unwrap_or(""),
+                provider.as_deref().unwrap_or("")
+            ),
+        );
+    }
     let count = data
         .get("accounts")
         .and_then(Value::as_array)

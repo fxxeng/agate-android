@@ -116,11 +116,28 @@ fn to_export_record(record: &StoredAccount) -> Value {
 /// 两把锁绝不嵌套（与导入端「先并定义、后进账号锁」同一纪律）。
 /// 定义不含任何凭证 —— apiKey 是账号的属性，已随账号记录导出。
 pub fn export_accounts(store: &AccountStore) -> Value {
+    export_selected(store, None, None)
+}
+
+/// 按 id 或 provider 细粒度导出（单账号 / 单分组分享，避免全量导出泄露全部 token）。
+///
+/// 两个选择器都给时以 `id` 为准（与上游 `ExportSelection` 二选一的口径一致）；
+/// 都不给就等于 [`export_accounts`] 的全量导出。自定义提供商定义随任何一次导出
+/// 一起带上 —— 单账号也可能是自定义家的，缺定义导入端外键就悬空。
+/// 定义在账号锁外读取，两把锁不嵌套（与全量导出、导入端同一纪律）。
+pub fn export_selected(store: &AccountStore, id: Option<&str>, provider: Option<&str>) -> Value {
     let accounts = store.with_lock(|guard| {
         let state = store.load_locked(guard);
         state
             .accounts
             .iter()
+            .filter(|record| match id {
+                Some(id) => record.id() == id,
+                None => match provider {
+                    Some(provider) => record.provider() == provider,
+                    None => true,
+                },
+            })
             .map(to_export_record)
             .collect::<Vec<_>>()
     });
