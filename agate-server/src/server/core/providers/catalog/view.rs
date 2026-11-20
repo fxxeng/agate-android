@@ -715,10 +715,14 @@ mod tests {
             mapping_issue(&rules, "cline-free", &m, target, true, ok),
             None
         );
-        // 开关关掉
-        let ok2 = mapping_effective(&rules, kind_from_id("cline-free"), &m, "my-alias");
+        // 开关关掉：effective 随之为 false，issue 报 mapping-off
+        let off_rules = rules_with(json!([
+            { "alias": "my-alias", "target": target, "provider": "cline-free", "enabled": false }
+        ]));
+        let ok2 = mapping_effective(&off_rules, kind_from_id("cline-free"), &m, "my-alias");
+        assert!(!ok2, "关掉的别名不该生效");
         assert_eq!(
-            mapping_issue(&rules, "cline-free", &m, target, false, ok2),
+            mapping_issue(&off_rules, "cline-free", &m, target, false, ok2),
             Some("mapping-off")
         );
         // 目标不在清单
