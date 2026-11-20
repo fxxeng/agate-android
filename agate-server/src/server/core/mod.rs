@@ -94,6 +94,9 @@ pub mod limiter;
 pub mod login;
 pub mod login_listener;
 pub mod loopback;
+/// 维护任务执行台账（凭证维护 / 模型目录更新）：记录每次执行与逐条结果，
+/// 供维护记录页查询与重试。执行仍复用 credential_maintenance / providers::adapter。
+pub mod maintenance;
 pub mod model_meta;
 pub mod model_rules;
 pub mod models;

@@ -610,6 +610,10 @@ impl ServerState {
         // 下面日志裁剪天数与旧文件候选目录才不会用错值。
         let snapshot = config::init(db.clone());
         core::task_state::install(db.clone());
+        // 维护任务执行台账：与 task_state 的排期快照分工不同，这里保存逐次执行的
+        // 历史与逐条结果（维护记录页的数据源）。装库句柄即可，记账点在
+        // core::maintenance::{execute, launch, retry}。
+        core::maintenance::storage::install(db.clone());
         // 每账号的余额查询记录（余额不足跳过 / 自动禁用的底座）：装库句柄时
         // 顺带做旧 kv 快照的一次性迁移与内存事实表的装载（见 usage_records 模块头）。
         core::usage_records::install(db.clone());

@@ -324,7 +324,10 @@ pub fn is_reserved(key: &str) -> bool {
 /// 之间的崩溃窗口，并允许从账号结果快照重建未正常关闭批次的中断摘要。
 /// v19 持久化 AutoCheckin 的 schedule 归属与摘要投影完成状态，覆盖顶层/条目级
 /// `lastResult` 写入之间的崩溃窗口；v20 增加 uncertain 对账证据与独立解决标记；v21 增加对账历史幂等投影标记。
-pub const SCHEMA_VERSION: i64 = 21;
+/// v22 增加维护任务执行台账（`maintenance_runs` / `maintenance_items`）：凭证维护与
+/// 模型目录更新共用，与 `backgroundTaskState` 的「最近一次排期快照」分工不同 ——
+/// 台账保存逐次执行的历史与逐条结果，供维护记录页查询/重试。
+pub const SCHEMA_VERSION: i64 = 22;
 
 /// 版本 1 的全部表与索引：改造前所有 JSON / JSONL 文件的对应形态。
 ///
@@ -942,6 +945,49 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_checkin_records_reconciliation_evidence
   ON checkin_records(reconciliation_evidence_id) WHERE reconciliation_evidence_id IS NOT NULL;
 ";
 
+/// 版本 22：维护任务执行台账。
+///
+/// `maintenance_runs` 一次执行一行，`maintenance_items` 逐账号/逐家结果一行；
+/// 后者通过 `run_id` 外键级联删除，与上游同形。`status='running'` 的行由
+/// Recorder 心跳推进 `heartbeat_at`，超时未 heartbeat 的在读取时收敛为
+/// `interrupted`（进程被杀的兜底，避免「执行中」永久卡住）。两张表都不引用
+/// accounts：账号删除后执行证据仍保留，供追溯。
+const V22_SCHEMA: &str = "
+CREATE TABLE IF NOT EXISTS maintenance_runs (
+  id TEXT PRIMARY KEY,
+  task_id TEXT NOT NULL,
+  source TEXT NOT NULL,
+  retry_of TEXT,
+  started_at INTEGER NOT NULL,
+  heartbeat_at INTEGER NOT NULL,
+  finished_at INTEGER,
+  duration_ms INTEGER,
+  status TEXT NOT NULL,
+  refreshed INTEGER NOT NULL DEFAULT 0,
+  skipped INTEGER NOT NULL DEFAULT 0,
+  failed INTEGER NOT NULL DEFAULT 0,
+  total INTEGER NOT NULL DEFAULT 0,
+  error TEXT,
+  metadata TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_maintenance_runs_time
+  ON maintenance_runs(started_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_maintenance_runs_task
+  ON maintenance_runs(task_id, started_at DESC);
+CREATE TABLE IF NOT EXISTS maintenance_items (
+  run_id TEXT NOT NULL REFERENCES maintenance_runs(id) ON DELETE CASCADE,
+  position INTEGER NOT NULL,
+  provider TEXT NOT NULL,
+  account_id TEXT,
+  account_name TEXT,
+  status TEXT NOT NULL,
+  data TEXT NOT NULL,
+  PRIMARY KEY (run_id, position)
+);
+CREATE INDEX IF NOT EXISTS idx_maintenance_items_account
+  ON maintenance_items(account_id, run_id);
+";
+
 /// 把库升到 [`SCHEMA_VERSION`]（幂等：已是最新版时什么都不做）。
 ///
 /// **库版本高于本程序时返回 `Err` 拒绝打开**（v14 起有意反转的一条既有决定，
@@ -1107,6 +1153,7 @@ fn apply_version(
         19 => conn.execute_batch(V19_SCHEMA),
         20 => conn.execute_batch(V20_SCHEMA),
         21 => conn.execute_batch(V21_SCHEMA),
+        22 => conn.execute_batch(V22_SCHEMA),
         _ => Ok(()),
     }
 }

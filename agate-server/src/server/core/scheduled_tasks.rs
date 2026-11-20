@@ -46,7 +46,7 @@ use serde_json::{json, Value};
 use crate::server::config;
 use crate::server::config::IntervalTaskPatch;
 use crate::server::core::account_store::AccountStore;
-use crate::server::core::task_state::{self, Claim, TaskState};
+use crate::server::core::task_state::{self, TaskState};
 use crate::server::core::update::UpdateManager;
 use crate::server::logging;
 
@@ -316,22 +316,6 @@ pub async fn run_now(
     run_backend(store, update, task, true).await
 }
 
-/// 「部分账号失败」算不算这一轮失败（`RunGuard::finish` 的 `success`）。
-///
-/// ── 为什么不算 ──────────────────────────────────────────────
-/// `success = false` 会按失败次数做指数退避（最长 24 小时，见 `core::task_state`
-/// 的 `RunGuard::finish`）。而后端任务的失败常常是**按账号**的：一个账号的登录态
-/// 被上游作废（refreshToken 废了、接口稳定 401）就足以让每一轮都判失败一次，
-/// 整条任务于是被推到几小时后再跑，其余账号跟着一起变旧。失败本身已经如实进了
-/// 结果与日志，不需要再把整轮一起罚掉。
-///
-/// ── 为什么「一个都没成功」仍算失败 ───────────────────────────
-/// 全失败通常意味着更上游的问题（断网、出口被挡、上游整体故障）：这时保留退避，
-/// 别按原间隔反复打上游。判据因此是「有失败 **且** 一个都没成功」。
-fn round_succeeded(succeeded: usize, failed: usize) -> bool {
-    failed == 0 || succeeded > 0
-}
-
 async fn run_backend(
     store: &AccountStore,
     update: &UpdateManager,
@@ -360,94 +344,21 @@ async fn run_backend(
             },
         );
     }
-    // 手动执行越不越过失败冷却：按**冷却记的是什么**分两类（见 `ManualBackoff`）。
-    //   · 记「上一轮为什么没成功」的（模型目录刷新、凭证维护）——
-    //     用户按按钮往往正是刚把那个原因修好（换了账号、重新登录、把坏账号删了），
-    //     继续拿旧结论挡着只会让按钮看起来是坏的；
-    //   · 记「上游配额桶什么时候恢复」的（检查更新）—— 提前打一次只会再吃一次
-    //     403 并把恢复时刻重新顶到未来，如实告诉用户还要等多久更有用。
-    let backoff = match task.id {
-        TASK_MODEL_REFRESH | TASK_CREDENTIAL_MAINTENANCE => task_state::ManualBackoff::Bypass,
-        _ => task_state::ManualBackoff::Respect,
-    };
-    let guard = match task_state::claim(task.id, interval_ms(task), manual, backoff, 1_000)? {
-        Claim::Acquired(guard) => guard,
-        Claim::Deferred(state) => return Err(state.waiting_message()),
-    };
-    let (summary, success) = match task.id {
-        TASK_CREDENTIAL_MAINTENANCE => {
-            let results =
-                crate::server::core::credential_maintenance::refresh_expiring_accounts(store).await;
-            let (refreshed, skipped, failed) =
-                crate::server::core::credential_maintenance::summarize(&results);
-            let summary = format!("刷新 {refreshed} 个，跳过 {skipped} 个，失败 {failed} 个");
-            if refreshed > 0 || failed > 0 {
-                logging::log_with_level(
-                    "[Maintenance]",
-                    &format!("凭证自动维护：{summary}"),
-                    if failed > 0 { "error" } else { "info" },
-                );
-            }
-            (summary, round_succeeded(refreshed, failed))
-        }
-        TASK_MODEL_REFRESH => {
-            let results = if manual {
-                crate::server::core::providers::adapter::refresh_implemented_forced(
-                    store,
-                    &serde_json::Map::new(),
-                    None,
-                )
-                .await
-            } else {
-                crate::server::core::providers::adapter::refresh_implemented(store).await
-            };
-            let count = |status: &str| {
-                results
-                    .iter()
-                    .filter(|item| item["status"] == status)
-                    .count()
-            };
-            let (refreshed, skipped, failed) =
-                (count("refreshed"), count("skipped"), count("failed"));
-            // 全跳过的轮次（各家的间隔没到 / 没有可用登录态）在自动路径上是常态：
-            // 被动刷新与手动刷新会先把间隔推走，这时「成功 0 家」看着像失败，
-            // 所以这一档单独给一句话说清「本轮无事可做」。
-            let summary = if refreshed == 0 && failed == 0 {
-                format!("本轮无需刷新（跳过 {skipped} 家：未到间隔或没有可用登录态）")
-            } else {
-                format!("成功 {refreshed} 家，跳过 {skipped} 家，失败 {failed} 家")
-            };
-            // models.dev 元数据搭同一条任务（它回答的是同一件事的另一半：清单与
-            // 元数据一起才是一份能用的模型表），但**排期独立** —— 各家的目录
-            // 缓存 TTL 与它无关，一方被跳过不该连带另一方也不刷。
-            //
-            // 它的失败**不改变本任务的成败**：元数据是补充信息，为它把整轮标成
-            // 失败会连带触发凭证那套失败冷却，进而拖住真正重要的模型清单刷新；
-            // 失败原因如实写进摘要（用户看得到），这是「不静默」与「不误伤」的
-            // 折中。
-            let metadata =
-                crate::server::core::model_meta::refresh(manual, interval_ms(task)).await;
-            let metadata_note = match metadata.get("status").and_then(Value::as_str) {
-                Some("refreshed") => format!(
-                    "；models.dev 元数据已更新 {} 条",
-                    metadata.get("count").and_then(Value::as_u64).unwrap_or(0)
-                ),
-                Some("failed") => format!(
-                    "；models.dev 元数据刷新失败（{}）",
-                    metadata
-                        .get("message")
-                        .and_then(Value::as_str)
-                        .unwrap_or("未知原因")
-                ),
-                // skipped（未到间隔 / 设置里关了）不写进摘要：那是常态，写进去只是噪音
-                _ => String::new(),
-            };
-            (format!("{summary}{metadata_note}"), failed == 0)
-        }
-        _ => return Err("未知后端任务".to_string()),
-    };
-    guard.finish(success, summary.clone(), None, 0, interval_ms(task))?;
-    Ok(summary)
+    // 凭证维护 / 模型目录更新：转到维护记录层统一执行。
+    //
+    // 这两条任务的刷新动作本来就在这里（下方原分支），现在把它们连同「逐条结果
+    // 落库」一起交给 `core::maintenance::execute` —— 它内部做 claim/guard（与这里
+    // 同一套 task_state，不会双重占位）、调同一个刷新链、再写维护台账。于是自动
+    // 排期与「立即执行」按钮都留下可查的执行记录，且执行逻辑只有一处（唯一入口）。
+    // 放在 claim 之前，避免这里先占了位、maintenance 再 claim 时被判「执行中」。
+    if matches!(task.id, TASK_CREDENTIAL_MAINTENANCE | TASK_MODEL_REFRESH) {
+        let request = crate::server::core::maintenance::Request::full(task.id, manual);
+        return crate::server::core::maintenance::execute(store, request)
+            .await
+            .map(|detail| crate::server::core::maintenance::summary(&detail));
+    }
+    // 其余后端任务只有「版本检查」，已在函数开头单独处理；到这里只可能是未知任务。
+    Err("未知后端任务".to_string())
 }
 
 /// 调度循环：把后端任务按各自配置的间隔重复执行（由 `ServerState::bootstrap`

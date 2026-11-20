@@ -917,6 +917,10 @@ pub fn panel_router(state: ServerState) -> Router {
             "/api/scheduled-tasks/{*rest}",
             any(api::scheduled_tasks::entry),
         )
+        // 维护记录（凭证维护 / 模型目录更新的逐次执行历史）：概览是 GET，
+        // 详情/手动跑/重试挂在通配尾段下由 `api::maintenance::entry` 分发。
+        .route("/api/maintenance", get(api::maintenance::overview))
+        .route("/api/maintenance/{*rest}", any(api::maintenance::entry))
         // ── 软件更新（对照 server.mjs 749-773 行）──
         // Node 是 `path.startsWith('/api/update/')` 的前缀判定：命中后逐条比对，
         // 都不匹配则落到全局 404（不带 success 信封）。用 {*rest} 通配入口 +

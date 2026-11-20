@@ -106,6 +106,9 @@ pub mod import_sources;
 pub mod keepalive;
 pub mod keys_api;
 pub mod logs_api;
+/// 维护任务执行记录（概览 / 详情 / 手动跑 / 重试）：GET /api/maintenance 与
+/// /api/maintenance/{*rest}，见该文件模块头。
+pub mod maintenance;
 pub mod model_access;
 pub mod model_manage;
 // models.dev 模型元数据（开关 / 状态 / 立即刷新）：与「逐家上游目录」的
