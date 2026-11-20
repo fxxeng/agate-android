@@ -715,6 +715,13 @@ pub fn panel_router(state: ServerState) -> Router {
             "/api/developer-role-compat",
             get(api::role_compat::get_role_compat).put(api::role_compat::put_role_compat),
         )
+        // 与 developer-role-compat 同形：仅 Codex 的 Responses 请求补 phase 阶段
+        // 标记，让客户端折叠思考/工具过程。默认关，改完下一个请求立即生效。
+        .route(
+            "/api/reasoning-collapse",
+            get(api::reasoning_collapse::get_reasoning_collapse)
+                .put(api::reasoning_collapse::put_reasoning_collapse),
+        )
         // ── Cline 伪装头的逐键覆盖 ──
         // 与 /api/sanitize 同形（GET 读 / PUT 写，响应体就是新状态），挂
         // protected：头集合决定出站请求「长得像不像官方客户端」，敏感度同级。

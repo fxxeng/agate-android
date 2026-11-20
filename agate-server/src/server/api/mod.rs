@@ -122,6 +122,8 @@ pub mod pipeline;
 pub mod prompt;
 pub mod prompt_rules;
 pub mod protocol;
+/// 第三方回答完自动折叠过程开关（GET/PUT /api/reasoning-collapse）。
+pub mod reasoning_collapse;
 pub mod proxies;
 pub mod qoder_umid;
 pub mod queue_api;

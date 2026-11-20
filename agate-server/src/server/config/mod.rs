@@ -186,6 +186,9 @@ pub struct RuntimeConfig {
     /// （改完开关下一个请求就生效，不重启进程），解析一次存下来最省事。
     /// 语义与默认值见 `KEY_DEVELOPER_ROLE_COMPAT`。
     developer_role_compat: bool,
+    /// 第三方模型回答完自动折叠过程开关（默认关，见
+    /// `KEY_THIRD_PARTY_REASONING_COLLAPSE`）。协议重建层每次请求读一次。
+    third_party_reasoning_collapse: bool,
     /// **Cline 转发头的逐键覆盖**（设置页「Cline 伪装头」）。
     ///
     /// 存的只是**用户改过的键**（覆盖表），默认值硬编码在
@@ -344,6 +347,11 @@ impl RuntimeConfig {
     /// 开发者角色兼容是否开启（转发层每次发送前判一次，见字段说明）
     pub fn developer_role_compat(&self) -> bool {
         self.developer_role_compat
+    }
+
+    /// 第三方回答完自动折叠过程是否开启（协议重建层每次请求判一次）。
+    pub fn third_party_reasoning_collapse(&self) -> bool {
+        self.third_party_reasoning_collapse
     }
 
     /// 网关面（`/v1/*`）跨域访问是否开启（CORS 中间件逐请求判一次，见字段说明）
@@ -612,6 +620,11 @@ fn build(raw: Map<String, Value>) -> RuntimeConfig {
             .get(KEY_DEVELOPER_ROLE_COMPAT)
             .and_then(Value::as_bool)
             .unwrap_or(true),
+        // 默认关：只给严格识别为 Codex 的 Responses 请求补 phase 标记。
+        third_party_reasoning_collapse: raw
+            .get(KEY_THIRD_PARTY_REASONING_COLLAPSE)
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
         // Cline 伪装头覆盖表：只收 string → string 的项（手改库写出数字/布尔
         // 值的项直接忽略 —— 头值只会是文本），缺失 = 全默认
         cline_upstream_headers: cline_headers_from(&raw),
@@ -1913,6 +1926,16 @@ pub fn set_developer_role_compat(enabled: bool) -> bool {
             .raw
             .insert(KEY_DEVELOPER_ROLE_COMPAT.to_string(), Value::Bool(enabled));
         config.developer_role_compat = enabled;
+    })
+}
+
+/// 写入第三方回答完自动折叠过程开关（与 `set_developer_role_compat` 同模式）。
+pub fn set_third_party_reasoning_collapse(enabled: bool) -> bool {
+    update(|config| {
+        config
+            .raw
+            .insert(KEY_THIRD_PARTY_REASONING_COLLAPSE.to_string(), Value::Bool(enabled));
+        config.third_party_reasoning_collapse = enabled;
     })
 }
 

@@ -158,6 +158,10 @@ pub async fn responses_endpoint(
     let started_at = logging::now_ms();
     // 请求来源客户端（UA 识别，见 `core::client`）：早失败路径与收尾记账共用
     let client = crate::server::core::client::classify(&pipeline::user_agent_of(&headers));
+    // 协议兼容只看严格客户端识别（不跟随报表规则/来源声明）：仅 Codex 请求且
+    // 开关开启时给助手消息补 phase 阶段标记。
+    let reasoning_collapse = client == crate::server::core::client::CLIENT_CODEX
+        && crate::server::config::current().third_party_reasoning_collapse();
     let path = "/v1/responses";
     let raw = match parse_object(&state, started_at, path, &body, &client) {
         Ok(value) => value,
@@ -307,7 +311,8 @@ pub async fn responses_endpoint(
                 ..context
             };
             if stream {
-                let mut machine = responses::ResponsesStream::new(&model, &request);
+                let mut machine =
+                    responses::ResponsesStream::new(&model, &request, reasoning_collapse);
                 let transformed = pipeline::transformed_stream(
                     source,
                     context,
@@ -319,7 +324,7 @@ pub async fn responses_endpoint(
                 return sse_response(status, transformed);
             }
             // 下游要非流式：内部收流，聚合成本协议的 JSON
-            let mut collector = responses::ResponsesCollector::new();
+            let mut collector = responses::ResponsesCollector::new(reasoning_collapse);
             collect_stream(source, &mut |chunk| collector.push(chunk)).await;
             collector.finish();
             let body = collector.into_response(&model, &request);

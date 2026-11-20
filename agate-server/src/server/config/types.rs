@@ -185,6 +185,14 @@ pub const ZWSP: &str = "\u{200B}";
 /// 转换实施点见 `core::upstream::payload`（send_body 的角色归一层）。
 pub const KEY_DEVELOPER_ROLE_COMPAT: &str = "developerRoleCompat";
 
+/// 第三方模型回答完自动折叠过程开关（config.json 键）。
+///
+/// 仅对严格识别为 Codex 的 Responses 请求生效：给助手消息补 `phase`
+/// （final_answer / commentary）阶段标记，让客户端能折叠思考与工具过程。
+/// **默认关**：这是给特定客户端补的标记，默认开会改变所有 Responses 响应形状。
+/// 实施点见 `core::protocol::responses_phase`。
+pub const KEY_THIRD_PARTY_REASONING_COLLAPSE: &str = "thirdPartyReasoningCollapse";
+
 /// **Cline 转发头的逐键覆盖**（config.json 键）。
 ///
 /// 形状：`{"User-Agent": "Cline/3.0.62", ...}`（string → string）。语义是

@@ -1376,6 +1376,8 @@ pub struct ResponsesStream {
     finish_reason: Option<String>,
     /// 已完成的 output 项（收尾时按 output_index 排序进 response.output）
     output_items: Vec<(i64, Value)>,
+    /// 是否给助手消息补 phase 阶段标记（仅 Codex + 开关开，见 responses_phase）。
+    reasoning_collapse: bool,
 }
 
 #[derive(Default)]
@@ -1401,7 +1403,7 @@ struct ToolFinal {
 }
 
 impl ResponsesStream {
-    pub fn new(model: &str, request: &Value) -> Self {
+    pub fn new(model: &str, request: &Value, reasoning_collapse: bool) -> Self {
         Self {
             buffer: SseLineBuffer::new(),
             response_id: random_id("resp"),
@@ -1426,6 +1428,7 @@ impl ResponsesStream {
             usage: None,
             finish_reason: None,
             output_items: Vec::new(),
+            reasoning_collapse,
         }
     }
 
@@ -1499,17 +1502,20 @@ impl ResponsesStream {
         if !self.text_open && self.tools.is_empty() {
             out.extend(self.open_text());
         }
-        out.extend(self.close_text());
+        // phase 用与响应信封同一套 incomplete 判据：只有真正完成的回答才补
+        // final_answer / commentary，截断与内容过滤不补。
+        let incomplete = super::responses_phase::incomplete_reason(self.finish_reason.as_deref());
+        let phase = super::responses_phase::message_phase(
+            self.finish_reason.as_deref(),
+            !self.tools.is_empty(),
+            incomplete.is_none(),
+        );
+        out.extend(self.close_text(phase));
         out.extend(self.close_tools());
         let output: Vec<Value> = {
             let mut items = self.output_items.clone();
             items.sort_by_key(|(index, _)| *index);
             items.into_iter().map(|(_, item)| item).collect()
-        };
-        let incomplete = match self.finish_reason.as_deref() {
-            Some("length") => Some("max_output_tokens"),
-            Some("content_filter") => Some("content_filter"),
-            _ => None,
         };
         let status = if incomplete.is_some() {
             "incomplete"
@@ -1653,9 +1659,11 @@ impl ResponsesStream {
     fn consume_tool(&mut self, call: &Value) -> Vec<bytes::Bytes> {
         let mut out = Vec::new();
         let key = call.get("index").and_then(Value::as_i64).unwrap_or(0);
-        // 工具调用与正文互斥：先把文本与思考收尾
+        // 工具调用与正文互斥：先把文本与思考收尾。工具调用前的说明文字属于
+        // commentary 阶段（开关开时才补标记）。
         out.extend(self.close_reasoning());
-        out.extend(self.close_text());
+        let phase = super::responses_phase::message_phase(Some("tool_calls"), true, true);
+        out.extend(self.close_text(phase));
 
         // ── 状态更新与事件构造**分两段**写 ──────────────────────────
         // 事件构造要动 `self.sequence`，而状态更新要借 `self.tools`。
@@ -1928,7 +1936,7 @@ impl ResponsesStream {
         ]
     }
 
-    fn close_text(&mut self) -> Vec<bytes::Bytes> {
+    fn close_text(&mut self, phase: Option<&str>) -> Vec<bytes::Bytes> {
         if !self.text_open {
             return Vec::new();
         }
@@ -1939,13 +1947,16 @@ impl ResponsesStream {
             "annotations": [],
             "logprobs": [],
         });
-        let item = json!({
+        let mut item = json!({
             "type": "message",
             "id": self.text_id,
             "status": "completed",
             "role": "assistant",
             "content": [part.clone()],
         });
+        if self.reasoning_collapse {
+            super::responses_phase::apply(&mut item, phase);
+        }
         self.output_items.push((self.text_index, item.clone()));
         vec![
             self.event(
@@ -2100,10 +2111,12 @@ pub struct ResponsesCollector {
     finish_reason: Option<String>,
     id: String,
     created: i64,
+    /// 是否给助手消息补 phase（同 ResponsesStream，见 responses_phase）。
+    reasoning_collapse: bool,
 }
 
 impl ResponsesCollector {
-    pub fn new() -> Self {
+    pub fn new(reasoning_collapse: bool) -> Self {
         Self {
             buffer: SseLineBuffer::new(),
             text: String::new(),
@@ -2113,6 +2126,7 @@ impl ResponsesCollector {
             finish_reason: None,
             id: String::new(),
             created: logging::now_ms() / 1000,
+            reasoning_collapse,
         }
     }
 
@@ -2211,13 +2225,22 @@ impl ResponsesCollector {
             }));
         }
         if !self.text.is_empty() || self.tools.is_empty() {
-            output.push(json!({
+            let mut item = json!({
                 "type": "message",
                 "id": random_id("msg"),
                 "status": "completed",
                 "role": "assistant",
                 "content": [{ "type": "output_text", "text": self.text, "annotations": [], "logprobs": [] }],
-            }));
+            });
+            if self.reasoning_collapse {
+                let phase = super::responses_phase::message_phase(
+                    self.finish_reason.as_deref(),
+                    !self.tools.is_empty(),
+                    self.finish_reason.as_deref().is_some(),
+                );
+                super::responses_phase::apply(&mut item, phase);
+            }
+            output.push(item);
         }
         for (_, tool) in self.tools {
             let name = if tool.name.is_empty() {

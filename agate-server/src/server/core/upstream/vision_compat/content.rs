@@ -254,7 +254,7 @@ mod tests {
     fn replaces_image_with_description() {
         let body = body_with_image();
         let images = collect(&body).unwrap();
-        let next = replace(&body, &images, &["一只猫"]).unwrap();
+        let next = replace(&body, &images, &["一只猫".to_string()]).unwrap();
         let part = &next["messages"][0]["content"][1];
         assert_eq!(part["type"], "text");
         assert!(part["text"].as_str().unwrap().contains("一只猫"));

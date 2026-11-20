@@ -66,6 +66,8 @@ pub mod freeform;
 pub mod history;
 pub mod native_tool;
 pub mod responses;
+/// Responses 助手消息的阶段标记（开关开启时由 responses.rs 调用）。
+pub mod responses_phase;
 pub mod responses_outbound;
 pub mod tool_plan;
 
