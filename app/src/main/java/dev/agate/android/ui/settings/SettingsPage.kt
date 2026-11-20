@@ -44,9 +44,15 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import dev.agate.android.data.AccountSortOps
+import dev.agate.android.data.ClientIdentificationOps
 import dev.agate.android.data.KeepalivePrefs
 import dev.agate.android.data.LogOps
+import dev.agate.android.data.MaintenanceOps
+import dev.agate.android.data.PromptRulesOps
+import dev.agate.android.data.ReasoningCollapseOps
 import dev.agate.android.data.SettingsOps
+import dev.agate.android.data.VisionCompatOps
 import dev.agate.android.ui.components.AgateAccordion
 import dev.agate.android.ui.components.AgateBadge
 import dev.agate.android.ui.components.AgateFormInput
@@ -100,6 +106,13 @@ fun SettingsPage(
     onThemeModeChange: (AgateThemeMode) -> Unit = {},
     onOpenDrawer: () -> Unit = {},
     onBack: () -> Unit = {},
+    // 三层地基 + 运维能力的二级页入口（默认空，兼容宿主未接线的场景）
+    onOpenVisionCompat: () -> Unit = {},
+    onOpenClientIdentification: () -> Unit = {},
+    onOpenPromptRules: () -> Unit = {},
+    onOpenAccountSort: () -> Unit = {},
+    onOpenMaintenance: () -> Unit = {},
+    onOpenModelAccess: () -> Unit = {},
 ) {
     val C = agateColors()
     val ctx = LocalContext.current
@@ -117,6 +130,14 @@ fun SettingsPage(
     var prompt by remember { mutableStateOf<SettingsOps.Prompt?>(null) }
     var storage by remember { mutableStateOf<SettingsOps.Storage?>(null) }
     var words by remember { mutableStateOf<List<String>>(emptyList()) }
+
+    // 二/三级能力的折叠摘要（null = 未读到；由各自端点独立加载，失败不拖垮整页）
+    var reasoningCollapse by remember { mutableStateOf<Boolean?>(null) }
+    var visionView by remember { mutableStateOf<VisionCompatOps.View?>(null) }
+    var clientView by remember { mutableStateOf<ClientIdentificationOps.View?>(null) }
+    var promptRulesView by remember { mutableStateOf<PromptRulesOps.View?>(null) }
+    var accountSort by remember { mutableStateOf<AccountSortOps.Sorting?>(null) }
+    var maintenanceOverview by remember { mutableStateOf<MaintenanceOps.Overview?>(null) }
 
     var loading by remember { mutableStateOf(true) }
     var errors by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
@@ -170,6 +191,20 @@ fun SettingsPage(
             val w = SettingsOps.zwspWords()
             if (w.ok) words = w.data.orEmpty() else failed["安全"] = w.error ?: "词表读取失败"
 
+            // 二级能力摘要：各读各的，任一失败只让那一项显示「未读取」
+            val rc = ReasoningCollapseOps.load()
+            reasoningCollapse = if (rc.ok) rc.data else null
+            val vc = VisionCompatOps.load()
+            visionView = if (vc.ok) vc.data else null
+            val ci = ClientIdentificationOps.load()
+            clientView = if (ci.ok) ci.data else null
+            val pr = PromptRulesOps.load()
+            promptRulesView = if (pr.ok) pr.data else null
+            val asrt = AccountSortOps.load()
+            accountSort = if (asrt.ok) asrt.data else null
+            val mt = MaintenanceOps.overview(limit = 1)
+            maintenanceOverview = if (mt is MaintenanceOps.Outcome.Ok) mt.value else null
+
             errors = failed
             loading = false
         }
@@ -220,7 +255,7 @@ fun SettingsPage(
         ) {
             SectionHeader(
                 title = "应用设置",
-                subtitle = "十一组 · 读数来自内核，改完即生效（无需重启）",
+                subtitle = "十三组 · 读数来自内核，改完即生效（无需重启）",
                 trailing = versionName(ctx),
             )
 
@@ -691,6 +726,32 @@ fun SettingsPage(
                         },
                     )
                 }
+                Divider(C)
+                Spacer(Modifier.height(10.dp))
+                SwitchRow(
+                    label = "第三方回答折叠过程阶段",
+                    desc = "仅 Codex 的 Responses 请求：补阶段标记让客户端折叠思考/工具过程。" +
+                        "只影响显示，不改发给上游的请求。",
+                    checked = reasoningCollapse ?: false,
+                    enabled = "/api/reasoning-collapse" !in pending && reasoningCollapse != null,
+                    onToggle = { want ->
+                        if ("/api/reasoning-collapse" in pending) return@SwitchRow
+                        val before = reasoningCollapse
+                        reasoningCollapse = want
+                        pending = pending + "/api/reasoning-collapse"
+                        setError("超时", null)
+                        scope.launch {
+                            val r = ReasoningCollapseOps.save(want)
+                            if (r.ok) {
+                                reasoningCollapse = r.data
+                            } else {
+                                reasoningCollapse = before
+                                setError("超时", r.error ?: "保存失败")
+                            }
+                            pending = pending - "/api/reasoning-collapse"
+                        }
+                    },
+                )
                 Hint(
                     "改完对下一个请求立即生效，无需重启。排队发生在首字节之前，吃的是「等待响应」那份预算。",
                     C,
@@ -1055,6 +1116,69 @@ fun SettingsPage(
                         },
                     )
                 }
+            }
+
+            // ══ 8. 智能兼容（二级页入口）══════════════════════
+            AgateAccordion(
+                title = "智能兼容",
+                badge = { AgateBadge("3 项", BadgeTone.BLUE) },
+            ) {
+                Text(
+                    "这些是「可观测行为」配置：只影响统计归类、提示词选择、发图降级与显示折叠，" +
+                        "不改发给上游的协议形状。点开逐项配置。",
+                    style = AgateType.Caption,
+                    color = C.textSub,
+                )
+                Spacer(Modifier.height(10.dp))
+                NavEntryRow(
+                    title = "图片兼容",
+                    desc = "发图给看不了图的模型时：另调视觉模型识读（assist）或整体改交（reroute）",
+                    badge = visionCompatSummary(visionView),
+                    onClick = onOpenVisionCompat,
+                )
+                NavEntryRow(
+                    title = "客户端识别",
+                    desc = "按请求头把客户端归到统计列，并驱动提示词规则匹配；可预览识别结果",
+                    badge = clientIdentificationSummary(clientView),
+                    onClick = onOpenClientIdentification,
+                )
+                NavEntryRow(
+                    title = "提示词规则",
+                    desc = "按 家/客户端/模型 条件替换提示词（旧「提示词」组是全局单份，这里是规则表）",
+                    badge = promptRulesSummary(promptRulesView),
+                    onClick = onOpenPromptRules,
+                )
+            }
+
+            // ══ 9. 运维工具（二级页入口）══════════════════════
+            AgateAccordion(
+                title = "运维工具",
+                badge = { AgateBadge("3 项", BadgeTone.BLUE) },
+            ) {
+                Text(
+                    "账号自动排序、维护执行台账与 Key 权限查询。配置即时生效，执行记录来自内核真账。",
+                    style = AgateType.Caption,
+                    color = C.textSub,
+                )
+                Spacer(Modifier.height(10.dp))
+                NavEntryRow(
+                    title = "账号自动排序",
+                    desc = "按额度/余额/加入时间给各家的账号排优先级（顺序即优先级）",
+                    badge = accountSortSummary(accountSort),
+                    onClick = onOpenAccountSort,
+                )
+                NavEntryRow(
+                    title = "维护记录",
+                    desc = "凭证刷新与模型目录更新的逐次执行台账；可筛选、看详情、手动跑、重试",
+                    badge = maintenanceSummary(maintenanceOverview),
+                    onClick = onOpenMaintenance,
+                )
+                NavEntryRow(
+                    title = "模型 Key 权限",
+                    desc = "按选中那把 Key 查它实际能调用的模型清单（面板 Key 查询，不探活）",
+                    badge = "查询",
+                    onClick = onOpenModelAccess,
+                )
             }
 
             // ══ 8. 数据管理 ══════════════════════════════════
@@ -2698,4 +2822,70 @@ private fun KeepaliveGroup(ctx: android.content.Context) {
             C,
         )
     }
+}
+
+
+// ══════════════════════════════════════════════════════════════
+//  二级页入口行 + 摘要（折叠态读数，全部来自内核真值）
+// ══════════════════════════════════════════════════════════════
+
+/**
+ * 通往二级页的入口行：标题 + 说明 + 右侧摘要徽标 + 箭头。
+ * 整行可点，摘要是只读真值（读不到给「未读取」，不猜 0）。
+ */
+@Composable
+private fun NavEntryRow(
+    title: String,
+    desc: String,
+    badge: String,
+    onClick: () -> Unit,
+) {
+    val C = agateColors()
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(C.insetBg, RoundedCornerShape(12.dp))
+            .border(1.dp, C.border, RoundedCornerShape(12.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 11.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(title, style = AgateType.BodyS, color = C.textMain)
+            Spacer(Modifier.height(3.dp))
+            Text(desc, style = AgateType.Caption, color = C.textDim)
+        }
+        Spacer(Modifier.width(8.dp))
+        AgateBadge(badge, BadgeTone.BLUE)
+        Text("›", fontSize = 20.sp, color = C.textDim, modifier = Modifier.padding(start = 6.dp))
+    }
+    Spacer(Modifier.height(8.dp))
+}
+
+internal fun visionCompatSummary(v: VisionCompatOps.View?): String {
+    if (v == null) return "未读取"
+    if (!v.config.enabled) return "已关闭"
+    val n = v.config.rules.size
+    return if (n == 0) "已启用" else "$n 条规则"
+}
+
+internal fun clientIdentificationSummary(v: ClientIdentificationOps.View?): String {
+    if (v == null) return "未读取"
+    return "${v.config.rules.size} 条规则"
+}
+
+internal fun promptRulesSummary(v: PromptRulesOps.View?): String {
+    if (v == null) return "未读取"
+    return "${v.rules.size} 条规则"
+}
+
+internal fun accountSortSummary(s: AccountSortOps.Sorting?): String {
+    if (s == null) return "未读取"
+    val n = s.configured.size
+    return if (n == 0) "默认" else "$n 家已配"
+}
+
+internal fun maintenanceSummary(o: MaintenanceOps.Overview?): String {
+    if (o == null) return "未读取"
+    return "共 ${o.records.total} 次"
 }

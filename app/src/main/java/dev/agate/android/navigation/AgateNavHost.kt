@@ -138,6 +138,13 @@ object Routes {
     const val SETTINGS = "settings"
     const val KEYS = "keys"
     const val SHOWCASE = "showcase"
+    // 三层地基 + 运维能力二级页
+    const val VISION_COMPAT = "vision_compat"
+    const val CLIENT_IDENTIFICATION = "client_identification"
+    const val PROMPT_RULES = "prompt_rules"
+    const val ACCOUNTS_SORT = "accounts_sort"
+    const val MAINTENANCE = "maintenance"
+    const val MODEL_ACCESS = "model_access"
 }
 
 private data class DrawerEntry(val route: String, val label: String, val icon: ImageVector)
@@ -583,13 +590,18 @@ fun AgateNavHost(
                     dev.agate.android.ui.assistant.AssistantPage(onOpenDrawer = ::openDrawer)
                 }
                 composable(Routes.SETTINGS) {
-                    // 设置：十组手风琴（服务接入 / 外观 / 流式 / 超时 / 重试 /
-                    // 脱敏与安全 / 提示词 / 数据 / 备份 / 关于），见该页模块头
+                    // 设置：十三组手风琴（原十一组 + 智能兼容 / 运维工具入口），见该页模块头
                     dev.agate.android.ui.settings.SettingsPage(
                         themeMode = themeMode,
                         onThemeModeChange = onThemeModeChange,
                         onOpenDrawer = ::openDrawer,
                         onBack = { navController.popBackStack() },
+                        onOpenVisionCompat = { navController.navigate(Routes.VISION_COMPAT) },
+                        onOpenClientIdentification = { navController.navigate(Routes.CLIENT_IDENTIFICATION) },
+                        onOpenPromptRules = { navController.navigate(Routes.PROMPT_RULES) },
+                        onOpenAccountSort = { navController.navigate(Routes.ACCOUNTS_SORT) },
+                        onOpenMaintenance = { navController.navigate(Routes.MAINTENANCE) },
+                        onOpenModelAccess = { navController.navigate(Routes.MODEL_ACCESS) },
                     )
                 }
                 composable(Routes.KEYS) {
@@ -597,6 +609,26 @@ fun AgateNavHost(
                         onOpenDrawer = ::openDrawer,
                         onBack = { navController.popBackStack() },
                     )
+                }
+
+                // ── 三层地基 + 运维能力二级页 ──
+                composable(Routes.VISION_COMPAT) {
+                    dev.agate.android.ui.settings.VisionCompatPage(onBack = { navController.popBackStack() })
+                }
+                composable(Routes.CLIENT_IDENTIFICATION) {
+                    dev.agate.android.ui.settings.ClientIdentificationPage(onBack = { navController.popBackStack() })
+                }
+                composable(Routes.PROMPT_RULES) {
+                    dev.agate.android.ui.settings.PromptRulesPage(onBack = { navController.popBackStack() })
+                }
+                composable(Routes.ACCOUNTS_SORT) {
+                    dev.agate.android.ui.settings.AccountSortPage(onBack = { navController.popBackStack() })
+                }
+                composable(Routes.MAINTENANCE) {
+                    dev.agate.android.ui.settings.MaintenancePage(onBack = { navController.popBackStack() })
+                }
+                composable(Routes.MODEL_ACCESS) {
+                    dev.agate.android.ui.settings.ModelAccessPage(onBack = { navController.popBackStack() })
                 }
             }
         }
