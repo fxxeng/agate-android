@@ -136,6 +136,13 @@ pub(super) struct ProviderContext<'a> {
     /// 单次请求的出网代理临时覆盖（模型测试专用；`None` = 跟随账号配置，
     /// `Some(None)` = 强制直连，`Some(Some(proxy))` = 强制走指定节点）。
     pub proxy_override: Option<&'a Option<crate::server::core::proxies::ResolvedProxy>>,
+    /// 这次转发是生图 / 图片编辑（`None` = 普通对话请求）。
+    ///
+    /// 语义与取舍见 [`super::ForwardRequest::image`]。放在上下文里的唯一目的
+    /// 是让 [`send_body`] **一个入口早退**：五层对话改写（角色归一 / 提示词 /
+    /// 脱敏 / 压缩 / 原生工具闸门）都以 `messages` 为前提，让它们跑一遍生图
+    /// 请求不是「无操作」而是有机会改坏 `prompt`。
+    pub image: Option<crate::server::core::providers::images::ImageOperation>,
 }
 
 /// 某一家 provider 实际要发送的请求体（**每次转发前**决定，不做跨家复用），
@@ -190,6 +197,17 @@ pub(super) fn send_body<'a>(
     account: Option<&Value>,
     degraded: bool,
 ) -> SendBody<'a> {
+    // ── 生图 / 图片编辑：只做「模型名按家改写」这一件事 ──────────────
+    // 下面各层全部是**对话形态**的处理，每一层都以 `messages` 为前提，而生图
+    // body 里只有 `prompt` 与几个参数。让它们跑一遍的后果不是「无操作」，而是
+    // 有机会把 `prompt` 改坏（脱敏会把像指纹的串改掉、提示词层会插一条 system）。
+    //
+    // 所以这里**显式早退**，而不是在每一层里各加一个 `if ctx.image.is_some()`：
+    // 那种写法要求以后新增的每一层都记得加判断（漏一层的表现是生图被悄悄改写），
+    // 而「一个入口早退」在结构上保证下游不可能有生图层不知道的改写。
+    if ctx.image.is_some() {
+        return image_send_body(ctx, provider_id, account);
+    }
     // ── ⓪ 角色归一层（开发者角色兼容开关）───────────────────────────
     // 在所有改写**之前**：先把 developer 角色归一成 system，后面各层（提示词、
     // 脱敏、各适配器）看到的就是统一形态 —— 适配器自己的 developer→system 映射
@@ -410,6 +428,48 @@ fn normalize_developer_role(body: &Value, enabled: bool) -> Option<(Value, usize
 /// id（Loomy 目录就是 `GLM-5.3-Flash`，客户端常发小写），只差大小写时不改，
 /// 上游会当成未知模型静默回落（实测：`glm-5.3-flash` 被回落成
 /// `deepseek-v4-flash-0731`，图片能力随之丢失）。
+/// 生图 / 图片编辑的发送体：**只**做模型名按家改写。
+///
+/// 为什么不复用对话那条 `send_body` 的后半段：那五层改写的输入是 `messages`，
+/// 生图体里没有；而它们各自的「无输入时」行为并不一致（有的原样返回，有的会
+/// 插一条 system）。早退是唯一能保证「生图体只被改模型名」的写法。
+///
+/// `account` 参与解析的理由与 [`send_body`] 相同（映射可以按账号区分）。
+fn image_send_body<'a>(
+    ctx: &'a ProviderContext<'_>,
+    provider_id: &str,
+    account: Option<&Value>,
+) -> SendBody<'a> {
+    let requested = ctx
+        .body
+        .get("model")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if requested.is_empty() {
+        // 没有 model：不改写，也没有冷却键（与对话路径同一口径）。
+        // 生图入口已保证 model 非空（`api::images::resolve_model` 会填默认值），
+        // 走到这里说明是内部调用方 —— 不 panic、原样发。
+        return SendBody {
+            body: Cow::Borrowed(ctx.body),
+            wire_model: requested,
+        };
+    }
+    let wire = crate::server::core::providers::catalog::wire_target_for_provider(
+        &requested,
+        provider_id,
+        account,
+    );
+    ctx.telemetry.note_upstream_model(&wire.model);
+    let mut body = Cow::Borrowed(ctx.body);
+    rewrite_model(&mut body, &requested, &wire.model, provider_id);
+    SendBody {
+        body,
+        wire_model: wire.model,
+    }
+}
+
 fn rewrite_model(body: &mut Cow<'_, Value>, requested: &str, wire: &str, provider_id: &str) {
     if wire == requested {
         return;

@@ -168,6 +168,24 @@ pub mod terminal {
 ///     转给上游（那样由上游挑模型，白名单等于不存在）。
 ///   - **一家可用提供商都没有**（没加账号，`active` 为空）：与 ③ 同一条例外 ——
 ///     广告视图必然为空，此时报「没有可用账号」比报「模型不存在」有用。
+/// 生图入口的模型解析：与对话**同一套**目录 / 别名 / 白名单语义。
+///
+/// ── 为什么这里只是一句转发 ──────────────────────────────────
+/// 上游（agent2api）的目录条目带 `kind == "image"`，它的对话入口会拒绝图片
+/// 模型、生图入口反过来只放行图片模型，因此那边需要一个 `image_generation`
+/// 开关来切两套收窄条件。本仓的目录条目没有这个字段（分支线的图片能力声明
+/// 在 `providers::images` 的能力位里，不在目录条目上），两边的候选集合本就
+/// 相同 —— 硬造一个开关只会变成永远不会走到的分支。
+///
+/// 若将来目录引入 `kind`，这里是唯一需要加分支的地方。
+pub fn resolve_image_model(
+    state: &ServerState,
+    payload: &mut Value,
+    scope: Option<&KeyScope>,
+) -> Result<String, GatewayError> {
+    resolve_model(state, payload, scope)
+}
+
 pub fn resolve_model(
     state: &ServerState,
     payload: &mut Value,

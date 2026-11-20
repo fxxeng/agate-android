@@ -29,6 +29,7 @@
 
 pub mod adapter;
 pub mod growth;
+pub mod image_generation;
 pub mod keepalive;
 pub mod normalize;
 pub mod reconcile;

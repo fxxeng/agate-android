@@ -246,6 +246,56 @@ impl ProviderAdapter for AntigravityAdapter {
     ///   - 429 → `QuotaLimited`；400 档交给共用的内容拦截判定；
     ///   - 408 / 5xx → `Fatal` + [`Self::retry_advice`] 的原地退避（可重试）；
     ///   - 其余 → `Fatal`（原样透出）。
+    /// 本家有生图通道（`:streamGenerateContent` 的 `image_gen` 桶）。
+    ///
+    /// **通道级**能力位：哪条模型能生图由目录条目的 `kind=image` 决定
+    /// （`models::map_entry` 对 `gemini-*-image` 打标），两者在
+    /// `providers::images::operation_providers` 里取交集。
+    fn supports_image_generation(&self) -> bool {
+        true
+    }
+
+    /// 本家也能做参考图编辑 —— 不是另一条路由，而是**同一个端点**多带几张图。
+    ///
+    /// 这里如实为 true 的理由与 raccoon 那边不同：那家编辑要 multipart 出站
+    /// （另一条协议），这家只需要往同一条 user 消息里多塞几个 `image_url`。
+    fn supports_image_editing(&self) -> bool {
+        true
+    }
+
+    /// 构造上游生图 / 编辑请求（信封见 `antigravity_outbound`，响应是 Gemini SSE）。
+    ///
+    /// `body.model` 已经是本家发送名（`payload::image_send_body` 先改写过），
+    /// 所以这里**不再**走 `models::upstream_model_id` —— 重写两次会在别名链上
+    /// 发错名字（生图链路的通用约定，见 `ProviderAdapter::build_image_request`）。
+    fn build_image_request(
+        &self,
+        account: &Value,
+        body: &Value,
+        _client_headers: &HeaderMap,
+        operation: crate::server::core::providers::images::ImageOperation,
+    ) -> Result<crate::server::core::providers::images::ImageRequestPlan, GatewayError> {
+        let wire_model = body
+            .get("model")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or("");
+        super::image_generation::build(account, body, operation, wire_model)
+    }
+
+    /// **账号未配代理时跟随系统代理**（`true`；仓内唯一覆写这一位的家）。
+    ///
+    /// ── 为什么本家是特例 ────────────────────────────────────────
+    /// 上游是 Google：多数网络里只有经代理才可达，直连必然 TCP 超时
+    /// （用户实测 `os error 10060`）。而用户机器上「已经能打开 Google 的
+    /// 那个代理」就写在系统设置里 —— 浏览器能打开授权页正是靠它。账号若
+    /// 没单独配代理，跟随它是唯一合理的默认；系统没配代理时 reqwest 探测
+    /// 不到，等价于直连，不引入新的失败面。
+    ///
+    /// 口径与登录链路一致（那边本来就无从挂账号代理，走
+    /// `egress::client_for_system_proxy()`；见 `super::client_for` 的文档）。
+    /// **别把这一位抄到别家** —— 对国内可直连的上游，「直连就是直连」才是
+    /// 正确口径（trait 文档里有完整论证）。
     fn classify_error(&self, status: u16, error_body: &Value) -> UpstreamErrorClass {
         let raw = error_body
             .get("message")

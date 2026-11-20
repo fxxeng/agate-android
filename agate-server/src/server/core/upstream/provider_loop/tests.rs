@@ -61,6 +61,8 @@ async fn zcode_http_200_quota_json_is_classified_before_streaming_without_resend
             Some(&capture),
             &RequestTelemetry::new(),
             false,
+            // 这些用例走对话形态（生图有独立的 images 用例）
+            None,
         )
         .await;
         task.abort();
@@ -117,6 +119,8 @@ async fn zcode_http_auth_and_quota_errors_keep_their_status() {
             None,
             &RequestTelemetry::new(),
             false,
+            // 这些用例走对话形态（生图有独立的 images 用例）
+            None,
         )
         .await;
         task.abort();
@@ -150,6 +154,8 @@ async fn zcode_unknown_or_malformed_success_json_returns_an_error() {
             None,
             &RequestTelemetry::new(),
             false,
+            // 这些用例走对话形态（生图有独立的 images 用例）
+            None,
         )
         .await;
         task.abort();
@@ -186,11 +192,16 @@ async fn zcode_success_sse_and_other_providers_json_remain_unconsumed() {
             None,
             &RequestTelemetry::new(),
             false,
+            // 这些用例走对话形态（生图有独立的 images 用例）
+            None,
         )
         .await;
         task.abort();
         let response = match result {
-            Ok(response) => response,
+            Ok(super::super::images::ImageResponse::Live(response)) => response,
+            Ok(super::super::images::ImageResponse::Complete(body)) => {
+                panic!("对话用例不该走生图读取层: {body}")
+            }
             Err(failure) => panic!("valid response rejected: {}", failure.error.message),
         };
         assert_eq!(response.text().await.unwrap(), body);
@@ -505,6 +516,8 @@ async fn a_real_413_response_is_sent_once_and_handed_back() {
         Some(&capture),
         &RequestTelemetry::new(),
         false,
+        // 对话形态（生图有独立用例）
+        None,
     )
     .await;
     task.abort();

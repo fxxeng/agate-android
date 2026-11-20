@@ -335,6 +335,37 @@ pub fn client_without_redirects(proxy: Option<&ResolvedProxy>) -> Arc<reqwest::C
 /// 与 `client_for` 不同**不进 LRU**：它没有「出口参数」这一维，进程内一份
 /// 即可。系统代理改了要重启网关才生效（reqwest 在 build 时探测一次）——
 /// 登录与 Antigravity 的请求都是低频操作，这个取舍不影响正确性。
+pub fn pinned_address_client(
+    proxy: Option<&ResolvedProxy>,
+    system_proxy_when_unset: bool,
+    host: &str,
+    addresses: &[std::net::SocketAddr],
+) -> Result<reqwest::Client, String> {
+    let timeouts = crate::server::config::timeout_settings();
+    let mut builder = base_builder(&timeouts).redirect(reqwest::redirect::Policy::none());
+    if !addresses.is_empty() {
+        builder = builder.resolve_to_addrs(host, addresses);
+    }
+    match proxy {
+        Some(proxy) => {
+            if proxy.port.is_none_or(|port| port == 0) {
+                return Err("代理端口无效".to_string());
+            }
+            let parsed = reqwest::Proxy::all(build_proxy_url(proxy))
+                .map_err(|_| "代理地址无效".to_string())?;
+            builder = builder.no_proxy().proxy(parsed);
+        }
+        // 直连语义：与 `client_for(None)` 一致，必须显式关掉环境代理探测。
+        // `system_proxy_when_unset` 为真时保持 reqwest 的自动探测（这家上游
+        // 在账号没配代理时跟随系统代理，见 `ProviderAdapter::system_proxy_when_unset`）。
+        None if !system_proxy_when_unset => {
+            builder = builder.no_proxy();
+        }
+        None => {}
+    }
+    builder.build().map_err(|_| "无法创建出站连接".to_string())
+}
+
 pub fn client_for_system_proxy() -> Arc<reqwest::Client> {
     static CLIENT: OnceLock<Arc<reqwest::Client>> = OnceLock::new();
     CLIENT

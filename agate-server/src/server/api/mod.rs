@@ -88,6 +88,15 @@ pub mod events_api;
 pub mod health;
 // 「从其他工具导入」的扫描接口（当前来源：cc-switch；存储读取见
 // `core::import_ccswitch`）
+// ── OpenAI Images 兼容面（/v1/images/*）与图片工具面 ──────────────
+// 五个文件的分工见各自模块头：入口（images）、入参形态归一（image_input）、
+// 响应归一（image_output）、本机附件缓存（image_assets）、会话图片压缩配置
+// （image_compress）。
+pub mod image_assets;
+pub mod image_compress;
+pub mod image_input;
+pub mod image_output;
+pub mod images;
 pub mod import_sources;
 /// 保活换行丢弃开关（`/api/keepalive-strip`）：与 `/api/sanitize`、`/api/debug`
 /// 同形的单开关端点，独立成文件而不是塞进 config_api —— 理由见该模块头。

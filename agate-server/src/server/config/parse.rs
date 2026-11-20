@@ -914,3 +914,34 @@ mod tests {
         );
     }
 }
+
+pub(super) fn image_compress_from(map: &Map<String, Value>) -> ImageCompressSettings {
+    let defaults = ImageCompressSettings::default();
+    ImageCompressSettings {
+        enabled: map
+            .get(KEY_IMAGE_COMPRESS_ENABLED)
+            .and_then(Value::as_bool)
+            .unwrap_or(defaults.enabled),
+        max_edge: bounded_int_field(
+            map,
+            KEY_IMAGE_COMPRESS_MAX_EDGE,
+            defaults.max_edge,
+            IMAGE_COMPRESS_MIN_MAX_EDGE,
+            IMAGE_COMPRESS_MAX_MAX_EDGE,
+        ),
+        quality: bounded_int_field(
+            map,
+            KEY_IMAGE_COMPRESS_QUALITY,
+            defaults.quality,
+            IMAGE_COMPRESS_MIN_QUALITY,
+            IMAGE_COMPRESS_MAX_QUALITY,
+        ),
+        threshold_kb: bounded_int_field(
+            map,
+            KEY_IMAGE_COMPRESS_THRESHOLD_KB,
+            defaults.threshold_kb,
+            IMAGE_COMPRESS_MIN_THRESHOLD_KB,
+            IMAGE_COMPRESS_MAX_THRESHOLD_KB,
+        ),
+    }
+}

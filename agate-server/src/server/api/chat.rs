@@ -225,6 +225,8 @@ pub async fn chat_completions(
             // 是模型测试的直达跳，见 `ForwardRequest` 的说明）
             ignore_model_gate: false,
             proxy_override: None,
+            // 对话入口永远不是生图（生图有自己的两个 handler，见 `api::images`）
+            image: None,
         })
         .await;
     let stats = state.request_stats();

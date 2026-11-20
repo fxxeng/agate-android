@@ -47,9 +47,15 @@
 //! 复核双进程冲突表现，本章今天只证明了「能锁上」。
 
 use std::fs::{File, OpenOptions};
-use std::io::{ErrorKind, Write};
+use std::io::Write;
+#[cfg(unix)]
+use std::io::ErrorKind;
+#[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
+#[cfg(unix)]
 use std::os::unix::io::AsRawFd;
+#[cfg(windows)]
+use std::os::windows::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -134,58 +140,10 @@ impl DataDirLock {
     /// Occupied」的窗口。crate 内直取只留给本模块测试与跨进程探针夹具。
     pub(crate) fn acquire(config_dir: &Path) -> Result<Self, LockError> {
         let path = config_dir.join(LOCK_FILE_NAME);
-        let io = |error| LockError::Io(path.clone(), error);
-
-        let mut file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .mode(0o644)
-            // `open(2)` 直接带 O_CLOEXEC：即使后面 F_SETFD 那步被跳过，
-            // fd 也不会漏进 exec 的子进程（约束 2）。
-            .custom_flags(libc::O_CLOEXEC)
-            .open(&path)
-            .map_err(io)?;
-
-        let fd = file.as_raw_fd();
-        // 复核并补一道 F_SETFD：老内核对 open 的 O_CLOEXEC 支持不完整时兜底。
-        // 两者任一失败都显式报错（约束 2「必须真的置上」，R47 T2.4）：fd 来自
-        // 刚成功打开的 File，F_GETFD/F_SETFD 在正常路径不可能失败；静默容忍
-        // 失败等于把这条约束虚设，不如按 Io 拒绝启动并带出底层原因。
-        // SAFETY: fd 来自上面成功打开的 File，调用期间 File 存活、未关闭；
-        // fcntl 不转移所有权。
-        unsafe {
-            let flags = libc::fcntl(fd, libc::F_GETFD);
-            if flags < 0 {
-                return Err(LockError::Io(path, std::io::Error::last_os_error()));
-            }
-            if flags & libc::FD_CLOEXEC == 0
-                && libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) != 0
-            {
-                return Err(LockError::Io(path, std::io::Error::last_os_error()));
-            }
-        }
-
-        // 非阻塞排他锁；EWOULDBLOCK/EAGAIN = 已有 Owner。
-        // EINTR 理论上不会出现（LOCK_NB 不等待），但仍按惯例重试一次护栏。
-        loop {
-            // SAFETY: fd 有效；flock 只读 fd 状态，不转移所有权。
-            let rc = unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) };
-            if rc == 0 {
-                break;
-            }
-            let error = std::io::Error::last_os_error();
-            match error.kind() {
-                ErrorKind::Interrupted => continue,
-                ErrorKind::WouldBlock => return Err(LockError::Occupied(path)),
-                _ => {
-                    // 含 ENOSYS（共享存储 / FUSE 不支持 flock）—— 按约束 3
-                    // 一律判 Io，绝不降级为无锁继续。
-                    return Err(LockError::Io(path, error));
-                }
-            }
-        }
+        // 打开与加锁在平台实现里（Unix = flock，Windows = share_mode(0)）：
+        // 「怎么锁」是平台差异，「锁哪、怎么记」是这里的事，分开之后
+        // 本函数只剩诊断信息与状态登记。
+        let mut file = platform_lock(&path)?;
 
         // 诊断信息（谁在什么时刻持锁）。**写失败不得导致锁被释放**：
         // 这里忽略所有结果，fd 依然持有 flock。
@@ -225,11 +183,91 @@ impl DataDirLock {
     }
 
     /// fd 是否带 `FD_CLOEXEC`。仅测试与诊断用，生产路径不依赖它。
+    #[cfg(unix)]
     pub fn is_close_on_exec(&self) -> bool {
         // SAFETY: fd 由 `_file` 持有，本调用期间未释放。
         let flags = unsafe { libc::fcntl(self._file.as_raw_fd(), libc::F_GETFD) };
         flags >= 0 && flags & libc::FD_CLOEXEC != 0
     }
+
+    /// Windows 没有 `FD_CLOEXEC`：句柄默认不继承（`bInheritHandle=false`），
+    /// 恒为 true 与 Unix 侧「已置上」的语义一致。
+    #[cfg(not(unix))]
+    pub fn is_close_on_exec(&self) -> bool {
+        true
+    }
+}
+
+/// 打开并独占锁住锁文件（Unix：`flock` + `O_CLOEXEC`）。
+#[cfg(unix)]
+fn platform_lock(path: &Path) -> Result<File, LockError> {
+    let io = |error| LockError::Io(path.to_path_buf(), error);
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o644)
+        // `open(2)` 直接带 O_CLOEXEC：即使后面 F_SETFD 那步被跳过，
+        // fd 也不会漏进 exec 的子进程（约束 2）。
+        .custom_flags(libc::O_CLOEXEC)
+        .open(path)
+        .map_err(io)?;
+    let fd = file.as_raw_fd();
+    // 复核并补一道 F_SETFD：老内核对 open 的 O_CLOEXEC 支持不完整时兜底。
+    // 两者任一失败都显式报错（约束 2「必须真的置上」）。
+    // SAFETY: fd 来自上面成功打开的 File，调用期间 File 存活、未关闭。
+    unsafe {
+        let flags = libc::fcntl(fd, libc::F_GETFD);
+        if flags < 0 {
+            return Err(LockError::Io(path.to_path_buf(), std::io::Error::last_os_error()));
+        }
+        if flags & libc::FD_CLOEXEC == 0
+            && libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) != 0
+        {
+            return Err(LockError::Io(path.to_path_buf(), std::io::Error::last_os_error()));
+        }
+    }
+    // 非阻塞排他锁；EWOULDBLOCK/EAGAIN = 已有 Owner。
+    loop {
+        // SAFETY: fd 有效；flock 只读 fd 状态，不转移所有权。
+        let rc = unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) };
+        if rc == 0 {
+            break;
+        }
+        let error = std::io::Error::last_os_error();
+        match error.kind() {
+            ErrorKind::Interrupted => continue,
+            ErrorKind::WouldBlock => return Err(LockError::Occupied(path.to_path_buf())),
+            _ => {
+                // 含 ENOSYS（共享存储 / FUSE 不支持 flock）—— 按约束 3
+                // 一律判 Io，绝不降级为无锁继续。
+                return Err(LockError::Io(path.to_path_buf(), error));
+            }
+        }
+    }
+    Ok(file)
+}
+
+/// 打开并独占锁住锁文件（Windows：`share_mode(0)`）。
+///
+/// 生产目标只有 Android（Unix）；这条实现的存在意义是**本机 Windows 也能
+/// `cargo check` / 跑测试**。语义对齐 Unix 侧：独占打开期间第二个进程会拿到
+/// 共享冲突（`ERROR_SHARING_VIOLATION`），判 `Occupied`。
+#[cfg(not(unix))]
+fn platform_lock(path: &Path) -> Result<File, LockError> {
+    OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .share_mode(0)
+        .open(path)
+        .map_err(|error| match error.raw_os_error() {
+            // 32 = 共享冲突，5 = 拒绝访问（被独占的句柄挡住）
+            Some(32) | Some(5) => LockError::Occupied(path.to_path_buf()),
+            _ => LockError::Io(path.to_path_buf(), error),
+        })
 }
 
 /// 规范化用于「同进程重入」比对的目录路径。

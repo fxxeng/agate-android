@@ -84,6 +84,7 @@ pub mod balance;
 pub mod credentials;
 pub mod endpoints;
 pub mod login;
+pub mod image_generation;
 pub mod models;
 pub mod oauth;
 pub mod project;

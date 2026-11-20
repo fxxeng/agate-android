@@ -2860,3 +2860,42 @@ mod auto_continue_tests {
         });
     }
 }
+
+// ─── 会话图片压缩（imageCompressEnabled / MaxEdge / Quality / ThresholdKb）──
+
+/// 会话图片压缩的四项设置。
+///
+/// ── 为什么不进 `RuntimeConfig` 的 typed 字段 ──────────────────
+/// 与 `routing_profiles()` 同一取舍：本模块的 typed 快照是「启动期定型、
+/// 变更时同步刷新」的，加一个字段就要在 `build()` 与每一处 `update()` 里
+/// 各接一次；而图片压缩是**只在转发层一家即将发送时**读一次的低频项。
+/// 直接用 `raw` 底稿解析（每个请求取一次快照，见 `upstream::forward`），
+/// 语义与热路径代价都够，也少一个「忘了同步快照」的失效面。
+pub fn image_compress_settings() -> ImageCompressSettings {
+    image_compress_from(current().raw())
+}
+
+/// 更新会话图片压缩（`None` = 该项不动），返回是否写盘成功。
+///
+/// 调用方（`api::image_compress::put_image_compress`）**必须先校验范围**：
+/// 越界值不会被拦在这里，读侧 `bounded_int_field` 会在下一次解析时丢弃它 ——
+/// 症状是「刚设的值悄悄变回默认」，正是调用方要避免的事。
+pub fn set_image_compress(patch: ImageCompressPatch) -> bool {
+    let fields: [(Option<i64>, &str); 3] = [
+        (patch.max_edge, KEY_IMAGE_COMPRESS_MAX_EDGE),
+        (patch.quality, KEY_IMAGE_COMPRESS_QUALITY),
+        (patch.threshold_kb, KEY_IMAGE_COMPRESS_THRESHOLD_KB),
+    ];
+    update(|config| {
+        if let Some(enabled) = patch.enabled {
+            config
+                .raw
+                .insert(KEY_IMAGE_COMPRESS_ENABLED.to_string(), Value::Bool(enabled));
+        }
+        for (value, key) in fields {
+            if let Some(number) = value {
+                config.raw.insert(key.to_string(), Value::from(number));
+            }
+        }
+    })
+}
