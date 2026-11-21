@@ -85,6 +85,8 @@ fun CheckinCenterPage(
     onOpenSchedule: () -> Unit = {},
     onOpenRecords: () -> Unit = {},
     onOpenRecovery: () -> Unit = {},
+    /** 从任务中心带过来的目标档（all/daily/onboarding/plans/growth）；空回落全部。 */
+    initialTier: String? = null,
     modifier: Modifier = Modifier,
 ) {
     val C = agateColors()
@@ -105,7 +107,7 @@ fun CheckinCenterPage(
      * 按原顺序全渲染）；选某一档时其余卡不进入组合树。`expanded` 留在页面级，
      * 所以切档来回，用户展开过的分组仍然记得。
      */
-    var taskTier by remember { mutableStateOf("all") }
+    var taskTier by remember { mutableStateOf(CheckinTierFocus.normalize(initialTier)) }
 
     /**
      * 每日签到卡内的 provider 筛选：`null` = 全部（默认）。
@@ -225,11 +227,9 @@ fun CheckinCenterPage(
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
-                    NavChip("全部", taskTier == "all") { taskTier = "all" }
-                    NavChip("每日签到", taskTier == "daily") { taskTier = "daily" }
-                    NavChip("新手福利", taskTier == "onboarding") { taskTier = "onboarding" }
-                    NavChip("活动福利", taskTier == "plans") { taskTier = "plans" }
-                    NavChip("成长任务", taskTier == "growth") { taskTier = "growth" }
+                    CheckinTierFocus.TIERS.forEach { (value, label) ->
+                        NavChip(label, taskTier == value) { taskTier = value }
+                    }
                 }
                 Spacer(Modifier.height(8.dp))
                 NavRowLabel("功能页")
@@ -247,7 +247,7 @@ fun CheckinCenterPage(
             TaskGap()
 
             // ── 每日签到 ──
-            if (taskTier == "all" || taskTier == "daily") {
+            if (taskTier == CheckinTierFocus.ALL || taskTier == CheckinTierFocus.DAILY) {
                 DailyCard(
                     snap = snap,
                     expanded = expanded,
@@ -264,19 +264,19 @@ fun CheckinCenterPage(
             }
 
             // ── 新手福利 ──
-            if (taskTier == "all" || taskTier == "onboarding") {
+            if (taskTier == CheckinTierFocus.ALL || taskTier == CheckinTierFocus.ONBOARDING) {
                 OnboardingCard(snap = snap, busyKey = busyKey, onBusy = { busyKey = it }, onToast = { toast(it) })
                 TaskGap()
             }
 
             // ── 活动福利 ──
-            if (taskTier == "all" || taskTier == "plans") {
+            if (taskTier == CheckinTierFocus.ALL || taskTier == CheckinTierFocus.PLANS) {
                 PlanCard(snap = snap, busyKey = busyKey, onBusy = { busyKey = it }, onToast = { toast(it) })
                 TaskGap()
             }
 
             // ── 成长任务 ──
-            if (taskTier == "all" || taskTier == "growth") {
+            if (taskTier == CheckinTierFocus.ALL || taskTier == CheckinTierFocus.GROWTH) {
                 GrowthCard(snap = snap, onToast = { toast(it) })
             }
 

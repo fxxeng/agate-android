@@ -95,6 +95,7 @@ import dev.agate.android.ui.provider.AddProviderPage
 import dev.agate.android.ui.provider.ProviderDetailPage
 import dev.agate.android.ui.provider.ProviderPage
 import dev.agate.android.ui.tasks.TasksPage
+import dev.agate.android.ui.tasks.CheckinTierFocus
 import dev.agate.android.ui.tasks.CheckinCenterPage
 import dev.agate.android.ui.tasks.CheckinSchedulePage
 import dev.agate.android.ui.tasks.CheckinRecordsPage
@@ -466,9 +467,14 @@ fun AgateNavHost(
                 composable(Routes.TASKS) {
                     TasksPage(
                         onOpenDrawer = { openDrawer() },
-                        onOpenCheckin = { navController.navigate(Routes.TASK_CHECKIN) },
+                        // 一次性焦点带上目标档，签到中心打开即落在这一档（见 CheckinTierFocus）
+                        onOpenCheckin = { tier ->
+                            CheckinTierFocus.set(tier)
+                            navController.navigate(Routes.TASK_CHECKIN)
+                        },
                         onOpenSchedule = { navController.navigate(Routes.TASK_SCHEDULE) },
                         onOpenRecords = { navController.navigate(Routes.TASK_RECORDS) },
+                        onOpenRecovery = { navController.navigate(Routes.TASK_RECOVERY) },
                         onOpenPeriodic = { navController.navigate(Routes.TASK_PERIODIC) },
                     )
                 }
@@ -526,6 +532,8 @@ fun AgateNavHost(
                         onOpenSchedule = { navController.navigate(Routes.TASK_SCHEDULE) },
                         onOpenRecords = { navController.navigate(Routes.TASK_RECORDS) },
                         onOpenRecovery = { navController.navigate(Routes.TASK_RECOVERY) },
+                        // 取走任务中心带来的目标档（一次性）；从别处进入时为 null → 回落「全部」
+                        initialTier = CheckinTierFocus.take(),
                     )
                 }
                 composable(Routes.TASK_RECOVERY) {

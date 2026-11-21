@@ -4,6 +4,8 @@ import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -60,13 +62,21 @@ import org.json.JSONObject
  * 上游**没有这个 UI**：`ui/zcode-captcha-pool.js` 是后台守卫脚本（每 2.5s
  * 轮询，`needsTokens` 才补货），页面里没有挂载点。手机上不铸令牌，
  * 所以这里只给读数与节奏设置（见 [CaptchaSheet]）。
+ *
+ * ── 任务类型标签组 ──────────────────────────────────────────
+ * 参考上游签到中心的 sections 分类：全部/每日签到/新手福利/活动福利/成长
+ * 任务。标签只切「渲染哪张卡」，读数全来自 [CheckinCenter.Snap]，不额外打
+ * 上游；点某类的「进入签到中心」带上该档，签到中心打开就停在对应档。
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun TasksPage(
     onOpenDrawer: () -> Unit = {},
-    onOpenCheckin: () -> Unit = {},
+    /** 进入签到中心；参数是目标档位（all/daily/onboarding/plans/growth）。 */
+    onOpenCheckin: (String) -> Unit = {},
     onOpenSchedule: () -> Unit = {},
     onOpenRecords: () -> Unit = {},
+    onOpenRecovery: () -> Unit = {},
     onOpenPeriodic: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
@@ -79,6 +89,8 @@ fun TasksPage(
     var busy by remember { mutableStateOf(false) }
     var captcha by remember { mutableStateOf<JSONObject?>(null) }
     var showCaptchaSheet by remember { mutableStateOf(false) }
+    /** 任务类型标签组选中档；只决定渲染哪张卡，不参与取数。 */
+    var taskTier by remember { mutableStateOf(CheckinTierFocus.ALL) }
 
     fun toast(text: String) = Toast.makeText(ctx, text, Toast.LENGTH_SHORT).show()
 
@@ -131,14 +143,17 @@ fun TasksPage(
                 TaskGap()
             }
 
-            TodayProgressCard(snap = snap, onOpenCheckin = onOpenCheckin)
+            TodayProgressCard(snap = snap, onOpenCheckin = { onOpenCheckin(CheckinTierFocus.ALL) })
             TaskGap()
 
-            EntryCard(
+            TierSection(
                 snap = snap,
+                tier = taskTier,
+                onTier = { taskTier = it },
                 onOpenCheckin = onOpenCheckin,
                 onOpenSchedule = onOpenSchedule,
                 onOpenRecords = onOpenRecords,
+                onOpenRecovery = onOpenRecovery,
                 onOpenPeriodic = onOpenPeriodic,
             )
             TaskGap()
@@ -240,72 +255,158 @@ private fun TodayProgressCard(snap: CheckinCenter.Snap, onOpenCheckin: () -> Uni
     }
 }
 
-/* ── 四个入口 ── */
+/* ── 任务类型标签组（全部 / 每日 / 新手 / 活动 / 成长）── */
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun EntryCard(
+private fun TierSection(
     snap: CheckinCenter.Snap,
-    onOpenCheckin: () -> Unit,
+    tier: String,
+    onTier: (String) -> Unit,
+    onOpenCheckin: (String) -> Unit,
     onOpenSchedule: () -> Unit,
     onOpenRecords: () -> Unit,
+    onOpenRecovery: () -> Unit,
     onOpenPeriodic: () -> Unit,
+) {
+    val C = agateColors()
+    TaskCard {
+        TaskCardHeader(title = "任务类型")
+        TaskDivider()
+        Spacer(Modifier.height(8.dp))
+
+        // 第一行：任务类型标签（切渲染哪张卡，不取数）。复用签到中心的 NavChip。
+        FlowRow(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            CheckinTierFocus.TIERS.forEach { (value, label) ->
+                NavChip(text = label, selected = tier == value, onClick = { onTier(value) })
+            }
+        }
+        Spacer(Modifier.height(10.dp))
+
+        // 第二行内容区：全部档给四行摘要；单类型档给该类读数 + 直达按钮。
+        when (tier) {
+            CheckinTierFocus.ALL -> TierSummary(snap, onOpenCheckin)
+            CheckinTierFocus.DAILY -> TierDetail(
+                title = "每日签到",
+                reading = buildString {
+                    append("今日 ${snap.todayDone}/${snap.todayEligible} 已签")
+                    if (snap.keepalive.isNotEmpty()) append(" · 保活链 ${snap.keepalive.size} 个模型")
+                },
+                enterLabel = "进入签到中心 · 每日",
+                onEnter = { onOpenCheckin(CheckinTierFocus.DAILY) },
+            )
+            CheckinTierFocus.ONBOARDING -> TierDetail(
+                title = "新手福利",
+                reading = "待查 ${snap.unsettledOnboarding} 项 · 一次性福利，领完不重复查",
+                enterLabel = "进入签到中心 · 新手",
+                onEnter = { onOpenCheckin(CheckinTierFocus.ONBOARDING) },
+            )
+            CheckinTierFocus.PLANS -> TierDetail(
+                title = "活动福利",
+                reading = "${snap.plans.size} 个套餐账号 · 领取需滑块验证",
+                enterLabel = "进入签到中心 · 活动",
+                onEnter = { onOpenCheckin(CheckinTierFocus.PLANS) },
+            )
+            CheckinTierFocus.GROWTH -> TierDetail(
+                title = "成长任务",
+                reading = "${snap.growth.size} 个账号 · 接单 + 点亮 + 领奖",
+                enterLabel = "进入签到中心 · 成长",
+                onEnter = { onOpenCheckin(CheckinTierFocus.GROWTH) },
+            )
+        }
+
+        Spacer(Modifier.height(10.dp))
+        TaskDivider()
+        Spacer(Modifier.height(8.dp))
+
+        // 功能页入口：不属于任务类型，常驻在卡尾，不受标签切换影响。
+        NavRowLabel("功能页")
+        Spacer(Modifier.height(4.dp))
+        FlowRow(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            NavChip("定时签到", selected = false) { onOpenSchedule() }
+            NavChip("签到记录", selected = false) { onOpenRecords() }
+            NavChip("补签恢复", selected = false) { onOpenRecovery() }
+            NavChip("周期任务", selected = false) { onOpenPeriodic() }
+        }
+    }
+}
+
+/** 「全部」档：四类各一行摘要，点行进签到中心对应档（不是只切标签）。 */
+@Composable
+private fun TierSummary(
+    snap: CheckinCenter.Snap,
+    onOpenCheckin: (String) -> Unit,
 ) {
     val C = agateColors()
     val unsettled = snap.unsettledOnboarding
     val planCount = snap.plans.size
     val growthCount = snap.growth.size
 
-    TaskCard {
-        TaskCardHeader(title = "分区")
-        TaskDivider()
-
+    Column {
         TaskRow(
-            title = "签到中心",
-            avatarColorKey = "签到中心",
+            title = "每日签到",
+            avatarColorKey = "每日签到",
             letters = "签",
-            subtitle = buildString {
-                append("每日 ${snap.todayDone}/${snap.todayEligible}")
-                if (unsettled > 0) append(" · 待查新手福利 $unsettled")
-                if (planCount > 0) append(" · 套餐账号 $planCount")
-                if (growthCount > 0) append(" · 成长任务 $growthCount")
-            },
-            onClick = onOpenCheckin,
+            subtitle = "今日 ${snap.todayDone}/${snap.todayEligible} · 保活链 ${snap.keepalive.size} 个模型",
+            onClick = { onOpenCheckin(CheckinTierFocus.DAILY) },
+        ) {
+            if (snap.todayEligible > 0 && snap.todayDone >= snap.todayEligible) TaskTag("已签完", C.green)
+            Text("›", color = C.textDim, fontSize = 16.sp)
+        }
+        TaskRow(
+            title = "新手福利",
+            avatarColorKey = "新手福利",
+            letters = "新",
+            subtitle = if (unsettled > 0) "一次性福利 · 待查 $unsettled 项" else "一次性福利 · 已结清",
+            onClick = { onOpenCheckin(CheckinTierFocus.ONBOARDING) },
         ) {
             if (unsettled > 0) TaskTag("$unsettled 项", C.amber)
-            else if (snap.todayEligible > 0 && snap.todayDone >= snap.todayEligible) TaskTag("已签完", C.green)
             Text("›", color = C.textDim, fontSize = 16.sp)
         }
-
         TaskRow(
-            title = "定时签到",
-            avatarColorKey = "定时签到",
-            letters = "时",
-            subtitle = "${snap.schedulesEnabled}/${snap.schedulesTotal} 条启用 · 保活链 ${snap.keepalive.size} 个模型",
-            onClick = onOpenSchedule,
-        ) {
-            TaskTag(if (snap.autoEnabled) "开" else "关", if (snap.autoEnabled) C.green else C.textDim)
-            Text("›", color = C.textDim, fontSize = 16.sp)
-        }
-
-        TaskRow(
-            title = "签到记录",
-            avatarColorKey = "签到记录",
-            letters = "记",
-            subtitle = "每账号一条明细 · 服务端分页",
-            onClick = onOpenRecords,
+            title = "活动福利",
+            avatarColorKey = "活动福利",
+            letters = "活",
+            subtitle = "${planCount} 个套餐账号 · 领取需滑块验证",
+            onClick = { onOpenCheckin(CheckinTierFocus.PLANS) },
         ) {
             Text("›", color = C.textDim, fontSize = 16.sp)
         }
-
         TaskRow(
-            title = "周期任务",
-            avatarColorKey = "周期任务",
-            letters = "周",
-            subtitle = "凭证维护 / 模型刷新 / 三条页面刷新",
-            onClick = onOpenPeriodic,
+            title = "成长任务",
+            avatarColorKey = "成长任务",
+            letters = "成",
+            subtitle = "$growthCount 个账号 · 接单 + 点亮 + 领奖",
+            onClick = { onOpenCheckin(CheckinTierFocus.GROWTH) },
         ) {
             Text("›", color = C.textDim, fontSize = 16.sp)
         }
+    }
+}
+
+/** 单类型档：真实读数 + 直达签到中心对应档的按钮。 */
+@Composable
+private fun TierDetail(title: String, reading: String, enterLabel: String, onEnter: () -> Unit) {
+    val C = agateColors()
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .background(C.insetBg, RoundedCornerShape(12.dp))
+            .padding(horizontal = 12.dp, vertical = 11.dp),
+    ) {
+        Text(title, color = C.textMain, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+        Spacer(Modifier.height(5.dp))
+        Text(reading, style = AgateType.Caption, color = C.textSub, lineHeight = 17.sp)
+        Spacer(Modifier.height(9.dp))
+        TaskBtn(enterLabel, primary = true, onClick = onEnter)
     }
 }
 
