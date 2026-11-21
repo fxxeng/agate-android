@@ -1,4 +1,11 @@
-//! KukuAI 登录：**主站网页登录**（`kuku.baidu.com`）+ 壳侧读完整会话 Cookie 收尾。
+//! KukuAI 登录：**主站网页登录**（`kuku.baidu.com`）+ 窗口侧读完整会话 Cookie 收尾。
+//!
+//! ── 两个窗口形态，同一条收尾 ────────────────────────────────
+//! 桌面壳用 WebView2 的 Cookie 存储（`desktop-tauri/src/login.rs` 的
+//! `submit_kuku_login`）；Android 用内嵌 WebView 的 `CookieManager`
+//! （`AuthWebViewSheet`，按 `ProviderPreset.sessionCookieNames = ["BDUSS"]` 判
+//! 登录成功）。两者都 POST `{state, cookie}` 到本文件的收尾路由 ——
+//! 平台差异只在「怎么读到 HttpOnly Cookie」，不在协议上。
 //!
 //! ── 为什么不是纯 API 短信、也不是 passport 页面自动化 ─────────
 //! 百度 passport 的短信发码（`senddpass`）带一串 wappass 风控签名参数（由

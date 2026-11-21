@@ -51,6 +51,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.agate.android.data.AccountOps
 import dev.agate.android.data.CustomProviderOps
+import dev.agate.android.data.QuworkOps
 import dev.agate.android.data.ProviderIdentityOps
 import dev.agate.android.data.GatewayRepository
 import dev.agate.android.data.ScheduledTaskOps
@@ -849,6 +850,13 @@ private fun AccountBlock(
         if (acc.provider == "zcode" || acc.provider == "zcode-intl") {
             ZcodePlanRow(acc = acc, busy = busy, onPatch = onPatchAccount)
         }
+        // ── 权益（QuWork，**账号级**）───────────────────────────────
+        // 月度赠送只读；兑换用的是该账号的登录凭证，同家两个账号权益互不相通。
+        // 折叠显示：常驻行只放状态 / 操作，明细展开才拉（一次上游请求，
+        // 页面加载不该替用户打）。读失败 / 兑换失败都给明确文案，不静默吞。
+        if (acc.provider == "quwork") {
+            QuworkBenefitsSection(acc = acc)
+        }
         Spacer(Modifier.height(8.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             SmallAction("置顶", enabled = !busy, onClick = onPin)
@@ -1523,6 +1531,236 @@ private fun SettingsTab(
         }
         Spacer(Modifier.height(24.dp))
     }
+}
+
+/* ───────────── QuWork 权益（账号级，折叠） ───────────── */
+/**
+ * QuWork 权益折叠区（仅 `acc.provider == "quwork"` 显示）。
+ *
+ * ── 为什么折叠 ───────────────────────────────────────────────
+ * 月度赠送 + 兑换明细是低频操作，且兑换要打上游：常驻行只放状态与「查看」，
+ * 展开才拉一次 benefits，页面加载不替用户打（与网关控制页同一纪律）。
+ * 这里用本文件局部 `Card` + `expanded`（同 [ClineHeadersCard]），而不是
+ * AgateAccordion —— 后者自己持有 expanded，展开时没法触发按需拉取。
+ *
+ * ── 三条不自己算的事 ─────────────────────────────────────────
+ * 1. 月度赠送只读：上游没有领取端点，不给按钮（给了就是骗点击）。
+ * 2. 兑换二选一：订单号（int64 数字）与邀请码走同一 redeem 端点的不同 body 键，
+ *    按用户填在哪个框就按哪个兑；两个都填本地先拦（内核同样 400）。
+ * 3. 成功文案写「上游确认」而不是「已到账」——回执没有增量字段；
+ *    积分是另一次回读的当前值，不当成「本次到账」。
+ */
+@Composable
+private fun QuworkBenefitsSection(acc: AccountDto) {
+    val C = agateColors()
+    val scope = rememberCoroutineScope()
+    var expanded by remember { mutableStateOf(false) }
+    var board by remember { mutableStateOf<QuworkOps.Benefits?>(null) }
+    var loading by remember { mutableStateOf(false) }
+    var orderId by remember { mutableStateOf("") }
+    var inviteCode by remember { mutableStateOf("") }
+    var redeemBusy by remember { mutableStateOf(false) }
+    var hint by remember { mutableStateOf<String?>(null) }
+    var okHint by remember { mutableStateOf<String?>(null) }
+
+    fun reload() {
+        if (loading) return
+        loading = true
+        scope.launch {
+            board = QuworkOps.benefits(acc.id)
+            loading = false
+        }
+    }
+
+    // 展开才拉一次；重复展开会再拉（不依赖缓存，兑换后也要回读）。
+    LaunchedEffect(expanded, acc.id) {
+        if (expanded) reload()
+    }
+
+    fun submit() {
+        if (redeemBusy) return
+        val order = orderId.trim()
+        val invite = inviteCode.trim()
+        when {
+            order.isNotEmpty() && invite.isNotEmpty() -> {
+                okHint = null
+                hint = "订单号与邀请码只能填一项：兑换码填邀请码，官网订单填订单号"
+                return
+            }
+            order.isEmpty() && invite.isEmpty() -> {
+                okHint = null
+                hint = "请填写订单号（16 位数字）或邀请码"
+                return
+            }
+        }
+        // 订单号按 int64 发出：先在本地把字符串转成 Long，拒绝非数字输入，
+        // 免得把「字符串订单号」送到上游被拒后再回来猜原因。
+        val orderLong = if (order.isNotEmpty()) order.toLongOrNull() else null
+        if (order.isNotEmpty() && orderLong == null) {
+            okHint = null
+            hint = "订单号必须是数字（int64），请检查后重试"
+            return
+        }
+        redeemBusy = true
+        hint = null
+        okHint = null
+        scope.launch {
+            val result = QuworkOps.redeem(
+                acc.id,
+                orderId = orderLong,
+                inviteCode = invite.takeIf { it.isNotEmpty() },
+            )
+            redeemBusy = false
+            if (result.ok) {
+                okHint = result.message.ifBlank { "上游已确认兑换成功" }
+                orderId = ""
+                inviteCode = ""
+                // 兑换可能带来一条新的赠送记录：回读刷新（读失败也只是展示不变）
+                board = QuworkOps.benefits(acc.id)
+            } else {
+                hint = result.message.ifBlank { "兑换失败" }
+            }
+        }
+    }
+
+    Card {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("权益 · 月度赠送", color = C.textMain, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(4.dp))
+                val b = board
+                val status = when {
+                    loading -> "读取中…"
+                    b == null -> "未读取 · 展开查看"
+                    b.unavailable -> (b.error ?: "暂不可用")
+                    else -> "共 ${b.items.size} 条赠送记录"
+                }
+                Text(status, color = if (b?.unavailable == true) C.red else C.textDim, fontSize = 11.sp)
+            }
+            SmallAction(if (expanded) "收起" else "查看", onClick = { expanded = !expanded })
+        }
+
+        if (expanded) {
+            Spacer(Modifier.height(10.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "月度赠送", color = C.textSub, fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.weight(1f),
+                )
+                SmallAction("刷新", enabled = !loading, onClick = { reload() })
+            }
+            Text("官方按月下发，这里只读（上游没有领取接口）", color = C.textDim, fontSize = 10.5.sp)
+            Spacer(Modifier.height(6.dp))
+            val current = board
+            when {
+                current == null -> Text(
+                    if (loading) "读取中…" else "暂不可用",
+                    color = C.textDim, fontSize = 12.sp,
+                )
+                current.unavailable -> Text(
+                    current.error ?: "暂不可用（上游没有返回月度赠送）",
+                    color = C.red, fontSize = 12.sp,
+                )
+                current.items.isEmpty() -> Text(
+                    if (loading) "读取中…" else "当前没有月度赠送记录",
+                    color = C.textDim, fontSize = 12.sp,
+                )
+                else -> current.items.forEach { gift ->
+                    Column(Modifier.fillMaxWidth().padding(vertical = 5.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                gift.period.ifBlank { "赠送记录" },
+                                color = C.textMain, fontSize = 12.5.sp,
+                                modifier = Modifier.weight(1f),
+                            )
+                            if (gift.status.isNotBlank()) {
+                                Text(gift.status, color = C.textSub, fontSize = 11.sp)
+                            }
+                        }
+                        val times = buildList {
+                            fmtGiftDate(gift.expectedAt)?.let { add("应到账 $it") }
+                            fmtGiftDate(gift.actualAt)?.let { add("实际 $it") }
+                        }
+                        if (times.isNotEmpty()) {
+                            Text(times.joinToString(" · "), color = C.textDim, fontSize = 10.5.sp)
+                        }
+                        if (gift.extra.isNotEmpty()) {
+                            Text(
+                                gift.extra.joinToString(" · ") { (key, value) -> "$key $value" },
+                                color = C.textDim, fontSize = 10.5.sp, maxLines = 2,
+                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                            )
+                        }
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(10.dp))
+            Text("权益兑换", color = C.textSub, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+            Text(
+                "订单号（官网订单，16 位数字）",
+                color = C.textDim, fontSize = 10.5.sp,
+                modifier = Modifier.padding(top = 4.dp),
+            )
+            OutlinedTextField(
+                value = orderId,
+                onValueChange = { orderId = it.trim().take(19) },
+                singleLine = true,
+                enabled = !redeemBusy,
+                placeholder = { Text("例如 1234567890123456", fontSize = 12.sp, color = C.textDim) },
+                modifier = Modifier.fillMaxWidth().padding(top = 2.dp),
+            )
+            Text(
+                "或 邀请码（含字母的那种兑换码）",
+                color = C.textDim, fontSize = 10.5.sp,
+                modifier = Modifier.padding(top = 6.dp),
+            )
+            OutlinedTextField(
+                value = inviteCode,
+                onValueChange = { inviteCode = it.trim().take(64) },
+                singleLine = true,
+                enabled = !redeemBusy,
+                placeholder = { Text("例如 AB12CD", fontSize = 12.sp, color = C.textDim) },
+                modifier = Modifier.fillMaxWidth().padding(top = 2.dp),
+            )
+            Spacer(Modifier.height(8.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                SmallAction(
+                    text = if (redeemBusy) "兑换中…" else "兑换",
+                    primary = true,
+                    enabled = !redeemBusy,
+                    onClick = { submit() },
+                )
+                Spacer(Modifier.width(8.dp))
+                Text("需要登录凭证（accessToken）", color = C.textDim, fontSize = 10.5.sp)
+            }
+            okHint?.let {
+                Spacer(Modifier.height(6.dp))
+                Text(it, color = C.green, fontSize = 12.sp)
+            }
+            hint?.let {
+                Spacer(Modifier.height(6.dp))
+                Text(it, color = C.red, fontSize = 12.sp)
+            }
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "兑换成功只代表上游确认受理；到账时间以上游为准。",
+                color = C.textDim, fontSize = 10.5.sp,
+            )
+        }
+    }
+}
+
+/** 赠送时间只显示到日（上游给的是毫秒时间戳；0 / 缺失时返回 null，不写「1970」）。 */
+private fun fmtGiftDate(ms: Long): String? {
+    if (ms <= 0) return null
+    val cal = java.util.Calendar.getInstance().apply { timeInMillis = ms }
+    return String.format(
+        "%04d-%02d-%02d",
+        cal.get(java.util.Calendar.YEAR),
+        cal.get(java.util.Calendar.MONTH) + 1,
+        cal.get(java.util.Calendar.DAY_OF_MONTH),
+    )
 }
 
 /* ───────────── 小件 ───────────── */

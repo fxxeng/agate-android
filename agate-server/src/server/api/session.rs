@@ -290,19 +290,18 @@ pub async fn login_start(State(state): State<ServerState>, body: Bytes) -> Respo
             }
         }
     }
-    // Qoder：设备授权，两站同构。拆家后界面上是两张卡片（`qoder` /
-    // `qoder-intl`），点哪张就发哪个 provider id —— 地区由 **provider id**
-    // 反查（与下面 ZCode 同一条理由：`edition` 是前端回显字段，拿它定地区
-    // 会让两张卡片共用一个表单时串味）。
-    if let Some(region) = crate::server::core::providers::qoder::endpoints::Region::from_kind(kind)
-    {
-        let handle = match state.login().start_qoder_login(region) {
+    // Qoder / 千问办公：设备授权，三站同构。界面上是三张卡片（`qoder` /
+    // `qoder-intl` / `qwenwork`），点哪张就发哪个 provider id —— 站点由
+    // **provider id** 反查（与下面 ZCode 同一条理由：`edition` 是前端回显字段，
+    // 拿它定站点会让几张卡片共用一个表单时串味）。
+    if let Some(site) = crate::server::core::providers::qoder::endpoints::Site::from_kind(kind) {
+        let handle = match state.login().start_qoder_login(site) {
             Ok(handle) => handle,
             Err(error) => return management_error(400, error),
         };
         let task = handle.snapshot();
         return ok_json(json!({ "state": task.state, "authUrl": task.auth_url,
-            "edition": task.edition, "provider": region.provider_id() }));
+            "edition": task.edition, "provider": site.provider_id() }));
     }
     // ZCode：**服务端中介的 CLI 轮询**（`/oauth/cli/init` 拿授权地址，
     // 用户在浏览器里授权后由后台任务轮询换令牌）。响应形状与 Qoder 那条
@@ -453,8 +452,8 @@ pub async fn login_start(State(state): State<ServerState>, body: Bytes) -> Respo
     // 「填写凭证」，而那条路只是绕远，不是必须。
     if let Some(region) = crate::server::core::providers::autoclaw::Region::from_kind(kind) {
         let message = if region == crate::server::core::providers::autoclaw::Region::Intl {
-            "AutoClaw 国际版的网页登录需要先完成一次风控验证，请回到「添加账号」弹窗，\
-             用「网页登录（Zai / Google）」发起"
+            "AutoClaw 国际版的网页登录需要先完成一次风控验证，\
+             请用本页的「Zai / Google」按钮发起（内嵌 / 浏览器两条普通通道都会走这条拦截）"
         } else {
             // 国内版确实没有 OAuth（上游 `oauth-captcha-config` 返回 enabled:false），
             // 它的官方唯一登录方式是手机验证码 —— 文案要指向那条
@@ -1191,10 +1190,12 @@ fn oauth_vendor_of(
     })
 }
 
-/// `GET /api/session/login/oauth/captcha-config` —— 取风控验证配置。
+/// `POST /api/session/login/oauth/captcha-config` —— 取风控验证配置。
 ///
 /// 前端据此初始化阿里云 SDK（`prefix` / `sceneId` 是 SDK 的必填参数）。
-/// `?provider=` 决定问哪个地区；缺省国内版。
+/// **地区从请求体的 `provider` 读**（`autoclaw` / `autoclaw-intl`），缺省国内版 ——
+/// 这条路由也挂了 GET（历史兼容），但 GET 没有 body，会问到国内版配置，所以
+/// 用它拿国际版的 sceneId 是拿不到的；新调用方一律 POST。
 ///
 /// ── 为什么这条单独成一个端点（不塞进 start）──────────────────
 /// 验证码要在**浏览器环境**里跑（SDK 是浏览器端 JS），而 SDK 初始化需要

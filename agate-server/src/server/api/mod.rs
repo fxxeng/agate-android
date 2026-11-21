@@ -128,6 +128,9 @@ pub mod protocol;
 pub mod proxies;
 pub mod qoder_umid;
 pub mod queue_api;
+// QuWork 权益：月度赠送（只读）与订单号 / 邀请码兑换
+// （`/api/accounts/{id}/quwork/*`，见该模块头）
+pub mod quwork_benefits;
 /// 第三方回答完自动折叠过程开关（GET/PUT /api/reasoning-collapse）。
 pub mod reasoning_collapse;
 pub mod retry_api;

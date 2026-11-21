@@ -71,6 +71,9 @@ object AccountOps {
      * - kuku：cookie 整串（BDUSS/STOKEN…），上游校验并补全昵称
      * - commandcode：apiKey（user_ 前缀）
      * - antigravity：refreshToken（email 可选）
+     * - modelscope / modelscope-intl：accessToken（内核 probe::identify 探活）
+     * - qwenwork：text（依赖服务端 qoder 粘贴入口，见分支注释）
+     * - quwork：text（llmToken 凭证整段）+ 可选 accessToken（登录态，权益兑换要用）
      */
     suspend fun addAccountFor(
         providerId: String,
@@ -86,6 +89,24 @@ object AccountOps {
             "antigravity" -> {
                 body.put("refreshToken", primary.trim())
                 if (!secondary.isNullOrBlank()) body.put("email", secondary.trim())
+            }
+            // ModelScope（魔搭）两家：只有一枚 `ms-` 令牌（既调推理又读身份 /
+            // 魔粒 / 签到），没有第二个字段 —— 表单 secondary 对这两家为空。
+            // 内核添加时会出网探活一次（probe::identify，顺带当日签到），
+            // 令牌无效或站点点错（国内令牌打国际站）在这一步 400，文案原样带回。
+            "modelscope", "modelscope-intl" -> body.put("accessToken", primary.trim())
+            // 千问办公 国内版（qwenwork）**没有粘贴通道**：预设是设备授权
+            // （DEVICE_CODE / EXTERNAL），内核 `prepare_account` 读的是 PAT
+            // （`pat` / `personalAccessToken`），这里递 `text` 恒失败。
+            // 与 main 一致，不提供该分支 —— 点卡片走设备授权，不要留一个
+            // 界面根本不会调用、调用了也 400 的死入口。
+            // QuWork（千问办公 1.6.0）：primary 是整段凭证（凭证 JSON / 纯 llmToken /
+            // yaml 行），由内核 quwork::credentials::normalize_paste 归一，客户端不解析。
+            // secondary 是可选的登录 accessToken（积分 / 续期 / 每日奖励 / 权益兑换要用），
+            // 与 main 同款放行；没有它权益区会提示需要登录凭证。
+            "quwork" -> {
+                body.put("text", primary.trim())
+                if (!secondary.isNullOrBlank()) body.put("accessToken", secondary.trim())
             }
             else -> return OpResult(false, null, "该提供商不支持粘贴凭证添加")
         }

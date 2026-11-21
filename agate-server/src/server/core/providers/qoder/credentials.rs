@@ -6,13 +6,17 @@ use crate::server::core::account_store::MAX_TOKEN_LENGTH;
 use crate::server::errors::GatewayError;
 use crate::server::logging;
 
-use super::endpoints::Region;
+use super::endpoints::Site;
 
 pub const REFRESH_MARGIN_MS: i64 = 5 * 60 * 1000;
 
+/// 千问办公的续期余量：刷新令牌只在访问令牌仍有效时可用，晚一步整号作废。
+/// 窗口必须远大于一次请求耗时，1 小时取自参考实现。
+pub const QWENWORK_REFRESH_MARGIN_MS: i64 = 60 * 60 * 1000;
+
 #[derive(Clone)]
 pub struct Credentials {
-    pub region: Region,
+    pub site: Site,
     pub access_token: String,
     pub refresh_token: String,
     pub expires_at: Option<i64>,
@@ -30,7 +34,7 @@ impl Credentials {
                 "Qoder 账号内容必须是 JSON 对象",
             ));
         }
-        let region = Region::from_payload(payload)?;
+        let site = Site::from_payload(payload)?;
         let access_token = secret(payload, &["accessToken", "access", "token", "access_token"])?;
         if access_token.is_empty() {
             return Err(GatewayError::with_status(
@@ -81,7 +85,7 @@ impl Credentials {
             .iter()
             .find_map(|key| timestamp(payload.get(*key)));
         let mut credentials = Self {
-            region,
+            site,
             access_token,
             refresh_token: refresh.clone(),
             expires_at,
@@ -100,6 +104,12 @@ impl Credentials {
             );
         }
         Ok(credentials)
+    }
+
+    /// 站点以 provider 身份为准（payload 里的 `mode` 只是兼容字段，见
+    /// `refresh::snapshot`）。
+    pub fn set_site(&mut self, site: Site) {
+        self.site = site;
     }
 
     pub fn complete_identity(&mut self) -> Result<(), GatewayError> {
@@ -155,10 +165,17 @@ impl Credentials {
     }
 
     pub fn expiring(&self) -> bool {
+        // 千问办公的窗口宽得多（见 `QWENWORK_REFRESH_MARGIN_MS`）：它的刷新
+        // 令牌只在访问令牌仍有效时可用，晚一步就整号作废。
+        let margin = if self.site.is_qwenwork() {
+            QWENWORK_REFRESH_MARGIN_MS
+        } else {
+            REFRESH_MARGIN_MS
+        };
         self.can_refresh()
             && self
                 .expires_at
-                .is_some_and(|expiry| expiry <= logging::now_ms() + REFRESH_MARGIN_MS)
+                .is_some_and(|expiry| expiry <= logging::now_ms() + margin)
     }
 
     pub fn to_value(&self) -> Value {
@@ -172,7 +189,7 @@ impl Credentials {
             }
         };
         json!({
-            "mode": self.region.id(),
+            "mode": self.site.id(),
             "accessToken": text_or_null(&self.access_token),
             "refreshToken": text_or_null(&self.refresh_token),
             "expiresAt": self.expires_at,

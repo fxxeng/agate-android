@@ -29,10 +29,10 @@
 
 use serde_json::{json, Value};
 
+use super::endpoints::{ModelConfigStyle, Site};
 use super::models::MAX_OUTPUT_TOKENS;
 
-/// 上游要求的会话类型与 agent 标识（源实现 `SESSION_TYPE` / `AGENT_ID`）
-const SESSION_TYPE: &str = "qodercli";
+/// 上游要求的 agent 标识（源实现 `AGENT_ID`）
 const AGENT_ID: &str = "agent_common";
 /// 上游的对话任务类型（源实现 `CHAT_TASK`）
 const CHAT_TASK: &str = "FREE_INPUT";
@@ -387,6 +387,7 @@ pub fn build_upstream_body(
     thinking: &ThinkingChoice,
     user_id: &str,
     session_seed: Option<&str>,
+    site: Site,
 ) -> Value {
     let limit = max_tokens
         .filter(|value| *value > 0)
@@ -424,10 +425,25 @@ pub fn build_upstream_body(
         None => {}
     }
 
+    // 千问办公：把上下文窗口一并声明出来（客户端与参考实现都这么做）。
+    // 它的目录只有一个 `max_input_tokens`、没有 `context_config` 那几档，
+    // `context.rs` 的升档逻辑因此永远不会触发；不声明的话上游按自己的默认
+    // 窗口走，长对话会在一半处被拒。值取目录给的，目录没给就用站点声明值。
+    if site.is_qwenwork() {
+        let declared = model_config
+            .get("max_input_tokens")
+            .and_then(Value::as_i64)
+            .filter(|value| *value > 0)
+            .unwrap_or_else(|| site.max_input_tokens());
+        if declared > 0 {
+            parameters.insert("context_length".to_string(), Value::from(declared));
+        }
+    }
+
     let request_id = super::cosy::random_uuid().unwrap_or_default();
     let session_id = session_id_for(user_id, upstream_key, session_seed);
 
-    json!({
+    let mut payload = json!({
         "request_id": request_id,
         "request_set_id": record_id,
         "chat_record_id": record_id,
@@ -438,7 +454,7 @@ pub fn build_upstream_body(
         "is_retry": false,
         "source": 1,
         "version": "3",
-        "session_type": SESSION_TYPE,
+        "session_type": site.session_type(),
         "agent_id": AGENT_ID,
         "task_id": "common",
         "code_language": "",
@@ -467,17 +483,36 @@ pub fn build_upstream_body(
             "features": [],
             "text": last_user_text,
         },
-        "model_config": slim_model_config(model_config, upstream_key),
+        "model_config": shape_model_config(model_config, upstream_key, site),
         "business": {
-            "product": "cli",
-            "version": "1.0.0",
+            "product": site.business_product(),
+            "version": site.business_version(),
             "type": "agent",
             "stage": "start",
             "id": super::cosy::random_uuid().unwrap_or_default(),
             "name": last_user_text.chars().take(30).collect::<String>(),
             "begin_at": crate::server::logging::now_ms(),
         },
-    })
+    });
+    // Qoder 后台按 business.model_key 归属模型；缺失时可能静默回落到 Auto，
+    // 用户明明选了具体模型却拿到另一个模型的回答。千问办公不读这个字段。
+    if !matches!(site, Site::QwenworkCn) {
+        if let Some(business) = payload.get_mut("business").and_then(Value::as_object_mut) {
+            business.insert(
+                "model_key".to_string(),
+                Value::String(upstream_key.to_string()),
+            );
+        }
+    }
+    payload
+}
+
+/// 按站点挑 `model_config` 的形状（见 [`ModelConfigStyle`]）。
+pub fn shape_model_config(config: &Value, upstream_key: &str, site: Site) -> Value {
+    match site.model_config_style() {
+        ModelConfigStyle::Qoder => slim_model_config(config, upstream_key),
+        ModelConfigStyle::Qwenwork => qwenwork_model_config(config, upstream_key, site),
+    }
 }
 
 /// 精简发往上游的 `model_config`（源实现 `slimModelConfig`）。
@@ -495,6 +530,54 @@ pub fn slim_model_config(config: &Value, upstream_key: &str) -> Value {
         }
     }
     Value::Object(slim)
+}
+
+/// 千问办公的 `model_config`（客户端那一份更宽的字段集）。
+///
+/// `display_name` 取上游 key（dumate2api 同款）—— 那只是给上游日志看的标注，
+/// 不参与路由；`max_input_tokens` 如实填目录声明值（超过它会整轮失败，不是
+/// 截断），目录没声明才退到站点声明值。
+fn qwenwork_model_config(config: &Value, upstream_key: &str, site: Site) -> Value {
+    let mut out = serde_json::Map::new();
+    out.insert("key".to_string(), Value::String(upstream_key.to_string()));
+    out.insert(
+        "display_name".to_string(),
+        Value::String(upstream_key.to_string()),
+    );
+    out.insert("model".to_string(), Value::String(String::new()));
+    out.insert(
+        "format".to_string(),
+        config
+            .get("format")
+            .cloned()
+            .unwrap_or_else(|| Value::String("openai".to_string())),
+    );
+    out.insert(
+        "is_vl".to_string(),
+        Value::Bool(config.get("is_vl").map(truthy).unwrap_or(false)),
+    );
+    out.insert(
+        "is_reasoning".to_string(),
+        Value::Bool(config.get("is_reasoning").map(truthy).unwrap_or(false)),
+    );
+    out.insert("api_key".to_string(), Value::String(String::new()));
+    out.insert("url".to_string(), Value::String(String::new()));
+    out.insert(
+        "source".to_string(),
+        config
+            .get("source")
+            .and_then(Value::as_str)
+            .filter(|text| !text.is_empty())
+            .map(|text| Value::String(text.to_string()))
+            .unwrap_or_else(|| Value::String("system".to_string())),
+    );
+    let max_input = config
+        .get("max_input_tokens")
+        .and_then(Value::as_i64)
+        .filter(|value| *value > 0)
+        .unwrap_or_else(|| site.max_input_tokens());
+    out.insert("max_input_tokens".to_string(), Value::from(max_input));
+    Value::Object(out)
 }
 
 /// 会话 id：同一账号 + 同一模型 + 同一种子派生同一个（源实现 `sessionIdFor`）。
@@ -571,7 +654,7 @@ pub fn map_model_back(name: &str) -> Option<String> {
             .and_then(Value::as_str)
             .map(str::to_string);
     }
-    super::models::resolve(name, super::endpoints::Region::Global)
+    super::models::resolve(name, super::endpoints::Site::QoderIntl)
         .and_then(|model| model.get("id").and_then(Value::as_str).map(str::to_string))
 }
 

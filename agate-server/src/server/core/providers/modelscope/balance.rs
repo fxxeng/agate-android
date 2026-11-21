@@ -52,13 +52,8 @@ pub async fn query(region: Region, token: &str) -> Result<Value, String> {
     // ── 主读数：魔粒钱包 ────────────────────────────────────
     let (status, balance_payload) =
         client::site_get(region, BALANCE_PATH, token, "魔粒余额查询").await?;
-    if status == 401 {
+    if status == 401 || status == 403 {
         return Err(client::expired_message(region, status, true));
-    }
-    if status == 403 {
-        return Err(format!(
-            "魔粒余额查询被上游拒绝（HTTP 403），请检查账号权限或稍后重试"
-        ));
     }
     if !(200..300).contains(&status) {
         return Err(format!("魔粒余额查询返回 HTTP {status}"));

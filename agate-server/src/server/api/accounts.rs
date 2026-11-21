@@ -223,18 +223,51 @@ fn kuku_credentials_from_b64_file(
     })
 }
 
-/// KukuAI 文件导入的临时 Cookies 文件路径（系统临时目录 + 随机文件名）。
+/// QuWork 文件导入（`authFileB64`）：用户拷来的 `qurwork-desktop.sqlite` → 凭证。
+///
+/// 与 KukuAI 那条同为「base64 → 解析」，区别只在解析器：QuWork 读的是桌面
+/// 客户端自己的 `auth_session.session_json`（明文 SQLite，见 `quwork::desktop_import`）。
+/// 这里**直接按内存字节解析、不落临时文件** —— KukuAI 之所以要落盘，是因为它
+/// 只有按路径工作的读取链；QuWork 有 `credentials_from_sqlite_bytes`，省掉这一步
+/// 也就没有「Android 上 `/data/local/tmp` 写不进去」的问题（见 `core::scratch::dir`
+/// 的取舍：能不写盘就不写盘）。
+///
+/// 状态码一律 400：这是「这次请求给的文件有问题」，不是服务端故障；文案统一经
+/// `describe_file_import_error` 带上原文件名。
+fn quwork_credentials_from_b64_file(
+    encoded: &str,
+    auth_file_name: Option<&str>,
+) -> Result<Value, AccountStoreError> {
+    let bytes = BASE64.decode(encoded).map_err(|error| {
+        describe_file_import_error(
+            AccountStoreError::new(
+                format!("authFileB64 不是合法的 base64（{error}）；请重新选择文件后再试"),
+                400,
+            ),
+            auth_file_name,
+        )
+    })?;
+    crate::server::core::providers::quwork::desktop_import::credentials_from_sqlite_bytes(&bytes)
+        .map_err(|message| {
+            describe_file_import_error(AccountStoreError::new(message, 400), auth_file_name)
+        })
+}
+
+/// KukuAI 文件导入的临时 Cookies 文件路径（`core::scratch` 下的随机文件名）。
 ///
 /// 随机段与 `proxy_pool::new_id` / `upstream::request::new_request_id` 同一手法
 /// （`RandomState` 的随机种子 + 毫秒 + 进程号，不引第三方依赖）：只要求并发写
 /// 不撞名，不承担安全语义（文件读完即删）。
+///
+/// ⚠️ 目录走 `core::scratch::dir()`：Android 的 `std::env::temp_dir()` 是
+/// `/data/local/tmp`，app 写不进去（真机上报 `Permission denied` os error 13）。
 fn kuku_temp_cookies_path() -> std::path::PathBuf {
     use std::hash::{BuildHasher, Hasher};
     let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
     hasher.write_u64(logging::now_ms() as u64);
     hasher.write_u64(std::process::id() as u64);
     let suffix = (hasher.finish() & 0xffff_ffff) as u32;
-    std::env::temp_dir().join(format!(
+    crate::server::core::scratch::dir().join(format!(
         "kuku-cookies-{}-{}-{suffix:08x}",
         std::process::id(),
         logging::now_ms()
@@ -493,6 +526,14 @@ pub async fn dispatch(
                 return super::growth::travel_run(&state, &id).await;
             }
         }
+        // QuWork 权益兑换（写）：订单号或邀请码，见 `api::quwork_benefits` 的模块头。
+        // 与上面的 provider 专属端点同一纪律：查询走 GET、动权益走 POST。
+        if let Some(id) = rest.strip_suffix("/quwork/redeem") {
+            let id = decode_segment(id);
+            if !id.is_empty() {
+                return super::quwork_benefits::redeem(&state, &id, body).await;
+            }
+        }
     }
 
     // ③' GET + /onboarding 结尾 → 新手任务状态（只读，签到后弹窗的查询口）。
@@ -514,6 +555,14 @@ pub async fn dispatch(
             let id = decode_segment(id);
             if !id.is_empty() {
                 return super::growth::status(&state, &id).await;
+            }
+        }
+        // QuWork 月度赠送列表（只读）。读不出时仍然 200，带 `ok:false` 与 `error`，
+        // 界面写「暂不可用」，见 `api::quwork_benefits`。
+        if let Some(id) = rest.strip_suffix("/quwork/benefits") {
+            let id = decode_segment(id);
+            if !id.is_empty() {
+                return super::quwork_benefits::monthly(&state, &id).await;
             }
         }
     }
@@ -790,21 +839,24 @@ pub async fn add_account(state: &ServerState, body: &Bytes) -> Response {
                 Err(reason) => Err(AccountStoreError::new(reason, 400)),
             }
         }
-        // Qoder（两个地区走同一份实现、按地区参数化，与 AutoClaw 同款）：
-        // 粘贴 PAT / 凭证 → 手动添加。拆家后界面上是两张卡片（`qoder` /
-        // `qoder-intl`），地区由 kind 反查（provider 身份是权威，payload 里
-        // 的 `mode` 只是兼容字段）。
+        // Qoder 系（中国版 / 国际版 / 千问办公国内版走同一份实现、按**站点**
+        // 参数化，与 AutoClaw 同款）：粘贴 PAT / 凭证 → 手动添加。拆家后界面上
+        // 是三张卡片（`qoder` / `qoder-intl` / `qwenwork`），站点由 kind 反查
+        // （provider 身份是权威，payload 里的 `mode` 只是兼容字段）。
+        //
+        // 千问办公没有 PAT（`Site::supports_pat` 为假），`prepare_account` 会
+        // 直接给一条明确的 400，而不是让请求飞过去拿 404。
         Some(
             kind @ (crate::server::core::providers::ProviderKind::Qoder
-            | crate::server::core::providers::ProviderKind::QoderIntl),
+            | crate::server::core::providers::ProviderKind::QoderIntl
+            | crate::server::core::providers::ProviderKind::Qwenwork),
         ) => {
-            let region = crate::server::core::providers::qoder::endpoints::Region::from_kind(kind)
-                .unwrap_or(crate::server::core::providers::qoder::endpoints::Region::Cn);
-            match crate::server::core::providers::qoder::auth::prepare_account(&payload, region)
-                .await
+            let site = crate::server::core::providers::qoder::endpoints::Site::from_kind(kind)
+                .unwrap_or(crate::server::core::providers::qoder::endpoints::Site::QoderCn);
+            match crate::server::core::providers::qoder::auth::prepare_account(&payload, site).await
             {
                 Ok(credentials) => {
-                    store.add_qoder_account(region, &credentials, import_name, "manual")
+                    store.add_qoder_account(site, &credentials, import_name, "manual")
                 }
                 Err(error) => Err(AccountStoreError::new(error.message, error.status_code)),
             }
@@ -1530,6 +1582,122 @@ pub async fn add_account(state: &ServerState, body: &Bytes) -> Response {
             )
         }
 
+        // ModelScope（魔搭，国内站 / 国际站两家）：**粘贴 `ms-` 令牌**
+        // → 出网探活一次（顺便就是当日签到）→ 拿上游的 HavanaId 做账号 id → 落账号。
+        //
+        // ── 为什么必须出网（与别家不同的地方）────────────────────
+        // 令牌是不透明的 `ms-…`，不是 JWT，**解不出任何身份**。不出网就只能拿
+        // 令牌尾号当 id —— 同一个账号换一次令牌就多出两条记录（用户看到
+        // 「我只有一个魔搭账号，怎么越加越多」）。所以这里的探活是**硬前置**：
+        // 失败就不落账号（`probe` 的模块头写了这个取舍）。
+        //
+        // 顺带的好处：令牌无效、或**站点点错**（国内令牌打国际站会 401
+        // `access forbidden`）在添加的那一刻就说清楚，而不是等第一次转发才失败。
+        //
+        // `importDesktop` 不提供：魔搭没有桌面客户端，没有可读的登录态文件
+        // （与 Loomy / MonkeyCode 同一处境）。
+        Some(
+            kind @ (crate::server::core::providers::ProviderKind::Modelscope
+            | crate::server::core::providers::ProviderKind::ModelscopeIntl),
+        ) => {
+            let region = crate::server::core::providers::modelscope::region::region_of_kind(kind)
+                .unwrap_or(crate::server::core::providers::modelscope::Region::Cn);
+            // ── 文件导入（对齐上游 `FileText`）────────────────────────
+            // 上游这里比别家宽：文件可能是带 `token` / `apiKey` 的 JSON，也可能
+            // 就是一枚裸 `ms-` 令牌 —— 解析不成 JSON 就整段当令牌（不报错）。
+            let (token, source) = match auth_file_content {
+                Some(content) => {
+                    let trimmed = content.trim();
+                    let token = match serde_json::from_str::<Value>(trimmed) {
+                        Ok(parsed) => {
+                            crate::server::core::providers::modelscope::credentials::token_from_payload(
+                                &parsed,
+                            )
+                        }
+                        Err(_) => trimmed.to_string(),
+                    };
+                    (token, "file")
+                }
+                None => {
+                    if import_desktop {
+                        return management_error(
+                            400,
+                            "ModelScope 没有桌面客户端，无法导入登录态；\
+                             请粘贴 ms- 开头的 API 令牌，或导入凭证文件",
+                        );
+                    }
+                    (
+                        crate::server::core::providers::modelscope::credentials::token_from_payload(
+                            &payload,
+                        ),
+                        "manual",
+                    )
+                }
+            };
+            if token.is_empty() {
+                return management_error(400, "请提供 ModelScope 令牌（ms- 开头）");
+            }
+            // 探活：一次调用拿「令牌是否可用」+「是谁」+ 当日签到
+            let identity =
+                match crate::server::core::providers::modelscope::probe::identify(region, &token)
+                    .await
+                {
+                    Ok(identity) => identity,
+                    Err(reason) => return management_error(400, reason),
+                };
+            store.add_modelscope_account(
+                region,
+                &token,
+                &identity.user_id,
+                &identity.display_name,
+                import_name,
+                source,
+            )
+        }
+        // QuWork（1.6.0）：**粘贴凭证 / 导入桌面客户端登录库** 两条入口，最终都
+        // 走同一个 `quwork::credentials::normalize_paste` 校验 + `add_quwork_account` 落库。
+        //
+        // ⚠️ `importDesktop` 仍然是**不支持的**：那条路径要求「按本机固定路径实时
+        // 读官方客户端」，而 Android 上没有 `%APPDATA%\qurwork-desktop`。差别在于
+        // 文件导入：用户可以把电脑上的 `qurwork-desktop.sqlite` 自己拷过来，本仓
+        // 只解析这次请求带来的字节（见 `quwork::desktop_import`）。
+        Some(crate::server::core::providers::ProviderKind::QuWork) => {
+            if import_desktop {
+                return management_error(
+                    400,
+                    "QuWork 不按本机路径读桌面客户端（手机上不存在客户端目录）。\
+                     请在电脑上把 qurwork-desktop.sqlite 拷到手机，用「导入凭证文件」选它；\
+                     也可以直接粘贴凭证 JSON、llmToken，或 .credentials.yaml 里的 QURIVS_LLM_API_KEY 行",
+                );
+            }
+            let mut secret = match auth_file_b64.filter(|_| auth_file_content.is_none()) {
+                // 二进制：用户拷来的桌面客户端登录库（只有它走这条）
+                Some(encoded) => match quwork_credentials_from_b64_file(encoded, auth_file_name) {
+                    Ok(secret) => secret,
+                    Err(error) => return store_error(error),
+                },
+                // 文本 / 手动粘贴：原路径不变（yaml 尾逗号截断已在
+                // `quwork::credentials::qurivs_key_from_yaml` 内实现，不在这里重复）
+                None => {
+                    let pasted = match auth_file_content {
+                        Some(content) => json!({ "text": content }),
+                        None => payload,
+                    };
+                    match crate::server::core::providers::quwork::credentials::normalize_paste(
+                        &pasted,
+                    ) {
+                        Ok(secret) => secret,
+                        Err(error) => return management_error(error.status_code, error.message),
+                    }
+                }
+            };
+            // 给了登录凭证就先补一次账号信息（uid / 昵称 / 手机号）：
+            // 上游 `normalize_account` 同款动作，身份串靠 `uid` 才能把
+            // 「同一个账号换了 llmToken 再粘一次」收敛到同一条记录。
+            // 探不到不阻断（模型凭证本身独立可用），见该函数注释。
+            crate::server::core::providers::quwork::credentials::enrich_user(&mut secret).await;
+            store.add_quwork_account(&secret, import_name, "manual")
+        }
         // WorkBuddy 系的两家（国内版 / 国际版）：同一套凭证形态与落账号路径，
         // 差别只有归属 —— provider id 自己就是归属（拆家后不再从 payload 里的
         // `edition` 反推：那是账号的属性，而落哪一家是身份问题）。
@@ -1542,13 +1710,10 @@ pub async fn add_account(state: &ServerState, body: &Bytes) -> Response {
         // provider 字段时无从选文件组，直接 400 而不是静默按国内版。
         Some(crate::server::core::providers::ProviderKind::WorkBuddy)
         | Some(crate::server::core::providers::ProviderKind::WorkBuddyIntl)
-        | Some(crate::server::core::providers::ProviderKind::Modelscope)
-        | Some(crate::server::core::providers::ProviderKind::ModelscopeIntl)
         | Some(crate::server::core::providers::ProviderKind::Atomcode)
         | Some(crate::server::core::providers::ProviderKind::LobsterAi)
         | Some(crate::server::core::providers::ProviderKind::Astudio)
         | Some(crate::server::core::providers::ProviderKind::Kiro)
-        | Some(crate::server::core::providers::ProviderKind::QuWork)
         | Some(crate::server::core::providers::ProviderKind::DeepSeekWeb)
         | Some(crate::server::core::providers::ProviderKind::Doubaowork)
         | Some(crate::server::core::providers::ProviderKind::Lingxi)
@@ -1866,11 +2031,11 @@ pub async fn refresh_account(state: &ServerState, body: &Bytes) -> Response {
             "自定义提供商账号的凭证由用户直接提供，无需刷新（更换凭证请重新添加或直接编辑）",
         );
     }
-    // Qoder（两个地区各查一次 —— 账号集合按 provider 隔离，同一 id 不可能
-    // 同时属于两家，与 Accio / AutoClaw 同一条遍历）
-    for region in crate::server::core::providers::qoder::endpoints::Region::ALL {
-        if state.store().qoder_account_record(region, &id).is_some() {
-            return refresh_provider_account(state, &id, region.kind()).await;
+    // Qoder / 千问办公（三个站点各查一次 —— 账号集合按 provider 隔离，同一 id
+    // 不可能同时属于两家，与 Accio / AutoClaw 同一条遍历）
+    for site in crate::server::core::providers::qoder::endpoints::Site::ALL {
+        if state.store().qoder_account_record(site, &id).is_some() {
+            return refresh_provider_account(state, &id, site.kind()).await;
         }
     }
     // CodeArts：一次性 refresh token + 写回，必须走适配器。

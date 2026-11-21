@@ -23,7 +23,7 @@ use crate::server::ServerState;
 /// GET /api/qoder-umid
 pub async fn get_status(_state: State<ServerState>) -> Response {
     ok_json(risk::status(
-        crate::server::core::providers::qoder::endpoints::Region::Global,
+        crate::server::core::providers::qoder::endpoints::Site::QoderIntl,
     ))
 }
 

@@ -59,7 +59,7 @@ use crate::server::core::proxies::ResolvedProxy;
 use crate::server::errors::GatewayError;
 
 use super::credentials::Credentials;
-use super::endpoints::Region;
+use super::endpoints::Site;
 use super::{auth, endpoints, refresh, risk};
 
 /// 活动类型：可领取权益（促销类活动是 `VIEW_DETAILS`，不是签到，不能领）
@@ -83,7 +83,7 @@ const DEFAULT_REWARD: f64 = 100.0;
 /// 根本不包含每日权益活动。此函数不调用 claim 端点。
 pub async fn inspect_uncertain_claim(
     store: &AccountStore,
-    region: Region,
+    site: Site,
     account_id: &str,
     run_started_at_ms: i64,
 ) -> Result<Value, GatewayError> {
@@ -91,27 +91,27 @@ pub async fn inspect_uncertain_claim(
     let run_started_at_sec = run_started_at_ms.div_euclid(1000);
     if run_started_at_ms <= 0 || run_started_at_sec <= 0 {
         return Ok(unknown_reconciliation(
-            region,
+            site,
             observed_at_ms,
             "签到运行时间无效，无法匹配活动窗口",
         ));
     }
 
-    let mut credentials = match refresh::ensure_fresh(store, region, account_id, false).await {
+    let mut credentials = match refresh::ensure_fresh(store, site, account_id, false).await {
         Ok(value) => value,
         Err(error) => {
             return Ok(unknown_reconciliation(
-                region,
+                site,
                 observed_at_ms,
                 &format!("凭证准备失败: {error}"),
             ))
         }
     };
-    let (record, _) = match refresh::snapshot(store, region, account_id) {
+    let (record, _) = match refresh::snapshot(store, site, account_id) {
         Ok(value) => value,
         Err(error) => {
             return Ok(unknown_reconciliation(
-                region,
+                site,
                 observed_at_ms,
                 &format!("账号快照读取失败: {error}"),
             ))
@@ -121,7 +121,7 @@ pub async fn inspect_uncertain_claim(
         Ok(value) => value,
         Err(error) => {
             return Ok(unknown_reconciliation(
-                region,
+                site,
                 observed_at_ms,
                 &format!("账号代理配置不可用: {error}"),
             ))
@@ -132,18 +132,18 @@ pub async fn inspect_uncertain_claim(
         Ok(value) => value,
         Err(error) => {
             return Ok(unknown_reconciliation(
-                region,
+                site,
                 observed_at_ms,
                 &format!("上游活动查询失败: {error}"),
             ))
         }
     };
     if first.status == 401 && credentials.can_refresh() {
-        credentials = match refresh::ensure_fresh(store, region, account_id, true).await {
+        credentials = match refresh::ensure_fresh(store, site, account_id, true).await {
             Ok(value) => value,
             Err(error) => {
                 return Ok(unknown_reconciliation(
-                    region,
+                    site,
                     observed_at_ms,
                     &format!("凭证刷新失败: {error}"),
                 ))
@@ -153,7 +153,7 @@ pub async fn inspect_uncertain_claim(
             Ok(value) => value,
             Err(error) => {
                 return Ok(unknown_reconciliation(
-                    region,
+                    site,
                     observed_at_ms,
                     &format!("凭证刷新后活动查询失败: {error}"),
                 ))
@@ -164,14 +164,14 @@ pub async fn inspect_uncertain_claim(
         Ok(value) => value,
         Err(error) => {
             return Ok(unknown_reconciliation(
-                region,
+                site,
                 observed_at_ms,
                 &format!("上游活动查询不可用: {error}"),
             ));
         }
     };
 
-    let list = if region == Region::Global {
+    let list = if site == Site::QoderIntl {
         let uid = first_list
             .get("uid")
             .and_then(Value::as_str)
@@ -179,14 +179,14 @@ pub async fn inspect_uncertain_claim(
             .trim();
         if uid.is_empty() {
             return Ok(unknown_reconciliation(
-                region,
+                site,
                 observed_at_ms,
                 "国际版活动列表缺少 uid，无法构造设备风控身份",
             ));
         }
         let (headers, _) = risk::augment_headers(
             endpoints::sash_headers(&credentials.access_token),
-            region,
+            site,
             uid,
         )
         .await;
@@ -194,7 +194,7 @@ pub async fn inspect_uncertain_claim(
             Ok(response) => response,
             Err(error) => {
                 return Ok(unknown_reconciliation(
-                    region,
+                    site,
                     observed_at_ms,
                     &format!("国际版风控活动查询失败: {error}"),
                 ));
@@ -204,7 +204,7 @@ pub async fn inspect_uncertain_claim(
             Ok(value) => value,
             Err(error) => {
                 return Ok(unknown_reconciliation(
-                    region,
+                    site,
                     observed_at_ms,
                     &format!("国际版风控活动查询不可用: {error}"),
                 ));
@@ -218,14 +218,14 @@ pub async fn inspect_uncertain_claim(
         &list,
         run_started_at_sec,
         observed_at_ms,
-        region,
+        site,
     ))
 }
 
-fn unknown_reconciliation(region: Region, observed_at_ms: i64, reason: &str) -> Value {
+fn unknown_reconciliation(site: Site, observed_at_ms: i64, reason: &str) -> Value {
     json!({
         "verdict": "unknown",
-        "provider": region.provider_id(),
+        "provider": site.provider_id(),
         "evidenceType": "campaign_claim_status",
         "observedAt": observed_at_ms,
         "reason": reason,
@@ -237,10 +237,10 @@ fn classify_campaign_reconciliation(
     list: &Value,
     run_started_at_sec: i64,
     observed_at_ms: i64,
-    region: Region,
+    site: Site,
 ) -> Value {
     let Some(rows) = list.get("campaigns").and_then(Value::as_array) else {
-        return unknown_reconciliation(region, observed_at_ms, "上游响应缺少 campaigns 数组");
+        return unknown_reconciliation(site, observed_at_ms, "上游响应缺少 campaigns 数组");
     };
 
     let matching: Vec<&Value> = rows
@@ -262,7 +262,7 @@ fn classify_campaign_reconciliation(
         } else {
             "多个每日权益活动覆盖本次运行时间，无法唯一归属"
         };
-        return unknown_reconciliation(region, observed_at_ms, reason);
+        return unknown_reconciliation(site, observed_at_ms, reason);
     }
 
     let campaign = matching[0];
@@ -283,14 +283,14 @@ fn classify_campaign_reconciliation(
         .and_then(Value::as_str)
         .unwrap_or("");
     if campaign_id.is_empty() {
-        return unknown_reconciliation(region, observed_at_ms, "匹配活动缺少 campaignId");
+        return unknown_reconciliation(site, observed_at_ms, "匹配活动缺少 campaignId");
     }
 
     if status != STATUS_CLAIMED {
         // CLAIMABLE / 未知状态都不能证明超时写请求未生效：上游可能最终一致。
         return json!({
             "verdict": "unknown",
-            "provider": region.provider_id(),
+            "provider": site.provider_id(),
             "evidenceType": "campaign_claim_status",
             "observedAt": observed_at_ms,
             "businessWindow": { "startAt": start, "endAt": end },
@@ -302,7 +302,7 @@ fn classify_campaign_reconciliation(
 
     json!({
         "verdict": "confirmed",
-        "provider": region.provider_id(),
+        "provider": site.provider_id(),
         "evidenceType": "campaign_claim_status",
         "observedAt": observed_at_ms,
         "businessWindow": { "startAt": start, "endAt": end },
@@ -326,16 +326,16 @@ fn classify_campaign_reconciliation(
 ///     变成「已签到」）；「没有活动」不带它 —— 不能把「今天没得领」记成已签到。
 pub async fn claim_daily_checkin(
     store: &AccountStore,
-    region: Region,
+    site: Site,
     account_id: &str,
 ) -> Result<Value, GatewayError> {
-    let mut credentials = refresh::ensure_fresh(store, region, account_id, false).await?;
-    let (record, _) = refresh::snapshot(store, region, account_id)?;
+    let mut credentials = refresh::ensure_fresh(store, site, account_id, false).await?;
+    let (record, _) = refresh::snapshot(store, site, account_id)?;
     let proxy = auth::account_proxy(&record)?;
 
     let mut response = fetch_campaigns(&credentials, proxy.as_ref()).await?;
     if response.status == 401 && credentials.can_refresh() {
-        credentials = refresh::ensure_fresh(store, region, account_id, true).await?;
+        credentials = refresh::ensure_fresh(store, site, account_id, true).await?;
         response = fetch_campaigns(&credentials, proxy.as_ref()).await?;
     }
     let list = auth::payload(response, "签到活动查询")?;
@@ -344,24 +344,24 @@ pub async fn claim_daily_checkin(
     // 401 重拉后的重试同样要叠头 —— 那时令牌换了，但流程不变。
     let mut headers = endpoints::sash_headers(&credentials.access_token);
     let mut risk_note: Option<String> = None;
-    if region == Region::Global {
+    if site == Site::QoderIntl {
         let uid = list
             .get("uid")
             .and_then(Value::as_str)
             .unwrap_or("")
             .trim()
             .to_string();
-        let (augmented, note) = risk::augment_headers(headers, region, &uid).await;
+        let (augmented, note) = risk::augment_headers(headers, site, &uid).await;
         headers = augmented;
         risk_note = note;
         let second = fetch_campaigns_with(&credentials, proxy.as_ref(), &headers).await?;
         if second.status == 401 && credentials.can_refresh() {
-            credentials = refresh::ensure_fresh(store, region, account_id, true).await?;
+            credentials = refresh::ensure_fresh(store, site, account_id, true).await?;
             let third = fetch_campaigns(&credentials, proxy.as_ref()).await?;
             let third = intl_refetch(&credentials, proxy.as_ref(), third).await?;
             return claim_from(
                 store,
-                region,
+                site,
                 account_id,
                 credentials,
                 proxy,
@@ -373,7 +373,7 @@ pub async fn claim_daily_checkin(
         let second = auth::payload(second, "签到活动查询（风控重拉）")?;
         return claim_from(
             store,
-            region,
+            site,
             account_id,
             credentials,
             proxy,
@@ -383,16 +383,7 @@ pub async fn claim_daily_checkin(
         .await;
     }
 
-    claim_from(
-        store,
-        region,
-        account_id,
-        credentials,
-        proxy,
-        list,
-        risk_note,
-    )
-    .await
+    claim_from(store, site, account_id, credentials, proxy, list, risk_note).await
 }
 
 /// 国际版的活动列表重取（叠风控头）。首段的 `uid` 缺失（上游没给）时按空
@@ -412,7 +403,7 @@ async fn intl_refetch(
         .to_string();
     let (headers, _) = risk::augment_headers(
         endpoints::sash_headers(&credentials.access_token),
-        credentials.region,
+        credentials.site,
         &uid,
     )
     .await;
@@ -423,7 +414,7 @@ async fn intl_refetch(
 /// 活动列表解析 + 领取（两个地区共用的收尾）。
 async fn claim_from(
     store: &AccountStore,
-    region: Region,
+    site: Site,
     account_id: &str,
     mut credentials: Credentials,
     proxy: Option<ResolvedProxy>,
@@ -450,7 +441,7 @@ async fn claim_from(
     }
 
     let Some(target) = claimable else {
-        return Ok(no_claim(region, claimed, risk_note));
+        return Ok(no_claim(site, claimed, risk_note));
     };
     let campaign_id = target
         .get("campaignId")
@@ -465,19 +456,19 @@ async fn claim_from(
 
     let url = format!(
         "{}{}/{}/claim",
-        region.open_api(),
+        site.open_api(),
         endpoints::CAMPAIGNS_PATH,
         campaign_id
     );
     let mut headers = endpoints::sash_headers(&credentials.access_token);
-    if region == Region::Global {
+    if site == Site::QoderIntl {
         let uid = list
             .get("uid")
             .and_then(Value::as_str)
             .unwrap_or("")
             .trim()
             .to_string();
-        let (augmented, _) = risk::augment_headers(headers, region, &uid).await;
+        let (augmented, _) = risk::augment_headers(headers, site, &uid).await;
         headers = augmented;
     }
     let mut claim = claim_campaign(&url, &credentials, proxy.as_ref(), &headers).await?;
@@ -487,17 +478,17 @@ async fn claim_from(
         return Ok(already_claimed_result());
     }
     if claim.status == 401 && credentials.can_refresh() {
-        credentials = refresh::ensure_fresh(store, region, account_id, true).await?;
+        credentials = refresh::ensure_fresh(store, site, account_id, true).await?;
         // 重签一个新头束（令牌换了，旧头的 Bearer 已失效）
         let mut fresh_headers = endpoints::sash_headers(&credentials.access_token);
-        if region == Region::Global {
+        if site == Site::QoderIntl {
             let uid = list
                 .get("uid")
                 .and_then(Value::as_str)
                 .unwrap_or("")
                 .trim()
                 .to_string();
-            let (augmented, _) = risk::augment_headers(fresh_headers, region, &uid).await;
+            let (augmented, _) = risk::augment_headers(fresh_headers, site, &uid).await;
             fresh_headers = augmented;
         }
         claim = claim_campaign(&url, &credentials, proxy.as_ref(), &fresh_headers).await?;
@@ -567,7 +558,7 @@ async fn fetch_campaigns_with(
 ) -> Result<ApiResponse, GatewayError> {
     let url = format!(
         "{}{}{}",
-        credentials.region.open_api(),
+        credentials.site.open_api(),
         endpoints::CAMPAIGNS_PATH,
         endpoints::CAMPAIGNS_QUERY
     );
@@ -586,7 +577,7 @@ async fn claim_campaign(
     headers.push(("content-type".to_string(), "application/json".to_string()));
     headers.push((
         "origin".to_string(),
-        credentials.region.open_api().to_string(),
+        credentials.site.open_api().to_string(),
     ));
     auth::request("POST", url, Some(&json!({})), &headers, proxy).await
 }
@@ -618,7 +609,7 @@ fn result_of(response: &ApiResponse) -> Option<String> {
 }
 
 /// 「这次没领到」的结果：区分「今天已领」「没有可领的活动」与「缺风控身份」。
-fn no_claim(region: Region, claimed: bool, risk_note: Option<String>) -> Value {
+fn no_claim(site: Site, claimed: bool, risk_note: Option<String>) -> Value {
     if claimed {
         return json!({
             "success": false,
@@ -626,7 +617,7 @@ fn no_claim(region: Region, claimed: bool, risk_note: Option<String>) -> Value {
             "msg": "今日已领取",
         });
     }
-    if region == Region::Global {
+    if site == Site::QoderIntl {
         // 国际版：要么缺 UMID 组件（风控头没带上，上游不下发积分活动），
         // 要么组件在但活动列表里此刻没有积分活动。10router 作者也在国际版
         // 上观察到「长期只回 VIEW_DETAILS 促销」（见它的 qoderCheckin.js），
@@ -671,8 +662,12 @@ mod tests {
             campaign("CLAIMED", ACTION_CLAIM_BENEFIT, 1_800_000_000, 1_800_086_399),
             campaign("CLAIMABLE", "VIEW_DETAILS", 1_800_000_000, 1_800_086_399),
         ]});
-        let result =
-            classify_campaign_reconciliation(&list, 1_800_000_001, 1_800_000_100_000, Region::Cn);
+        let result = classify_campaign_reconciliation(
+            &list,
+            1_800_000_001,
+            1_800_000_100_000,
+            Site::QoderCn,
+        );
         assert_eq!(result["verdict"], "confirmed");
         assert_eq!(result["upstreamStatus"], "CLAIMED");
     }
@@ -682,8 +677,12 @@ mod tests {
         let list = json!({ "campaigns": [
             campaign("CLAIMABLE", ACTION_CLAIM_BENEFIT, 1_800_000_000, 1_800_086_399),
         ]});
-        let result =
-            classify_campaign_reconciliation(&list, 1_800_000_001, 1_800_000_100_000, Region::Cn);
+        let result = classify_campaign_reconciliation(
+            &list,
+            1_800_000_001,
+            1_800_000_100_000,
+            Site::QoderCn,
+        );
         assert_eq!(result["verdict"], "unknown");
         assert_eq!(result["upstreamStatus"], "CLAIMABLE");
     }
@@ -702,7 +701,7 @@ mod tests {
                 list,
                 1_800_000_001,
                 1_800_000_100_000,
-                Region::Cn,
+                Site::QoderCn,
             );
             assert_eq!(result["verdict"], "unknown");
         }

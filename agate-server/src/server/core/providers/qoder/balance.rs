@@ -278,7 +278,7 @@ fn expiry_of(raw: &Value) -> Option<Value> {
 async fn plan_name(credentials: &Credentials, proxy: Option<&ResolvedProxy>) -> Option<String> {
     let response = auth::request(
         "GET",
-        &format!("{}{}", credentials.region.open_api(), endpoints::PLAN_PATH),
+        &format!("{}{}", credentials.site.open_api(), endpoints::PLAN_PATH),
         None,
         &endpoints::open_api_headers(Some(&credentials.access_token)),
         proxy,
@@ -348,27 +348,33 @@ fn usage_document(raw: &Value) -> Value {
 
 pub async fn query(
     store: &AccountStore,
-    region: super::endpoints::Region,
+    site: super::endpoints::Site,
     account_id: &str,
 ) -> Result<Value, GatewayError> {
-    let mut credentials = refresh::ensure_fresh(store, region, account_id, false).await?;
-    let (record, _) = refresh::snapshot(store, region, account_id)?;
+    let mut credentials = refresh::ensure_fresh(store, site, account_id, false).await?;
+    let (record, _) = refresh::snapshot(store, site, account_id)?;
     let proxy = auth::account_proxy(&record)?;
+    // 千问办公的余额与 Qoder 完全不同源：它把「用户 + 计划 + 额度」放在一份
+    // 账号上下文里（见 `endpoints::ACCOUNT_CONTEXT_QUOTA_PATH`），没有
+    // `userQuota` / `addOnQuota` 那几个桶。
+    if site.is_qwenwork() {
+        return qwenwork_usage(store, site, account_id, &mut credentials, proxy.as_ref()).await;
+    }
     let mut response = auth::request(
         "GET",
-        &format!("{}{}", credentials.region.open_api(), endpoints::USAGE_PATH),
+        &format!("{}{}", credentials.site.open_api(), endpoints::USAGE_PATH),
         None,
-        &endpoints::open_api_headers(Some(&credentials.access_token)),
+        &endpoints::account_headers(site, Some(&credentials.access_token)),
         proxy.as_ref(),
     )
     .await?;
     if response.status == 401 && credentials.can_refresh() {
-        credentials = refresh::ensure_fresh(store, region, account_id, true).await?;
+        credentials = refresh::ensure_fresh(store, site, account_id, true).await?;
         response = auth::request(
             "GET",
-            &format!("{}{}", credentials.region.open_api(), endpoints::USAGE_PATH),
+            &format!("{}{}", credentials.site.open_api(), endpoints::USAGE_PATH),
             None,
-            &endpoints::open_api_headers(Some(&credentials.access_token)),
+            &endpoints::account_headers(site, Some(&credentials.access_token)),
             proxy.as_ref(),
         )
         .await?;
@@ -386,6 +392,167 @@ pub async fn query(
         object.insert("subscription".to_string(), Value::Object(subscription));
     }
     Ok(document)
+}
+
+/// 账号上下文的正文在 `data` 那一层（千问办公的账号接口都包了一层信封）。
+fn unwrap(value: &Value) -> &Value {
+    value
+        .get("data")
+        .filter(|data| data.is_object())
+        .unwrap_or(value)
+}
+
+/// 三档积分池的 key 与展示名（顺序照客户端：每日 / 每月 / 长期）。
+const POOLS: &[(&str, &str)] = &[
+    ("daily_credits", "每日积分"),
+    ("monthly_credits", "每月积分"),
+    ("longterm_credits", "长期积分"),
+];
+
+/// 钱包（`/api/v1/adapter/user/wallets`）→ 逐格余额。
+fn wallet_pools(wallets: &Value) -> Vec<(String, f64)> {
+    let data = unwrap(wallets);
+    let mut out = Vec::new();
+    for (key, label) in POOLS {
+        let pool = data.get(*key);
+        let balance = pool
+            .and_then(|pool| number(pool.get("total_balance")))
+            .or_else(|| pool.and_then(|pool| number(pool.get("totalBalance"))));
+        if let Some(balance) = balance.filter(|value| *value > 0.0) {
+            out.push((label.to_string(), balance));
+        }
+    }
+    out
+}
+
+/// 账号上下文 + 钱包 → 账号页的余额文档（千问办公）。
+fn qwenwork_document(context: &Value, wallets: Option<&Value>) -> Value {
+    let data = unwrap(context);
+    let plan = data.get("plan").filter(|value| value.is_object());
+    let quota = data.get("quota").filter(|value| value.is_object());
+
+    let mut document = Map::new();
+    let mut credits: Vec<Value> = Vec::new();
+    let mut available: Option<f64> = None;
+    let unit = "credits";
+
+    if let Some(quota) = quota {
+        let total = number(quota.get("total"));
+        let remaining = number(quota.get("remaining"));
+        let used = number(quota.get("used")).or_else(|| match (total, remaining) {
+            (Some(total), Some(remaining)) => Some(total - remaining),
+            _ => None,
+        });
+        if let Some(row) = credit_row("积分", total, used, remaining, None, unit) {
+            credits.push(row);
+        }
+        available = remaining;
+    }
+    if let Some(wallets) = wallets {
+        for (label, balance) in wallet_pools(wallets) {
+            if let Some(row) = credit_row(&label, None, None, Some(balance), None, unit) {
+                credits.push(row);
+            }
+        }
+    }
+    document.insert(
+        "available".to_string(),
+        available.map_or(Value::Null, |value| json!(value)),
+    );
+    document.insert("unit".to_string(), Value::String(unit.to_string()));
+    document.insert("wallets".to_string(), Value::Array(Vec::new()));
+    if !credits.is_empty() {
+        document.insert("credits".to_string(), Value::Array(credits));
+    }
+    let mut subscription = Map::new();
+    if let Some(name) = plan
+        .and_then(|plan| plan.get("name"))
+        .and_then(Value::as_str)
+    {
+        if !name.trim().is_empty() {
+            subscription.insert(
+                "planName".to_string(),
+                Value::String(name.trim().to_string()),
+            );
+        }
+    }
+    let renew = plan
+        .and_then(|plan| {
+            plan.get("next_refresh_date")
+                .or_else(|| plan.get("next_due_date"))
+        })
+        .and_then(Value::as_str)
+        .and_then(|text| chrono::DateTime::parse_from_rfc3339(text).ok())
+        .map(|time| time.timestamp_millis());
+    if let Some(renew) = renew {
+        subscription.insert("expireAt".to_string(), json!(renew));
+    }
+    document.insert("subscription".to_string(), Value::Object(subscription));
+    Value::Object(document)
+}
+
+/// 读一份账号接口（带令牌），路径由调用方给。
+async fn read_account(
+    site: super::endpoints::Site,
+    path: &str,
+    token: &str,
+    proxy: Option<&ResolvedProxy>,
+) -> Result<Value, GatewayError> {
+    let response = auth::request(
+        "GET",
+        &format!("{}{}", site.open_api(), path),
+        None,
+        &endpoints::account_headers(site, Some(token)),
+        proxy,
+    )
+    .await?;
+    if !response.ok {
+        return Err(GatewayError::with_status(
+            i32::from(response.status),
+            format!("额度查询失败（HTTP {}）", response.status),
+        ));
+    }
+    response
+        .payload
+        .ok_or_else(|| GatewayError::with_status(502, "额度查询未返回有效 JSON"))
+}
+
+/// 千问办公的余额：账号上下文 + （个人账号才有）三档钱包。
+async fn qwenwork_usage(
+    store: &AccountStore,
+    site: super::endpoints::Site,
+    account_id: &str,
+    credentials: &mut Credentials,
+    proxy: Option<&ResolvedProxy>,
+) -> Result<Value, GatewayError> {
+    let usage_path = site
+        .usage_path()
+        .ok_or_else(|| GatewayError::with_status(500, "这家没有配置额度读取路径"))?;
+    let mut context = read_account(site, usage_path, &credentials.access_token, proxy).await;
+    if matches!(&context, Err(error) if error.status_code == 401 || error.status_code == 403)
+        && credentials.can_refresh()
+    {
+        *credentials = refresh::ensure_fresh(store, site, account_id, true).await?;
+        context = read_account(site, usage_path, &credentials.access_token, proxy).await;
+    }
+    let context = context?;
+
+    // 钱包：只有国内版的**个人**账号有（`is_biz` 为假）。读失败不阻断。
+    let mut wallets: Option<Value> = None;
+    if let Some(wallet_path) = site.wallets_path() {
+        let user = unwrap(&context)
+            .get("user")
+            .filter(|value| value.is_object())
+            .cloned()
+            .unwrap_or(Value::Null);
+        let is_biz = user.get("is_biz").or_else(|| user.get("isBiz"));
+        if is_biz.and_then(Value::as_bool) != Some(true) {
+            wallets = read_account(site, wallet_path, &credentials.access_token, proxy)
+                .await
+                .ok();
+        }
+    }
+    Ok(qwenwork_document(&context, wallets.as_ref()))
 }
 
 #[cfg(test)]

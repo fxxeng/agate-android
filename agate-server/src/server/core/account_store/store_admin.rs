@@ -686,13 +686,13 @@ impl AccountStore {
     }
 
     /// WorkBuddy 国际版拆家：把 `provider == "workbuddy"` 且 `edition == "intl"`
-    /// 的记录归到 `workbuddy-intl`（2026-10，见 `providers::workbuddy::region`）。
+    /// 的记录归到 `workbuddy-intl`（2026-10，见 `providers::workbuddy::site`）。
     ///
     /// ── 为什么不改 id（与 `migrate_cline_accounts` 的差别）──────────
     /// Cline 那次必须改 id：两个池共用 `cline-...` 的 id 空间，不拆就分不开。
     /// 本家不需要 —— 两个地区的 uid 是各自上游生成的 uuid，不会撞；而 id 是
     /// `requests.account_id` 与 `request_daily` 的引用键，改名会让用户在请求
-    /// 日志与报表里再也对不上自己那个账号（详见 `Region` 模块头那段论证）。
+    /// 日志与报表里再也对不上自己那个账号（详见 `Site` 模块头那段论证）。
     ///
     /// ── 判据为什么是 `edition` 而不是账号别的字段 ────────────────
     /// 拆家前「账号属于哪个地区」这件事**只有** `edition` 一个表达（端点、
@@ -730,7 +730,7 @@ impl AccountStore {
     ///
     /// ── 判据：记录里的地区，而不是 id 前缀 ─────────────────────
     /// 拆家前「这个账号属于哪个地区」由记录的 `mode`（兜底 `edition`）字段
-    /// 表达（`Region::from_payload` 的读取口径）。id 虽然也带地区段
+    /// 表达（`Site::from_payload` 的读取口径）。id 虽然也带地区段
     /// （`qoder-global-…` / `qoder-cn-…`），但那是生成时的快照，记录的权威
     /// 表达一直是凭证字段 —— 与 WorkBuddy 拆家「判据是 edition」同一取舍。
     ///
@@ -750,18 +750,16 @@ impl AccountStore {
             if record.provider() != LEGACY_QODER_ID {
                 continue;
             }
-            let Some(region) =
-                crate::server::core::providers::qoder::endpoints::Region::from_payload(
-                    &record.to_value(),
-                )
-                .ok()
-                .filter(|region| {
-                    *region == crate::server::core::providers::qoder::endpoints::Region::Global
-                })
-            else {
+            let Some(site) = crate::server::core::providers::qoder::endpoints::Site::from_payload(
+                &record.to_value(),
+            )
+            .ok()
+            .filter(|site| {
+                *site == crate::server::core::providers::qoder::endpoints::Site::QoderIntl
+            }) else {
                 continue;
             };
-            record.set_provider(region.provider_id());
+            record.set_provider(site.provider_id());
             moved += 1;
         }
         moved

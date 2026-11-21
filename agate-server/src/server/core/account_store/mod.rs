@@ -167,7 +167,7 @@ pub(crate) const AUTOCLAW_PROVIDER_ID: &str =
 
 /// AutoClaw **国际版** provider id（同 [`AUTOCLAW_PROVIDER_ID`] 的口径）。
 ///
-/// 两个地区是两家 provider（理由见 `providers::autoclaw::region` 的模块头）：
+/// 两个地区是两家 provider（理由见 `providers::autoclaw::site` 的模块头）：
 /// 各有独立的账号集合，因此账号层的「按家过滤」必须区分它们 ——
 /// 而「公开形态 / 身份字段」这类两地同形的判定用 [`is_autoclaw_family`]。
 pub(crate) const AUTOCLAW_INTL_PROVIDER_ID: &str = crate::server::core::providers::kind_id(
@@ -203,7 +203,7 @@ pub(crate) const MONKEYCODE_PROVIDER_ID: &str = crate::server::core::providers::
 
 /// MonkeyCode **国际版** provider id（同 [`MONKEYCODE_PROVIDER_ID`] 的口径）。
 ///
-/// 两个站点是两家 provider（理由见 `providers::monkeycode::region` 的模块头）：
+/// 两个站点是两家 provider（理由见 `providers::monkeycode::site` 的模块头）：
 /// 各有独立的账号集合，账号层的「按家过滤」必须区分它们。
 pub(crate) const MONKEYCODE_INTL_PROVIDER_ID: &str = crate::server::core::providers::kind_id(
     crate::server::core::providers::ProviderKind::MonkeyCodeIntl,
@@ -299,8 +299,7 @@ pub(crate) fn is_zcode_family(provider_id: &str) -> bool {
 /// 那些分支走本函数，于是加地区或改名时只改这里一处，而不是散在各文件里的
 /// `id == "qoder"`（那种写法对国际版恒为假，是个不会报错的静默失配）。
 pub(crate) fn is_qoder_family(provider_id: &str) -> bool {
-    crate::server::core::providers::qoder::endpoints::Region::from_provider_id(provider_id)
-        .is_some()
+    crate::server::core::providers::qoder::endpoints::Site::from_provider_id(provider_id).is_some()
 }
 
 /// 小浣熊 provider id（账号存储内部多处要用）。

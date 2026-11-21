@@ -11,7 +11,7 @@
 
 use std::sync::OnceLock;
 
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use crate::server::core::account_store::{AccountStore, CredentialWrite};
 use crate::server::core::providers::refresh_flight::{self, Join, Table};
@@ -22,30 +22,33 @@ use crate::server::logging;
 use super::auth;
 use super::credentials::{self, Credentials};
 use super::endpoints;
-use super::endpoints::Region;
+use super::endpoints::Site;
 
 static FLIGHTS: OnceLock<Table<Credentials>> = OnceLock::new();
 
 pub fn snapshot(
     store: &AccountStore,
-    region: Region,
+    site: Site,
     account_id: &str,
 ) -> Result<(Value, Credentials), GatewayError> {
     let record = store
-        .qoder_account_record(region, account_id)
+        .qoder_account_record(site, account_id)
         .ok_or_else(|| GatewayError::with_status(404, "Qoder 账号不存在，请先添加账号"))?;
     let mut credentials = Credentials::from_payload(&record)?;
+    // 站点以 **provider 身份**为准：记录里的 `mode` 只是兼容字段，拿它定站点
+    // 会让「把 A 站的凭证粘到 B 站卡片」变成一条两头都不认的记录。
+    credentials.set_site(site);
     credentials.complete_identity()?;
     Ok((record, credentials))
 }
 
 pub async fn ensure_fresh(
     store: &AccountStore,
-    region: Region,
+    site: Site,
     account_id: &str,
     force: bool,
 ) -> Result<Credentials, GatewayError> {
-    let (record, credentials) = snapshot(store, region, account_id)?;
+    let (record, credentials) = snapshot(store, site, account_id)?;
     if !force && !credentials.expiring() {
         return Ok(credentials);
     }
@@ -59,7 +62,7 @@ pub async fn ensure_fresh(
         "{}:{}:{}:{}:{}",
         store.file_string(),
         account_id,
-        credentials.region.id(),
+        credentials.site.id(),
         refresh_flight::fingerprint(&credentials.access_token),
         refresh_flight::fingerprint(&credentials.refresh_token)
     );
@@ -79,16 +82,22 @@ async fn refresh_and_save(
     credentials: &Credentials,
 ) -> Result<Credentials, GatewayError> {
     let proxy = auth::account_proxy(record)?;
-    let mut fresh = if let Some(pat) = credentials.pat() {
-        let mut fresh = auth::exchange_pat(pat, credentials.region, proxy.as_ref()).await?;
+    // PAT 交换只有 Qoder 有；千问办公没有作业令牌（见 `Site::supports_pat`），
+    // 拿 PAT 去换会稳定 404。
+    let mut fresh = if let Some(pat) = credentials
+        .pat()
+        .filter(|_| credentials.site.supports_pat())
+    {
+        let mut fresh = auth::exchange_pat(pat, credentials.site, proxy.as_ref()).await?;
         fresh.machine_id = credentials.machine_id.clone();
         fresh.complete_identity()?;
         fresh
     } else {
         refresh_via_open_api(credentials, proxy.as_ref()).await?
     };
+    fresh.set_site(credentials.site);
     fresh.complete_identity()?;
-    if fresh.user_id != credentials.user_id || fresh.region != credentials.region {
+    if fresh.user_id != credentials.user_id || fresh.site != credentials.site {
         return Err(GatewayError::with_status(
             400,
             "Qoder 续期返回了不同账号，旧凭证未被覆盖",
@@ -101,7 +110,7 @@ async fn refresh_and_save(
         CredentialWrite::Written => Ok(fresh),
         CredentialWrite::Stale => {
             let id = record.get("id").and_then(Value::as_str).unwrap_or("");
-            snapshot(store, credentials.region, id).map(|(_, credentials)| credentials)
+            snapshot(store, credentials.site, id).map(|(_, credentials)| credentials)
         }
     }
 }
@@ -130,18 +139,30 @@ async fn refresh_via_open_api(
             "Qoder 账号没有刷新凭证，请重新登录或添加 PAT",
         ));
     }
-    let path = if refresh.starts_with("jrt-") {
+    // 千问办公没有作业令牌（`/api/v1/jobToken/exchange` 不存在），刷新令牌
+    // 一律走设备端点；Qoder 按令牌前缀分派（见下）。
+    let path = if refresh.starts_with("jrt-") && credentials.site.supports_pat() {
         endpoints::JOB_REFRESH_PATH
     } else {
         endpoints::DEVICE_REFRESH_PATH
     };
+    // 千问办公的续期请求体多一个 `target: "c"`（dumate2api 的实测形态）；
+    // Qoder 只发 `refresh_token`。
+    let mut body = serde_json::Map::new();
+    body.insert(
+        "refresh_token".to_string(),
+        Value::String(refresh.to_string()),
+    );
+    if let Some(target) = credentials.site.refresh_target() {
+        body.insert("target".to_string(), Value::String(target.to_string()));
+    }
     let response = auth::request(
         "POST",
-        &format!("{}{}", credentials.region.open_api(), path),
+        &format!("{}{}", credentials.site.open_api(), path),
         // 字段名是 snake_case 的 `refresh_token`，与取令牌时的 camelCase
         // （`refreshToken`）不是同一套 —— 发错名字上游按缺参处理。
-        Some(&json!({ "refresh_token": refresh })),
-        &endpoints::refresh_headers(),
+        Some(&Value::Object(body)),
+        &endpoints::refresh_headers_for(credentials.site),
         proxy,
     )
     .await?;

@@ -145,6 +145,9 @@ fun AuthWebViewSheet(
             }
         }
     }
+    // 交回去的端点：null = 通用回调（把 Cookie 当 callbackUrl 交回）；非 null = 专用
+    // 收尾端点（KukuAI：{state, cookie} → finish_kuku_login，见 ProviderPreset 注释）。
+    val cookieCompletePath = preset?.cookieCompletePath
     // Cookie 只交回一次（登录成功后页面还会继续导航，每拍都交会重复 POST；
     // 内核那边虽然幂等，但没必要反复发）
     val cookieSubmitted = remember { mutableStateOf(false) }
@@ -172,7 +175,13 @@ fun AuthWebViewSheet(
                         lastSubmitted = cookie
                         cookieSubmitted.value = true
                         status = "已获取登录态，正在加入账号…"
-                        val accepted = LoginClient.forwardCallback(session.state, cookie)
+                        // 两种收尾形态：通用回调（Cookie 当 callbackUrl 交回，内核各家
+                        // 自己认）与专用端点（KukuAI：{state, cookie} → finish_kuku_login）
+                        val accepted = if (cookieCompletePath != null) {
+                            LoginClient.forwardCookie(session.state, cookie, cookieCompletePath)
+                        } else {
+                            LoginClient.forwardCallback(session.state, cookie)
+                        }
                         if (!accepted) {
                             // ⚠️ 未登录时通行证也会下发一条**匿名** `wps_sid`，内核探活
                             // 回 401 是**正常中间态**（登录任务仍是 pending）。这里复位

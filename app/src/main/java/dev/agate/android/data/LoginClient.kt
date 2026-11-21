@@ -34,14 +34,89 @@ object LoginClient {
     }
 
     sealed class StartResult {
-        data class Started(val state: String, val authUrl: String, val provider: String) : StartResult()
+        data class Started(
+            val state: String,
+            val authUrl: String,
+            val provider: String,
+            /** 本轮有降级时内核给的一句话（如回调端口被官方客户端占着）。 */
+            val warning: String? = null,
+        ) : StartResult()
         data class Failed(val reason: String) : StartResult()
     }
+
+    /** 风控配置（`/oauth/captcha-config` 的 data）：`enabled` 为假时别弹滑块。 */
+    data class CaptchaConfig(
+        val enabled: Boolean,
+        val region: String,
+        val prefix: String,
+        val sceneId: String,
+    )
 
     sealed class WaitResult {
         object Pending : WaitResult()
         data class Done(val session: JSONObject?) : WaitResult()
         data class Failed(val reason: String) : WaitResult()
+    }
+
+    /**
+     * POST /api/session/login/oauth/captcha-config {provider} —— 取阿里云滑块的
+     * `prefix` / `sceneId`（SDK 的必填参数，只能从上游拿）。
+     *
+     * ⚠️ 这条路由虽然也挂了 GET，但**地区从 body 读**（见内核 session.rs 的说明）；
+     * 用 GET 会问到国内版配置。这里一律 POST。
+     */
+    suspend fun captchaConfig(provider: String): Result<CaptchaConfig> = withContext(Dispatchers.IO) {
+        val body = JSONObject().put("provider", provider)
+        when (val r = postJson("/api/session/login/oauth/captcha-config", body)) {
+            is HttpResult.Ok -> {
+                val data = r.json.optJSONObject("data") ?: r.json
+                Result.success(
+                    CaptchaConfig(
+                        enabled = data.optBoolean("enabled"),
+                        region = data.optString("region", "ga").ifBlank { "ga" },
+                        prefix = data.optString("prefix"),
+                        sceneId = data.optString("sceneId").ifBlank { data.optString("scene_id") },
+                    )
+                )
+            }
+            else -> Result.failure(IllegalStateException(describe(r)))
+        }
+    }
+
+    /**
+     * POST /api/session/login/oauth/start {provider, vendor, captchaVerifyParam}
+     * → `{state, authUrl, warning?}`（与 `start` 同形状，等待逻辑可以直接复用）。
+     *
+     * [captchaVerifyParam] 是滑块 SDK 回调给前端的**不透明串**：原样回传，不做任何
+     * 解析或改写；空串会被上游当成「没过风控」拒掉（630014）。
+     */
+    suspend fun oauthStart(
+        provider: String,
+        vendor: String,
+        captchaVerifyParam: String,
+    ): StartResult = withContext(Dispatchers.IO) {
+        val body = JSONObject()
+            .put("provider", provider)
+            .put("vendor", vendor)
+            .put("captchaVerifyParam", captchaVerifyParam)
+        when (val r = postJson("/api/session/login/oauth/start", body)) {
+            is HttpResult.Ok -> {
+                val data = r.json.optJSONObject("data") ?: r.json
+                val state = data.optString("state")
+                val authUrl = data.optString("authUrl")
+                if (state.isBlank() || authUrl.isBlank()) {
+                    StartResult.Failed("内核未返回授权地址（风控可能未通过）")
+                } else {
+                    StartResult.Started(
+                        state = state,
+                        authUrl = authUrl,
+                        provider = data.optString("provider", provider),
+                        warning = data.optString("warning").ifBlank { null },
+                    )
+                }
+            }
+            else -> StartResult.Failed(describe(r))
+        }
     }
 
     /**
@@ -113,6 +188,27 @@ object LoginClient {
         // 真正的登录结果仍由 /wait 轮询给出（与所有家的口径一致）。
         resp.has("accountId") || resp.optBoolean("success") || resp.optBoolean("continue")
     }
+
+    /**
+     * 交回登录态 Cookie（**专用**收尾端点，如 KukuAI 的
+     * `POST /api/session/login/kuku/complete`）。body 是 `{state, cookie}`。
+     *
+     * ── 为什么不能复用 forwardCallback ─────────────────────────
+     * 通用端点的字段是 `callbackUrl`，内核按「自定义协议回调 URL」解析；而
+     * 百度通行证登录**不产生授权码**，凭证只有 Cookie（BDUSS / PTOKEN，且是
+     * HttpOnly），必须原样当 Cookie 头交给 `finish_kuku_login`。字段名对不上
+     * 就是 400「缺少 state 或登录态 Cookie」—— 而界面上只会看到「登录未完成」。
+     *
+     * 成功响应是 `{ok:true}`；这里只关心「内核收下了」，最终结果仍由 /wait 给出。
+     */
+    suspend fun forwardCookie(state: String, cookie: String, path: String): Boolean =
+        withContext(Dispatchers.IO) {
+            val resp = when (val r = postJson(path, JSONObject().put("state", state).put("cookie", cookie))) {
+                is HttpResult.Ok -> r.json
+                else -> return@withContext false
+            }
+            resp.optBoolean("ok") || resp.has("accountId") || resp.optBoolean("success")
+        }
 
     // P2：经 CoreTransport 内核直调（不经端口，Core 态可用）
     private suspend fun getJson(path: String): HttpResult = transact(CoreTransport.get(path))

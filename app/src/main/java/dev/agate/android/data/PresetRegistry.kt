@@ -22,6 +22,15 @@ enum class AuthChannel(val label: String) {
     EXTERNAL("浏览器登录"),
     DEVICE_CODE("设备码"),
     SMS("手机验证码"),
+    /**
+     * 官方主登录方式是 OAuth（当前只有 AutoClaw 国际版：Zai / Google）。
+     *
+     * ⚠️ 这类家**不能**走 EMBEDDED / EXTERNAL —— 内核在 `/api/session/login/start`
+     * 里对 AutoClaw 一律 400（授权地址要先过一次浏览器端阿里云风控，得从
+     * `/api/session/login/oauth/start` 拿）。通道列表里不放那两条，用户就不会
+     * 点到一个必然失败、还指向不存在按钮的入口。
+     */
+    OAUTH("Zai / Google 登录"),
     PASTE("粘贴凭证"),
     IMPORT_FILE("导入凭证文件"),
     IMPORT_DESKTOP("桌面登录态"),
@@ -83,6 +92,14 @@ data class ProviderPreset(
     val webLoginCookies: Boolean = false,
     /** 与 [webLoginCookies] 配套：算「已登录」要认哪些 Cookie 名（各家不同）。 */
     val sessionCookieNames: List<String> = emptyList(),
+    /**
+     * 读到的 Cookie 交给哪条收尾端点；`null` = 通用回调（body 是 `{state, callbackUrl}`）。
+     *
+     * KukuAI 是例外：百度通行证登录不产生授权码，凭证只在 Cookie 里（BDUSS /
+     * PTOKEN，HttpOnly，页面脚本读不到，但 CookieManager 读得到），走不了
+     * 「回调 URL」那一套，因此用专用端点 `{state, cookie}`（内核 `finish_kuku_login`）。
+     */
+    val cookieCompletePath: String? = null,
     /**
      * `webLoginCookies = true` 时，**除登录页自身域之外**还要读 Cookie 的域（有序）。
      *
@@ -151,16 +168,29 @@ object PresetRegistry {
         // AutoClaw 国内：手机验证码
         ProviderPreset(
             "autoclaw", "AutoClaw 国内版", "智谱 · 手机验证码", LoginKind.SMS,
-            listOf(AuthChannel.SMS), supportsCheckin = true,
+            // 内核的粘贴 / 明文文件导入两家都支持（accounts.rs 同一分支，地区由
+            // provider id 决定）；国内版 auth.json 是 DPAPI 密文，拷到手机解不开，
+            // 所以只对「明文凭证」开放这两条退路。
+            listOf(AuthChannel.SMS, AuthChannel.PASTE, AuthChannel.IMPORT_FILE),
+            pasteHint = "粘贴明文凭证 JSON（token / refreshToken / deviceId）",
+            pasteSecondaryHint = "客户端自带的 auth.json 是 DPAPI 密文，换设备解不开",
+            pasteMultiline = true,
+            supportsCheckin = true,
         ),
-        // AutoClaw 国际：loopback 回调
+        // AutoClaw 国际：官方主登录方式是 Zai / Google OAuth，授权地址要先在
+        // 浏览器里过一次阿里云滑块风控（`/api/session/login/oauth/start`），
+        // 所以走专用 OAUTH 通道；EMBEDDED / EXTERNAL 在内核里都会被 400 拦掉。
         ProviderPreset(
-            "autoclaw-intl", "AutoClaw 国际版", "autoglm.ai · 网页登录", LoginKind.WEBVIEW,
-            WEB, supportsCheckin = true,
-            // 浏览器通道的授权回调落在网关端口（localhost:<port>/...），Core 态
-            // 不监听该端口 ⇒ 网关没运行时浏览器得到 ERR_CONNECTION_REFUSED（实测）。
-            // 添加页那张「先运行网关」提示正是读这个字段；登录按钮也据此拦一道。
+            "autoclaw-intl", "AutoClaw 国际版", "autoglm.ai · Zai / Google 网页登录", LoginKind.WEBVIEW,
+            listOf(AuthChannel.OAUTH, AuthChannel.PASTE, AuthChannel.IMPORT_FILE),
+            pasteHint = "粘贴明文凭证 JSON（token / refreshToken / deviceId）",
+            pasteSecondaryHint = "客户端自带的 auth.json 是 DPAPI 密文，换设备解不开",
+            pasteMultiline = true,
+            // OAuth 的回调落在网关端口（localhost:<port>/auth/callback-zai|google），
+            // Core 态不监听 ⇒ 网关没运行时浏览器得到 ERR_CONNECTION_REFUSED（实测）。
+            // 上方那张「先运行网关」提示正是读这个字段；粘贴 / 导入不受影响，提示里已写明。
             needsGateway = true,
+            supportsCheckin = true,
         ),
         // Qoder：设备码 + PAT 粘贴
         ProviderPreset(
@@ -217,13 +247,27 @@ object PresetRegistry {
             "loomy", "Loomy", "讯飞 · 手机验证码", LoginKind.SMS,
             listOf(AuthChannel.SMS), supportsCheckin = true,
         ),
-        // Kuku：粘贴 Cookie；文件导入需二进制 SQLite
+        // Kuku：内嵌窗口登录（读百度通行证 Cookie）或粘贴 Cookie。
+        //
+        // ── 为什么现在能用 ─────────────────────────────────────
+        // 以前这里挂着 `disabledNote = "引擎依赖官方 Windows 客户端…"`：会话令牌
+        // 换发要加载 genflowengine.dll，Android 无从加载 ⇒ 网页登录的账号一律
+        // userreport errno=-6。内核已改成纯算法签名（providers/kuku/engine.rs），
+        // 任何平台都能换发，置灰理由不成立，删掉 disabledNote 即解灰。
+        //
+        // 收尾走专用端点（cookieCompletePath）：百度通行证登录不产生授权码，
+        // 凭证只有 Cookie（BDUSS / PTOKEN，HttpOnly，页面脚本读不到，但
+        // CookieManager 读得到），所以交回 `{state, cookie}`。
         ProviderPreset(
-            "kuku", "KukuAI", "百度文库 · 粘贴 Cookie", LoginKind.PASTE,
-            listOf(AuthChannel.PASTE, AuthChannel.IMPORT_FILE),
-            pasteHint = "Cookie 整串（含 BDUSS 与 STOKEN）", pasteMultiline = true,
+            "kuku", "KukuAI", "百度文库 · 网页登录 / 粘贴 Cookie", LoginKind.WEBVIEW,
+            listOf(AuthChannel.EMBEDDED, AuthChannel.PASTE, AuthChannel.IMPORT_FILE),
+            webLoginCookies = true,
+            sessionCookieNames = listOf("BDUSS"),
+            cookieCompletePath = "/api/session/login/kuku/complete",
+            // 换发要 PTOKEN（通行证级 STOKEN 换不成业务级）；缺了会走「账号已添加
+            // 但可能未登录」的警告，所以粘贴时点明要整串。
+            pasteHint = "Cookie 整串（含 BDUSS 与 PTOKEN）", pasteMultiline = true,
             supportsCheckin = true,
-            disabledNote = "引擎依赖官方 Windows 客户端，Android 端暂不可用",
         ),
         // MonkeyCode：内核不支持网页登录，只能粘贴 session
         ProviderPreset(

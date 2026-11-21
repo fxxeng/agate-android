@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use serde_json::json;
 
-use crate::server::core::providers::qoder::{endpoints::Region, oauth::DeviceLogin};
+use crate::server::core::providers::qoder::{endpoints::Site, oauth::DeviceLogin};
 use crate::server::logging;
 
 use super::{finish_task_error, LoginService, LoginTaskHandle, LOGIN_TIMEOUT_MS};
@@ -16,12 +16,12 @@ impl LoginService {
     /// 就发哪个 provider id —— 由调用方按 kind 反查地区传进来（与 ZCode 同款：
     /// 请求里的 `edition` 只是回显字段，不当权威）。两站是同一套 PKCE 设备
     /// 授权协议，只有站点主机不同。
-    pub fn start_qoder_login(&self, region: Region) -> Result<LoginTaskHandle, String> {
-        let flow = DeviceLogin::new(region).map_err(|error| error.message)?;
+    pub fn start_qoder_login(&self, site: Site) -> Result<LoginTaskHandle, String> {
+        let flow = DeviceLogin::new(site).map_err(|error| error.message)?;
         // 任务表里的 `edition` 只影响日志与前端回显（登录窗口标题等），
         // 用 provider 自己的取值而不是 workbuddy 那套 id。
-        let info = crate::server::core::endpoints::resolve_edition(Some(region.edition()));
-        let handle = self.new_handle_for_provider(info, region.provider_id());
+        let info = crate::server::core::endpoints::resolve_edition(Some(site.edition()));
+        let handle = self.new_handle_for_provider(info, site.provider_id());
         handle.update(|task| {
             task.state = Some(flow.state.clone());
             task.auth_url = Some(flow.auth_url.clone());
@@ -30,16 +30,16 @@ impl LoginService {
         let service = self.clone();
         let task = handle.clone();
         crate::spawn_task(async move {
-            service.run_qoder_login(task, region, flow).await;
+            service.run_qoder_login(task, site, flow).await;
         });
         logging::log(
             "[Login]",
-            &format!("发起 Qoder {}网页登录（等待授权…）", region.label()),
+            &format!("发起 Qoder {}网页登录（等待授权…）", site.label()),
         );
         Ok(handle)
     }
 
-    async fn run_qoder_login(&self, handle: LoginTaskHandle, region: Region, flow: DeviceLogin) {
+    async fn run_qoder_login(&self, handle: LoginTaskHandle, site: Site, flow: DeviceLogin) {
         let deadline = tokio::time::Instant::now() + Duration::from_millis(LOGIN_TIMEOUT_MS);
         loop {
             if handle.snapshot().canceled {
@@ -78,23 +78,23 @@ impl LoginService {
                     }
                     match self
                         .store
-                        .add_qoder_account(region, &credentials, None, "web")
+                        .add_qoder_account(site, &credentials, None, "web")
                     {
                         Ok(account) => {
                             // edition 取凭证自己记着的地区（不代表用户这次的界面选择）：
-                            // 落账号时 `add_qoder_account` 已按 region 去重与生成 id，
+                            // 落账号时 `add_qoder_account` 已按 site 去重与生成 id，
                             // 这里只把它原样回给前端，避免显示成另一站。
                             task.session = Some(json!({
                                 "accountUid": account.get("id"),
                                 "nickname": account.get("name"),
-                                "edition": credentials.region.edition(),
-                                "provider": region.provider_id(),
+                                "edition": credentials.site.edition(),
+                                "provider": site.provider_id(),
                             }));
                             logging::log(
                                 "[Login]",
                                 &format!(
                                     "✅ Qoder {}网页登录完成，账号已加入列表",
-                                    credentials.region.label()
+                                    credentials.site.label()
                                 ),
                             );
                         }

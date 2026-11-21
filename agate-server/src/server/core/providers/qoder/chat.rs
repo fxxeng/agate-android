@@ -152,7 +152,7 @@ pub fn build_plan(
     body: &Value,
     model_name: &str,
 ) -> Result<ChatPlan, GatewayError> {
-    let model = super::models::resolve(model_name, credentials.region).ok_or_else(|| {
+    let model = super::models::resolve(model_name, credentials.site).ok_or_else(|| {
         GatewayError::bad_request(format!(
             "模型不存在: {model_name}。Qoder 可用模型见 GET /v1/models"
         ))
@@ -227,6 +227,7 @@ pub fn build_plan(
         &thinking,
         &credentials.user_id,
         session_seed,
+        credentials.site,
     );
 
     // ── 上下文档位：装了才升级 ────────────────────────────────
@@ -247,7 +248,7 @@ pub fn build_plan(
         "{}algo/api/v2/service/pro/sse/agent_chat_generation\
          ?FetchKeys=llm_model_result&AgentId=agent_common&Encode=1",
         // 对话链路按令牌前缀选主机（作业令牌 jt- 走 api2，见 `inference_base`）
-        credentials.region.inference_base(&credentials.access_token)
+        credentials.site.inference_base(&credentials.access_token)
     );
     let identity = CosyIdentity {
         user_id: &credentials.user_id,
@@ -256,7 +257,7 @@ pub fn build_plan(
         email: &credentials.email,
         machine_id: &credentials.machine_id,
     };
-    let mut headers = cosy::build_auth_headers(Some(&encoded), &url, &identity)?;
+    let mut headers = cosy::build_auth_headers(Some(&encoded), &url, &identity, credentials.site)?;
     headers.push(("Content-Type".to_string(), "application/json".to_string()));
     headers.push(("Accept".to_string(), "text/event-stream".to_string()));
     headers.push(("Cache-Control".to_string(), "no-cache".to_string()));
@@ -457,7 +458,7 @@ impl Translator {
     /// 映射：那种情况的映射是在把它归一成可读的模型名，是需要的。
     pub fn new(response_id: String, model_name: String, thinking_enabled: bool) -> Self {
         let echo_requested_model =
-            super::models::resolve(&model_name, super::endpoints::Region::Global).is_some();
+            super::models::resolve(&model_name, super::endpoints::Site::QoderIntl).is_some();
         Self {
             response_id,
             created: logging::now_ms() / 1000,
@@ -845,17 +846,16 @@ pub struct AccountContext {
     pub proxy: Option<ResolvedProxy>,
 }
 
-/// 取某账号的凭证快照（含临期主动刷新）。`region` 是本适配器的地区身份
+/// 取某账号的凭证快照（含临期主动刷新）。`site` 是本适配器的地区身份
 /// （拆家后 provider 即地区，见 `qoder::mod` 的模块头）。
 pub async fn account_context(
     store: &AccountStore,
-    region: super::endpoints::Region,
+    site: super::endpoints::Site,
     account_id: &str,
     force_refresh: bool,
 ) -> Result<AccountContext, GatewayError> {
-    let credentials =
-        super::refresh::ensure_fresh(store, region, account_id, force_refresh).await?;
-    let (record, _) = super::refresh::snapshot(store, region, account_id)?;
+    let credentials = super::refresh::ensure_fresh(store, site, account_id, force_refresh).await?;
+    let (record, _) = super::refresh::snapshot(store, site, account_id)?;
     let proxy = super::auth::account_proxy(&record)?;
     Ok(AccountContext { credentials, proxy })
 }

@@ -96,12 +96,12 @@ pub async fn inspect_provider(
         Err(error) => return crate::server::errors::management_error(503, &error),
     };
     let (provider, account_started_at_ms) = context;
-    let mut result = if let Some(region) =
-        crate::server::core::providers::qoder::endpoints::Region::from_provider_id(&provider)
+    let mut result = if let Some(site) =
+        crate::server::core::providers::qoder::endpoints::Site::from_provider_id(&provider)
     {
         match crate::server::core::providers::qoder::checkin::inspect_uncertain_claim(
             state.store(),
-            region,
+            site,
             account_id,
             account_started_at_ms,
         )

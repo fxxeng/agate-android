@@ -60,12 +60,9 @@ pub async fn claim_for_account(
 /// 每日签到。
 pub async fn claim(region: Region, token: &str) -> Result<Value, String> {
     let (status, payload) = client::site_get(region, LOGIN_INFO_PATH, token, "每日签到").await?;
-    if status == 401 {
+    if status == 401 || status == 403 {
         // 令牌失效 / 打错站点：如实报（上层按 TokenExpired 处置）
         return Err(client::expired_message(region, status, true));
-    }
-    if status == 403 {
-        return Err("每日签到被上游拒绝（HTTP 403），请检查账号权限或稍后重试".to_string());
     }
     if !(200..300).contains(&status) {
         return Ok(json!({
