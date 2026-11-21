@@ -66,6 +66,12 @@ use crate::server::errors::GatewayError;
 
 use super::region::Region;
 
+/// 营销活动发现与领取回执（`marketing/touch` / `touch/action`）。
+///
+/// 2026-11-03 起每日套餐可**只**由这条链路下发（`billing/preview` 为空），
+/// 因此它与 billing 探测并列为两个发现源，见 [`discover`]。
+pub(crate) mod marketing;
+
 /// 单次请求超时（参考实现 `DEFAULT_TIMEOUT_MS` 逐字相同）。
 ///
 /// 必须显式设：`egress` 的默认 read_timeout 是 600 秒（给 SSE 长连接留的），
@@ -83,18 +89,30 @@ const REQUEST_TIMEOUT_MS: u64 = 15_000;
 /// 冒充不了客户端，`app_version` 与 `X-ZCode-App-Version` 都会对不上，症状是
 /// 领取被判 `1004 ineligible`（而这看起来像「账号没资格」，极易误判）。
 /// 上游抬门槛时用户可以用环境变量覆盖，不必等发版。
-/// 默认客户端版本号。
+/// **推理请求**的客户端版本号（只进推理身份头，不再给活动发现用）。
 ///
-/// ── 为什么是 3.16.2 而不是 3.14.0（本次修复的核心）────────────
-/// 这个值不只是「领取 / 余额」的查询参数：它同时进**推理请求**的
-/// `User-Agent: ZCode/{version}` 与 `X-ZCode-App-Version` 头 —— 上游按「客户端
-/// 形态」识别请求，**版本过旧会被拒**。旧值 `3.14.0` 是从 3.0.8 抄来的，
-/// 那个版本现在调不通（上游已抬高门槛），而实测可用的参考实现用的是 `3.16.2`。
+/// ── 为什么它是 3.16.2，而活动发现另用 3.18.0 ──────────────────
+/// 这个值进**推理请求**的 `User-Agent: ZCode/{version}` 与
+/// `X-ZCode-App-Version` 头 —— 上游按「客户端形态」识别推理请求，实测
+/// 3.17.2 的每条推理都被 `405 request has been blocked`（业务码 3012）拒收，
+/// 回退 3.16.2 才恢复；因此**推理这一路不能跟官方版本走**。
 ///
-/// 这不是「顺手升级数字」：值与上游的客户端白名单直接相关，写小了就是
-/// 「账号明明有额度、请求却被拒」这类最难查的失败。仍允许
-/// `ZCODE_APP_VERSION` 覆盖（上游再抬高时不必发版）。
+/// 但活动发现（`billing/preview` / `marketing/touch`）是另一组接口，不受那条
+/// 推理风控约束，且有独立的最低版本门槛（见 [`ACTIVITY_APP_VERSION`]）。于是
+/// 两路刻意分开：把活动发现也用 3.16.2，症状就是「活动明明在、却一个套餐
+/// 都探不到」（上游静默返回空列表，不报错）——正是本次修复的根因之一。
+///
+/// 仍允许 `ZCODE_APP_VERSION` 覆盖推理值（上游再抬高推理门槛时不必发版）。
 const DEFAULT_APP_VERSION: &str = "3.16.2";
+
+/// **活动发现 / 领取接口**的客户端版本号。
+///
+/// 上游 v3.4.1 实测（2026-11-03）：每日赠送套餐改由 `marketing/touch` 下发后，
+/// 同一账号 `3.16.3` 拿到 0 条交付、`3.17.1` 与 `3.18.0` 各拿到 1 条；老
+/// `billing/preview` 链路只要 3.16.1+。取两边都够用的 `3.18.0`。
+/// 与推理值分开的理由见 [`DEFAULT_APP_VERSION`]。
+/// `ZCODE_ACTIVITY_APP_VERSION` 可覆盖（上游抬门槛时不必发版）。
+const ACTIVITY_APP_VERSION: &str = "3.18.0";
 
 /// 探测与领取的路径（参考实现 `client.ts` 的常量）
 const PREVIEW_PATH: &str = "/api/v1/zcode-plan/billing/preview";
@@ -255,6 +273,22 @@ pub fn app_version() -> String {
         .unwrap_or_else(|| DEFAULT_APP_VERSION.to_string())
 }
 
+/// 活动发现 / 领取接口的客户端版本号（与推理的 [`app_version`] **刻意分开**）。
+///
+/// 优先级：环境变量 `ZCODE_ACTIVITY_APP_VERSION` > 内置 `3.18.0`。
+/// 这里**不读** `zcode_app_version()` 配置项：那个值是给推理链路躲 405 风控的
+/// （3.16.2），界面上改它是为了推理自救；若活动发现也跟着变，用户为推理填一个
+/// 低版本就会让套餐探测重新落入「静默空列表」。两件事互不干扰。
+///
+/// `pub(super)`：新建的 `marketing` 子模块与本节共用同一版本口径。
+pub(super) fn activity_app_version() -> String {
+    std::env::var("ZCODE_ACTIVITY_APP_VERSION")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| ACTIVITY_APP_VERSION.to_string())
+}
+
 /// 平台标识（参考实现的 `${process.platform}-${process.arch}`）。
 ///
 /// 上游把它当「客户端形态」的一部分。macOS / Linux 构建各取所得；其余目标
@@ -314,6 +348,11 @@ pub struct ClaimablePlan {
     pub ends_at: Option<i64>,
     /// 权益条目（进日志与界面，让用户看到领到了什么）
     pub entitlements: Vec<PlanEntitlement>,
+    /// 该套餐来自哪些营销活动（`marketing/touch` 的 `campaign_id`）。
+    ///
+    /// 领取 settle 之后要按这些 id 逐个回执 `touch/action`（见 `marketing` 子模块）。
+    /// 只有 billing 链路的套餐这里是空的（无需回执）。
+    pub marketing_campaign_ids: Vec<String>,
 }
 
 /// 套餐里的一条权益
@@ -491,7 +530,7 @@ pub fn outcome_hold(outcome: &ClaimOutcome) -> NextAttempt {
 /// 这里只在真的没有时才省略那个头 —— 那种情况会稳定拿到 3001，
 /// 而那正是「谁漏了这一步」的信号，不该由本函数偷偷补一个随机值（现编的值
 /// 每次都不一样，风控看到的是「同一个账号天天换设备」）。
-pub async fn preview(
+pub async fn preview_billing(
     region: Region,
     jwt: &str,
     device_mid: Option<&str>,
@@ -500,7 +539,8 @@ pub async fn preview(
     let url = format!(
         "{}{PREVIEW_PATH}?app_version={}&platform={}",
         region.zcode_origin(),
-        urlencode(&app_version()),
+        // 活动发现用活动版本（3.18.0），不是推理的 3.16.2 —— 见常量说明。
+        urlencode(&activity_app_version()),
         urlencode(platform())
     );
     let mut headers: Vec<(String, String)> = Vec::new();
@@ -537,7 +577,10 @@ pub async fn preview(
         .ok_or_else(|| GatewayError::with_status(502, "套餐探测：上游响应不是 JSON"))?;
     let code = payload.get("code").and_then(Value::as_i64).unwrap_or(0);
     let data = payload.get("data");
-    if !(200..300).contains(&response.status) || code != 0 || data.is_none() {
+    // `success: false` 与 code != 0 等价（上游两种写法都会出现）：漏判时会把
+    // 一份「业务失败但 code 恰好是 0」的响应当成空套餐列表，症状是活动在却探不到。
+    let explicit_failure = payload.get("success").and_then(Value::as_bool) == Some(false);
+    if !(200..300).contains(&response.status) || code != 0 || data.is_none() || explicit_failure {
         let message = error_message(&payload, response.status);
         return Err(GatewayError::with_status(
             502,
@@ -550,6 +593,152 @@ pub async fn preview(
         .map(|items| items.iter().filter_map(parse_plan).collect())
         .unwrap_or_default();
     Ok(PreviewOutcome::Plans(plans))
+}
+
+/// 双链路发现的合并结果（billing 探测 + 营销发现）。
+#[derive(Clone, Debug)]
+pub struct Discovery {
+    /// 合并去重后的全部可领套餐（按 `priority` 降序）。
+    pub plans: Vec<ClaimablePlan>,
+    /// 两条链路里**至少一条**成功返回了可解析的响应。
+    ///
+    /// 只用于区分「上游接口没部署」与「接口返回空列表」——两者对界面是同一句
+    /// 「当前没有可领套餐」，但排障时要能分清。billing 404 不再单独成档
+    /// （营销可能仍在线上），因此这里取「任一成功」。
+    pub deployed: bool,
+    /// billing 链路的错误（有它不影响营销结果，供日志与响应透出）。
+    pub billing_error: Option<String>,
+    /// 营销链路的错误（同上，单独一栏便于排障「活动在却探不到」）。
+    pub marketing_error: Option<String>,
+}
+
+/// 探测当前可领取的套餐（**双链路**：billing/preview + marketing/touch）。
+///
+/// ── 为什么要两条链路（本次修复的核心）────────────────────────
+/// 2026-11-03 起上游把每日赠送套餐改由 `GET /marketing/touch` 下发，
+/// `billing/preview` 可能整段为空。只查 billing 的后果就是「活动明明在，
+/// 套餐一个都探不到」。两条链路**并行**发（各自独立、互不阻塞），结果按
+/// plan_id 合并去重；一条失败不影响另一条，错误分别落到 `billing_error` /
+/// `marketing_error`，只在「两条都失败且没有拿到任何套餐」时才整体报错。
+///
+/// 认证与设备标识口径与单链路一致：jwt 为空时发匿名请求（上游允许匿名发现），
+/// `device_mid` 由调用方保证 UUID 形态。
+pub async fn discover(
+    region: Region,
+    jwt: &str,
+    device_mid: Option<&str>,
+    proxy: Option<&ResolvedProxy>,
+) -> Result<Discovery, GatewayError> {
+    let (billing, marketing) = tokio::join!(
+        preview_billing(region, jwt, device_mid, proxy),
+        marketing::query(region, jwt, device_mid, proxy),
+    );
+    let mut plans: Vec<ClaimablePlan> = Vec::new();
+    let mut deployed = false;
+    let mut billing_error = None;
+    let mut marketing_error = None;
+    match billing {
+        Ok(PreviewOutcome::Plans(items)) => {
+            if !items.is_empty() {
+                deployed = true;
+            }
+            merge_plans(&mut plans, items);
+        }
+        // billing 404 是「活动未上线」的正常态，不算错误（营销可能仍在线上）
+        Ok(PreviewOutcome::NotDeployed) => {}
+        Err(error) => billing_error = Some(error.message),
+    }
+    match marketing {
+        Ok(items) => {
+            // 营销链路返回空 deliveries 也是成功（接口在线但此刻没活动）。
+            // 只要 HTTP 通了就算 deployed，与 billing 的 `Plans([])` 口径一致。
+            deployed = true;
+            merge_plans(&mut plans, items);
+        }
+        // 营销 404 上游已按空列表处理（见 marketing::query），这里收到的一定是
+        // 真实错误，落到单独一栏。
+        Err(error) => marketing_error = Some(error.message),
+    }
+    if !deployed && plans.is_empty() {
+        let why = [billing_error.as_deref(), marketing_error.as_deref()]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join("；");
+        return Err(GatewayError::with_status(
+            502,
+            format!("套餐查询失败：{why}"),
+        ));
+    }
+    Ok(Discovery {
+        plans,
+        deployed,
+        billing_error,
+        marketing_error,
+    })
+}
+
+/// 把一批套餐合并进现有列表（按 `plan_id` 去重，最终按 `priority` 降序）。
+///
+/// 两条链路可能下发同一个 plan_id：营销侧解析出的元数据（名字/权益/起止）与
+/// billing 侧的互为补充，合并时各取非空字段，并把营销 campaign id 收集到一处
+/// ——领取后的回执要用它（见 `marketing::confirm`）。
+fn merge_plans(target: &mut Vec<ClaimablePlan>, incoming: Vec<ClaimablePlan>) {
+    for plan in incoming {
+        if let Some(existing) = target.iter_mut().find(|item| item.plan_id == plan.plan_id) {
+            merge_plan_fields(existing, plan);
+        } else {
+            target.push(plan);
+        }
+    }
+    // 稳定排序：优先级相同的条目保持发现顺序（billing 先于 marketing）
+    target.sort_by(|a, b| b.priority.cmp(&a.priority));
+}
+
+/// 同 plan_id 的字段合并（营销元数据补全 billing，或反过来）。
+fn merge_plan_fields(existing: &mut ClaimablePlan, incoming: ClaimablePlan) {
+    if existing.name.is_empty() || existing.name == existing.plan_id {
+        existing.name = incoming.name;
+    }
+    if existing.description.is_empty() {
+        existing.description = incoming.description;
+    }
+    existing.priority = existing.priority.max(incoming.priority);
+    if existing.starts_at.is_none() {
+        existing.starts_at = incoming.starts_at;
+    }
+    if existing.ends_at.is_none() {
+        existing.ends_at = incoming.ends_at;
+    }
+    if existing.entitlements.is_empty() {
+        existing.entitlements = incoming.entitlements;
+    }
+    for campaign in incoming.marketing_campaign_ids {
+        if !existing.marketing_campaign_ids.contains(&campaign) {
+            existing.marketing_campaign_ids.push(campaign);
+        }
+    }
+}
+
+/// 领取 settle 之后，按 campaign id 逐个回执 `touch/action`。
+///
+/// 由 API 层在「领取成功」或「已领过」两种落定结果后调用。回执失败只把原因
+/// 收集起来返回（调用方记日志 + 透出到 `marketingError`），**不改领取结果** ——
+/// 套餐额度在 claim 那一步已经到账，回执只是消费活动按钮。见 `marketing::confirm`。
+pub async fn confirm_campaigns(
+    region: Region,
+    jwt: &str,
+    device_mid: Option<&str>,
+    proxy: Option<&ResolvedProxy>,
+    campaign_ids: &[String],
+) -> Vec<String> {
+    let mut errors = Vec::new();
+    for campaign in campaign_ids {
+        if let Err(error) = marketing::confirm(region, jwt, device_mid, proxy, campaign).await {
+            errors.push(error);
+        }
+    }
+    errors
 }
 
 /// 领取一个套餐。
@@ -611,7 +800,9 @@ pub async fn claim(
             value.to_string(),
         ));
     }
-    headers.push(("X-ZCode-App-Version".to_string(), app_version()));
+    // 领取走活动平面（billing/claim），与发现同口径用活动版本（3.18.0）；
+    // 推理身份头的 3.16.2 只服务 anthropic 端点，两者不可混用。
+    headers.push(("X-ZCode-App-Version".to_string(), activity_app_version()));
     headers.push(("X-Platform".to_string(), platform().to_string()));
     if let Some(mid) = device_mid.map(str::trim).filter(|value| !value.is_empty()) {
         headers.push(("X-Device-Mid".to_string(), mid.to_string()));
@@ -640,10 +831,12 @@ pub async fn claim(
     let data = payload.get("data");
     let plan = data.and_then(|value| value.get("plan"));
 
-    // 成功：HTTP 2xx + biz code 0 + data.plan 存在（三者缺一不可 —— 参考实现
-    // 同样要求 data.plan 在场，因为只有它带 starts_at/ends_at）
-    if (200..300).contains(&response.status) && biz_code == Some(0) {
-        if let Some(plan) = plan {
+    // 成功：HTTP 2xx + biz code 0 + success 未明确为 false + data.plan 是对象。
+    // 四者缺一不可（对齐上游 v3.4.1）：漏掉 success 会把 200 的业务失败当成功，
+    // 漏掉 is_object 会把 plan:null 误判成领到（随后 ends_at 读不到，hold 时长错乱）。
+    let explicit_failure = payload.get("success").and_then(Value::as_bool) == Some(false);
+    if (200..300).contains(&response.status) && biz_code == Some(0) && !explicit_failure {
+        if let Some(plan) = plan.filter(|value| value.is_object()) {
             return Ok(ClaimOutcome::Claimed {
                 plan_id: plan_id.to_string(),
                 starts_at: plan.get("starts_at").and_then(Value::as_i64),
@@ -752,6 +945,9 @@ fn parse_plan(raw: &Value) -> Option<ClaimablePlan> {
         starts_at: raw.get("starts_at").and_then(unix_seconds_of),
         ends_at: raw.get("ends_at").and_then(unix_seconds_of),
         entitlements,
+        // billing 链路的条目不挂营销活动；marketing 子模块解析出的条目会在
+        // 合并前自行填入 campaign id（见 marketing::query）。
+        marketing_campaign_ids: Vec::new(),
     })
 }
 
@@ -880,5 +1076,52 @@ mod captcha_config_vectors {
         );
         assert!(parse_captcha_config(&json!({"data": {"configs": {}} })).is_none());
         assert!(parse_captcha_config(&json!({})).is_none());
+    }
+}
+
+#[cfg(test)]
+mod discovery_vectors {
+    //! 双链路合并的判据：同一 plan_id 的字段互补、营销 campaign id 汇总、去重与排序。
+
+    use super::{merge_plans, ClaimablePlan};
+
+    fn plan(id: &str, name: &str, priority: i64, campaigns: &[&str]) -> ClaimablePlan {
+        ClaimablePlan {
+            plan_id: id.to_string(),
+            name: name.to_string(),
+            description: String::new(),
+            priority,
+            starts_at: None,
+            ends_at: None,
+            entitlements: Vec::new(),
+            marketing_campaign_ids: campaigns.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn billing_and_marketing_merge_into_one_plan_with_both_campaigns() {
+        let mut target = vec![plan("p1", "", 0, &[])];
+        merge_plans(&mut target, vec![plan("p1", "周末套餐", 9, &["c1"])]);
+        merge_plans(&mut target, vec![plan("p1", "", 3, &["c2", "c1"])]);
+        assert_eq!(1, target.len(), "同一 plan_id 始终只有一份");
+        let p = &target[0];
+        assert_eq!("周末套餐", p.name, "空名被补全");
+        assert_eq!(9, p.priority, "优先级取最大");
+        assert_eq!(
+            vec!["c1".to_string(), "c2".to_string()],
+            p.marketing_campaign_ids,
+            "两条链路的 campaign id 汇总且去重"
+        );
+    }
+
+    #[test]
+    fn merged_plans_are_sorted_by_priority_desc() {
+        let mut target = vec![plan("low", "低", 1, &[])];
+        merge_plans(
+            &mut target,
+            vec![plan("high", "高", 5, &[]), plan("mid", "中", 3, &[])],
+        );
+        let order: Vec<&str> = target.iter().map(|p| p.plan_id.as_str()).collect();
+        assert_eq!(vec!["high", "mid", "low"], order);
     }
 }

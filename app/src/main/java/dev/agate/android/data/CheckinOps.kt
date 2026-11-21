@@ -102,16 +102,36 @@ object CheckinOps {
         post("/api/accounts/$id/onboarding/claim", JSONObject())
 
     /** ZCode 套餐探测（只读、不要验证码）。 */
+
+    /**
+     * ZCode 领取的风控配置（与 `LoginClient.captchaConfig` 同一位置，但来自 ZCode 的
+     * `/client/configs`）。返回 `{enabled, prefix, sceneId, region, skipModelRequest}`。
+     * `enabled=false` 或 prefix/sceneId 为空时不要弹滑块，直接空码领取。
+     */
+    suspend fun planCaptchaConfig(id: String): OpResult =
+        post("/api/accounts/$id/zcode-claim/captcha-config", JSONObject())
+
     suspend fun planPreview(id: String): OpResult =
         post("/api/accounts/$id/zcode-claim/preview", JSONObject())
 
     /**
      * ZCode 套餐领取。`planId` 空 = 领优先级最高的那份（内核自己挑）。
-     * 验证码参数留空：本版不做过码（见设计预览 §⑥），空值内核放行，
-     * 上游真要码时会回 `captcha` 失败，界面如实显示原因。
+     *
+     * 验证码串由客户端 WebView 跑阿里云官方 SDK 解出（复用 AutoClaw 同款
+     * `captchaPage`），原样带给内核 —— 内核只把它当请求头转发，不解析。
+     * 上游此刻不要验证码时（enabled=false）传空即可，内核有「空值不发头」处理。
      */
-    suspend fun planClaim(id: String, planId: String = ""): OpResult =
-        post("/api/accounts/$id/zcode-claim", JSONObject().put("planId", planId))
+    suspend fun planClaim(
+        id: String,
+        planId: String = "",
+        captchaVerifyParam: String = "",
+        captchaRegion: String = "",
+    ): OpResult {
+        val body = JSONObject().put("planId", planId)
+        if (captchaVerifyParam.isNotBlank()) body.put("captchaVerifyParam", captchaVerifyParam)
+        if (captchaRegion.isNotBlank()) body.put("captchaRegion", captchaRegion)
+        return post("/api/accounts/$id/zcode-claim", body)
+    }
 
     suspend fun growthStatus(id: String): JSONObject? = getData("/api/accounts/$id/growth")
 

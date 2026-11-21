@@ -55,9 +55,7 @@ use axum::body::Bytes;
 use serde_json::{json, Value};
 
 use crate::server::core::providers::zcode::activation;
-use crate::server::core::providers::zcode::claim::{
-    self, ClaimFailure, ClaimOutcome, PreviewOutcome,
-};
+use crate::server::core::providers::zcode::claim::{self, ClaimFailure, ClaimOutcome};
 use crate::server::core::providers::zcode::region::Region;
 use crate::server::core::proxies::ResolvedProxy;
 use crate::server::errors::management_error;
@@ -206,12 +204,15 @@ fn account_proxy(
 /// 成功响应的形状（前端据此渲染列表与「领取」按钮）：
 /// ```json
 /// { "plans": [ { "planId", "name", "description", "priority",
-///                "startsAt", "endsAt", "entitlements": [...] } ],
-///   "deployed": true, "activated": true, "activationError": null }
+///                "startsAt", "endsAt", "entitlements": [...],
+///                "marketingCampaignIds": [...] } ],
+///   "deployed": true, "activated": true, "activationError": null,
+///   "billingError": null, "marketingError": null }
 /// ```
-/// `deployed: false` 表示上游活动接口尚未部署（404）—— **这不是错误**，
-/// 是活动开抢前的正常状态（见 `providers::zcode::claim` 的模块头）。
-/// 前端应当据此显示「当前没有可领套餐」而不是报错。
+/// `deployed: false` 表示两条发现链路都没成功返回（活动开抢前 / 都没部署）——
+/// **这不是错误**，前端据此显示「当前没有可领套餐」而不是报错。
+/// `billingError` / `marketingError` 各自记录一条链路的失败原因：一条挂了另一条
+/// 仍可能给出套餐，两个字段并存才能解释「为什么这次看到 / 没看到某个活动」。
 ///
 /// ── `activated` / `activationError` 的取值 ────────────────────
 /// 它们回答「这次有没有补报激活事件」（资格的前置动作，见
@@ -231,27 +232,24 @@ pub async fn preview(state: &ServerState, account_id: &str) -> axum::response::R
         Err((status, message)) => return management_error(status, message),
     };
     let proxy = account_proxy(state, account_id);
-    let outcome = claim::preview(
+    let discovery = claim::discover(
         target.region,
         &target.jwt,
         target.device_mid.as_deref(),
         proxy.as_ref(),
     )
     .await;
-    // 三个字段：探测到的套餐、接口是否已部署，以及**这次有没有补报激活事件**
-    // （`activated` / `activationError`，取值语义见 `report_activation`）
-    let (plans, deployed, activated, activation_error) = match outcome {
-        Ok(PreviewOutcome::NotDeployed) => (Vec::new(), false, None, None),
-        Ok(PreviewOutcome::Plans(plans)) if !plans.is_empty() => (plans, true, None, None),
+    // 五个字段：探测到的套餐、接口是否在线、这次有没有补报激活事件，以及两条
+    // 发现链路各自的错误（`activated` / `activationError` 语义见 `report_activation`）。
+    let (mut discovery, activated, activation_error) = match discovery {
+        // 有套餐：不必补报激活，读写分开的既有口径不变。
+        Ok(d) if !d.plans.is_empty() => (d, None, None),
         // ── 空列表：补报激活再探测一遍（本函数唯一一处会写上游的地方）──
         // 空列表**可能**只是资格没登记（见 `providers::zcode::activation` 的模块头：
         // 资格由激活事件发放，而本家不跑官方客户端，那一步不会自动发生）。
-        // 代价是两次事件 + 一次重探，收益是把「明明有资格却看不到套餐」变成看得到 ——
-        // 而预览是用户点出来的低频动作（界面上的那颗「领套餐」），这个代价付得起。
-        // 反过来，列表非空时**不报**：读写分开的既有口径不变（探测仍是只读的）。
-        Ok(PreviewOutcome::Plans(_)) => {
+        Ok(d) => {
             let (activated, activation_error) = report_activation(&target, proxy.as_ref()).await;
-            match claim::preview(
+            match claim::discover(
                 target.region,
                 &target.jwt,
                 target.device_mid.as_deref(),
@@ -259,22 +257,23 @@ pub async fn preview(state: &ServerState, account_id: &str) -> axum::response::R
             )
             .await
             {
-                Ok(PreviewOutcome::NotDeployed) => (Vec::new(), false, activated, activation_error),
-                Ok(PreviewOutcome::Plans(plans)) => {
-                    logging::verbose(
-                        "[Claim]",
-                        &format!(
-                            "ZCode {}账号「{}」补报激活事件后重探：{} 份可领套餐",
-                            target.region.label(),
-                            target.name,
-                            plans.len()
-                        ),
-                    );
-                    (plans, true, activated, activation_error)
+                Ok(again) => {
+                    if !again.plans.is_empty() {
+                        logging::verbose(
+                            "[Claim]",
+                            &format!(
+                                "ZCode {}账号「{}」补报激活事件后重探：{} 份可领套餐",
+                                target.region.label(),
+                                target.name,
+                                again.plans.len()
+                            ),
+                        );
+                    }
+                    // 重探的错误覆盖首探的（它们描述同一件事的更新一次尝试）。
+                    (again, activated, activation_error)
                 }
-                // 重探失败：不把「刚才那次成功的空探测」降级成错误 ——
-                // 首次探测已经拿到了一个可信的答案（当前没有可领套餐），
-                // 补报那一趟只是加试。错误原因进日志，响应用首次探测的结果。
+                // 重探整体失败：不把首探那次「在线但空」降级成错误。保留首探的
+                // 错误信息，只把重探失败记进日志（理由同旧的 preview handler）。
                 Err(error) => {
                     logging::log(
                         "[Claim]",
@@ -285,17 +284,25 @@ pub async fn preview(state: &ServerState, account_id: &str) -> axum::response::R
                             error.message
                         ),
                     );
-                    (Vec::new(), true, activated, activation_error)
+                    (d, activated, activation_error)
                 }
             }
         }
         Err(error) => return management_error(error.status_code, error.message),
     };
+    // 首探在线但空、重探也空时 `billing_error`/`marketing_error` 已在 discovery 里；
+    // 若重探把错误清掉了（例如首探网络抖一下、重探成功），以重探为准。
+    let deployed = discovery.deployed;
+    let billing_error = discovery.billing_error.take();
+    let marketing_error = discovery.marketing_error.take();
+    let plans = std::mem::take(&mut discovery.plans);
     ok_json(json!({
         "plans": plans.iter().map(plan_to_json).collect::<Vec<Value>>(),
         "deployed": deployed,
         "activated": activated,
         "activationError": activation_error,
+        "billingError": billing_error,
+        "marketingError": marketing_error,
     }))
 }
 
@@ -391,9 +398,13 @@ pub async fn claim_plan(
     // 受益（资格登记之后探测才看得见套餐）。失败不阻断 —— 如实进日志与响应。
     let (activated, activation_error) = report_activation(&target, proxy.as_ref()).await;
     let requested_plan_id = field("planId");
+    // 目标套餐的营销 campaign id（供领取 settle 后回执）。客户端点名领取时不带
+    // 这个字段，所以无论是否点名都探测一次：一来兜底挑优先级最高的套餐，二来
+    // 拿到该套餐来源的活动 id。探测失败不阻断点名领取（领取本身才是资格判据）。
+    let mut campaign_ids: Vec<String> = Vec::new();
     let plan_id = if requested_plan_id.is_empty() {
         // 没点名就探测一次，取优先级最高的那个
-        match claim::preview(
+        match claim::discover(
             target.region,
             &target.jwt,
             target.device_mid.as_deref(),
@@ -401,30 +412,44 @@ pub async fn claim_plan(
         )
         .await
         {
-            Ok(PreviewOutcome::Plans(plans)) => match claim::pick_target(&plans, "") {
-                Some(plan) => plan.plan_id.clone(),
+            Ok(discovery) => match claim::pick_target(&discovery.plans, "") {
+                Some(plan) => {
+                    campaign_ids = plan.marketing_campaign_ids.clone();
+                    plan.plan_id.clone()
+                }
                 None => {
                     return ok_json(json!({
                         "ok": false,
                         "failure": "unavailable",
-                        "message": "当前没有可领取的套餐",
+                        "message": if discovery.deployed { "当前没有可领取的套餐" }
+                                   else { "活动尚未开始（上游接口未部署）" },
                         "activated": activated,
                         "activationError": activation_error,
+                        "marketingError": discovery.marketing_error,
                     }))
                 }
             },
-            Ok(PreviewOutcome::NotDeployed) => {
-                return ok_json(json!({
-                    "ok": false,
-                    "failure": "unavailable",
-                    "message": "活动尚未开始（上游接口未部署）",
-                    "activated": activated,
-                    "activationError": activation_error,
-                }))
-            }
             Err(error) => return management_error(error.status_code, error.message),
         }
     } else {
+        // 点名领取：也做一次只取的发现，把 campaign id 捞出来用于回执；失败就
+        // 跳过回执（套餐额度仍由 claim 决定），不让额外一趟拖累主流程。
+        if let Ok(discovery) = claim::discover(
+            target.region,
+            &target.jwt,
+            target.device_mid.as_deref(),
+            proxy.as_ref(),
+        )
+        .await
+        {
+            if let Some(plan) = discovery
+                .plans
+                .iter()
+                .find(|plan| plan.plan_id == requested_plan_id)
+            {
+                campaign_ids = plan.marketing_campaign_ids.clone();
+            }
+        }
         requested_plan_id
     };
 
@@ -455,6 +480,22 @@ pub async fn claim_plan(
                 ),
             );
             let claimed_at = record_claim(state, account_id, &plan_id);
+            // 领取成功：按来源活动逐个回执（失败只记日志，不改领取结果）
+            let marketing_errors = claim::confirm_campaigns(
+                target.region,
+                &target.jwt,
+                target.device_mid.as_deref(),
+                proxy.as_ref(),
+                &campaign_ids,
+            )
+            .await;
+            for error in &marketing_errors {
+                logging::log(
+                    "[Claim]",
+                    &format!("ZCode 营销回执未完成（套餐已领取）：{error}"),
+                );
+            }
+            let marketing_error = marketing_errors.join("；");
             ok_json(json!({
                 "ok": true,
                 "planId": plan_id,
@@ -463,6 +504,7 @@ pub async fn claim_plan(
                 "claimedAt": claimed_at,
                 "activated": activated,
                 "activationError": activation_error,
+                "marketingError": if marketing_error.is_empty() { Value::Null } else { Value::String(marketing_error) },
             }))
         }
         Ok(ClaimOutcome::Failed {
@@ -486,11 +528,33 @@ pub async fn claim_plan(
             // 「上游说已领过」也是「今天领到了」：落一次状态，界面从此显示
             // 「今日已领」而不是让用户反复点（见模块头）。其余失败不落 ——
             // 验证码没过、额度耗尽这些都不意味着这一期的套餐已经到手。
-            let claimed_at = if failure == ClaimFailure::AlreadyClaimed {
+            let already_claimed = failure == ClaimFailure::AlreadyClaimed;
+            let claimed_at = if already_claimed {
                 record_claim(state, account_id, &plan_id)
             } else {
                 0
             };
+            // 上游口径：Claimed 与「已领过 1003」都算 settle，都要回执活动按钮；
+            // 其余失败（验证码 / 额度 / 未登录）不回执。回执失败只记日志。
+            let marketing_errors = if already_claimed {
+                claim::confirm_campaigns(
+                    target.region,
+                    &target.jwt,
+                    target.device_mid.as_deref(),
+                    proxy.as_ref(),
+                    &campaign_ids,
+                )
+                .await
+            } else {
+                Vec::new()
+            };
+            for error in &marketing_errors {
+                logging::log(
+                    "[Claim]",
+                    &format!("ZCode 营销回执未完成（套餐已领取）：{error}"),
+                );
+            }
+            let marketing_error = marketing_errors.join("；");
             ok_json(json!({
                 "ok": false,
                 "planId": plan_id,
@@ -502,6 +566,7 @@ pub async fn claim_plan(
                 "claimedAt": claimed_at,
                 "activated": activated,
                 "activationError": activation_error,
+                "marketingError": if marketing_error.is_empty() { Value::Null } else { Value::String(marketing_error) },
             }))
         }
     }
@@ -533,6 +598,9 @@ fn plan_to_json(plan: &claim::ClaimablePlan) -> Value {
         "priority": plan.priority,
         "startsAt": plan.starts_at,
         "endsAt": plan.ends_at,
+        // 来源活动 id 非空 = 这份套餐（也）由 marketing/touch 下发；界面据此
+        // 标注「活动福利」来源，排障时也能看出双链路是否都给出了同一份套餐。
+        "marketingCampaignIds": plan.marketing_campaign_ids,
         "entitlements": plan
             .entitlements
             .iter()
