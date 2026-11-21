@@ -102,9 +102,6 @@ pub static QODER_INTL_ADAPTER: QoderAdapter = QoderAdapter {
 pub static QWENWORK_ADAPTER: QoderAdapter = QoderAdapter {
     site: Site::QwenworkCn,
 };
-pub static QWENWORK_ADAPTER: QoderAdapter = QoderAdapter {
-    site: Site::QwenworkCn,
-};
 
 /// 映射上绑的思考等级注入到请求体的哪个键。
 ///
@@ -702,7 +699,10 @@ async fn refresh_after_auth(
         return Err(error);
     }
     *attempts += 1;
-    logging::log(site.log_tag(), "🔑 上游报鉴权失败，强制续期凭证后同账号重试一次");
+    logging::log(
+        site.log_tag(),
+        "🔑 上游报鉴权失败，强制续期凭证后同账号重试一次",
+    );
     // 续期本身可能在途（刷新接口一次往返），先记一条内部重试 —— 用户看到
     // 「凭证过期 → 续期 → 重发」这条链，才解释得通这次请求为什么慢了一拍
     telemetry.note_attempt_retry("上游鉴权失败，强制续期凭证后重试", Some(401), 0);
@@ -741,7 +741,7 @@ async fn queue_backoff(
     *waited_ms += wait_ms;
     let seconds = wait_ms / 1000;
     logging::log(
-        site.log_tag(),
+        "[Qoder]",
         &format!(
             "⏳ 上游模型排队中{}，{seconds} 秒后重试（第 {}/{} 次）",
             if queued.detail.is_empty() {

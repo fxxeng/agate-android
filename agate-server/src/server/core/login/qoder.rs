@@ -34,7 +34,7 @@ impl LoginService {
         });
         logging::log(
             "[Login]",
-            &format!("发起 Qoder {}网页登录（等待授权…）", site.label()),
+            &format!("发起 {} 网页登录（等待授权…）", site.display_name()),
         );
         Ok(handle)
     }
@@ -46,7 +46,10 @@ impl LoginService {
                 return;
             }
             if tokio::time::Instant::now() >= deadline {
-                finish_task_error(&handle, "Qoder 网页登录超时，请重新发起");
+                finish_task_error(
+                    &handle,
+                    &format!("{} 网页登录超时，请重新发起", site.product()),
+                );
                 return;
             }
             tokio::time::sleep(Duration::from_secs(2)).await;
@@ -60,14 +63,20 @@ impl LoginService {
             match outcome {
                 Ok(Ok(None)) => continue,
                 Ok(Err(error)) if error.code.as_deref() == Some("qoder_transport") => {
-                    logging::verbose("[Login]", "Qoder 设备授权暂时不可达，继续等待");
+                    logging::verbose(
+                        "[Login]",
+                        &format!("{} 设备授权暂时不可达，继续等待", site.display_name()),
+                    );
                 }
                 Ok(Err(error)) => {
                     finish_task_error(&handle, &error.message);
                     return;
                 }
                 Err(_) => {
-                    finish_task_error(&handle, "Qoder 网页登录超时，请重新发起");
+                    finish_task_error(
+                        &handle,
+                        &format!("{} 网页登录超时，请重新发起", site.product()),
+                    );
                     return;
                 }
                 Ok(Ok(Some(credentials))) => {
@@ -93,8 +102,8 @@ impl LoginService {
                             logging::log(
                                 "[Login]",
                                 &format!(
-                                    "✅ Qoder {}网页登录完成，账号已加入列表",
-                                    credentials.site.label()
+                                    "✅ {} 网页登录完成，账号已加入列表",
+                                    credentials.site.display_name()
                                 ),
                             );
                         }

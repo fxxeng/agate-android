@@ -63,15 +63,15 @@ impl AccountStore {
             .into_iter()
             .find(|record| {
                 record.user_id() == credentials.user_id
-                    && Site::from_payload(&record.to_value()).ok() == Some(credentials.site)
+                    && Site::from_record(&record.to_value()).ok() == Some(credentials.site)
             });
         let id = existing
             .as_ref()
             .map(|record| record.id().to_string())
             .unwrap_or_else(|| {
                 format!(
-                    "qoder-{}-{:x}",
-                    credentials.site.id(),
+                    "{}-{:x}",
+                    credentials.site.account_id_prefix(),
                     Sha256::digest(credentials.user_id.as_bytes())
                 )
             });
@@ -226,7 +226,7 @@ impl AccountStore {
             }
         }
         if record.user_id() != credentials.user_id
-            || Site::from_payload(&record.to_value()).ok() != Some(credentials.site)
+            || Site::from_record(&record.to_value()).ok() != Some(credentials.site)
         {
             return Err(AccountStoreError::bad_request(
                 "Qoder 刷新结果与原账号身份不一致",
@@ -256,7 +256,7 @@ impl AccountStore {
         // 旧数据的兼容读取 —— 记录缺 `mode` 时 `from_payload` 会默认 Global，
         // 那个默认对中国版记录是错的，不能当首选。
         let site = Site::from_provider_id(&record.provider())
-            .or_else(|| Site::from_payload(&record.to_value()).ok());
+            .or_else(|| Site::from_record(&record.to_value()).ok());
         let available = record.has_token() && site.is_some();
         let can_refresh = Credentials::from_payload(&record.to_value())
             .map(|credentials| credentials.can_refresh())
