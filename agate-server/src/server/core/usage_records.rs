@@ -330,12 +330,25 @@ pub const MAX_QUERY_INTERVAL_SECONDS: i64 = 86_400;
 ///
 /// 「缺省」必须与全局任务时代的行为对齐：那时「定时查询积分」默认开启
 /// （每 10 分钟），账号什么都不配也在查；因此每账号化的缺省同样是**开启**
-/// （间隔取 1 分钟 —— 用户升级反馈指定的值），而不是「未配置 = 不查」——
-/// 否则升级后所有人的余额列都会静默停更。
+/// （而不是「未配置 = 不查」）—— 否则升级后所有人的余额列都会静默停更。
+///
+/// 缺省间隔按平台分流：
+///   · 桌面端 1 分钟 —— 用户升级反馈指定的值，常通电、射频唤醒无感；
+///   · Android 端 5 分钟 —— 手机息屏后每次外网查询都会唤醒射频，60s × 账号数
+///     意味着射频几乎无法进入深睡（见 `usage_query` 模块头与省电审计）。前端
+///     任务「日志/请求/报表自动刷新」也是同理但页面不可见即静默，余额查询是
+///     进程常驻的，所以要靠拉长间隔降频。
+///
+/// 这是**编译期**分支：`DEFAULT_QUERY_INTERVAL_SECONDS` 是 `const`，两端各自
+/// 编译进 .so / 桌面二进制，不引入运行时判断。已显式配过 `usageQuery.interval`
+/// 的账号仍按原值跑 —— 改缺省不改写存量设置。
 ///
 /// 余额不足的缺省处理按 provider 区分（见 [`default_low_balance_mode`]）：
 /// 大多数家沿用跳过（阈值 1）—— 全局任务时代没有这个概念，它是最温和的
 /// 兜底；唯独 Cline 免费池缺省**不处理**，原因见那边的文档。
+#[cfg(target_os = "android")]
+pub const DEFAULT_QUERY_INTERVAL_SECONDS: i64 = 300;
+#[cfg(not(target_os = "android"))]
 pub const DEFAULT_QUERY_INTERVAL_SECONDS: i64 = 60;
 pub const DEFAULT_LOW_BALANCE_THRESHOLD: f64 = 1.0;
 
@@ -551,5 +564,63 @@ fn reload_facts() {
         .collect();
     if let Ok(mut slot) = facts_slot().lock() {
         *slot = facts;
+    }
+}
+
+#[cfg(test)]
+mod power_defaults_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// 缺省间隔按平台分流：Android 必须显著大于桌面（省电分支生效），
+    /// 且两端都落在 30s~1 天的合法区间内。本机（非 android）编译只验证桌面值；
+    /// Android 值由 CI 的 android target 编译与这里的 `< 桌面值` 断言共同钉住。
+    #[test]
+    fn default_query_interval_is_larger_on_android() {
+        assert!(
+            (MIN_QUERY_INTERVAL_SECONDS..=MAX_QUERY_INTERVAL_SECONDS)
+                .contains(&DEFAULT_QUERY_INTERVAL_SECONDS),
+            "缺省间隔必须落在写入侧允许的区间内"
+        );
+        #[cfg(target_os = "android")]
+        {
+            assert_eq!(DEFAULT_QUERY_INTERVAL_SECONDS, 300, "Android 缺省 5 分钟");
+        }
+        #[cfg(not(target_os = "android"))]
+        {
+            assert_eq!(DEFAULT_QUERY_INTERVAL_SECONDS, 60, "桌面缺省 1 分钟");
+            assert!(
+                crate::server::config::DEFAULT_UPDATE_CHECK_MINUTES >= 20,
+                "桌面版本检查默认不短于历史 20 分钟"
+            );
+        }
+    }
+
+    /// 未配置 `usageQuery` = 开启 + 缺省间隔（不是关闭、不是写死 60）。
+    /// 这条钉住「改缺省值能覆盖存量账号」的前提：缺省不被物化进记录。
+    #[test]
+    fn missing_usage_query_uses_platform_default_enabled() {
+        let account = json!({ "id": "a" });
+        assert_eq!(
+            query_interval_of(&account),
+            Some(DEFAULT_QUERY_INTERVAL_SECONDS),
+            "未配置必须用编译期缺省间隔"
+        );
+    }
+
+    /// 用户显式配置（含关闭）必须被尊重，不被省电默认值覆盖。
+    #[test]
+    fn explicit_usage_query_wins_over_default() {
+        let custom = json!({
+            "id": "a",
+            "usageQuery": { "enabled": true, "interval": 45 }
+        });
+        assert_eq!(query_interval_of(&custom), Some(45), "显式间隔必须保留");
+
+        let off = json!({
+            "id": "a",
+            "usageQuery": { "enabled": false, "interval": 0 }
+        });
+        assert_eq!(query_interval_of(&off), None, "显式关闭必须保留");
     }
 }

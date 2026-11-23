@@ -574,13 +574,20 @@ pub const DEFAULT_MODEL_REFRESH_MINUTES: i64 = 60;
 pub const DEFAULT_LOGS_AUTO_REFRESH_SECONDS: i64 = 1;
 pub const DEFAULT_REQUESTS_AUTO_REFRESH_SECONDS: i64 = 1;
 pub const DEFAULT_REPORT_AUTO_REFRESH_SECONDS: i64 = 1;
-/// 软件版本检查默认间隔（分钟）：每 20 分钟查一次 GitHub 最新发布。
+/// 软件版本检查默认间隔（分钟）：向 GitHub 查最新发布。
 ///
-/// 20 分钟 = 3 次/小时，相对匿名限额（60 次/小时，且**按出口 IP 计** —— 同一
-/// 出口下的其它程序共用这份额度）留足余量，又能让新版本的提示在一刻钟量级内
-/// 出现。**这个默认值只影响「没配过间隔」的情形**：已经保存过
+/// 桌面端 20 分钟 = 3 次/小时，相对匿名限额（60 次/小时，且**按出口 IP 计**
+/// —— 同一出口下的其它程序共用这份额度）留足余量，又能让新版本提示在一刻钟
+/// 量级内出现。Android 端拉长到 2 小时：手机用户装的是应用商店版本，不依赖
+/// GitHub 自动提示，而每次检查都是一次外网射频唤醒（常驻进程无法被 Doze 合并）。
+/// 这是编译期分支（`const`，两端各自编译），不引入运行时判断。
+///
+/// **这个默认值只影响「没配过间隔」的情形**：已经保存过
 /// `scheduledTasks.updateCheck.interval` 的配置按原值跑（`interval_field`
 /// 只在键缺失或越界时才回落到默认），所以调整它不会改写老用户的设置。
+#[cfg(target_os = "android")]
+pub const DEFAULT_UPDATE_CHECK_MINUTES: i64 = 120;
+#[cfg(not(target_os = "android"))]
 pub const DEFAULT_UPDATE_CHECK_MINUTES: i64 = 20;
 
 /// 间隔型任务的取值范围。上下限分两套（分钟 / 秒），因为两类任务的合理区间

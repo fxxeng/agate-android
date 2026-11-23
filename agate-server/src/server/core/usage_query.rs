@@ -468,10 +468,17 @@ fn enforce_token_disable(store: &AccountStore, accounts: &[Value], now: i64) {
 
 // ─── 每账号自动查询的心跳调度 ────────────────────────────────
 
-/// 心跳判定间隔：10 秒（与 `scheduled_tasks` 的 tick 同一量级）。
-/// 账号间隔下限是 30 秒，这个粒度意味着「到点后最多晚 10 秒查询」——
-/// 用户感知不到，空转代价只是每 10 秒一次读库（到期判定全部在内存与
-/// 记录表的小查询里）。
+/// 心跳判定间隔：桌面 10 秒 / Android 30 秒（与 `scheduled_tasks` 的 tick 同一量级）。
+///
+/// 每 tick 一次读库做到期判定（全部在内存与记录表的小查询里），不发外网 ——
+/// 真正的外网请求只给到期的账号。桌面端 10s 粒度对应账号间隔下限 30s，「到点
+/// 后最多晚 10 秒」用户无感。Android 端拉到 30s 与账号间隔下限对齐：常驻进程
+/// 每 10s 唤醒一次做纯本地判定，在息屏时也照跑（specialUse FGS 免于 Doze
+/// 合并），30s 省下约 2/3 的定时器唤醒；最坏「到点晚 30s」，对缺省 5 分钟（桌面
+/// 1 分钟）的查询间隔无感。编译期分支，两端各自编译。
+#[cfg(target_os = "android")]
+pub const SWEEP_TICK_MS: u64 = 30_000;
+#[cfg(not(target_os = "android"))]
 pub const SWEEP_TICK_MS: u64 = 10_000;
 
 /// 起动每账号自动查询的心跳循环（`ServerState::bootstrap` 调一次，进程内

@@ -52,9 +52,14 @@ use crate::server::logging;
 
 /// 调度循环的判定间隔。
 ///
-/// 10 秒：backend 任务的间隔下限是 1 分钟（见 `INTERVAL_MIN_MINUTES`），
-/// 10 秒的判定粒度意味着「到点后最多晚 10 秒执行」——用户感知不到，
-/// 而空转代价只是每 10 秒一次读库（排期在库里）。不做得更密：没有收益。
+/// 每 tick 一次读库查排期（任务都在库里），到点才执行任务。桌面端 10 秒：
+/// backend 任务的间隔下限是 1 分钟（见 `INTERVAL_MIN_MINUTES`），「到点最多晚
+/// 10 秒」用户感知不到。Android 端拉到 30 秒：常驻进程息屏也照跑（specialUse
+/// FGS），30s 省下约 2/3 的定时器唤醒，而任务最短 1 分钟，「到点晚 30s」仍在
+/// 半分钟粒度内、无感。编译期分支，两端各自编译。不做得更密：没有收益。
+#[cfg(target_os = "android")]
+pub const TICK_MS: u64 = 30_000;
+#[cfg(not(target_os = "android"))]
 pub const TICK_MS: u64 = 10_000;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -105,7 +110,7 @@ pub const TASKS: [TaskDef; 6] = [
     TaskDef {
         id: TASK_UPDATE_CHECK,
         label: "软件版本检查",
-        description: "定期向 GitHub 查询最新发布版本，默认每 20 分钟一次。检查结果、排期和限流冷却跨重启保留；手动检查也会合并重复请求并遵守冷却。开关与间隔在「软件更新」面板的「更新设置」弹窗里配置（定时任务页不再渲染这一条）。",
+        description: "定期向 GitHub 查询最新发布版本（默认间隔因平台而异，以下方实际间隔为准）。检查结果、排期和限流冷却跨重启保留；手动检查也会合并重复请求并遵守冷却。开关与间隔在「软件更新」面板的「更新设置」弹窗里配置（定时任务页不再渲染这一条）。",
         unit: "minutes",
         runner: Runner::Backend,
         min: config::INTERVAL_MIN_MINUTES,

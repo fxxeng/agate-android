@@ -624,8 +624,9 @@ fn balance_query_public(fields: &Map<String, Value>, scheme: &str) -> Value {
 /// 读侧只做**容错展开**、不校验：合法性由写入侧（`apply_patch` 的
 /// `normalize_usage_query`）保证，这里负责把缺失 / 脏值收敛成缺省形状，让
 /// 调度与前端都按「恒定形状」读。缺省与 `usage_records::query_interval_of`
-/// 同一口径 —— **未配置 = 开启、1 分钟**（对齐全局任务时代「默认就在查」的
-/// 行为，升级后余额列不停更），只有显式 `{enabled:false}` 才是关。
+/// 同一口径 —— **未配置 = 开启、缺省间隔（桌面 1 分钟 / Android 5 分钟）**
+/// （对齐全局任务时代「默认就在查」的行为，升级后余额列不停更），只有显式
+/// `{enabled:false}` 才是关。
 fn usage_query_public(value: Option<&Value>) -> Value {
     use crate::server::core::usage_records::{
         DEFAULT_QUERY_INTERVAL_SECONDS, MAX_QUERY_INTERVAL_SECONDS, MIN_QUERY_INTERVAL_SECONDS,
