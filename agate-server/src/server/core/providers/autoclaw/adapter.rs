@@ -105,12 +105,15 @@ use super::models;
 use super::refresh;
 use super::region::Region;
 
+use super::CLIENT_VERSION;
+
 /// 客户端版本号（源实现 `createUpstreamClient` 的 `desktopAppVersion` 默认值；
 /// `server.mjs` 从不覆盖它，所以这里是常量而不是配置项）。
 ///
-/// 它进 `X-Version` 头：上游按它识别 AutoClaw 客户端版本，改动会让上游按不同
-/// 的兼容路径解释请求。
-const DESKTOP_APP_VERSION: &str = "1.17.8";
+/// 它进 `X-Version` 头：上游按它识别 AutoClaw 客户端版本。值定义在
+/// `autoclaw::CLIENT_VERSION`，与模型目录的签名头共用一处 —— 不再各写一份
+/// （此前目录 1.18.5 / 转发 1.17.8 两个值，客户端升级后目录过期导致清单拉不到
+/// 新模型）。两条链路一起跟随真实桌面端版本。
 
 /// 上游语言 / 通道（源实现的 `lang` / `channel` 默认值，`server.mjs` 同样不覆盖）
 const CLIENT_LANG: &str = "zh-CN";
@@ -553,7 +556,7 @@ fn brand_headers() -> Vec<(String, String)> {
         ("X-Product".to_string(), "autoclaw".to_string()),
         ("X-Client-Type".to_string(), "pc".to_string()),
         ("X-Tm".to_string(), platform_tm().to_string()),
-        ("X-Version".to_string(), DESKTOP_APP_VERSION.to_string()),
+        ("X-Version".to_string(), CLIENT_VERSION.to_string()),
         ("X-Lang".to_string(), CLIENT_LANG.to_string()),
         ("X-Channel".to_string(), CLIENT_CHANNEL.to_string()),
         ("x_trace_id".to_string(), "autoclaw-desktop".to_string()),

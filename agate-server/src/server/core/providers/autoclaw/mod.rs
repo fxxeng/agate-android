@@ -113,3 +113,39 @@ pub mod region;
 
 pub use adapter::{AUTOCLAW_ADAPTER, AUTOCLAW_INTL_ADAPTER};
 pub use region::Region;
+
+/// 对外申报的 AutoClaw 桌面端版本，供**两条链路共用**（模型目录的签名头
+/// `refresh::signed_auth_headers` 与转发 chat 的品牌头 `adapter::brand_headers`）。
+///
+/// ── 为什么必须单点定义 ─────────────────────────────────────
+/// 这两处此前各写一份（目录 1.18.5 / 转发 1.17.8），客户端升级后目录那份
+/// 过期、服务端按 `X-Version` 门控只下发旧清单（GLM-5.4 等新模型拉不到），
+/// 而转发那份还停在更早的版本 —— 同一「客户端版本」两个值，升级时漏改一处
+/// 就是静默故障。现在统一到本常量：改一处两条链路同时生效。
+///
+/// ── 值怎么定 ───────────────────────────────────────────────
+/// 跟随真实桌面端版本：官方 2026-11 活动链接里 `target_app_version=2.5.3`，
+/// 该版本下 GLM-5.4 已在端内上架。上游按 `X-Version` 做目录门控，版本过低
+/// 会回落到旧清单而不报错 —— 所以这个值的症状是「模型少」，不是请求失败。
+/// 客户端再升级时改这里一处即可。
+pub const CLIENT_VERSION: &str = "2.5.3";
+
+#[cfg(test)]
+mod client_version_tests {
+    use super::*;
+
+    /// 钉住「一个版本」：目录与转发都从 [CLIENT_VERSION] 取值，两处不得再各自
+    /// 写字面量（历史上就是漏改目录那份，导致 GLM-5.4 拉不到）。这条断言把
+    /// 「跟随客户端版本」的当前值固定下来，升级时明确改这一处。
+    #[test]
+    fn client_version_is_single_source() {
+        assert_eq!(CLIENT_VERSION, "2.5.3");
+        // 两条链路必须真的引用同一个常量（编译器保证没有第二个字面量常量）：
+        // 目录头在 refresh::signed_auth_headers，转发头在 adapter::brand_headers。
+        let catalog_header = refresh::signed_auth_headers("dummy-token")
+            .into_iter()
+            .find(|(key, _)| key == "X-Version")
+            .map(|(_, value)| value);
+        assert_eq!(catalog_header.as_deref(), Some(CLIENT_VERSION));
+    }
+}

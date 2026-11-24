@@ -48,7 +48,8 @@
 //! 都**不触发**发放；只有 user-info 打下去，20000 + 500 立刻入账（国际版是
 //! 800，没有 20000 档）。user-info 是客户端启动时的固定动作，服务端把「登录」
 //! 的判据挂在它上面（流水元数据 `event_type: autoclaw_user_active`）。
-//! 版本无关（X-Version 1.18.5 照发）、幂等（重复调用不重复入账）。
+//! 版本无关（X-Version 取 `autoclaw::CLIENT_VERSION`，换值不影响）、幂等
+//! （重复调用不重复入账）。
 //!
 //! user-info 只需要 access token（不需要 refreshToken），也就没有 token 轮换
 //! 这类副作用 —— 比原来的「强制刷新」触发更干净、覆盖面更大。失败只记日志、

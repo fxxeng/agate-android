@@ -50,6 +50,7 @@ use super::credentials::{
     CredentialOrigin, REFRESH_FALLBACK_CODE, REQUEST_TIMEOUT_MS,
 };
 use super::crypto;
+use super::CLIENT_VERSION;
 
 /// 签名用的 appId / appKey（源实现 `AUTH_APP_ID` / `AUTH_APP_KEY`）。
 ///
@@ -61,17 +62,20 @@ const AUTH_APP_KEY: &str = "38d2391985e2369a5fb8227d8e6cd5e5";
 
 /// 对外申报的客户端版本（源实现 `authHeaders` 里的 `X-Version: app.getVersion()`）。
 ///
+/// 常量定义在 `autoclaw::CLIENT_VERSION`（与转发品牌头共用同一处），本模块
+/// 通过下面的 `use super::CLIENT_VERSION` 引用 —— 不在本文件再写一份。
+///
 /// ── 为什么必须带这个头（2026-09-22 实测）─────────────────────
 /// 服务端按 `X-Version` 对 `autoclaw-model-config` 做**版本门控**：同一个账号、
 /// 同一个 URL，不带这个头时国际版只下发 4 条（缺 `tdpsk_deepseek-v4-flash-202605`
 /// 与 `zai_glm-5.3-flash`）、国内版只下发 3 条（缺 `zai_glm-5.3-flash`）；补上
-/// `X-Version: 1.18.5`（本机桌面端当前版本，两地实测同值放行）后两地都下发
-/// 全量目录。客户端在**所有** userapi 请求上都发它（`commonHeaders` 包着
-/// `authHeaders`），所以这里跟着签名头一起发，而不是只给目录请求加。
+/// `X-Version` 后两地都下发全量目录。客户端在**所有** userapi 请求上都发它
+/// （`commonHeaders` 包着 `authHeaders`），所以这里跟着签名头一起发，而不是只
+/// 给目录请求加。
 ///
 /// 值跟着**真实客户端**走：客户端自动更新后这里会过时，过时的症状是目录
-/// 回落成旧清单而不是报错 —— 到时候改这一个常量即可。
-const CLIENT_VERSION: &str = "1.18.5";
+/// 回落成旧清单（如 GLM-5.4 拉不到）而不是报错 —— 改 `autoclaw::CLIENT_VERSION`
+/// 一处即可，两条链路同时生效。
 
 // ─── 单飞表 ─────────────────────────────────────────────────
 
