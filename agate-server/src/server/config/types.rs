@@ -576,11 +576,15 @@ pub const DEFAULT_REQUESTS_AUTO_REFRESH_SECONDS: i64 = 1;
 pub const DEFAULT_REPORT_AUTO_REFRESH_SECONDS: i64 = 1;
 /// 软件版本检查默认间隔（分钟）：向 GitHub 查最新发布。
 ///
-/// 桌面端 20 分钟 = 3 次/小时，相对匿名限额（60 次/小时，且**按出口 IP 计**
-/// —— 同一出口下的其它程序共用这份额度）留足余量，又能让新版本提示在一刻钟
-/// 量级内出现。Android 端拉长到 2 小时：手机用户装的是应用商店版本，不依赖
-/// GitHub 自动提示，而每次检查都是一次外网射频唤醒（常驻进程无法被 Doze 合并）。
-/// 这是编译期分支（`const`，两端各自编译），不引入运行时判断。
+/// **自动检查当前已停用**：`ScheduledSettings::default()` 里 `update_check.enabled`
+/// 为 `false`，且 `core::scheduled_tasks::auto_tasks()` 把这条任务排除在后台循环
+/// 之外 —— 无论配置里 enabled 是否为 true，都不会有后台请求。这个间隔值只是
+/// 任务定义与手动检查的回落参数，保留以便日后恢复。
+///
+/// 历史值（供恢复时参考）：桌面 20 分钟 = 3 次/小时，相对匿名限额（60 次/小时，
+/// **按出口 IP 计**）留足余量；Android 2 小时 —— 手机用户装的是应用商店版本，
+/// 不依赖 GitHub 自动提示，而每次检查都是一次外网射频唤醒（常驻进程无法被
+/// Doze 合并）。编译期分支（`const`，两端各自编译），不引入运行时判断。
 ///
 /// **这个默认值只影响「没配过间隔」的情形**：已经保存过
 /// `scheduledTasks.updateCheck.interval` 的配置按原值跑（`interval_field`
@@ -649,8 +653,10 @@ impl Default for ScheduledSettings {
                 enabled: true,
                 interval: DEFAULT_REPORT_AUTO_REFRESH_SECONDS,
             },
+            // 自动版本检查当前停用：缺省关，且 scheduled_tasks::auto_tasks()
+            // 会把它排除在后台循环外（即使存量配置里仍是 enabled）。手动检查保留。
             update_check: IntervalTask {
-                enabled: true,
+                enabled: false,
                 interval: DEFAULT_UPDATE_CHECK_MINUTES,
             },
         }

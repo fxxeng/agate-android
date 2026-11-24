@@ -961,14 +961,14 @@ impl AccountStore {
     /// 整块对象更新：`enabled` 按真值判定；`interval` 必须是整数秒，开启时必须在
     /// `MIN~MAX_QUERY_INTERVAL_SECONDS` 内（关闭时放行任意整数 / 缺失，存 0）——
     /// 用户先关开关保存，不会因为残留的旧间隔被 400 挡住。非对象（null / 脏值）
-    /// 一律视为「恢复缺省」= 开启、缺省间隔（桌面 1 分钟 / Android 5 分钟，与读侧
-    /// `query_interval_of` 的缺省同一口径）；显式关闭必须是 `{enabled:false}` 对象。
+    /// 一律视为「恢复缺省」= 关闭（余额走手动 / 客户端定点主动刷新，后台不查，
+    /// 与读侧 `query_interval_of` 的缺省同一口径）；显式开启必须是
+    /// `{enabled:true, interval:…}` 对象。
     fn normalize_usage_query(value: &Value) -> Result<Value, AccountStoreError> {
         const MIN: i64 = crate::server::core::usage_records::MIN_QUERY_INTERVAL_SECONDS;
         const MAX: i64 = crate::server::core::usage_records::MAX_QUERY_INTERVAL_SECONDS;
-        const DEFAULT: i64 = crate::server::core::usage_records::DEFAULT_QUERY_INTERVAL_SECONDS;
         let Some(fields) = value.as_object() else {
-            return Ok(json!({ "enabled": true, "interval": DEFAULT }));
+            return Ok(json!({ "enabled": false, "interval": 0 }));
         };
         let enabled = fields.get("enabled").map(js_truthy).unwrap_or(false);
         let interval = match fields.get("interval") {
@@ -991,14 +991,12 @@ impl AccountStore {
     }
 
     /// `usageQuery` 的比较基准：已存的值过一遍同一套归一化（容错版 —— 存量数据
-    /// 由写入侧保证合法，这里不报错）。**记录上没有这个键 = 缺省开启、缺省间隔
-    /// （桌面 1 分钟 / Android 5 分钟）**：比较基准与读侧缺省一致，用户对着缺省值
-    /// 保存一次设置不会凭空多出一条「已开启」的变更日志，也不会把缺省配置物化
-    /// 进每条账号记录。
+    /// 由写入侧保证合法，这里不报错）。**记录上没有这个键 = 缺省关闭**：比较基准
+    /// 与读侧缺省一致，用户对着缺省值保存一次设置不会凭空多出一条「已关闭」的
+    /// 变更日志，也不会把缺省配置物化进每条账号记录。
     fn normalize_usage_query_lenient(value: Option<&Value>) -> Value {
-        const DEFAULT: i64 = crate::server::core::usage_records::DEFAULT_QUERY_INTERVAL_SECONDS;
         Self::normalize_usage_query(value.unwrap_or(&Value::Null))
-            .unwrap_or_else(|_| json!({ "enabled": true, "interval": DEFAULT }))
+            .unwrap_or_else(|_| json!({ "enabled": false, "interval": 0 }))
     }
 
     /// `lowBalance` 的写入侧归一化：mode 三选一；非 off 档要求阈值有限且 > 0；

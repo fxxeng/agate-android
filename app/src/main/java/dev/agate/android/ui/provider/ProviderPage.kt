@@ -165,12 +165,12 @@ fun ProviderPage(
         onDispose { }
     }
 
-    /** 并发查询全部账号余额 + 在途连接数。silent=首屏自动拉取不弹提示。 */
+    /** 读余额缓存 + 在途连接数。silent=首屏载入不弹提示（首屏只读缓存，不打上游）。 */
     fun loadBalances(silent: Boolean = false) {
         if (querying) return
         querying = true
         scope.launch {
-            val usage = AccountOps.usage()
+            val usage = AccountOps.usage(mode = AccountOps.UsageMode.CACHE_ONLY)
             val conn = AccountOps.connections()
             querying = false
             if (usage != null) {
@@ -201,7 +201,7 @@ fun ProviderPage(
             if (!silent) {
                 Toast.makeText(
                     ctx,
-                    if (usage == null) "余额查询失败" else "已刷新 ${metrics.size} 个账号余额",
+                    if (usage == null) "暂无余额缓存，请到额度中心刷新" else "已载入 ${metrics.size} 个账号余额",
                     Toast.LENGTH_SHORT,
                 ).show()
             }

@@ -104,10 +104,14 @@ fun QuotaCenterPage(
     // 展开状态（基线用 details 折叠，默认收起）
     var expanded by remember { mutableStateOf<Set<String>>(emptySet()) }
 
-    suspend fun refresh(force: Boolean = false) {
+    suspend fun refresh(manual: Boolean = false) {
         busy = true
         hint = null
-        val data = AccountOps.usage(force = force)
+        // 进额度中心 = 主动刷新时机（30 分钟窗口内只读缓存）；
+        // 「刷新全部」按钮 = 手动强制（20 秒硬节流）。
+        val mode = if (manual) AccountOps.UsageMode.MANUAL
+                   else AccountOps.UsageMode.PROACTIVE
+        val data = AccountOps.usage(mode = mode)
         busy = false
         if (data == null) {
             hint = "查询失败：内核未响应"
@@ -147,7 +151,7 @@ fun QuotaCenterPage(
 
     LaunchedEffect(Unit) {
         AccountOps.configure(GatewayPrefs.apiKey(ctx))
-        refresh(force = false)
+        refresh() // 进额度中心：主动刷新时机之一（窗口内走缓存）
     }
 
     // 名字表只拉一次（自定义家的名称不是高频变动数据）。
@@ -231,7 +235,7 @@ fun QuotaCenterPage(
                 SmallPill(
                     text = if (busy) "查询中…" else "刷新全部",
                     enabled = !busy,
-                    onClick = { if (!busy) scope.launch { refresh(force = true) } },
+                    onClick = { if (!busy) scope.launch { refresh(manual = true) } },
                 )
             }
             hint?.let {

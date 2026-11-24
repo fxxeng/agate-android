@@ -20,8 +20,8 @@ import org.json.JSONObject
  *   点了没有任何东西可跑，所以不给按钮 —— 一个点了没反应的按钮比没有更糟。
  *
  * ── `update_check` 在界面上隐藏 ─────────────────────────────
- * 它的配置入口收在「设置 → 更新设置」弹窗里。同一件事两个入口会让人以为是
- * 两件事。后端照常执行，只是本页不渲染它。
+ * 软件版本检查的自动调度已停用（后端 `auto_tasks()` 不再纳入它，不会自动向
+ * GitHub 发请求）。任务定义与手动检查 API 保留，本页不渲染它。
  *
  * ── 间隔单位由任务的 `unit` 决定 ────────────────────────────
  * `minutes`（凭证维护 / 模型刷新 / 版本检查）与 `seconds`（三条前端刷新）。
@@ -30,7 +30,7 @@ import org.json.JSONObject
  */
 object PeriodicTaskOps {
 
-    /** 界面隐藏的任务（入口在别处）。 */
+    /** 界面隐藏的任务：软件版本检查自动调度已停用（手动检查 API 仍保留）。 */
     private val HIDDEN = setOf("update_check")
 
     class Row(o: JSONObject) {

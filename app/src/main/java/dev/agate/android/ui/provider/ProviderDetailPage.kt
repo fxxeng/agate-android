@@ -154,13 +154,15 @@ fun ProviderDetailPage(
 
     fun toast(m: String) = Toast.makeText(ctx, m, Toast.LENGTH_SHORT).show()
 
-    fun loadUsage(id: String? = null, force: Boolean = false) {
+    fun loadUsage(id: String? = null, manual: Boolean = false) {
         if (busy) return
         busy = true
         scope.launch {
-            // force=false 时由 UsageCache 决定：新鲜缓存直接返回，过期缓存也先用
-            // 旧的（进详情页不再自动打上游，避免频繁请求被官方风控）
-            val data = AccountOps.usage(id, force = force)
+            // 进详情页 = 主动刷新时机之一（30 分钟窗口内只读缓存）；
+            // 「查询余额 / 连通测试」按钮 = 手动强制（20 秒硬节流）。
+            val mode = if (manual) AccountOps.UsageMode.MANUAL
+                       else AccountOps.UsageMode.PROACTIVE
+            val data = AccountOps.usage(id, mode)
             busy = false
             if (data == null) { toast("余额查询失败"); return@launch }
             val arr = data.optJSONArray("results")
@@ -180,7 +182,7 @@ fun ProviderDetailPage(
                     }
                 }
             }
-            toast(if (force) "余额已更新" else "余额已载入（缓存）")
+            toast(if (manual) "余额已更新" else "余额已载入（缓存）")
         }
     }
 
@@ -200,7 +202,7 @@ fun ProviderDetailPage(
     }
 
     LaunchedEffect(accounts.map { it.id }) {
-        if (accounts.isNotEmpty()) loadUsage(force = false)
+        if (accounts.isNotEmpty()) loadUsage() // 进家详情页：主动刷新时机之一
     }
 
     fun batchAction(action: String, ids: List<String> = accounts.map { it.id }, done: String) {
@@ -306,7 +308,7 @@ fun ProviderDetailPage(
                 busy = busy,
                 usageCapable = usageCapable,
                 onOpenLimiter = { acc -> limiterTarget = acc },
-                onQueryUsage = { loadUsage(force = true) },
+                onQueryUsage = { loadUsage(manual = true) },
                 onEdit = { acc ->
                     editing = acc
                     editName = acc.displayName
@@ -394,7 +396,10 @@ fun ProviderDetailPage(
                     } else if (!busy) {
                         busy = true
                         scope.launch {
-                            val data = AccountOps.usage(first.id, force = true)
+                            val data = AccountOps.usage(
+                                first.id,
+                                AccountOps.UsageMode.MANUAL,
+                            )
                             busy = false
                             val row = data?.optJSONArray("results")?.optJSONObject(0)
                             val err = row?.optString("error").orEmpty()

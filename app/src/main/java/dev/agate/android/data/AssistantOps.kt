@@ -312,8 +312,9 @@ object AssistantOps {
 
             TOOL_LIST_BALANCE -> {
                 val account = args.optString("account").trim().ifEmpty { null }
-                val data = AccountOps.usage(account)
-                    ?: return fail("读取余额失败（内核未就绪或接口不可用）")
+                // AI 工具查余额只读缓存，绝不因为一次问答去打各家上游。
+                val data = AccountOps.usage(account, AccountOps.UsageMode.CACHE_ONLY)
+                    ?: return fail("暂无余额缓存，请到额度中心刷新后再问")
                 return ok(data)
             }
 

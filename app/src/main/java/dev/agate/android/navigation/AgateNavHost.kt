@@ -74,7 +74,9 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.NavType
 import androidx.navigation.navArgument
+import dev.agate.android.data.AccountOps
 import dev.agate.android.data.GatewayRepository
+import dev.agate.android.data.UsageCache
 import dev.agate.android.ui.components.AgateBottomBar
 import dev.agate.android.ui.components.AgateTabItem
 import dev.agate.android.ui.home.ConsolePage
@@ -350,6 +352,16 @@ fun AgateNavHost(
         // 端口必须一起灌进去：SSE 与探活都按它拼地址（见 configure 的说明）
         GatewayRepository.configure(GatewayPrefs.apiKey(ctx), GatewayPrefs.port(ctx))
         GatewayRepository.startPolling()
+        // 首次打开 app 主动拉一次余额：整个进程只发一轮，其余时机见
+        // UsageMode.PROACTIVE（进额度中心 / 进家详情页）。内核直调自带就绪等待，
+        // 冷启动时 Core 还在后台 bootstrap 也能等到；失败就留空缓存，下次
+        // 进额度中心 / 家详情页按 30 分钟窗口再试。
+        scope.launch {
+            if (UsageCache.consumeColdStart()) {
+                AccountOps.configure(GatewayPrefs.apiKey(ctx))
+                AccountOps.usage(mode = AccountOps.UsageMode.PROACTIVE)
+            }
+        }
         while (true) {
             GatewayRepository.syncGatewayRunning()
             delay(5_000L)

@@ -110,7 +110,7 @@ pub const TASKS: [TaskDef; 6] = [
     TaskDef {
         id: TASK_UPDATE_CHECK,
         label: "软件版本检查",
-        description: "定期向 GitHub 查询最新发布版本（默认间隔因平台而异，以下方实际间隔为准）。检查结果、排期和限流冷却跨重启保留；手动检查也会合并重复请求并遵守冷却。开关与间隔在「软件更新」面板的「更新设置」弹窗里配置（定时任务页不再渲染这一条）。",
+        description: "自动检查当前已停用：本版本不做后台自动更新探测（不向 GitHub 发任何请求）。需要时可在「软件更新」里手动检查；手动检查仍合并重复请求并遵守冷却。自动调度代码与配置保留，日后要恢复只需把它重新纳入 auto_tasks()。",
         unit: "minutes",
         runner: Runner::Backend,
         min: config::INTERVAL_MIN_MINUTES,
@@ -151,6 +151,22 @@ pub const TASKS: [TaskDef; 6] = [
 
 pub fn find(id: &str) -> Option<&'static TaskDef> {
     TASKS.iter().find(|task| task.id == id)
+}
+
+/// 真正纳入**后台自动调度**的后端任务（自动排期与循环的唯一入口）。
+///
+/// 软件版本检查当前**不纳入**：产品决定本版本不做后台自动更新探测（不再定期
+/// 向 GitHub 发请求）。任务本身、配置解析、手动 API（`/api/update/check` 与
+/// 「立即执行」）全部保留 —— 只是自动循环不再跑它。日后要恢复，把它从这个
+/// 排除表拿掉即可，排期 / 冷却 / 手动合并等既有逻辑无需改动。
+///
+/// 注意这里只影响「谁被自动跑」：`find` / `configure` / `run_now` 仍认这条任务，
+/// 所以用户在「软件更新」里手动检查照常可用。
+pub fn auto_tasks() -> impl Iterator<Item = &'static TaskDef> {
+    TASKS
+        .iter()
+        .filter(|task| task.runner == Runner::Backend)
+        .filter(|task| task.id != TASK_UPDATE_CHECK)
 }
 
 fn settings_of(settings: config::ScheduledSettings, id: &str) -> config::IntervalTask {
@@ -385,7 +401,7 @@ pub fn spawn(store: AccountStore, update: UpdateManager) {
             // 首轮先按持久化状态恢复排期：从未跑过的任务排到「现在」（于是全新安装
             // 启动即跑一次，与改造前一致），跑过的沿用「上次尝试 + 间隔」——
             // 已经到期的自然落到过去，这一轮就补上。
-            for task in TASKS.iter().filter(|task| task.runner == Runner::Backend) {
+            for task in auto_tasks() {
                 if let Err(error) = task_state::reschedule(&state_key(task.id), interval_ms(task)) {
                     logging::log(
                         "[Tasks]",
@@ -406,7 +422,7 @@ pub fn spawn(store: AccountStore, update: UpdateManager) {
                     }
                     continue;
                 };
-                for task in TASKS.iter().filter(|task| task.runner == Runner::Backend) {
+                for task in auto_tasks() {
                     if cancellation.is_cancelled() {
                         break;
                     }

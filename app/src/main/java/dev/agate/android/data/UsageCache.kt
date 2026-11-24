@@ -3,27 +3,26 @@ package dev.agate.android.data
 import org.json.JSONObject
 
 /**
- * 余额查询的**客户端缓存与节流**。
+ * 余额查询的**客户端缓存、节流与刷新时机判定**。
  *
- * ── 为什么需要它 ────────────────────────────────────────────
- * 余额查询会真的打到各家上游（`/api/accounts/usage` → 各 provider 的
- * `query_usage`），而官方对这类接口有频次风控。页面侧原本的行为是「进入即查」：
- * 每次打开提供商详情、每次重建列表、每次回到额度中心，都会再请求一轮。
- * 用户来回翻几次就等于刷了一串请求。
+ * ── 余额查询会真打各家上游（`/api/accounts/usage` → 各 provider 的
+ * `query_usage`），官方对这类接口有频次风控。本版本把口径改成
+ * **手动刷新为主，主动刷新只在少数明确时机**：
+ *   - 手动：用户点「查询余额 / 刷新全部」，走 [AccountOps.usage] 的 force 分支；
+ *   - 主动（[shouldProactive]）：冷启动首次打开 app、距上次超过
+ *     [PROACTIVE_WINDOW_MS] 再进入额度中心、进入家详情页；
+ *   - 其余进入页面 / 首页摘要：只读缓存，绝不打上游。
  *
- * 这里的口径：
- * - **默认只读缓存**（[SOFT_TTL_MS] 内视为新鲜，直接用）；
- * - 只有用户**显式点「查询余额」**才强制刷新；
- * - 强制刷新也有**硬节流**（[HARD_THROTTLE_MS]），防止连点；
- * - 按「账号 id」缓存单查结果，批量查询（id 为空）单独用 `*` 作为键。
+ * 内核侧缺省也已改为「不自动查」（`usage_records::DEFAULT_QUERY_ENABLED=false`），
+ * 显式开启账号自动查询的用户仍按原间隔跑 —— 两条链互不干扰。
  *
- * 阈值取 5 分钟 / 20 秒：余额是分钟级才变的东西，5 分钟内重复查没有信息增量；
- * 20 秒是「用户点了一下没反应会再点」的心理窗口。
+ * 缓存是**进程内存**（重启即空），所以「冷启动首次」天然能靠本进程的一次性
+ * 标志实现：进程内 [consumeColdStart] 只有第一次返回 true。
  */
 object UsageCache {
 
-    /** 缓存新鲜期：此时间内不发起上游请求。 */
-    const val SOFT_TTL_MS: Long = 5 * 60 * 1000L
+    /** 主动刷新的时间窗：距上次成功查询超过这么久，进额度中心才值得再查。 */
+    const val PROACTIVE_WINDOW_MS: Long = 30 * 60 * 1000L
 
     /** 强制刷新也至少间隔这么久，防连点。 */
     const val HARD_THROTTLE_MS: Long = 20 * 1000L
@@ -32,22 +31,42 @@ object UsageCache {
 
     private val entries = HashMap<String, Entry>()
 
+    /** 进程内「冷启动首次主动刷新」令牌：整个进程生命周期只消费一次。 */
+    private var coldStartConsumed = false
+
     private fun key(id: String?) = id?.takeIf { it.isNotBlank() } ?: "*"
+
+    /**
+     * 消费冷启动令牌：整个进程只返回一次 true，用于「首次打开 app 主动拉一次」。
+     * 进程重启后对象重建 → 令牌复位，正是「每次冷启动一次」的语义。
+     */
+    @Synchronized
+    fun consumeColdStart(): Boolean {
+        if (coldStartConsumed) return false
+        coldStartConsumed = true
+        return true
+    }
 
     /** 是否已有可用缓存（不看新鲜度），用于「先渲染旧数据」。 */
     @Synchronized
     fun cached(id: String?): JSONObject? = entries[key(id)]?.body
 
-    /** 缓存是否仍然新鲜。 */
-    @Synchronized
-    fun isFresh(id: String?): Boolean {
-        val entry = entries[key(id)] ?: return false
-        return System.currentTimeMillis() - entry.at < SOFT_TTL_MS
-    }
-
     /** 上次成功写入的时间戳（毫秒），没有则 null。 */
     @Synchronized
     fun updatedAt(id: String?): Long? = entries[key(id)]?.at
+
+    /**
+     * 是否到了「主动刷新」的时机：从没查过（冷启动首进）→ true；
+     * 距上次成功查询超过 [PROACTIVE_WINDOW_MS] → true；否则 false（用缓存）。
+     *
+     * 与手动强制的 20s 节流分开：主动刷新看的是 30 分钟的「值不值得再打上游」，
+     * 手动按钮看的是「用户点了没反应会不会连点」。
+     */
+    @Synchronized
+    fun shouldProactive(id: String?): Boolean {
+        val at = entries[key(id)]?.at ?: return true
+        return System.currentTimeMillis() - at >= PROACTIVE_WINDOW_MS
+    }
 
     /** 距离下次可强制刷新还有多久（毫秒），0 表示可以。 */
     @Synchronized

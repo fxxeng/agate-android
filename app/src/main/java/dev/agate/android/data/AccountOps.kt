@@ -122,26 +122,38 @@ object AccountOps {
     }
 
     /**
+     * 余额查询的三种时机（唯一入口是 [usage]，禁止页面各自拼缓存判断）。
+     *
+     * - [CACHE_ONLY]：只读 [UsageCache]，绝不发请求 —— 列表页首屏、首页摘要、
+     *   AI 工具查余额都走这一档（「手动刷新为主」的默认档）；
+     * - [PROACTIVE]：主动刷新，只在三个明确时机用 —— 冷启动首次、距上次超过
+     *   [UsageCache.PROACTIVE_WINDOW_MS] 再进额度中心、进入家详情页。由
+     *   [UsageCache.shouldProactive] 判定，窗口内只读缓存；
+     * - [MANUAL]：用户显式点「查询余额 / 刷新全部 / 连通测试」，受 20 秒硬节流。
+     */
+    enum class UsageMode { CACHE_ONLY, PROACTIVE, MANUAL }
+
+    /**
      * GET /api/accounts/usage[?id=] → `{results:[{id,name,usage,error,code?}], skipped}`。
      *
-     * ── 为什么要 [force] ────────────────────────────────────────
-     * 这个接口会真的打到各家上游，官方对余额类接口有频次风控。页面原本「进入即查」，
-     * 来回翻几页就是连串请求。现在默认走缓存（见 [UsageCache]）：
-     * - `force = false`：新鲜缓存直接用；有过期缓存也先给旧的（不让上游背锅）；
-     *   只有**从没查过**才真的发一次请求；
-     * - `force = true`：用户显式点「查询余额」时才用，且受 20 秒硬节流保护。
-     *
-     * 返回 null 只表示「既没有缓存、请求也失败」。
+     * 余额接口会真打各家上游、有频次风控，所以「何时可以发请求」由 [mode] 唯一裁定：
+     * 见 [UsageMode]。返回 null 只表示「既没有缓存、这次也没发请求（或请求失败）」。
      */
-    suspend fun usage(id: String? = null, force: Boolean = false): JSONObject? {
-        if (!force) {
-            val cached = UsageCache.cached(id)
-            if (cached != null && UsageCache.isFresh(id)) return cached
-            // 有过期数据：先用旧的，不打扰上游（下次点按钮才刷）
-            if (cached != null) return cached
-        } else if (UsageCache.throttleRemaining(id) > 0) {
-            // 连点保护：拿缓存顶上，避免又发一轮
-            UsageCache.cached(id)?.let { return it }
+    suspend fun usage(
+        id: String? = null,
+        mode: UsageMode = UsageMode.CACHE_ONLY,
+    ): JSONObject? {
+        when (mode) {
+            UsageMode.CACHE_ONLY -> return UsageCache.cached(id)
+            UsageMode.PROACTIVE -> {
+                if (!UsageCache.shouldProactive(id)) return UsageCache.cached(id)
+            }
+            UsageMode.MANUAL -> {
+                // 连点保护：20 秒内拿缓存顶上，避免又发一轮
+                if (UsageCache.throttleRemaining(id) > 0) {
+                    UsageCache.cached(id)?.let { return it }
+                }
+            }
         }
         val q = if (id.isNullOrBlank()) "" else "?id=" + java.net.URLEncoder.encode(id, "UTF-8")
         val body = get("/api/accounts/usage$q") ?: return UsageCache.cached(id)

@@ -624,17 +624,25 @@ fn balance_query_public(fields: &Map<String, Value>, scheme: &str) -> Value {
 /// 读侧只做**容错展开**、不校验：合法性由写入侧（`apply_patch` 的
 /// `normalize_usage_query`）保证，这里负责把缺失 / 脏值收敛成缺省形状，让
 /// 调度与前端都按「恒定形状」读。缺省与 `usage_records::query_interval_of`
-/// 同一口径 —— **未配置 = 开启、缺省间隔（桌面 1 分钟 / Android 5 分钟）**
-/// （对齐全局任务时代「默认就在查」的行为，升级后余额列不停更），只有显式
-/// `{enabled:false}` 才是关。
+/// 同一口径 —— **未配置 = 关**（余额走手动 / 客户端定点主动刷新，后台不查），
+/// 只有显式 `{enabled:true}` 才开。
 fn usage_query_public(value: Option<&Value>) -> Value {
     use crate::server::core::usage_records::{
-        DEFAULT_QUERY_INTERVAL_SECONDS, MAX_QUERY_INTERVAL_SECONDS, MIN_QUERY_INTERVAL_SECONDS,
+        DEFAULT_QUERY_ENABLED, DEFAULT_QUERY_INTERVAL_SECONDS, MAX_QUERY_INTERVAL_SECONDS,
+        MIN_QUERY_INTERVAL_SECONDS,
     };
     let Some(fields) = value.and_then(Value::as_object) else {
-        return json!({ "enabled": true, "interval": DEFAULT_QUERY_INTERVAL_SECONDS });
+        return json!({
+            "enabled": DEFAULT_QUERY_ENABLED,
+            "interval": if DEFAULT_QUERY_ENABLED { DEFAULT_QUERY_INTERVAL_SECONDS } else { 0 },
+        });
     };
-    let enabled = fields.get("enabled").map(js_truthy).unwrap_or(true);
+    // 对象在但缺 enabled：与写入侧 `normalize_usage_query` 的 `unwrap_or(false)`
+    // 同口径 —— 缺省不查，别把一个不完整的对象当成「开启」。
+    let enabled = fields
+        .get("enabled")
+        .map(js_truthy)
+        .unwrap_or(DEFAULT_QUERY_ENABLED);
     let interval = fields.get("interval").and_then(Value::as_i64).unwrap_or(0);
     // 开着但间隔缺失 / 越界（脏值）→ 缺省间隔；关着则原样透出（0 = 未设过）
     let interval = if enabled

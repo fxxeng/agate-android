@@ -326,14 +326,20 @@ pub fn extract_remaining(usage: &Value) -> (Option<f64>, bool) {
 pub const MIN_QUERY_INTERVAL_SECONDS: i64 = 30;
 pub const MAX_QUERY_INTERVAL_SECONDS: i64 = 86_400;
 
-/// 账号记录上**没有** `usageQuery` / `lowBalance` 配置时的缺省口径。
+/// 账号记录上**没有** `usageQuery` 配置时的缺省口径：**不自动查询**。
 ///
-/// 「缺省」必须与全局任务时代的行为对齐：那时「定时查询积分」默认开启
-/// （每 10 分钟），账号什么都不配也在查；因此每账号化的缺省同样是**开启**
-/// （而不是「未配置 = 不查」）—— 否则升级后所有人的余额列都会静默停更。
+/// 余额以「手动刷新为主」：自动刷新只发生在客户端明确规定的几个时机（冷启动
+/// 首次、进入额度中心且距上次超过窗口、进入家详情页），这些时机都走手动查询
+/// API（`/api/accounts/usage`），不依赖后台心跳。后台心跳只服务**显式开启**
+/// `usageQuery.enabled=true` 的账号 —— 常驻进程不该为每个账号周期性地唤醒
+/// 射频打上游（见 `usage_query` 模块头与省电审计）。
 ///
-/// 缺省间隔按平台分流：
-///   · 桌面端 1 分钟 —— 用户升级反馈指定的值，常通电、射频唤醒无感；
+/// 「缺省不查」不写进记录：记录上没有 `usageQuery` 键（或显式关掉）都是同一
+/// 个结论。只有显式开启才物化 `usageQuery`，这样升级不会改写存量账号，用户
+/// 在设置里打开后才开始后台查。
+///
+/// 显式开启后，间隔按平台分流：
+///   · 桌面端 1 分钟 —— 常通电、射频唤醒无感；
 ///   · Android 端 5 分钟 —— 手机息屏后每次外网查询都会唤醒射频，60s × 账号数
 ///     意味着射频几乎无法进入深睡（见 `usage_query` 模块头与省电审计）。前端
 ///     任务「日志/请求/报表自动刷新」也是同理但页面不可见即静默，余额查询是
@@ -346,6 +352,7 @@ pub const MAX_QUERY_INTERVAL_SECONDS: i64 = 86_400;
 /// 余额不足的缺省处理按 provider 区分（见 [`default_low_balance_mode`]）：
 /// 大多数家沿用跳过（阈值 1）—— 全局任务时代没有这个概念，它是最温和的
 /// 兜底；唯独 Cline 免费池缺省**不处理**，原因见那边的文档。
+pub const DEFAULT_QUERY_ENABLED: bool = false;
 #[cfg(target_os = "android")]
 pub const DEFAULT_QUERY_INTERVAL_SECONDS: i64 = 300;
 #[cfg(not(target_os = "android"))]
@@ -395,14 +402,17 @@ pub fn default_low_balance(provider: &str) -> Value {
     }
 }
 
-/// 账号配置的自动查询间隔（秒）。
+/// 账号配置的自动查询间隔（秒）。`None` = 不自动查询。
 ///
-/// 未配置 → 缺省开启（1 分钟）；显式 `{enabled:false}` → `None`（用户关的
-/// 必须尊重）；开着但间隔缺失 / 越界（DB 里的手工脏值）→ 按缺省间隔跑，
-/// 不因为一个坏数字把整个账号的自动查询停掉。
+/// 未配置 → 缺省**不查**（余额走手动 / 客户端定点主动刷新）；显式
+/// `{enabled:true}` → 按间隔查（用户开的必须尊重）；开着但间隔缺失 / 越界
+/// （DB 里的手工脏值）→ 按缺省间隔跑，不因为一个坏数字把整个账号的查停掉。
 pub fn query_interval_of(account: &Value) -> Option<i64> {
     let Some(config) = account.get("usageQuery") else {
-        return Some(DEFAULT_QUERY_INTERVAL_SECONDS);
+        // 缺省不查：显式开启才物化配置，所以这里直接关。
+        // 用 `then_some` 让「缺省开关」成为唯一真值，避免写死 None 后又留一条
+        // 将来改回 true 时会被遗忘的分支（CI 的 -D warnings 也不会挑 unreachable）。
+        return DEFAULT_QUERY_ENABLED.then_some(DEFAULT_QUERY_INTERVAL_SECONDS);
     };
     if config.get("enabled").and_then(Value::as_bool) != Some(true) {
         return None;
@@ -596,19 +606,16 @@ mod power_defaults_tests {
         }
     }
 
-    /// 未配置 `usageQuery` = 开启 + 缺省间隔（不是关闭、不是写死 60）。
-    /// 这条钉住「改缺省值能覆盖存量账号」的前提：缺省不被物化进记录。
+    /// 未配置 `usageQuery` = 不自动查（余额走手动 / 客户端定点主动刷新）。
+    /// 这条钉住「手动为主」的前提：缺省不被物化进记录，也不打上游。
     #[test]
-    fn missing_usage_query_uses_platform_default_enabled() {
+    fn missing_usage_query_is_disabled_by_default() {
         let account = json!({ "id": "a" });
-        assert_eq!(
-            query_interval_of(&account),
-            Some(DEFAULT_QUERY_INTERVAL_SECONDS),
-            "未配置必须用编译期缺省间隔"
-        );
+        assert_eq!(query_interval_of(&account), None, "未配置必须默认不自动查");
+        assert!(!DEFAULT_QUERY_ENABLED, "缺省开关必须是关闭");
     }
 
-    /// 用户显式配置（含关闭）必须被尊重，不被省电默认值覆盖。
+    /// 用户显式开启（含间隔）必须被尊重，不被省电默认值覆盖。
     #[test]
     fn explicit_usage_query_wins_over_default() {
         let custom = json!({
@@ -616,6 +623,17 @@ mod power_defaults_tests {
             "usageQuery": { "enabled": true, "interval": 45 }
         });
         assert_eq!(query_interval_of(&custom), Some(45), "显式间隔必须保留");
+
+        // 显式开启但间隔是脏值 → 按平台缺省间隔跑，不停掉
+        let dirty = json!({
+            "id": "a",
+            "usageQuery": { "enabled": true, "interval": -1 }
+        });
+        assert_eq!(
+            query_interval_of(&dirty),
+            Some(DEFAULT_QUERY_INTERVAL_SECONDS),
+            "显式开启但间隔非法时用缺省间隔"
+        );
 
         let off = json!({
             "id": "a",
