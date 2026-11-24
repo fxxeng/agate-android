@@ -1299,6 +1299,15 @@ const EXTRA_ALIASES: &[(&str, &str, &str)] = &[
     // 免费池的裸 id：短名 `glm-5.3-flash` 与订阅池那条撞名（见上文）
     ("cline-free", "z-ai/glm-5.3-flash", "glm-5.3-flash"),
     ("cline-pass", "cline-pass/glm-5.3-flash", "glm-5.3-flash"),
+    // AutoClaw 两地的 `glm-x-preview` 是 GLM-5.4 的**内部代号**（官方 2026-11
+    // 公告：对外名 GLM-5.4、内部代号 glm-x-preview，同一模型同一份额度）。
+    // 上游 `autoclaw-model-config` 只下发内部代号，照桌面端的对外名找不到；
+    // 补一条对外别名让清单显示 GLM-5.4、且用 GLM-5.4/glm-5.4 都能请求到
+    // （旧名 glm-x-preview 照旧可用 —— 映射是追加，不改写）。
+    // 两家都点名（各自独立的 (provider,id) 命名空间）；国内版 provider id
+    // 是历史契约 `autoclaw`，不是 `autoclaw-cn`（见 autoclaw::region）。
+    ("autoclaw", "glm-x-preview", "GLM-5.4"),
+    ("autoclaw-intl", "glm-x-preview", "GLM-5.4"),
 ];
 
 /// 额外别名的种子键：`<provider>:<id>#alias:<alias>`。
@@ -1448,6 +1457,41 @@ pub fn seed_raccoon_defaults(ids: &[String]) -> Option<String> {
         parts.push(format!("默认新增映射 [{}]", mappings_added.join(", ")));
     }
     Some(format!("🧩 小浣熊模型默认规则: {}", parts.join("；")))
+}
+
+/// AutoClaw 清单的**默认映射种子**：只补 [`EXTRA_ALIASES`] 里点名的对外名（当前
+/// 是 `glm-x-preview → GLM-5.4`，两地各一条），不碰任何启停状态。
+///
+/// ── 为什么单独一个函数、而不是塞进 `seed_raccoon_defaults` 那样的大种子 ──
+/// AutoClaw 没有「内部 id 默认禁用 / 去前缀」那一整套规则，只需要点名补一个
+/// 对外别名。本函数只做这一件事：对 `ids` 里每个 id 跑 `seed_extra_aliases`
+/// （表里没点名的 id 是空操作），有新增就落盘。
+///
+/// ── 不改启停，是刻意的 ────────────────────────────────
+/// `glm-x-preview` 默认可能是关的（它是「预览代号」，用户没打开过）。映射建好
+/// 后要等用户打开这个模型，别名才会在清单里接管显示（让位判据要求 target 未关）。
+/// 种子不擅自替用户打开 —— 那会越过他已做的启停选择。改名与启停是两件事。
+///
+/// 幂等且与主 seeded 分开计时（见 `extra_alias_key`）：用户删掉这条映射后不会
+/// 被下一次刷新重种；上游将来新增的 id 因为 id 没种过会自动补点名别名。
+pub fn seed_autoclaw_defaults(provider: &str, ids: &[String]) -> Option<String> {
+    let mut rules = current();
+    let mut added: Vec<String> = Vec::new();
+    let mut touched = false;
+    for id in ids {
+        touched |= seed_extra_aliases(&mut rules, provider, id.trim(), ids, &mut added);
+    }
+    if !touched {
+        return None;
+    }
+    save(&rules);
+    if added.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "🧩 AutoClaw 模型默认映射 [{provider}]: {}",
+        added.join(", ")
+    ))
 }
 
 // ─── 各清单的「默认启用白名单」种子 ────────────────────
@@ -1727,4 +1771,29 @@ fn seed_default_enabled(
         disabled_added.len(),
         disabled_added.join(", ")
     ))
+}
+
+#[cfg(test)]
+mod extra_alias_tests {
+    use super::*;
+
+    /// AutoClaw 两地的 `glm-x-preview`（GLM-5.4 内部代号）都必须点名补对外名。
+    /// 漏掉一家会让「界面显示 GLM-5.4」在一地生效、另一地仍是内部代号 —— 这正是
+    /// 用户截图里两地都要修的症状。同时钉住别名与 target 不同（否则不让位）。
+    #[test]
+    fn autoclaw_glm54_alias_seeded_for_both_regions() {
+        for provider in ["autoclaw", "autoclaw-intl"] {
+            let hit = EXTRA_ALIASES.iter().find(|(owner, target, alias)| {
+                owner.eq_ignore_ascii_case(provider)
+                    && target.eq_ignore_ascii_case("glm-x-preview")
+                    && alias.eq_ignore_ascii_case("GLM-5.4")
+            });
+            assert!(hit.is_some(), "{provider} 必须点名 glm-x-preview → GLM-5.4");
+            let (_, target, alias) = hit.unwrap();
+            assert!(
+                !alias.eq_ignore_ascii_case(target),
+                "别名必须与 target 不同才会让位显示"
+            );
+        }
+    }
 }

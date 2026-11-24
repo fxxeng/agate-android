@@ -1512,6 +1512,27 @@ fn seed_current_cline_defaults() {
     }
 }
 
+/// 对**当前清单**里的 AutoClaw 模型补一次默认映射种子（两地各一条
+/// `glm-x-preview → GLM-5.4`，见 `model_rules::seed_autoclaw_defaults`）。
+///
+/// 与其余种子同理：刷新可能因 TTL 早退 / 无登录态 / 上游失败而不落地新清单，
+/// 那条路径上没有种子可挂；启动后 / 刷新前手里的这份清单（内置或缓存恢复）
+/// 也要有同样的对外名。幂等：种过的 id 不会再动，用户删掉的映射不会被重加。
+/// 不碰启停 —— 别名要等用户打开 `glm-x-preview` 才在清单里接管显示。
+fn seed_current_autoclaw_defaults() {
+    for region in super::autoclaw::Region::ALL {
+        let ids: Vec<String> = super::autoclaw::models::list(region)
+            .iter()
+            .filter_map(|item| item.get("id").and_then(Value::as_str).map(str::to_string))
+            .collect();
+        if let Some(summary) =
+            crate::server::core::model_rules::seed_autoclaw_defaults(region.provider_id(), &ids)
+        {
+            crate::server::logging::log("[Models]", &summary);
+        }
+    }
+}
+
 /// 让所有**已实现**的 provider 各刷新一次模型目录（**自动**路径入口）。
 ///
 /// 调用点：`api::chat::spawn_catalog_refresh`（客户端拉 `/v1/models` 的后台刷新）
@@ -1530,11 +1551,13 @@ pub async fn refresh_implemented(store: &AccountStore) -> Vec<Value> {
     seed_current_workbuddy_defaults();
     seed_current_qoder_defaults();
     seed_current_cline_defaults();
+    seed_current_autoclaw_defaults();
     let results =
         super::catalog_refresh::refresh(store, &serde_json::Map::new(), None, false).await;
     // 刷新落地后补种一次：新增的带前缀 / 别名模型在这一刻才出现在清单里
     // （与开头那次同一件事 —— 那时种的是缓存恢复的清单）
     seed_current_cline_defaults();
+    seed_current_autoclaw_defaults();
     results
 }
 
@@ -1562,6 +1585,7 @@ pub fn restore_cached_catalogs() {
     seed_current_workbuddy_defaults();
     seed_current_qoder_defaults();
     seed_current_cline_defaults();
+    seed_current_autoclaw_defaults();
     // 留痕：哪些家的清单是从持久化缓存恢复的、各是什么时候拉的。没有这条
     // 日志，「这次的清单是刚拉的还是上次的」在排障时只能靠翻数据库回答。
     let restored = catalog_cache::cached_scopes();
@@ -1646,8 +1670,10 @@ pub async fn refresh_implemented_forced(
     seed_current_workbuddy_defaults();
     seed_current_qoder_defaults();
     seed_current_cline_defaults();
+    seed_current_autoclaw_defaults();
     let results = super::catalog_refresh::refresh(store, accounts, providers, true).await;
     seed_current_cline_defaults();
+    seed_current_autoclaw_defaults();
     results
 }
 
