@@ -129,7 +129,9 @@ object AccountOps {
      * - [PROACTIVE]：主动刷新，只在三个明确时机用 —— 冷启动首次、距上次超过
      *   [UsageCache.PROACTIVE_WINDOW_MS] 再进额度中心、进入家详情页。由
      *   [UsageCache.shouldProactive] 判定，窗口内只读缓存；
-     * - [MANUAL]：用户显式点「查询余额 / 刷新全部 / 连通测试」，受 20 秒硬节流。
+     * - [MANUAL]：用户显式点「查询余额 / 刷新全部 / 连通测试」，受 20 秒硬节流；
+     *   成功后开启 [UsageCache.MANUAL_QUIET_WINDOW_MS] 全局静默，期间任何页面的
+     *   PROACTIVE 都只读缓存、不再打上游。
      */
     enum class UsageMode { CACHE_ONLY, PROACTIVE, MANUAL }
 
@@ -158,6 +160,10 @@ object AccountOps {
         val q = if (id.isNullOrBlank()) "" else "?id=" + java.net.URLEncoder.encode(id, "UTF-8")
         val body = get("/api/accounts/usage$q") ?: return UsageCache.cached(id)
         UsageCache.put(id, body)
+        // 只有手动查成功才开全局静默：它要挡住随后进别的页面按另一个 key
+        // 又真查一轮（单查 / 批量的 key 不同，各自的 30min 窗挡不住对方）。
+        // PROACTIVE 不开 —— 那会连「进家详情页主动刷新」这个既定时机一起挡掉。
+        if (mode == UsageMode.MANUAL) UsageCache.markManualQuery()
         return body
     }
 
