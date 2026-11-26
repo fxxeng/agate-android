@@ -1038,13 +1038,14 @@ mod catalog_merge_tests {
             .iter()
             .filter_map(|m| m.get("id").and_then(Value::as_str))
             .collect();
+        // 对外 id = display_name 去空白（toModelId），断言也得用去空白的形态
         assert!(ids.contains(&"HungerG"), "app 场景的 HungerG 必须合并进来");
         assert!(ids.contains(&"Qwen4-Max"), "chat 场景保留");
-        assert!(!ids.contains(&"Skip Me"), "非 openai 格式的 app 条目不收");
-        assert!(!ids.contains(&"No Key"), "缺 key 的条目不收");
+        assert!(!ids.contains(&"SkipMe"), "非 openai 格式的 app 条目不收");
+        assert!(!ids.contains(&"NoKey"), "缺 key 的条目不收");
         // 同 key：chat 优先，app 那条不重复进
-        assert_eq!(ids.iter().filter(|id| **id == "From Chat").count(), 1);
-        assert!(!ids.contains(&"From App"), "同 key 以 chat 为准");
+        assert_eq!(ids.iter().filter(|id| **id == "FromChat").count(), 1);
+        assert!(!ids.contains(&"FromApp"), "同 key 以 chat 为准");
     }
 
     /// 千问办公只有 qwork 单一场景，不做 app 合并（与上游一致）。
