@@ -595,7 +595,8 @@ pub fn list_for(site: Site) -> Vec<Value> {
 /// 站点 —— 这样「国际版账号请求中国版专属模型」会拿到一个明确的解析结果，
 /// 由上游报出真实原因（而不是网关谎报「模型不存在」）。
 pub fn resolve(model_id: &str, site: Site) -> Option<Value> {
-    let wanted = model_id.trim().to_lowercase();
+    let trimmed = model_id.trim();
+    let wanted = trimmed.to_lowercase();
     if wanted.is_empty() {
         return None;
     }
@@ -618,6 +619,32 @@ pub fn resolve(model_id: &str, site: Site) -> Option<Value> {
         if let Some(found) = find_in(&fallback(*candidate), &wanted) {
             return Some(found);
         }
+    }
+    // ③ 用户登记的自定义模型（`/api/models/custom`，如上游目录不广告的匿名
+    // 限免模型 HungerG）。`manifest_for` 已把它并入清单供展示/校验，但本函数
+    // 是**转发侧**的模型解析（chat::build_plan 用它取 upstreamKey）——漏了这
+    // 一档，登记后清单里看得见、真发起请求却报「模型不存在」。
+    //
+    // 按**本账号所属站点**登记：与清单入口 `custom_models_for(provider_id)`
+    // 同一命名空间，别让国际版账号请求国内版登记的条目（反过来 ① 已跨站查过
+    // 官方目录，这里只补「自己家登记的」）。登记名即客户端名即上游 key（匿名
+    // 模型没有另一套内部 id）；能力位不编造 —— 只给 agent 固 tool-call，其余
+    // 保守为 false/缺省，比撒谎说支持多模态/推理好。
+    if crate::server::core::model_rules::is_custom(site.provider_id(), trimmed) {
+        // 用**原始大小写**的登记名，不用 lowercased 的 wanted —— 上游 key 大小写
+        // 敏感，HungerG 发成 hungerg 就是另一个模型（404）。is_custom 内部已
+        // 忽略大小写比对，这里只负责把名字原样发给上游。
+        return Some(entry(
+            trimmed, // id：客户端登记的名字
+            trimmed, // upstreamKey：匿名模型按同名发给上游
+            false,   // reasoning：不猜
+            &[],
+            false, // vision：不猜（能力位覆盖可由 modelRules.capabilities 另配）
+            true,  // enabled：登记即用户显式要用
+            site.max_input_tokens(),
+            "custom",
+            "", // credits：上游没给
+        ));
     }
     None
 }
