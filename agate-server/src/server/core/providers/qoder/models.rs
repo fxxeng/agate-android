@@ -835,15 +835,54 @@ fn envelope_error(payload: &Value) -> Option<String> {
 /// 字段口径照抄源实现：只收 `chat` 数组，缺 `key` 或缺 `display_name` 的条目丢弃。
 /// 对外的模型 id 用 `display_name` **去掉空白**（源实现 `toModelId`）——
 /// 于是客户端看到的名称可读，请求时再映射回 `key`。
+///
+/// ── Qoder 必须合并 `chat` + `app` 两个场景（2026-11-26 修复）───────
+/// 上游桌面客户端的模型下拉读的是**两份目录**：`chat` 是对话模型，`app` 里是
+/// OpenAI 兼容的 agent 模型（限免 / 新上的匿名模型如 HungerG 就在这一份）。
+/// 此前这里只读 `chat`，于是`app` 独有的模型在桌面端看得见、本项目却拉不到 ——
+/// 症状正是「HungerG 展开后也没有」。上游参考实现（providers crate）的
+/// `parse_catalog` 会按 key 合并两处、同 key 以 `chat` 为准，这里对齐它。
+/// 千问办公（`model_scene = qwork`）只有单一场景，不做合并。
 fn parse_catalog(payload: &Value, site: Site) -> Vec<Value> {
-    // Qoder：`{ chat: [...] }`；千问办公：`{ qwork: [...] }`（见 `Site::model_scene`）
-    let scene = site.model_scene().unwrap_or("chat");
-    let Some(chat) = payload.get(scene).and_then(Value::as_array) else {
-        return Vec::new();
-    };
+    let scene = site.model_scene();
+    let mut rows: Vec<&Value> = payload
+        .get(scene.unwrap_or("chat"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .collect();
+    // 只有 Qoder（scene 缺省 = chat）才有第二份 `app` 目录；千问办公不合并。
+    if scene.is_none() {
+        let mut seen_keys: Vec<&str> = rows
+            .iter()
+            .copied()
+            .filter_map(|item| item.get("key").and_then(Value::as_str))
+            .map(str::trim)
+            .filter(|key| !key.is_empty())
+            .collect();
+        for item in payload
+            .get("app")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let key = item.get("key").and_then(Value::as_str).unwrap_or("").trim();
+            // 与上游同款三条判据：key 非空、不与 chat 已列的 key 重复、且是
+            // OpenAI 兼容模型（`format == "openai"`）—— 非 OpenAI 的那批 app
+            // 条目走的不是本网关的转发协议，收进来只会让客户端点了调不通。
+            if key.is_empty()
+                || seen_keys.contains(&key)
+                || item.get("format").and_then(Value::as_str) != Some("openai")
+            {
+                continue;
+            }
+            seen_keys.push(key);
+            rows.push(item);
+        }
+    }
     let mut models: Vec<Value> = Vec::new();
     let mut seen: Vec<String> = Vec::new();
-    for item in chat {
+    for item in rows {
         let key = item.get("key").and_then(Value::as_str).unwrap_or("").trim();
         let display = item
             .get("display_name")
@@ -965,5 +1004,62 @@ fn js_truthy(value: &Value) -> bool {
         Value::Number(number) => number.as_f64().map(|item| item != 0.0).unwrap_or(false),
         Value::String(text) => !text.is_empty(),
         Value::Array(_) | Value::Object(_) => true,
+    }
+}
+
+#[cfg(test)]
+mod catalog_merge_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// Qoder 目录的 `app` 场景里有 chat 没有的模型（限免匿名模型如 HungerG）——
+    /// 必须与 `chat` 合并，否则桌面端看得见、本项目拉不到。同 key 以 chat 为准，
+    /// 非 openai 格式的 app 条目不收。
+    #[test]
+    fn qoder_merges_openai_models_from_app_scene() {
+        let payload = json!({
+            "chat": [
+                { "key": "qwen4max", "display_name": "Qwen4-Max", "enable": true },
+                { "key": "shared", "display_name": "From Chat", "enable": true },
+            ],
+            "app": [
+                { "key": "hungerg", "display_name": "HungerG", "enable": true,
+                  "format": "openai", "price_factor": 0 },
+                { "key": "shared", "display_name": "From App", "enable": true,
+                  "format": "openai" },
+                { "key": "non-openai", "display_name": "Skip Me", "enable": true,
+                  "format": "anthropic" },
+                { "key": "", "display_name": "No Key", "enable": true,
+                  "format": "openai" },
+            ],
+        });
+        let models = parse_catalog(&payload, Site::QoderIntl);
+        let ids: Vec<&str> = models
+            .iter()
+            .filter_map(|m| m.get("id").and_then(Value::as_str))
+            .collect();
+        assert!(ids.contains(&"HungerG"), "app 场景的 HungerG 必须合并进来");
+        assert!(ids.contains(&"Qwen4-Max"), "chat 场景保留");
+        assert!(!ids.contains(&"Skip Me"), "非 openai 格式的 app 条目不收");
+        assert!(!ids.contains(&"No Key"), "缺 key 的条目不收");
+        // 同 key：chat 优先，app 那条不重复进
+        assert_eq!(ids.iter().filter(|id| **id == "From Chat").count(), 1);
+        assert!(!ids.contains(&"From App"), "同 key 以 chat 为准");
+    }
+
+    /// 千问办公只有 qwork 单一场景，不做 app 合并（与上游一致）。
+    #[test]
+    fn qwenwork_does_not_merge_app_scene() {
+        let payload = json!({
+            "qwork": [ { "key": "qwen38", "display_name": "Qwen3.8-Flash", "enable": true } ],
+            "app": [ { "key": "extra", "display_name": "Extra", "enable": true,
+                       "format": "openai" } ],
+        });
+        let models = parse_catalog(&payload, Site::QwenworkCn);
+        let ids: Vec<&str> = models
+            .iter()
+            .filter_map(|m| m.get("id").and_then(Value::as_str))
+            .collect();
+        assert_eq!(ids, vec!["Qwen3.8-Flash"], "千问办公不合并 app 场景");
     }
 }
