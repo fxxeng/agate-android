@@ -926,11 +926,7 @@ fn parse_catalog(payload: &Value, site: Site) -> Vec<Value> {
     let mut seen_keys: Vec<&str> = Vec::new();
     for item in rows {
         let key = item.get("key").and_then(Value::as_str).unwrap_or("").trim();
-        if key.is_empty()
-            || seen_keys
-                .iter()
-                .any(|known| known.eq_ignore_ascii_case(key))
-        {
+        if key.is_empty() || seen_keys.iter().any(|known| known.eq_ignore_ascii_case(key)) {
             continue;
         }
         let display = item
@@ -950,7 +946,9 @@ fn parse_catalog(payload: &Value, site: Site) -> Vec<Value> {
         // 对外 id = 展示名去空白（源实现 `toModelId`）。id 必须与展示名同源 ——
         // 模型页列的就是 id，只改 `name` 等于没改名。转发仍用 `key`。
         let id: String = name.chars().filter(|ch| !ch.is_whitespace()).collect();
-        let id = if id.is_empty() { key.to_string() } else { id };
+        if id.is_empty() {
+            continue;
+        }
         seen_keys.push(key);
 
         let vision = item.get("is_vl").map(js_truthy).unwrap_or(false);
@@ -1111,7 +1109,8 @@ mod catalog_merge_tests {
             "assistant": [
                 { "key": "hmodel", "display_name": "hmodel", "enable": true,
                   "is_free": true, "price_factor": 0 },
-                { "key": "mmodel", "enable": true },          // 连 display_name 都没给
+                // 上游对匿名模型也可能连 display_name 都不给
+                { "key": "mmodel", "enable": true },
                 { "key": "mystery", "display_name": "Mystery Model", "enable": true },
             ],
         });
