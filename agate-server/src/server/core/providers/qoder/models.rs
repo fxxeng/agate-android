@@ -926,7 +926,11 @@ fn parse_catalog(payload: &Value, site: Site) -> Vec<Value> {
     let mut seen_keys: Vec<&str> = Vec::new();
     for item in rows {
         let key = item.get("key").and_then(Value::as_str).unwrap_or("").trim();
-        if key.is_empty() || seen_keys.iter().any(|known| known.eq_ignore_ascii_case(key)) {
+        if key.is_empty()
+            || seen_keys
+                .iter()
+                .any(|known| known.eq_ignore_ascii_case(key))
+        {
             continue;
         }
         let display = item
