@@ -301,6 +301,12 @@ fn fallback(site: Site) -> Vec<Value> {
     rows.iter()
         .map(
             |(id, key, reasoning, supports_effort, efforts, vision, enabled, factor)| {
+                // 与在线目录同一把尺子：对外 id/展示名都取文案包里的真名，
+                // 否则断网时同一个模型在线叫 `HungerG`、离线叫 `hmodel`
+                let id = match presented_name(*key) {
+                    Some(name) => name,
+                    None => *id,
+                };
                 entry(
                     id,
                     key,
@@ -830,9 +836,53 @@ fn envelope_error(payload: &Value) -> Option<String> {
     }
 }
 
+/// 代号 → 展示名。
+///
+/// Qoder 对**匿名模型**只下发代号（`hmodel`、`gmodel_latest` 之类），真名放在
+/// 客户端的展示文案包里：桌面端 0.5.20 自带的 QCS 文本包 `modelPresentations`
+/// （`environment=global-prod`、修订 4）就是这张表。桌面端下拉里 `hmodel`
+/// 显示成 `HungerG`、`gmodel_latest` 显示成 `GLM-5.4`，全靠它 —— 上游
+/// `display_name` 给的就是代号，照抄上游会让人以为「没有这个模型」。
+///
+/// 对外 id 与展示名都取这张表里的真名（模型页列的就是 id，只改 `name`
+/// 等于没改），但**转发仍用上游 `key`** —— 名字是名字，`model` 字段发成
+/// 别的就是一个不存在的模型。表里没有的 key 继续用上游 `display_name`。
+const PRESENTED_NAMES: &[(&str, &str)] = &[
+    ("auto", "Auto"),
+    ("fast", "Fast"),
+    ("lite", "Lite"),
+    ("ultimate", "Ultimate"),
+    ("efficient", "Efficient"),
+    ("performance", "Performance"),
+    ("hmodel", "HungerG"),
+    ("lmodel", "QoDuck"),
+    ("cmodel", "Cantus"),
+    ("smodel", "Sonus"),
+    ("dmodel", "DeepSeek-V4-Pro"),
+    ("dfmodel", "DeepSeek-Flash"),
+    ("gmodel", "GLM-5.3"),
+    ("gfmodel", "GLM-5.3-Flash"),
+    ("gmodel_latest", "GLM-5.4"),
+    ("qmodel", "Qwen3.7-Plus"),
+    ("qfmodel", "Qwen3.8-Flash"),
+    ("qmodel_38max", "Qwen3.8-Max"),
+    ("qmodel_latest", "Qwen4-Max"),
+    ("qmodel_latest_preview", "Qwen4-Max-Preview"),
+    ("kmodel", "Kimi-K2.8-Preview"),
+    ("kmodel_latest", "Kimi-K3.1-Pro"),
+    ("mmodel", "MiniMax-M3.1-Flash"),
+];
+
+fn presented_name(key: &str) -> Option<&'static str> {
+    PRESENTED_NAMES
+        .iter()
+        .find(|(code, _)| code.eq_ignore_ascii_case(key))
+        .map(|(_, name)| *name)
+}
+
 /// 解析目录响应：`{ chat: [ { key, display_name, enable, is_vl, ... } ] }`。
 ///
-/// 字段口径照抄源实现：只收 `chat` 数组，缺 `key` 或缺 `display_name` 的条目丢弃。
+/// 字段口径照抄源实现：只收 `chat` 数组，缺 `key` 的条目丢弃。
 /// 对外的模型 id 用 `display_name` **去掉空白**（源实现 `toModelId`）——
 /// 于是客户端看到的名称可读，请求时再映射回 `key`。
 ///
@@ -841,12 +891,17 @@ fn envelope_error(payload: &Value) -> Option<String> {
 /// `models.list` / `MHd`）实测到：响应顶层是**按场景名分组**的对象，桌面端
 /// 默认读 `assistant`，还会合并 `quest` / `service_account` / `byok_enterprise`
 /// 等场景，并用 `key` 去重、第一处优先。`chat` 只是本项目早期看到的其中一格。
-/// HungerG（桌面端有、本项目拉不到）就在本项目没读的场景里。
 ///
 /// 因此这里不再点名 `chat`/`app` 两格，而是按桌面端口径遍历**顶层所有数组**：
 /// 每个数组当一个场景，按 key 去重后合并。这样上游新增场景也不必改代码。
 /// 千问办公（`model_scene = qwork`）仍只读单一 `qwork` 场景 —— 它那些顶层键
 /// （如钱包/套餐信息）不是模型数组，遍历会误收。
+///
+/// ── 展示名要过一遍文案包（2026-11-28 三次修复）──
+/// HungerG 其实一直在 `assistant` 场景里，只是上游给的 `display_name` 就是
+/// **代号** `hmodel`；桌面端的渲染层本地存储（`qoder.chatModelUpdates.v1`）
+/// 与桌面端会话记录（`chat_sessions.model = "hmodel"`）都证实了这点。
+/// 所以「拉不到 HungerG」不是缺场景，而是名字没换 —— 见 `PRESENTED_NAMES`。
 fn parse_catalog(payload: &Value, site: Site) -> Vec<Value> {
     let scene = site.model_scene();
     let mut rows: Vec<&Value> = Vec::new();
@@ -871,9 +926,10 @@ fn parse_catalog(payload: &Value, site: Site) -> Vec<Value> {
     let mut seen_keys: Vec<&str> = Vec::new();
     for item in rows {
         let key = item.get("key").and_then(Value::as_str).unwrap_or("").trim();
-        if seen_keys
-            .iter()
-            .any(|known| known.eq_ignore_ascii_case(key))
+        if key.is_empty()
+            || seen_keys
+                .iter()
+                .any(|known| known.eq_ignore_ascii_case(key))
         {
             continue;
         }
@@ -882,14 +938,20 @@ fn parse_catalog(payload: &Value, site: Site) -> Vec<Value> {
             .and_then(Value::as_str)
             .unwrap_or("")
             .trim();
-        if key.is_empty() || display.is_empty() {
+        // 展示名以文案包为准（桌面端同款）：上游对匿名模型只给代号。表里没有
+        // 的 key 才用上游 `display_name`，两个都没有就退回 key。
+        let name = match presented_name(key) {
+            Some(presented) => presented,
+            None => display,
+        };
+        if name.is_empty() {
             continue;
         }
+        // 对外 id = 展示名去空白（源实现 `toModelId`）。id 必须与展示名同源 ——
+        // 模型页列的就是 id，只改 `name` 等于没改名。转发仍用 `key`。
+        let id: String = name.chars().filter(|ch| !ch.is_whitespace()).collect();
+        let id = if id.is_empty() { key.to_string() } else { id };
         seen_keys.push(key);
-        let id: String = display.chars().filter(|ch| !ch.is_whitespace()).collect();
-        if id.is_empty() {
-            continue;
-        }
 
         let vision = item.get("is_vl").map(js_truthy).unwrap_or(false);
         let reasoning = item.get("is_reasoning").map(js_truthy).unwrap_or(false)
@@ -931,7 +993,7 @@ fn parse_catalog(payload: &Value, site: Site) -> Vec<Value> {
             &credits,
         );
         if let Some(object) = model.as_object_mut() {
-            object.insert("name".to_string(), Value::String(display.to_string()));
+            object.insert("name".to_string(), Value::String(name.to_string()));
             object.insert("efforts".to_string(), Value::Array(efforts));
             if let Some(format) = item.get("format") {
                 if !format.is_null() {
@@ -1002,7 +1064,7 @@ mod catalog_merge_tests {
     use serde_json::json;
 
     /// Qoder 桌面端按场景分组（assistant / quest / chat / app / …），本项目必须
-    /// 遍历**所有顶层数组**才不漏模型（如 HungerG 出现在非 chat 场景）。
+    /// 遍历**所有顶层数组**才不漏模型。
     /// 按 key 去重、第一处（顶层字段顺序）优先；非数组顶层键不误收。
     #[test]
     fn qoder_merges_all_scenes_by_key() {
@@ -1012,7 +1074,7 @@ mod catalog_merge_tests {
                 { "key": "shared", "display_name": "From Assistant", "enable": true },
             ],
             "quest": [
-                { "key": "hungerg", "display_name": "HungerG", "enable": true,
+                { "key": "questonly", "display_name": "Quest Only", "enable": true,
                   "price_factor": 0 },
             ],
             "chat": [
@@ -1031,13 +1093,55 @@ mod catalog_merge_tests {
             .filter_map(|m| m.get("id").and_then(Value::as_str))
             .collect();
         // 对外 id = display_name 去空白（toModelId）
-        assert!(ids.contains(&"HungerG"), "quest 场景的 HungerG 必须收进来");
+        assert!(ids.contains(&"QuestOnly"), "quest 场景的条目必须收进来");
         assert!(ids.contains(&"Qwen4-Max"), "assistant 场景保留");
         assert!(ids.contains(&"AppOnly"), "app 场景保留，不受 format 限制");
         assert!(!ids.contains(&"NoKey"), "缺 key 的条目不收");
         // 同一 key "shared" 只收第一处（assistant 在 chat 前）
         assert_eq!(ids.iter().filter(|id| **id == "FromAssistant").count(), 1);
         assert!(!ids.contains(&"FromChat"), "同 key 以先出现的场景为准");
+    }
+
+    /// 上游对匿名模型只下发代号（`hmodel`），真名在客户端的展示文案包里 ——
+    /// 桌面端下拉里 `hmodel` 显示为 `HungerG`。模型页列的是 `id`，所以对外 id
+    /// 也要换成真名；转发仍走 `upstreamKey`（代号发错就是另一个模型）。
+    #[test]
+    fn codename_gets_presented_name() {
+        let payload = json!({
+            "assistant": [
+                { "key": "hmodel", "display_name": "hmodel", "enable": true,
+                  "is_free": true, "price_factor": 0 },
+                { "key": "mmodel", "enable": true },          // 连 display_name 都没给
+                { "key": "mystery", "display_name": "Mystery Model", "enable": true },
+            ],
+        });
+        let models = parse_catalog(&payload, Site::QoderIntl);
+        let by_id = |id: &str| {
+            models
+                .iter()
+                .find(|m| m.get("id").and_then(Value::as_str) == Some(id))
+                .cloned()
+                .unwrap_or_else(|| panic!("缺 {}", id))
+        };
+        let hunger = by_id("HungerG");
+        assert_eq!(hunger.get("name").and_then(Value::as_str), Some("HungerG"));
+        assert_eq!(
+            hunger.get("upstreamKey").and_then(Value::as_str),
+            Some("hmodel"),
+            "转发仍用代号"
+        );
+        let minimax = by_id("MiniMax-M3.1-Flash");
+        assert_eq!(
+            minimax.get("upstreamKey").and_then(Value::as_str),
+            Some("mmodel"),
+            "上游不给 display_name 时也要收进来"
+        );
+        let mystery = by_id("MysteryModel");
+        assert_eq!(
+            mystery.get("name").and_then(Value::as_str),
+            Some("Mystery Model"),
+            "表里没有的 key 沿用上游名"
+        );
     }
 
     /// 千问办公只有 qwork 单一场景，不做 app 合并（与上游一致）。
